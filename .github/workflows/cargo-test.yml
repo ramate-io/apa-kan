@@ -1,0 +1,14 @@
+name: Cargo Test
+
+on:
+  push:
+    branches:
+
+jobs:
+  cargo-test:
+    uses: ./.github/workflows/nix-command.yml
+    with:
+      command: cargo test --release
+      nix_flake_path: '.'
+      runner: 'ubuntu-latest'
+      rust_cache_key: cargo-release-test

@@ -1,0 +1,14 @@
+*.tfstate*
+__pycache__
+*.env
+venv
+.venv
+target
+.apa-kan
+.nix-dev-profile*
+.nix-profile*
+dist
+packaging/*.local.md
+packaging/*.local.env
+packaging/identity.local.md
+.DS_Store

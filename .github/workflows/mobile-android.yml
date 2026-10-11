@@ -1,0 +1,89 @@
+name: Mobile - Android
+
+on:
+  push:
+    branches:
+      - '**'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: mobile-android-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    if: >
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main' ||
+      contains(github.event.head_commit.message, 'ci-action::package')
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      rust: ${{ steps.ver.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ver
+        run: |
+          echo "version=$(packaging/version.sh)" >> "$GITHUB_OUTPUT"
+          echo "rust=$(packaging/version.sh --rust)" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;26.1.10909125"
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+      
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.version.outputs.rust }}
+          targets: aarch64-linux-android,armv7-linux-androideabi
+      
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Install cargo-apk
+        run: cargo install cargo-apk
+      
+      - name: Build Android APK
+        run: cargo apk build -p apa-kan --release
+      
+      - name: Package Android artifacts
+        run: packaging/scripts/package-android.sh
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apa-kan-${{ env.VERSION }}-android
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    if: github.event_name == 'release'
+    needs: [android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: apa-kan-*-android
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/*.apk --clobber

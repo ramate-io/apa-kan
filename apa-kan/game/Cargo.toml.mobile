@@ -1,0 +1,23 @@
+# This file documents mobile-specific Cargo.toml additions
+# These would be merged into Cargo.toml when using cargo-apk or other mobile tooling
+
+[package.metadata.android]
+package = "io.ramate.apa_kan"
+label = "Apa Kan"
+icon = "@mipmap/ic_launcher"
+fullscreen = false
+orientation = "landscape"
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 24
+target_sdk_version = 33
+
+[package.metadata.android.application]
+debuggable = false
+theme = "@android:style/Theme.NoTitleBar.Fullscreen"
+
+[package.metadata.android.application.activity]
+config_changes = "orientation|keyboardHidden|screenSize"
+launch_mode = "singleTask"
+orientation = "landscape"
