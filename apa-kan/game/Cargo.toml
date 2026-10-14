@@ -44,3 +44,9 @@ theme = "@android:style/Theme.NoTitleBar.Fullscreen"
 config_changes = "orientation|keyboardHidden|screenSize"
 launch_mode = "singleTask"
 orientation = "landscape"
+
+[package.metadata.android.signing.debug]
+keystore = "debug.keystore"
+store_password = "android"
+key_alias = "androiddebugkey"
+key_password = "android"
