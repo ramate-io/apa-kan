@@ -68,6 +68,11 @@ jobs:
       - name: Install cargo-apk
         run: cargo install cargo-apk
       
+      - name: Generate debug keystore
+        run: |
+          cd apa-kan/game
+          keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+      
       - name: Build Android APK
         run: cargo apk build -p apa-kan --release
       
