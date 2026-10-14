@@ -45,7 +45,7 @@ config_changes = "orientation|keyboardHidden|screenSize"
 launch_mode = "singleTask"
 orientation = "landscape"
 
-[package.metadata.android.signing.debug]
+[package.metadata.android.signing.release]
 path = "debug.keystore"
 keystore_password = "android"
 key_alias = "androiddebugkey"
