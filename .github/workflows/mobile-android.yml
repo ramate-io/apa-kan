@@ -53,9 +53,9 @@ jobs:
         with:
           packages: 'platform-tools'
       
-      - name: Install Android NDK
+      - name: Install Android NDK and Platform
         run: |
-          sdkmanager --install "ndk;26.1.10909125"
+          sdkmanager --install "platforms;android-30" "ndk;26.1.10909125"
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
       
       - uses: dtolnay/rust-toolchain@master
