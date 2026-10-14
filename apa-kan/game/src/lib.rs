@@ -31,24 +31,7 @@ fn setup(mut commands: Commands) {
 	));
 }
 
-#[cfg(target_os = "android")]
-#[no_mangle]
-fn android_main(app: bevy::winit::AndroidApp) {
-	use bevy::winit::WinitPlugin;
-	
-	App::new()
-		.add_plugins(
-			DefaultPlugins
-				.set(WinitPlugin::default().with_android_app(app))
-				.set(WindowPlugin {
-					primary_window: Some(Window {
-						title: "Apa Kan".into(),
-						resolution: (800, 600).into(),
-						..default()
-					}),
-					..default()
-				}),
-		)
-		.add_systems(Startup, setup)
-		.run();
+#[bevy_main]
+pub fn main() {
+	run();
 }
