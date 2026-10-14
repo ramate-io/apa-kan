@@ -13,7 +13,13 @@ mkdir -p "$WIN_DIR"
 
 cp "$BINARY" "$WIN_DIR/apa-kan.exe"
 
-cd "$DIST"
-zip -r "ApaKan-$VERSION-windows-x64.zip" "ApaKan-$VERSION-windows-x64"
+# Use PowerShell's Compress-Archive on Windows (zip not available by default)
+if command -v powershell.exe &> /dev/null; then
+	powershell.exe -Command "Compress-Archive -Path '$WIN_DIR' -DestinationPath '$DIST/ApaKan-$VERSION-windows-x64.zip' -Force"
+else
+	# Fallback to zip if available (e.g., in Git Bash with zip installed)
+	cd "$DIST"
+	zip -r "ApaKan-$VERSION-windows-x64.zip" "ApaKan-$VERSION-windows-x64"
+fi
 
 echo "✅ Windows package created: $DIST/ApaKan-$VERSION-windows-x64.zip"
