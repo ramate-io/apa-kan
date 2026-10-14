@@ -74,7 +74,7 @@ jobs:
           keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
       
       - name: Build Android APK
-        run: cargo apk build -p apa-kan --release
+        run: cargo apk build -p apa-kan --lib --release
       
       - name: Package Android artifacts
         run: packaging/scripts/package-android.sh
