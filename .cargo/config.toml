@@ -1,0 +1,5 @@
+[build]
+rustflags = ["-C", "strip=none"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "strip=none"]

@@ -1,0 +1,14 @@
+name: Cargo Check
+
+on:
+  push:
+    branches:
+
+jobs:
+  cargo-check:
+    uses: ./.github/workflows/nix-command.yml
+    with:
+      command: cargo check
+      nix_flake_path: '.'
+      runner: 'ubuntu-latest'
+      rust_cache_key: cargo-check

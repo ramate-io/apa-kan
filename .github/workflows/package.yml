@@ -1,0 +1,119 @@
+name: Package
+
+on:
+  push:
+    branches:
+      - '**'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: package-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    if: >
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main' ||
+      contains(github.event.head_commit.message, 'ci-action::package')
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      rust: ${{ steps.ver.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ver
+        run: |
+          echo "version=$(packaging/version.sh)" >> "$GITHUB_OUTPUT"
+          echo "rust=$(packaging/version.sh --rust)" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.version.outputs.rust }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p apa-kan --release --locked
+      - run: packaging/scripts/package-linux.sh
+      - run: packaging/smoke.sh "dist/ApaKan-$VERSION-linux-x64/apa-kan"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apa-kan-${{ env.VERSION }}-linux-x64
+          path: dist/ApaKan-${{ env.VERSION }}-linux-x64.tar.xz
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    needs: version
+    runs-on: macos-14
+    timeout-minutes: 180
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.version.outputs.rust }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p apa-kan --release --locked
+      - run: packaging/scripts/package-macos.sh
+      - run: packaging/smoke.sh dist/ApaKan.app/Contents/MacOS/apa-kan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apa-kan-${{ env.VERSION }}-macos-arm64
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.version.outputs.rust }}
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p apa-kan --release --locked --target x86_64-pc-windows-msvc
+      - run: packaging/scripts/package-windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apa-kan-${{ env.VERSION }}-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    if: github.event_name == 'release'
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: apa-kan-*
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/*.{dmg,zip,tar.xz} --clobber

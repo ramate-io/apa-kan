@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -e
+
+if [ -z "$LIB_PRE_COMMIT_ENABLE" ]; then
+	exit 0
+fi
+
+cargo fmt --all

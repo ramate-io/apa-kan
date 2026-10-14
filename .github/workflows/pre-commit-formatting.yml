@@ -1,0 +1,40 @@
+name: Pre-commit Formatting
+
+on:
+  push:
+    branches:
+
+jobs:
+  pre-commit-formatting:
+    uses: ./.github/workflows/nix-command.yml
+    with:
+      command: |
+        git config user.email "ci@example.com"
+        git config user.name "CI Bot"
+        
+        if ! git diff --exit-code || ! git diff --cached --exit-code; then
+          echo "❌ Repository is not clean after checkout"
+          exit 1
+        fi
+        
+        export LIB_PRE_COMMIT_ENABLE=1
+        git add -A
+        git commit --allow-empty -m "CI: Run lib-pre-commit hooks"
+        
+        if ! git diff --exit-code; then
+          echo "❌ lib-pre-commit hooks modified files. Run them locally and commit the result before pushing."
+          echo ""
+          echo "To fix this:"
+          echo "1. Enter nix shell: nix develop"
+          echo "2. Run hooks: LIB_PRE_COMMIT_ENABLE=1 git commit --allow-empty -m \"Run lib-pre-commit hooks\""
+          echo "3. Commit any generated changes, then push again"
+          echo ""
+          echo "Modified files:"
+          git diff --name-only
+          exit 1
+        fi
+        
+        echo "✅ No changes detected. lib-pre-commit output matches the pushed commit."
+      nix_flake_path: '.'
+      runner: 'ubuntu-latest'
+      rust_cache: false
