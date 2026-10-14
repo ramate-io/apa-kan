@@ -22,7 +22,7 @@ fn setup(mut commands: Commands) {
 	commands.spawn((
 		Text::new("Apa Kan"),
 		TextFont {
-			font_size: 80.0,
+			font_size: FontSize::Px(80.0),
 			..default()
 		},
 		TextColor(Color::srgb(1.0, 1.0, 1.0)),
@@ -33,7 +33,7 @@ fn setup(mut commands: Commands) {
 			..default()
 		},
 		TextLayout {
-			justify: JustifyText::Center,
+			justify: Justify::Center,
 			..default()
 		},
 	));
