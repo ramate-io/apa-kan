@@ -19,7 +19,7 @@ name = "apa-kan"
 path = "src/main.rs"
 
 [dependencies]
-bevy = { workspace = true }
+bevy = { workspace = true, features = ["android-native-activity"] }
 
 [lints]
 workspace = true
