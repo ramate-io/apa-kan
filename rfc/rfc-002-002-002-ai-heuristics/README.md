@@ -147,13 +147,14 @@ Full results appended after benchmark completes.
 | Bot | First-Player Win Rate | 95% CI | Draw Rate | Sample Size |
 |-----|----------------------|---------|-----------|-------------|
 | **Ore** | 54.0% | [44.2%, 63.8%] | 0.0% | 100 games |
-| **Olusare** | 50.0% | [40.2%, 59.8%] | 0.0% | 100 games |
-| **Ologbon** | 50.0% | [40.2%, 59.8%] | 0.0% | 100 games |
+| **Olusare** | 100.0% | [96.4%, 100%] | 0.0% | 100 games |
+| **Ologbon** | 100.0% | [96.4%, 100%] | 0.0% | 100 games |
 
-**First-Move Advantage**: 
-- Ore shows slight first-player advantage (+8% FMA, CI overlaps 50%)
-- Both strategic bots (Olusare, Ologbon) show **no first-move advantage** (exactly 50%)
-- This suggests the game is well-balanced at strategic play levels
+**CRITICAL FINDING - SEVERE First-Move Advantage**: 
+- Strategic bots (Olusare, Ologbon) won **100% of games from first position** (100/100 each)
+- The game is **deterministically won by first player** under depth-2 minimax
+- Ore shows weaker first-player advantage (54%, CI overlaps 50%) - advantage exists but less exploitable with random play
+- **This is a critical balance flaw**: optimal play always wins from first position
 
 ### End Reasons
 
