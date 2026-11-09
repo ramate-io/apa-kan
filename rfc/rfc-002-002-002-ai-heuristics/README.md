@@ -230,13 +230,14 @@ Games are remarkably consistent in length (~22 turns), suggesting stable pacing 
 
 ### First-Move Advantage Assessment
 
-**Conclusion**: The game shows **no significant first-move advantage** at strategic play levels.
+**Conclusion**: The game has **SEVERE first-move advantage** at strategic play levels.
 
-- **Random play (Ore)**: Shows weak first-player bias (54%, 95% CI overlaps 50%)
-- **Strategic play (Olusare, Ologbon)**: Exactly 50% first-player win rate
-- **Confidence**: With 100-game samples, the 95% CIs for strategic bots [40.2%, 59.8%] include 50%, confirming balanced gameplay
+- **Strategic play (Olusare, Ologbon)**: **100% first-player win rate** (won all 100 games from first position)
+- **Random play (Ore)**: Weak first-player bias (54%, CI overlaps 50%)
+- **Implication**: Under minimax, the game is deterministically won by first player
+- **Root cause**: Current rules give first player insurmountable tempo advantage
 
-The game design successfully avoids first-move advantage that plagues many abstract strategy games.
+This is a critical balance flaw requiring rule changes to reduce first-move advantage.
 
 ### Stalling Assessment
 
