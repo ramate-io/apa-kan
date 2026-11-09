@@ -1,4 +1,6 @@
-use apa_kan::game::{Action, ActionType, AiConfig, AiPlayer, BotType, Game, GameState, Player, Rules};
+use apa_kan::game::{
+	Action, ActionType, AiConfig, AiPlayer, BotType, Game, GameState, Player, Rules,
+};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -97,12 +99,7 @@ impl PairingStats {
 	}
 }
 
-fn play_game(
-	p1: &AiPlayer,
-	p2: &AiPlayer,
-	tile_seed: u64,
-	max_turns: usize,
-) -> MatchResult {
+fn play_game(p1: &AiPlayer, p2: &AiPlayer, tile_seed: u64, max_turns: usize) -> MatchResult {
 	let mut game = Game::new(); // Will add seed support later if needed
 	let mut p1_actions = ActionCounts::default();
 	let mut p2_actions = ActionCounts::default();
@@ -418,9 +415,16 @@ fn main() {
 
 			println!("{} vs {}", stats.p1_name, stats.p2_name);
 			println!("  First-player win rate: {:.1}%", p1_wr * 100.0);
-			println!("  95% CI: [{:.1}%, {:.1}%]", (p1_wr - ci_95) * 100.0, (p1_wr + ci_95) * 100.0);
+			println!(
+				"  95% CI: [{:.1}%, {:.1}%]",
+				(p1_wr - ci_95) * 100.0,
+				(p1_wr + ci_95) * 100.0
+			);
 			println!("  Sample size: {} games", stats.total_games);
-			println!("  Draw rate: {:.1}%", (stats.draws as f64 / stats.total_games as f64) * 100.0);
+			println!(
+				"  Draw rate: {:.1}%",
+				(stats.draws as f64 / stats.total_games as f64) * 100.0
+			);
 			println!("  Avg game length: {:.1} turns", stats.avg_turns());
 			println!();
 		}
@@ -447,14 +451,8 @@ fn main() {
 	}
 
 	println!("\n=== Overall Statistics ===\n");
-	println!(
-		"Total games played: {}",
-		all_pairings.iter().map(|s| s.total_games).sum::<usize>()
-	);
-	println!(
-		"Total turns: {}",
-		all_pairings.iter().map(|s| s.total_turns).sum::<usize>()
-	);
+	println!("Total games played: {}", all_pairings.iter().map(|s| s.total_games).sum::<usize>());
+	println!("Total turns: {}", all_pairings.iter().map(|s| s.total_turns).sum::<usize>());
 	println!(
 		"Avg turns per game: {:.1}",
 		all_pairings.iter().map(|s| s.total_turns).sum::<usize>() as f64
