@@ -1,5 +1,5 @@
 use super::actions::{has_legal_add_or_move, Action, ActionType};
-use super::core::{Direction, Game, GameState, Player, Position, Tile};
+use super::core::{Game, GameState, Player, Position, Tile};
 
 pub struct Rules;
 
@@ -17,8 +17,8 @@ impl Rules {
 			ActionType::Add { tile_index, position } => {
 				Self::apply_add(game, tile_index, position)?;
 			}
-			ActionType::Move { tile_id, direction } => {
-				Self::apply_move(game, tile_id, direction)?;
+			ActionType::Move { tile_id, destination } => {
+				Self::apply_move(game, tile_id, destination)?;
 			}
 			ActionType::Rotate { tile_id, clockwise } => {
 				Self::apply_rotate(game, tile_id, clockwise)?;
@@ -54,7 +54,7 @@ impl Rules {
 		Ok(())
 	}
 
-	fn apply_move(game: &mut Game, tile_id: u32, direction: Direction) -> Result<(), String> {
+	fn apply_move(game: &mut Game, tile_id: u32, destination: Position) -> Result<(), String> {
 		let from_pos = game
 			.board
 			.find_tile(tile_id)
@@ -66,18 +66,16 @@ impl Rules {
 			return Err("Not your tile".to_string());
 		}
 
-		let to_pos = from_pos.neighbor(direction);
-
-		if !to_pos.is_valid() {
-			return Err("Invalid target position".to_string());
+		if !destination.is_valid() {
+			return Err("Invalid destination".to_string());
 		}
 
-		if !game.board.is_empty(to_pos) {
-			return Err("Target position is occupied".to_string());
+		if !game.board.is_empty(destination) {
+			return Err("Destination is occupied".to_string());
 		}
 
 		let tile = game.board.remove(from_pos).expect("Tile should exist");
-		game.board.place(to_pos, tile);
+		game.board.place(destination, tile);
 
 		Ok(())
 	}
@@ -149,10 +147,7 @@ impl Rules {
 		}
 
 		for position in tiles_to_remove {
-			if let Some(removed_tile) = game.board.remove(position) {
-				let stack = game.stack_mut(removed_tile.owner);
-				stack.push(removed_tile);
-			}
+			game.board.remove(position);
 		}
 	}
 
@@ -212,7 +207,7 @@ mod tests {
 		Rules::apply_action(&mut game, action).ok();
 
 		assert!(game.board.get(Position::new(0, 1)).is_none());
-		assert_eq!(game.player_one_stack.len(), 1);
+		assert_eq!(game.player_one_stack.len(), 0);
 	}
 
 	#[test]
@@ -280,9 +275,8 @@ mod tests {
 		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(1, 2))).ok();
 
 		let tiles_on_board = game.board.tiles().count();
-		let tiles_in_stack = game.player_one_stack.len();
 
-		assert!(tiles_on_board == 0 || tiles_in_stack > initial_stack_size);
+		assert!(tiles_on_board <= 2);
 	}
 
 	#[test]
@@ -293,7 +287,7 @@ mod tests {
 		game.board.place(Position::new(2, 2), game.player_one_stack.remove(0));
 
 		let tile_id = game.board.get(Position::new(2, 2)).unwrap().id;
-		let action = Action::move_tile(Player::One, tile_id, Direction::North);
+		let action = Action::move_tile(Player::One, tile_id, Position::new(1, 2));
 		let result = Rules::apply_action(&mut game, action);
 
 		assert!(result.is_ok());
@@ -343,14 +337,15 @@ mod tests {
 	}
 
 	#[test]
-	fn test_removed_tile_returns_to_stack() {
+	fn test_removed_tile_discarded() {
 		let mut game =
 			Game::new_with_tiles(vec![make_tile(0, Player::One, [Color::Maroon; 4])], vec![]);
 
 		let action = Action::add(Player::One, 0, Position::new(0, 1));
 		Rules::apply_action(&mut game, action).ok();
 
-		assert_eq!(game.player_one_stack.len(), 1);
+		assert_eq!(game.player_one_stack.len(), 0);
+		assert!(game.board.get(Position::new(0, 1)).is_none());
 	}
 
 	#[test]
@@ -422,12 +417,12 @@ mod tests {
 		game.board.place(Position::new(0, 1), game.player_one_stack.remove(0));
 		game.board.place(Position::new(0, 2), game.player_one_stack.remove(0));
 
-		let initial_stack_size = game.player_one_stack.len();
+		let tiles_before = game.board.tiles().count();
 
 		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(0, 3))).ok();
 
-		let tiles_removed = game.player_one_stack.len() - initial_stack_size;
-		assert!(tiles_removed >= 1);
+		let tiles_after = game.board.tiles().count();
+		assert!(tiles_after < tiles_before);
 	}
 
 	#[test]
@@ -469,5 +464,47 @@ mod tests {
 
 		let after_action = game.board.tiles().count();
 		assert_eq!(after_action, initial_on_board);
+	}
+
+	#[test]
+	fn test_move_tile_traveling_through_adjacencies() {
+		let mut game = Game::new_with_tiles(
+			vec![
+				make_tile(0, Player::One, [Color::Maroon; 4]),
+				make_tile(1, Player::One, [Color::Maroon; 4]),
+				make_tile(2, Player::One, [Color::Maroon; 4]),
+			],
+			vec![],
+		);
+
+		game.board.place(Position::new(2, 1), game.player_one_stack.remove(0));
+		game.board.place(Position::new(2, 2), game.player_one_stack.remove(0));
+		game.board.place(Position::new(2, 3), game.player_one_stack.remove(0));
+
+		let tile_id = game.board.get(Position::new(2, 1)).unwrap().id;
+		let action = Action::move_tile(Player::One, tile_id, Position::new(1, 3));
+		let result = Rules::apply_action(&mut game, action);
+
+		assert!(result.is_ok());
+		assert!(game.board.get(Position::new(2, 1)).is_none());
+		assert!(game.board.get(Position::new(1, 3)).is_some());
+	}
+
+	#[test]
+	fn test_move_no_adjacencies_no_moves() {
+		let mut game =
+			Game::new_with_tiles(vec![make_tile(0, Player::One, [Color::Maroon; 4])], vec![]);
+
+		game.board.place(Position::new(2, 2), game.player_one_stack.remove(0));
+
+		use crate::game::actions::generate_legal_actions;
+		let actions = generate_legal_actions(&game);
+
+		let move_actions: Vec<_> = actions
+			.iter()
+			.filter(|a| matches!(a.action_type, ActionType::Move { .. }))
+			.collect();
+
+		assert_eq!(move_actions.len(), 0);
 	}
 }

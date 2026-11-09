@@ -69,11 +69,11 @@ The game ends when one player cannot ADD or MOVE a tile; the other player wins.
 
 **Question**: Is a removed tile returned to the player's stack or permanently out of play?
 
-**Decision**: Removed tiles are RETURNED to the player's stack.
+**Decision** (CONFIRMED BY DESIGNER): Removed tiles are DISCARDED - permanently out of the game.
 
-**Rationale**: This prevents the game from becoming too punishing and allows for longer, more strategic gameplay. Players can reuse removed tiles with different placement strategies.
+**Rationale**: This is how the game progresses toward an end. Players must protect their tiles carefully, as lost tiles cannot be recovered. This creates higher stakes and encourages defensive play.
 
-**Test Coverage**: `test_removed_tile_returns_to_stack()`
+**Test Coverage**: `test_removed_tile_discarded()`
 
 ### 4. Tile Edge Generation
 
@@ -97,17 +97,25 @@ The game ends when one player cannot ADD or MOVE a tile; the other player wins.
 
 **Question**: What does "moving over" mean? Can tiles move through occupied squares or only empty ones? Single step or multi-step paths?
 
-**Decision**: 
-- Movement is SINGLE-STEP only (to one of the 4 cardinal neighbors)
-- Tiles can move FROM an occupied square TO an adjacent empty square
-- The "moving over" check applies to the edge being crossed:
-  - If moving North, check the North edge of the source tile against the South edge of the destination tile (if occupied by another tile)
-  - The edge of the moving tile must have weight ≤ the edge it's crossing
-  - If the destination is empty, only check that the move is to an orthogonally adjacent square
+**Decision** (CONFIRMED BY DESIGNER): Movement is TILE TRAVELING through adjacent occupied tiles.
 
-**Rationale**: Single-step movement is simpler to implement and understand. The weight check creates interesting constraints where heavy-edged tiles are less mobile.
+"It's strictly tile traveling. You can tile travel as far as you want through adjacencies (whether they are yours or your opponent's tiles). You can no longer MOVE if you don't have any [adjacencies]."
 
-**Test Coverage**: `test_move_single_step()`, `test_move_weight_constraint()`, `test_move_to_empty()`
+**Mechanics**:
+- A tile travels through a chain of adjacent occupied tiles (either player's)
+- Can travel any distance through valid adjacencies
+- Tile maintains its cardinal orientation (no rotation during travel)
+- Each step over a tile must satisfy the edge-weight rule:
+  - The shared edge must have at least as much weight as the moving tile's matching edge
+  - Where two tiles share an edge, that edge's weight = max(both sides)
+- The move must END on an empty, non-corner square
+- A tile with NO adjacent tiles has no legal MOVE actions
+
+**Implementation**: BFS/flood-fill to find all reachable empty destinations via valid tile adjacencies.
+
+**Rationale**: Creates strategic depth where building connected networks matters. Heavy-edged tiles have restricted mobility. Isolated tiles cannot move.
+
+**Test Coverage**: `test_move_tile_traveling()`, `test_move_multi_step()`, `test_move_weight_constraint()`, `test_move_no_adjacencies()`, `test_move_ends_on_empty()`
 
 ### 6. Win Condition Check
 
