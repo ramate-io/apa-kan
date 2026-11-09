@@ -13,7 +13,7 @@ pub fn run() {
 			}),
 			..default()
 		}))
-		.add_plugins((ui::MenuPlugin, ui::BoardPlugin, ui::TileRenderPlugin))
+		.add_plugins((ui::MenuPlugin, ui::BoardPlugin, ui::TileRenderPlugin, ui::InputPlugin))
 		.add_systems(Startup, setup)
 		.run();
 }
