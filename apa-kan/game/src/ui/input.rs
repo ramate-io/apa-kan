@@ -1,5 +1,5 @@
 use crate::game::actions::{generate_legal_actions, has_legal_add_or_move, Action, ActionType};
-use crate::game::core::{Direction, Game, GameState, Player, Position};
+use crate::game::core::{Game, GameState, Player, Position};
 use crate::game::rules::Rules;
 use crate::ui::board::{board_to_screen_pos, GameResource};
 use crate::ui::menu::GameScreen;
@@ -181,20 +181,15 @@ fn handle_click(
 						}
 					}
 				}
-				Selection::BoardTile { tile_id, position } => {
-					let direction = get_direction(*position, pos);
-					if let Some(dir) = direction {
-						let action = Action::move_tile(game.0.current_player, *tile_id, dir);
-						match Rules::apply_action(&mut game.0, action) {
-							Ok(_) => {
-								input_state.selection = None;
-							}
-							Err(e) => {
-								set_feedback(input_state, format!("Cannot move: {}", e));
-							}
+				Selection::BoardTile { tile_id, .. } => {
+					let action = Action::move_tile(game.0.current_player, *tile_id, pos);
+					match Rules::apply_action(&mut game.0, action) {
+						Ok(_) => {
+							input_state.selection = None;
 						}
-					} else {
-						set_feedback(input_state, "Can only move to adjacent squares".to_string());
+						Err(e) => {
+							set_feedback(input_state, format!("Cannot move: {}", e));
+						}
 					}
 				}
 			}
@@ -252,23 +247,6 @@ fn check_stack_click(click_pos: Vec2, game: &Game) -> Option<Selection> {
 	None
 }
 
-fn get_direction(from: Position, to: Position) -> Option<Direction> {
-	let dr = to.row - from.row;
-	let dc = to.col - from.col;
-
-	if dr == -1 && dc == 0 {
-		Some(Direction::North)
-	} else if dr == 1 && dc == 0 {
-		Some(Direction::South)
-	} else if dr == 0 && dc == 1 {
-		Some(Direction::East)
-	} else if dr == 0 && dc == -1 {
-		Some(Direction::West)
-	} else {
-		None
-	}
-}
-
 fn set_feedback(input_state: &mut InputState, message: String) {
 	input_state.feedback_message = Some((message, Timer::from_seconds(2.0, TimerMode::Once)));
 }
@@ -304,19 +282,16 @@ fn update_highlights(
 			}
 			Selection::BoardTile { tile_id, .. } => {
 				for action in legal_actions {
-					if let ActionType::Move { tile_id: move_tile_id, direction } =
+					if let ActionType::Move { tile_id: move_tile_id, destination } =
 						action.action_type
 					{
 						if move_tile_id == *tile_id {
-							if let Some(from_pos) = game.0.board.find_tile(*tile_id) {
-								let to_pos = from_pos.neighbor(direction);
-								let screen_pos = board_to_screen_pos(to_pos);
-								gizmos.circle_2d(
-									Isometry2d::from_translation(screen_pos),
-									40.0,
-									Color::srgba(0.0, 1.0, 0.0, 0.3),
-								);
-							}
+							let screen_pos = board_to_screen_pos(destination);
+							gizmos.circle_2d(
+								Isometry2d::from_translation(screen_pos),
+								40.0,
+								Color::srgba(0.0, 1.0, 0.0, 0.3),
+							);
 						}
 					}
 				}
