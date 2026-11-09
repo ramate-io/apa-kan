@@ -17,11 +17,8 @@ impl Rules {
 			ActionType::Add { tile_index, position } => {
 				Self::apply_add(game, tile_index, position)?;
 			}
-			ActionType::Move { tile_id, destination } => {
-				Self::apply_move(game, tile_id, destination)?;
-			}
-			ActionType::Rotate { tile_id, clockwise } => {
-				Self::apply_rotate(game, tile_id, clockwise)?;
+			ActionType::Move { tile_id, destination, rotation_count } => {
+				Self::apply_move(game, tile_id, destination, rotation_count)?;
 			}
 		}
 
@@ -30,6 +27,10 @@ impl Rules {
 		Self::check_win_condition(game);
 
 		game.current_player = game.current_player.other();
+		game.turn_count += 1;
+
+		Self::check_turn_limit_draw(game);
+		Self::check_repetition_draw(game);
 
 		Ok(())
 	}
@@ -54,11 +55,22 @@ impl Rules {
 		Ok(())
 	}
 
-	fn apply_move(game: &mut Game, tile_id: u32, destination: Position) -> Result<(), String> {
+	fn apply_move(
+		game: &mut Game,
+		tile_id: u32,
+		destination: Position,
+		rotation_count: u8,
+	) -> Result<(), String> {
 		let from_pos = game
 			.board
 			.find_tile(tile_id)
 			.ok_or_else(|| "Tile not found on board".to_string())?;
+
+		if from_pos == destination {
+			return Err(
+				"Cannot move to same position (use rotation_count if reorienting)".to_string()
+			);
+		}
 
 		let tile = game.board.get(from_pos).ok_or_else(|| "Tile not found".to_string())?;
 
@@ -74,38 +86,11 @@ impl Rules {
 			return Err("Destination is occupied".to_string());
 		}
 
-		let tile = game.board.remove(from_pos).expect("Tile should exist");
+		let mut tile = game.board.remove(from_pos).expect("Tile should exist");
+		tile = tile.rotated_n_times(rotation_count);
 		game.board.place(destination, tile);
 
 		Ok(())
-	}
-
-	fn apply_rotate(game: &mut Game, tile_id: u32, clockwise: bool) -> Result<(), String> {
-		let position = game
-			.board
-			.find_tile(tile_id)
-			.ok_or_else(|| "Tile not found on board".to_string())?;
-
-		let tile = game.board.get(position).ok_or_else(|| "Tile not found".to_string())?;
-
-		if tile.owner != game.current_player {
-			return Err("Not your tile".to_string());
-		}
-
-		let original_tile = tile.clone();
-		let rotated_tile = if clockwise { tile.rotate_cw() } else { tile.rotate_ccw() };
-
-		if Self::tiles_equal_orientation(&original_tile, &rotated_tile) {
-			return Err("Cannot end in starting orientation".to_string());
-		}
-
-		game.board.place(position, rotated_tile);
-
-		Ok(())
-	}
-
-	fn tiles_equal_orientation(a: &Tile, b: &Tile) -> bool {
-		a.north == b.north && a.east == b.east && a.south == b.south && a.west == b.west
 	}
 
 	fn check_and_remove_all_mismatched(game: &mut Game) {
@@ -156,6 +141,36 @@ impl Rules {
 
 		if !current_can_move {
 			game.state = GameState::Won(game.current_player.other());
+		}
+	}
+
+	fn check_turn_limit_draw(game: &mut Game) {
+		if game.state != GameState::InProgress {
+			return;
+		}
+
+		if game.turn_count >= 100 {
+			game.state = GameState::Draw;
+		}
+	}
+
+	fn check_repetition_draw(game: &mut Game) {
+		if game.state != GameState::InProgress {
+			return;
+		}
+
+		let current_hash = game.compute_position_hash();
+		game.position_history.push(current_hash);
+
+		if game.position_history.len() >= 6 {
+			let len = game.position_history.len();
+			let latest = game.position_history[len - 1];
+			let two_ago = game.position_history[len - 3];
+			let four_ago = game.position_history[len - 5];
+
+			if latest == two_ago && latest == four_ago {
+				game.state = GameState::Draw;
+			}
 		}
 	}
 }
@@ -287,7 +302,7 @@ mod tests {
 		game.board.place(Position::new(2, 2), game.player_one_stack.remove(0));
 
 		let tile_id = game.board.get(Position::new(2, 2)).unwrap().id;
-		let action = Action::move_tile(Player::One, tile_id, Position::new(1, 2));
+		let action = Action::move_tile(Player::One, tile_id, Position::new(1, 2), 0);
 		let result = Rules::apply_action(&mut game, action);
 
 		assert!(result.is_ok());
@@ -296,44 +311,13 @@ mod tests {
 	}
 
 	#[test]
-	fn test_rotate_tile() {
-		let mut game = Game::new_with_tiles(
-			vec![make_tile(
-				0,
-				Player::One,
-				[Color::Maroon, Color::Green, Color::Blue, Color::Orange],
-			)],
-			vec![],
-		);
-
-		game.board.place(Position::new(2, 2), game.player_one_stack.remove(0));
-
-		let tile_id = game.board.get(Position::new(2, 2)).unwrap().id;
-		let original = game.board.get(Position::new(2, 2)).unwrap().clone();
-
-		let action = Action::rotate(Player::One, tile_id, true);
-		let result = Rules::apply_action(&mut game, action);
-
-		assert!(result.is_ok());
-
-		let rotated = game.board.get(Position::new(1, 2)).or_else(|| game.player_one_stack.first());
-		if let Some(tile) = game.board.get(Position::new(2, 2)) {
-			assert_ne!(tile.north.color, original.north.color);
-		}
-	}
-
-	#[test]
-	fn test_rotate_to_same_orientation_fails() {
-		let tile = make_tile(0, Player::One, [Color::Maroon; 4]);
-		let mut game = Game::new_with_tiles(vec![tile.clone()], vec![]);
-
-		game.board.place(Position::new(2, 2), game.player_one_stack.remove(0));
-
-		let tile_id = game.board.get(Position::new(2, 2)).unwrap().id;
-		let action = Action::rotate(Player::One, tile_id, true);
-		let result = Rules::apply_action(&mut game, action);
-
-		assert!(result.is_err());
+	fn test_move_with_rotation() {
+		let actions = crate::game::actions::generate_legal_actions(&Game::new());
+		let move_actions: Vec<_> = actions
+			.iter()
+			.filter(|a| matches!(a.action_type, ActionType::Move { .. }))
+			.collect();
+		assert!(move_actions.len() == 0);
 	}
 
 	#[test]
@@ -459,9 +443,6 @@ mod tests {
 
 		let initial_on_board = game.board.tiles().count();
 
-		let tile_id = game.board.get(Position::new(2, 2)).unwrap().id;
-		Rules::apply_action(&mut game, Action::rotate(Player::Two, tile_id, true)).ok();
-
 		let after_action = game.board.tiles().count();
 		assert_eq!(after_action, initial_on_board);
 	}
@@ -482,7 +463,7 @@ mod tests {
 		game.board.place(Position::new(2, 3), game.player_one_stack.remove(0));
 
 		let tile_id = game.board.get(Position::new(2, 1)).unwrap().id;
-		let action = Action::move_tile(Player::One, tile_id, Position::new(1, 3));
+		let action = Action::move_tile(Player::One, tile_id, Position::new(1, 3), 0);
 		let result = Rules::apply_action(&mut game, action);
 
 		assert!(result.is_ok());

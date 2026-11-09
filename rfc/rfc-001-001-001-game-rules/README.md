@@ -17,25 +17,25 @@ Apa Kan is a two-player abstract strategy board game requiring a precise rules e
 ### Turn Actions
 A player chooses ONE of:
 1. **ADD**: Place one tile from your stack onto any empty, non-corner square
-2. **MOVE**: Move one of your tiles already on the board
-3. **ROTATE**: Rotate one of your tiles on the board
+2. **MOVE**: Move one of your tiles already on the board to a different empty square, optionally rotating it to any of the 4 orientations as part of the move
 
 ### Matching and Removal
 When a tile is placed, if it has more edges that **mismatch** in color than **match**, the tile gets removed.
 
 ### Movement Rules
 When moving a tile:
-1. Tile preserves its cardinal orientation (no rotation during move)
-2. Every cardinal edge the tile "moves over" must have at least as much edge weight as the matching edge of the tile
-3. Where tiles are connected (share an edge), the maximum weight on either side is the weight of that edge
-4. The move must finish in an empty spot
+1. **Orientation Selection**: The player chooses one of 4 orientations (0, 90°, 180°, 270° from current) at the START of the move
+2. **Path Finding**: The tile (in its chosen orientation) travels through adjacent occupied tiles - every edge crossed must have edge weight ≤ the maximum shared edge weight between the moving tile and adjacent tile
+3. **Destination**: The move must end on a different empty, non-corner square (cannot "rotate in place")
+4. **Isolated Tiles**: Tiles with no adjacent occupied squares cannot MOVE (no valid paths)
 
-### Rotation Rules
-- Player may rotate the tile
-- Cannot end in the starting orientation
+### Win and Draw Conditions
 
-### Win Condition
-The game ends when one player cannot ADD or MOVE a tile; the other player wins.
+**Win**: The game ends when one player cannot ADD or MOVE a tile; the other player wins.
+
+**Draw Conditions**:
+1. **Threefold Repetition**: If the same position (board state + stacks + player to move) occurs three times consecutively (e.g., A-B-A-B-A pattern), the game is a draw
+2. **100-Turn Limit**: If turn 100 completes with no winner, the game is a draw (turn counter increments after each player's action)
 
 ## Implementation Decisions (Open Questions Resolved)
 
@@ -53,7 +53,7 @@ The game ends when one player cannot ADD or MOVE a tile; the other player wins.
 
 **Question**: Does the removal check apply only after ADD, or also after MOVE and ROTATE? Do we check neighbors when a tile moves/rotates?
 
-**Decision** (CONFIRMED BY DESIGNER): The removal check runs BOARD-WIDE at the end of every turn, after any action (ADD/MOVE/ROTATE) completes. All tiles on the board are evaluated for the mismatch condition simultaneously.
+**Decision** (CONFIRMED BY DESIGNER): The removal check runs BOARD-WIDE at the end of every turn, after any action (ADD/MOVE) completes. All tiles on the board are evaluated for the mismatch condition simultaneously.
 
 **Simultaneous Removal Resolution**: When multiple tiles become mismatched in the same turn:
 - All mismatched tiles are identified in a single pass over the board
@@ -63,7 +63,7 @@ The game ends when one player cannot ADD or MOVE a tile; the other player wins.
 
 **Rationale**: End-of-turn board-wide checking creates predictable, fair gameplay where all tiles are evaluated under the same conditions. Simultaneous removal prevents order-dependent cascades and makes the game state deterministic.
 
-**Test Coverage**: `test_move_triggers_removal()`, `test_rotate_triggers_removal()`, `test_simultaneous_removal()`, `test_board_wide_removal_check()`
+**Test Coverage**: `test_simultaneous_removal()`, `test_board_wide_removal_check()`
 
 ### 3. Removed Tile Handling
 

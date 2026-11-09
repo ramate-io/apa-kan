@@ -4,8 +4,7 @@ use std::collections::{HashSet, VecDeque};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionType {
 	Add { tile_index: usize, position: Position },
-	Move { tile_id: TileId, destination: Position },
-	Rotate { tile_id: TileId, clockwise: bool },
+	Move { tile_id: TileId, destination: Position, rotation_count: u8 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,12 +18,13 @@ impl Action {
 		Self { player, action_type: ActionType::Add { tile_index, position } }
 	}
 
-	pub fn move_tile(player: Player, tile_id: TileId, destination: Position) -> Self {
-		Self { player, action_type: ActionType::Move { tile_id, destination } }
-	}
-
-	pub fn rotate(player: Player, tile_id: TileId, clockwise: bool) -> Self {
-		Self { player, action_type: ActionType::Rotate { tile_id, clockwise } }
+	pub fn move_tile(
+		player: Player,
+		tile_id: TileId,
+		destination: Position,
+		rotation_count: u8,
+	) -> Self {
+		Self { player, action_type: ActionType::Move { tile_id, destination, rotation_count } }
 	}
 }
 
@@ -34,7 +34,6 @@ pub fn generate_legal_actions(game: &Game) -> Vec<Action> {
 
 	actions.extend(generate_add_actions(game, player));
 	actions.extend(generate_move_actions(game, player));
-	actions.extend(generate_rotate_actions(game, player));
 
 	actions
 }
@@ -69,9 +68,14 @@ fn generate_move_actions(game: &Game, player: Player) -> Vec<Action> {
 			continue;
 		}
 
-		let reachable = find_reachable_destinations(game, *pos, tile);
-		for dest in reachable {
-			actions.push(Action::move_tile(player, tile.id, dest));
+		for rotation_count in 0..4 {
+			let rotated_tile = tile.rotated_n_times(rotation_count);
+			let reachable = find_reachable_destinations(game, *pos, &rotated_tile);
+			for dest in reachable {
+				if dest != *pos {
+					actions.push(Action::move_tile(player, tile.id, dest, rotation_count));
+				}
+			}
 		}
 	}
 
@@ -146,21 +150,6 @@ fn can_cross_edge(
 	moving_edge.weight.value() <= edge_weight
 }
 
-fn generate_rotate_actions(game: &Game, player: Player) -> Vec<Action> {
-	let mut actions = Vec::new();
-
-	for (_, tile) in game.board.tiles() {
-		if tile.owner != player {
-			continue;
-		}
-
-		actions.push(Action::rotate(player, tile.id, true));
-		actions.push(Action::rotate(player, tile.id, false));
-	}
-
-	actions
-}
-
 pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 	if !game.stack(player).is_empty() {
 		for row in 0..5 {
@@ -222,21 +211,42 @@ mod tests {
 	}
 
 	#[test]
-	fn test_generate_rotate_actions() {
+	fn test_move_with_rotation() {
 		let mut game = Game::new();
-		let tile = Tile::new(
+		let tile1 = Tile::new(
 			0,
 			Player::One,
 			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
-			Edge { color: Color::Green, weight: EdgeWeight::Single },
-			Edge { color: Color::Blue, weight: EdgeWeight::Single },
-			Edge { color: Color::Orange, weight: EdgeWeight::Single },
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+		);
+		let tile2 = Tile::new(
+			1,
+			Player::One,
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
 		);
 
-		game.board.place(Position::new(2, 2), tile);
+		game.board.place(Position::new(2, 2), tile1);
+		game.board.place(Position::new(2, 3), tile2);
 
-		let actions = generate_rotate_actions(&game, Player::One);
-		assert_eq!(actions.len(), 2);
+		let actions = generate_move_actions(&game, Player::One);
+		assert!(actions.len() > 0);
+
+		let move_from_2_2: Vec<_> = actions
+			.iter()
+			.filter(|a| {
+				if let ActionType::Move { tile_id, .. } = a.action_type {
+					tile_id == 0
+				} else {
+					false
+				}
+			})
+			.collect();
+		assert!(move_from_2_2.len() >= 4);
 	}
 
 	#[test]

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::Hash;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Color {
@@ -14,7 +15,7 @@ impl Color {
 	}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EdgeWeight {
 	Single,
 	Double,
@@ -61,7 +62,7 @@ impl Direction {
 	}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Edge {
 	pub color: Color,
 	pub weight: EdgeWeight,
@@ -107,6 +108,14 @@ impl Tile {
 			south: self.east,
 			west: self.south,
 		}
+	}
+
+	pub fn rotated_n_times(&self, n: u8) -> Self {
+		let mut tile = self.clone();
+		for _ in 0..(n % 4) {
+			tile = tile.rotate_cw();
+		}
+		tile
 	}
 
 	pub fn rotate_ccw(&self) -> Self {
@@ -225,12 +234,15 @@ pub struct Game {
 	pub current_player: Player,
 	pub state: GameState,
 	next_tile_id: TileId,
+	pub position_history: Vec<u64>,
+	pub turn_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {
 	InProgress,
 	Won(Player),
+	Draw,
 }
 
 impl Game {
@@ -242,6 +254,8 @@ impl Game {
 			current_player: Player::One,
 			state: GameState::InProgress,
 			next_tile_id: 0,
+			position_history: Vec::new(),
+			turn_count: 0,
 		};
 		game.initialize_random_tiles();
 		game
@@ -263,6 +277,8 @@ impl Game {
 			current_player: Player::One,
 			state: GameState::InProgress,
 			next_tile_id: next_id,
+			position_history: Vec::new(),
+			turn_count: 0,
 		}
 	}
 
@@ -310,7 +326,36 @@ impl Game {
 	}
 
 	pub fn is_game_over(&self) -> bool {
-		matches!(self.state, GameState::Won(_))
+		matches!(self.state, GameState::Won(_) | GameState::Draw)
+	}
+
+	pub fn compute_position_hash(&self) -> u64 {
+		use std::collections::hash_map::DefaultHasher;
+		use std::hash::{Hash, Hasher};
+
+		let mut hasher = DefaultHasher::new();
+
+		self.current_player.hash(&mut hasher);
+
+		let mut positions: Vec<_> = self.board.tiles().collect();
+		positions.sort_by_key(|(pos, _)| (pos.row, pos.col));
+		for (pos, tile) in positions {
+			pos.hash(&mut hasher);
+			tile.id.hash(&mut hasher);
+			tile.north.color.hash(&mut hasher);
+			tile.north.weight.hash(&mut hasher);
+			tile.east.color.hash(&mut hasher);
+			tile.east.weight.hash(&mut hasher);
+			tile.south.color.hash(&mut hasher);
+			tile.south.weight.hash(&mut hasher);
+			tile.west.color.hash(&mut hasher);
+			tile.west.weight.hash(&mut hasher);
+		}
+
+		self.player_one_stack.len().hash(&mut hasher);
+		self.player_two_stack.len().hash(&mut hasher);
+
+		hasher.finish()
 	}
 }
 
