@@ -151,16 +151,26 @@ fn handle_click(
 
 		if distance < TILE_SIZE / 2.0 {
 			rotation_mode.rotations = (rotation_mode.rotations + 1) % 4;
+			return;
+		}
 
-			let action = Action::rotate(game.0.current_player, rotation_mode.tile_id, true);
-			if let Err(e) = Rules::apply_action(&mut game.0, action) {
-				set_feedback(input_state, format!("Cannot rotate: {}", e));
-			}
-		} else {
-			if rotation_mode.rotations == 0 {
-				set_feedback(input_state, "Cannot end in starting orientation".to_string());
-			} else {
-				input_state.rotation_mode = None;
+		let board_pos = screen_to_board_pos(click_pos);
+		if let Some(dest_pos) = board_pos {
+			if dest_pos != rotation_mode.position {
+				let action = Action::move_tile(
+					game.0.current_player,
+					rotation_mode.tile_id,
+					dest_pos,
+					rotation_mode.rotations,
+				);
+				match Rules::apply_action(&mut game.0, action) {
+					Ok(_) => {
+						input_state.rotation_mode = None;
+					}
+					Err(e) => {
+						set_feedback(input_state, format!("Cannot move: {}", e));
+					}
+				}
 			}
 		}
 		return;
@@ -181,14 +191,16 @@ fn handle_click(
 						}
 					}
 				}
-				Selection::BoardTile { tile_id, .. } => {
-					let action = Action::move_tile(game.0.current_player, *tile_id, pos);
-					match Rules::apply_action(&mut game.0, action) {
-						Ok(_) => {
-							input_state.selection = None;
-						}
-						Err(e) => {
-							set_feedback(input_state, format!("Cannot move: {}", e));
+				Selection::BoardTile { tile_id, position } => {
+					if pos != *position {
+						let action = Action::move_tile(game.0.current_player, *tile_id, pos, 0);
+						match Rules::apply_action(&mut game.0, action) {
+							Ok(_) => {
+								input_state.selection = None;
+							}
+							Err(e) => {
+								set_feedback(input_state, format!("Cannot move: {}", e));
+							}
 						}
 					}
 				}
@@ -282,7 +294,7 @@ fn update_highlights(
 			}
 			Selection::BoardTile { tile_id, .. } => {
 				for action in legal_actions {
-					if let ActionType::Move { tile_id: move_tile_id, destination } =
+					if let ActionType::Move { tile_id: move_tile_id, destination, .. } =
 						action.action_type
 					{
 						if move_tile_id == *tile_id {
@@ -373,6 +385,9 @@ fn update_turn_display(
 					Player::Two => "Player 2",
 				};
 				**text = format!("{} Wins!", winner);
+			}
+			GameState::Draw => {
+				**text = "Draw!".to_string();
 			}
 		}
 	}
