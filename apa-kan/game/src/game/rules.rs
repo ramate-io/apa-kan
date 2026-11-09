@@ -258,8 +258,16 @@ mod tests {
 	fn test_mismatching_edges_removed() {
 		let mut game = Game::new_with_tiles(
 			vec![
-				make_tile(0, Player::One, [Color::Maroon, Color::Green, Color::Blue, Color::Orange]),
-				make_tile(1, Player::One, [Color::Green, Color::Blue, Color::Orange, Color::Maroon]),
+				make_tile(
+					0,
+					Player::One,
+					[Color::Maroon, Color::Green, Color::Blue, Color::Orange],
+				),
+				make_tile(
+					1,
+					Player::One,
+					[Color::Green, Color::Blue, Color::Orange, Color::Maroon],
+				),
 			],
 			vec![],
 		);
