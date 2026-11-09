@@ -332,7 +332,7 @@ fn main() {
 	println!("  Ologbon (B): {}", BotType::Ologbon.description());
 	println!();
 
-	let depth = 3;
+	let depth = 2;
 	let games_per_side = 50;
 	let base_seed = 42;
 
