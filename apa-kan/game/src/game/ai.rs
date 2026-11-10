@@ -585,8 +585,35 @@ impl AiPlayer {
 	}
 
 	fn select_untried_action(&self, node: &mut MctsNode) -> Action {
-		let idx = self.rng.borrow_mut().gen_range(0..node.untried_actions.len());
-		node.untried_actions.swap_remove(idx)
+		use rand::seq::SliceRandom;
+		let weights: Vec<f64> = node.untried_actions.iter().map(|a| self.action_prior(*a)).collect();
+		let total: f64 = weights.iter().sum();
+		
+		if total <= 0.0 {
+			let idx = self.rng.borrow_mut().gen_range(0..node.untried_actions.len());
+			return node.untried_actions.swap_remove(idx);
+		}
+
+		let mut rng = self.rng.borrow_mut();
+		let choice = rng.gen_range(0.0..total);
+		let mut cumulative = 0.0;
+		
+		for (i, &weight) in weights.iter().enumerate() {
+			cumulative += weight;
+			if choice < cumulative {
+				return node.untried_actions.swap_remove(i);
+			}
+		}
+		
+		node.untried_actions.swap_remove(node.untried_actions.len() - 1)
+	}
+
+	fn action_prior(&self, action: Action) -> f64 {
+		match action.action_type {
+			ActionType::Move { .. } => 2.0,
+			ActionType::Add { .. } => 1.0,
+			ActionType::Pass => 0.1,
+		}
 	}
 
 	fn select_best_uct_child(&self, node: &MctsNode) -> usize {
@@ -597,22 +624,24 @@ impl AiPlayer {
 			.iter()
 			.enumerate()
 			.max_by(|(_, a), (_, b)| {
-				let uct_a = self.calculate_uct(a, total_visits, exploration);
-				let uct_b = self.calculate_uct(b, total_visits, exploration);
+				let prior_a = a.action.map(|act| self.action_prior(act)).unwrap_or(1.0);
+				let prior_b = b.action.map(|act| self.action_prior(act)).unwrap_or(1.0);
+				let uct_a = self.calculate_puct(a, total_visits, exploration, prior_a);
+				let uct_b = self.calculate_puct(b, total_visits, exploration, prior_b);
 				uct_a.partial_cmp(&uct_b).unwrap_or(std::cmp::Ordering::Equal)
 			})
 			.map(|(idx, _)| idx)
 			.unwrap_or(0)
 	}
 
-	fn calculate_uct(&self, node: &MctsNode, parent_visits: f64, exploration: f64) -> f64 {
+	fn calculate_puct(&self, node: &MctsNode, parent_visits: f64, c_puct: f64, prior: f64) -> f64 {
 		if node.visits == 0 {
 			return f64::INFINITY;
 		}
 
-		let exploitation = node.wins / node.visits as f64;
-		let exploration_term = exploration * (parent_visits.ln() / node.visits as f64).sqrt();
-		exploitation + exploration_term
+		let q = node.wins / node.visits as f64;
+		let u = c_puct * prior * (parent_visits.sqrt() / (1.0 + node.visits as f64));
+		q + u
 	}
 
 	fn mcts_rollout(&self, game: &Game, original_player: Player) -> f64 {
@@ -672,12 +701,23 @@ impl AiPlayer {
 	fn select_rollout_action(&self, game: &Game, actions: &[Action]) -> Action {
 		use rand::seq::SliceRandom;
 
-		// Evaluate each action and prefer captures
 		let mut weighted_actions: Vec<(Action, i32)> = actions
 			.iter()
 			.map(|&action| {
 				let mut game_copy = game.clone();
 				let mut weight = 0;
+
+				// Prefer MOVE actions for captures
+				match action.action_type {
+					ActionType::Move { .. } => weight += 20,
+					ActionType::Add { position, .. } => {
+						// Prefer edge placements in scored mode (safer)
+						if game.rule_set.scored_mode && game.board.is_edge(position) {
+							weight += 5;
+						}
+					}
+					ActionType::Pass => weight -= 50,
+				}
 
 				if Rules::apply_action(&mut game_copy, action).is_ok() {
 					let my_tiles_before =
@@ -695,13 +735,19 @@ impl AiPlayer {
 						.filter(|(_, t)| t.owner != game.current_player)
 						.count();
 
-					// Prefer captures (opponent loses tiles)
-					let captures = opp_tiles_before.saturating_sub(opp_tiles_after);
-					weight += captures as i32 * 10;
+					// In scored mode, heavily prefer MOVE captures
+					if game.rule_set.scored_mode && matches!(action.action_type, ActionType::Move { .. }) {
+						let captures = opp_tiles_before.saturating_sub(opp_tiles_after);
+						weight += captures as i32 * 30;
+					} else {
+						// Prefer captures (opponent loses tiles)
+						let captures = opp_tiles_before.saturating_sub(opp_tiles_after);
+						weight += captures as i32 * 10;
+					}
 
-					// Avoid self-removal
+					// Heavily avoid self-removal
 					let self_loss = my_tiles_before.saturating_sub(my_tiles_after);
-					weight -= self_loss as i32 * 5;
+					weight -= self_loss as i32 * 15;
 				}
 
 				(action, weight)
@@ -711,10 +757,12 @@ impl AiPlayer {
 		// Sort by weight descending
 		weighted_actions.sort_by_key(|(_, w)| -w);
 
-		// Select with some randomness: 60% best, 40% random from rest
+		// Select with some randomness: 70% best, 30% random from top 3
 		let mut rng = self.rng.borrow_mut();
-		if rng.gen::<f64>() < 0.6 && !weighted_actions.is_empty() {
+		if rng.gen::<f64>() < 0.7 && !weighted_actions.is_empty() {
 			weighted_actions[0].0
+		} else if weighted_actions.len() > 3 {
+			weighted_actions[rng.gen_range(0..3)].0
 		} else {
 			actions.choose(&mut *rng).copied().unwrap_or(actions[0])
 		}
@@ -886,7 +934,7 @@ fn calculate_connectivity(game: &Game, player: Player) -> i32 {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::game::core::{Color, Edge, EdgeWeight, Tile};
+	use crate::game::core::{Color, Edge, EdgeWeight, Position, RuleSet, Tile};
 
 	fn make_tile(id: u32, owner: Player, colors: [Color; 4]) -> Tile {
 		Tile::new(
@@ -933,6 +981,39 @@ mod tests {
 
 		let score = ai.evaluate_mobility(&game, Player::One);
 		assert!(score >= 0);
+	}
+
+	#[test]
+	fn test_mcts_with_puct() {
+		let game = Game::new_with_rules(RuleSet::scored());
+		let ai = AiPlayer::new(AiConfig {
+			depth: 1,
+			bot_type: BotType::Mcts,
+			time_budget: Some(Duration::from_millis(100)),
+			use_transposition_table: false,
+			use_move_ordering: false,
+			mcts_iterations: Some(50),
+			mcts_exploration: 1.41,
+			mcts_rollout_depth: 10,
+		});
+
+		let action = ai.choose_action(&game);
+		assert!(action.is_some());
+		
+		let stats = ai.stats.borrow();
+		assert!(stats.nodes_searched > 0);
+	}
+
+	#[test]
+	fn test_action_priors() {
+		let ai = AiPlayer::new(AiConfig::default());
+		
+		let move_action = Action::move_tile(Player::One, 0, Position::new(1, 1), 0);
+		let add_action = Action::add(Player::One, 0, Position::new(0, 1));
+		let pass_action = Action::pass(Player::One);
+		
+		assert!(ai.action_prior(move_action) > ai.action_prior(add_action));
+		assert!(ai.action_prior(add_action) > ai.action_prior(pass_action));
 	}
 
 	#[test]
