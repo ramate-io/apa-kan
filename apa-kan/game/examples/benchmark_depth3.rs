@@ -307,6 +307,9 @@ fn run_pairing(
 				time_budget: None,
 				use_transposition_table: true,
 				use_move_ordering: true,
+				mcts_iterations: None,
+				mcts_exploration: 1.41,
+				mcts_rollout_depth: 20,
 			},
 			seed,
 		);
@@ -317,6 +320,9 @@ fn run_pairing(
 				time_budget: None,
 				use_transposition_table: true,
 				use_move_ordering: true,
+				mcts_iterations: None,
+				mcts_exploration: 1.41,
+				mcts_rollout_depth: 20,
 			},
 			seed.wrapping_add(1),
 		);
@@ -356,6 +362,9 @@ fn run_pairing(
 				time_budget: None,
 				use_transposition_table: true,
 				use_move_ordering: true,
+				mcts_iterations: None,
+				mcts_exploration: 1.41,
+				mcts_rollout_depth: 20,
 			},
 			seed,
 		);
@@ -366,6 +375,9 @@ fn run_pairing(
 				time_budget: None,
 				use_transposition_table: true,
 				use_move_ordering: true,
+				mcts_iterations: None,
+				mcts_exploration: 1.41,
+				mcts_rollout_depth: 20,
 			},
 			seed.wrapping_add(1),
 		);

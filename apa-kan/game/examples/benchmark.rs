@@ -190,11 +190,29 @@ fn run_pairing(
 		let ai_seed = base_seed.wrapping_mul(2000).wrapping_add(i as u64);
 
 		let p1 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot1_type, time_budget: None },
+			AiConfig {
+				depth,
+				bot_type: bot1_type,
+				time_budget: None,
+				use_transposition_table: true,
+				use_move_ordering: true,
+				mcts_iterations: None,
+				mcts_exploration: 1.41,
+				mcts_rollout_depth: 20,
+			},
 			ai_seed,
 		);
 		let p2 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot2_type, time_budget: None },
+			AiConfig {
+				depth,
+				bot_type: bot2_type,
+				time_budget: None,
+				use_transposition_table: true,
+				use_move_ordering: true,
+				mcts_iterations: None,
+				mcts_exploration: 1.41,
+				mcts_rollout_depth: 20,
+			},
 			ai_seed.wrapping_add(1),
 		);
 
@@ -229,11 +247,29 @@ fn run_pairing(
 		let ai_seed = base_seed.wrapping_mul(4000).wrapping_add(i as u64);
 
 		let p1 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot2_type, time_budget: None },
+			AiConfig {
+				depth,
+				bot_type: bot2_type,
+				time_budget: None,
+				use_transposition_table: true,
+				use_move_ordering: true,
+				mcts_iterations: None,
+				mcts_exploration: 1.41,
+				mcts_rollout_depth: 20,
+			},
 			ai_seed,
 		);
 		let p2 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot1_type, time_budget: None },
+			AiConfig {
+				depth,
+				bot_type: bot1_type,
+				time_budget: None,
+				use_transposition_table: true,
+				use_move_ordering: true,
+				mcts_iterations: None,
+				mcts_exploration: 1.41,
+				mcts_rollout_depth: 20,
+			},
 			ai_seed.wrapping_add(1),
 		);
 
