@@ -36,19 +36,26 @@ Usage: apa-kan [OPTIONS]
 
 Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`.
 
+Watch minimax vs MCTS in the GUI (1 s/move):
+
+```bash
+cargo run -p apa-kan --release -- --bot1 minimax --bot2 mcts --think-ms 1000 --delay-ms 250
+cargo run -p apa-kan --release -- --bot1 mcts --bot2 minimax --think-ms 1000 --delay-ms 250
+```
+
 Headless screenshot (Bevy window under xvfb, or the PNG renderer without `desktop`):
 
 ```bash
 cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png --width 1280 --height 800
 ```
 
-Round-robin benchmark:
+Search head-to-head (branching factor, stalling, minimax/MCTS/greedy):
 
 ```bash
-cargo run -p apa-kan-bench --release --no-default-features -- --games 20 --think-ms 20
+cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- --games 6 --think-ms 1000
 ```
 
-Results: [`apa-kan/game/benchmark_results/round_robin.txt`](apa-kan/game/benchmark_results/round_robin.txt).
+Results: [`apa-kan/game/benchmark_results/search_h2h.txt`](apa-kan/game/benchmark_results/search_h2h.txt). One full minimax vs MCTS move list: [`apa-kan/game/benchmark_results/minimax_vs_mcts_game.txt`](apa-kan/game/benchmark_results/minimax_vs_mcts_game.txt). The earlier 20 ms round-robin is in [`apa-kan/game/benchmark_results/round_robin.txt`](apa-kan/game/benchmark_results/round_robin.txt).
 
 ## Test
 

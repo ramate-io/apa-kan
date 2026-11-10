@@ -72,9 +72,19 @@ pub struct Tile {
 	pub dots: u8,
 }
 
+/// One of each (color × weight × dots) in `1..=3`.
+pub const KIND_COUNT: usize = 27;
+
 impl Tile {
 	pub fn kind_label(self) -> String {
 		format!("{} w{} d{}", self.color.name(), self.weight, self.dots)
+	}
+
+	/// Stable 0..26 index for the 27 (color, weight, dots) kinds.
+	pub fn kind_index(self) -> usize {
+		let w = (self.weight.clamp(1, 3) - 1) as usize;
+		let d = (self.dots.clamp(1, 3) - 1) as usize;
+		(self.color as usize) * 9 + w * 3 + d
 	}
 }
 
@@ -324,6 +334,17 @@ impl Game {
 		self.bags[player.index()].len()
 	}
 
+	pub fn bag(&self, player: Player) -> &[Tile] {
+		&self.bags[player.index()]
+	}
+
+	/// Reorder remaining bag tiles. The multiset is unchanged; capture-draw
+	/// order becomes the sampled permutation (determinization).
+	pub fn shuffle_bags(&mut self, rng: &mut impl rand::Rng) {
+		self.bags[0].shuffle(rng);
+		self.bags[1].shuffle(rng);
+	}
+
 	pub fn board_count(&self, player: Player) -> usize {
 		self.tiles
 			.iter()
@@ -337,6 +358,11 @@ impl Game {
 
 	pub fn set_current(&mut self, player: Player) {
 		self.current = player;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_status(&mut self, status: GameStatus) {
+		self.status = status;
 	}
 
 	pub fn place_tile(&mut self, node: NodeId, tile: Tile) {
@@ -767,6 +793,8 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
+	use rand::rngs::StdRng;
+	use rand::SeedableRng;
 
 	fn green(game: &mut Game, owner: Player, weight: u8, dots: u8) -> Tile {
 		game.alloc_tile(owner, TileColor::Green, weight, dots)
@@ -1155,5 +1183,35 @@ mod tests {
 		let adds = game.legal_adds();
 		assert_eq!(adds.len(), 5 * 8);
 		assert!(game.legal_moves().is_empty());
+	}
+
+	#[test]
+	fn kind_index_covers_the_27_kinds() {
+		use std::collections::HashSet;
+		let mut seen = HashSet::new();
+		for color in TileColor::ALL {
+			for weight in 1..=3 {
+				for dots in 1..=3 {
+					let t = Tile { id: 0, owner: Player::One, color, weight, dots };
+					assert!(t.kind_index() < KIND_COUNT);
+					assert!(seen.insert(t.kind_index()));
+				}
+			}
+		}
+		assert_eq!(seen.len(), KIND_COUNT);
+	}
+
+	#[test]
+	fn shuffle_bags_keeps_the_same_kinds() {
+		let mut game = Game::new(RuleSet::default(), 12);
+		let snapshot = |g: &Game, p: Player| {
+			let mut v: Vec<_> = g.bag(p).iter().map(|t| t.kind_index()).collect();
+			v.sort_unstable();
+			v
+		};
+		let before = snapshot(&game, Player::One);
+		let mut rng = StdRng::seed_from_u64(99);
+		game.shuffle_bags(&mut rng);
+		assert_eq!(before, snapshot(&game, Player::One));
 	}
 }
