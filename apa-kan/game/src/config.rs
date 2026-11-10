@@ -5,12 +5,10 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 
-use bevy::prelude::Resource;
-
 use crate::ai::Actor;
 use crate::game::RuleSet;
 
-#[derive(Clone, Debug, Resource)]
+#[derive(Clone, Debug)]
 pub struct GameConfig {
 	pub bot1: Actor,
 	pub bot2: Actor,

@@ -43,7 +43,7 @@ cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png
 Round-robin benchmark:
 
 ```bash
-cargo run -p apa-kan-bench --release -- --games 20 --think-ms 20
+cargo run -p apa-kan-bench --release --no-default-features -- --games 20 --think-ms 20
 ```
 
 Results: [`apa-kan/game/benchmark_results/round_robin.txt`](apa-kan/game/benchmark_results/round_robin.txt).

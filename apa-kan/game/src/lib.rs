@@ -5,6 +5,7 @@ pub mod board;
 pub mod config;
 pub mod game;
 pub mod render;
+#[cfg(feature = "desktop")]
 pub mod ui;
 
 use config::GameConfig;
@@ -20,7 +21,14 @@ pub fn run() {
 		}
 		return;
 	}
+	#[cfg(feature = "desktop")]
 	ui::run_app(cfg);
+	#[cfg(not(feature = "desktop"))]
+	{
+		let _ = cfg;
+		eprintln!("apa-kan was built without the desktop feature");
+		std::process::exit(1);
+	}
 }
 
 pub fn default_rules() -> RuleSet {

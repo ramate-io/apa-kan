@@ -26,7 +26,7 @@ pub fn run_app(cfg: GameConfig) {
 			..default()
 		}))
 		.insert_resource(ClearColor(Color::srgb(0.07, 0.08, 0.10)))
-		.insert_resource(cfg)
+		.insert_resource(ConfigRes(cfg))
 		.insert_resource(PlayState {
 			game,
 			selection: Selection::None,
@@ -40,6 +40,16 @@ pub fn run_app(cfg: GameConfig) {
 		.add_systems(Startup, setup)
 		.add_systems(Update, (draw_gizmos, handle_click, bot_turn, refresh_view, update_hud))
 		.run();
+}
+
+#[derive(Resource)]
+struct ConfigRes(GameConfig);
+
+impl std::ops::Deref for ConfigRes {
+	type Target = GameConfig;
+	fn deref(&self) -> &GameConfig {
+		&self.0
+	}
 }
 
 #[derive(Resource)]
@@ -154,7 +164,7 @@ fn handle_click(
 	windows: Query<&Window>,
 	cameras: Query<(&Camera, &GlobalTransform)>,
 	mut play: ResMut<PlayState>,
-	cfg: Res<GameConfig>,
+	cfg: Res<ConfigRes>,
 	keys: Res<ButtonInput<KeyCode>>,
 ) {
 	if keys.just_pressed(KeyCode::Escape) {
@@ -362,7 +372,7 @@ fn bench_pos(player: Player, index: usize, len: usize) -> Vec2 {
 fn bot_turn(
 	time: Res<Time>,
 	mut clock: ResMut<BotClock>,
-	cfg: Res<GameConfig>,
+	cfg: Res<ConfigRes>,
 	mut play: ResMut<PlayState>,
 	mut rng: ResMut<RngRes>,
 ) {
@@ -513,7 +523,7 @@ fn tile_color(color: TileColor) -> Color {
 
 fn update_hud(
 	play: Res<PlayState>,
-	cfg: Res<GameConfig>,
+	cfg: Res<ConfigRes>,
 	mut status: Query<&mut Text, (With<StatusHud>, Without<LogHud>, Without<WarnHud>)>,
 	mut log: Query<&mut Text, (With<LogHud>, Without<StatusHud>, Without<WarnHud>)>,
 	mut warn: Query<&mut Text, (With<WarnHud>, Without<StatusHud>, Without<LogHud>)>,
