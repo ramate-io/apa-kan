@@ -175,11 +175,11 @@ impl AiPlayer {
 
 		let mut best_action = actions[0];
 		let mut best_score = i32::MIN;
-		
+
 		// Iterative deepening: start at depth 1 and progressively go deeper
 		let mut current_depth = 1;
 		let max_depth = self.config.depth.max(1);
-		
+
 		while current_depth <= max_depth {
 			// Check time budget before starting a new depth iteration
 			if let Some(time_budget) = self.config.time_budget {
@@ -187,7 +187,7 @@ impl AiPlayer {
 					break;
 				}
 			}
-			
+
 			let mut alpha = i32::MIN;
 			let beta = i32::MAX;
 			let mut depth_best_action = actions[0];
@@ -222,7 +222,7 @@ impl AiPlayer {
 					alpha = alpha.max(score);
 				}
 			}
-			
+
 			// Only update best action if we completed the full depth
 			if completed_depth {
 				best_action = depth_best_action;
@@ -443,7 +443,7 @@ impl AiPlayer {
 	fn choose_mcts(&self, game: &Game) -> Option<Action> {
 		self.reset_stats();
 		let start_time = Instant::now();
-		
+
 		let actions = generate_legal_actions(game);
 		if actions.is_empty() {
 			return None;
@@ -503,10 +503,10 @@ impl AiPlayer {
 					untried_actions: child_actions,
 					player: game.current_player,
 				};
-				
+
 				// 3. Simulation: rollout from this new child
 				let result = self.mcts_rollout(game, original_player);
-				
+
 				// 4. Backpropagation
 				child.visits = 1;
 				child.wins = result;
@@ -522,31 +522,33 @@ impl AiPlayer {
 			// Select best child using UCT
 			let best_child_idx = self.select_best_uct_child(node);
 			let child = &mut node.children[best_child_idx];
-			
+
 			if let Some(action) = child.action {
 				if Rules::apply_action(game, action).is_ok() {
 					let result = if game.is_game_over() {
 						// Terminal node
 						match game.state {
 							GameState::Won(winner) => {
-								if winner == original_player { 1.0 } else { 0.0 }
+								if winner == original_player {
+									1.0
+								} else {
+									0.0
+								}
 							}
 							GameState::Draw => 0.5,
-							GameState::InProgress => {
-								self.mcts_rollout(game, original_player)
-							}
+							GameState::InProgress => self.mcts_rollout(game, original_player),
 						}
 					} else {
 						self.mcts_iteration(child, game, original_player)
 					};
-					
+
 					// Backpropagate
 					node.visits += 1;
 					node.wins += result;
 					return result;
 				}
 			}
-			
+
 			// If action failed, just update node
 			node.visits += 1;
 			0.5
@@ -555,13 +557,21 @@ impl AiPlayer {
 			node.visits += 1;
 			let result = match game.state {
 				GameState::Won(winner) => {
-					if winner == original_player { 1.0 } else { 0.0 }
+					if winner == original_player {
+						1.0
+					} else {
+						0.0
+					}
 				}
 				GameState::Draw => 0.5,
 				GameState::InProgress => {
 					if !has_legal_add_or_move(game, game.current_player) {
 						let winner = game.current_player.other();
-						if winner == original_player { 1.0 } else { 0.0 }
+						if winner == original_player {
+							1.0
+						} else {
+							0.0
+						}
 					} else {
 						0.5
 					}
@@ -580,7 +590,7 @@ impl AiPlayer {
 	fn select_best_uct_child(&self, node: &MctsNode) -> usize {
 		let total_visits = node.visits as f64;
 		let exploration = self.config.mcts_exploration;
-		
+
 		node.children
 			.iter()
 			.enumerate()
@@ -597,7 +607,7 @@ impl AiPlayer {
 		if node.visits == 0 {
 			return f64::INFINITY;
 		}
-		
+
 		let exploitation = node.wins / node.visits as f64;
 		let exploration_term = exploration * (parent_visits.ln() / node.visits as f64).sqrt();
 		exploitation + exploration_term
@@ -606,34 +616,42 @@ impl AiPlayer {
 	fn mcts_rollout(&self, game: &Game, original_player: Player) -> f64 {
 		let mut game_copy = game.clone();
 		let mut depth = 0;
-		
+
 		while depth < self.config.mcts_rollout_depth && !game_copy.is_game_over() {
 			let actions = generate_legal_actions(&game_copy);
 			if actions.is_empty() {
 				break;
 			}
-			
+
 			// Guided rollout policy: prefer captures and avoid self-removal
 			let action = self.select_rollout_action(&game_copy, &actions);
 			if Rules::apply_action(&mut game_copy, action).is_err() {
 				break;
 			}
-			
+
 			depth += 1;
 		}
-		
+
 		// Evaluate terminal state or use heuristic
 		if game_copy.is_game_over() {
 			match game_copy.state {
 				GameState::Won(winner) => {
-					if winner == original_player { 1.0 } else { 0.0 }
+					if winner == original_player {
+						1.0
+					} else {
+						0.0
+					}
 				}
 				GameState::Draw => 0.5,
 				GameState::InProgress => 0.5,
 			}
 		} else if !has_legal_add_or_move(&game_copy, game_copy.current_player) {
 			let winner = game_copy.current_player.other();
-			if winner == original_player { 1.0 } else { 0.0 }
+			if winner == original_player {
+				1.0
+			} else {
+				0.0
+			}
 		} else {
 			// Use Ologbon's heuristic normalized to [0, 1]
 			let heuristic = self.evaluate_enhanced(&game_copy, original_player);
@@ -644,44 +662,46 @@ impl AiPlayer {
 
 	fn select_rollout_action(&self, game: &Game, actions: &[Action]) -> Action {
 		use rand::seq::SliceRandom;
-		
+
 		// Evaluate each action and prefer captures
 		let mut weighted_actions: Vec<(Action, i32)> = actions
 			.iter()
 			.map(|&action| {
 				let mut game_copy = game.clone();
 				let mut weight = 0;
-				
+
 				if Rules::apply_action(&mut game_copy, action).is_ok() {
-					let my_tiles_before = game.board.tiles()
+					let my_tiles_before =
+						game.board.tiles().filter(|(_, t)| t.owner == game.current_player).count();
+					let opp_tiles_before =
+						game.board.tiles().filter(|(_, t)| t.owner != game.current_player).count();
+					let my_tiles_after = game_copy
+						.board
+						.tiles()
 						.filter(|(_, t)| t.owner == game.current_player)
 						.count();
-					let opp_tiles_before = game.board.tiles()
+					let opp_tiles_after = game_copy
+						.board
+						.tiles()
 						.filter(|(_, t)| t.owner != game.current_player)
 						.count();
-					let my_tiles_after = game_copy.board.tiles()
-						.filter(|(_, t)| t.owner == game.current_player)
-						.count();
-					let opp_tiles_after = game_copy.board.tiles()
-						.filter(|(_, t)| t.owner != game.current_player)
-						.count();
-					
+
 					// Prefer captures (opponent loses tiles)
 					let captures = opp_tiles_before.saturating_sub(opp_tiles_after);
 					weight += captures as i32 * 10;
-					
+
 					// Avoid self-removal
 					let self_loss = my_tiles_before.saturating_sub(my_tiles_after);
 					weight -= self_loss as i32 * 5;
 				}
-				
+
 				(action, weight)
 			})
 			.collect();
-		
+
 		// Sort by weight descending
 		weighted_actions.sort_by_key(|(_, w)| -w);
-		
+
 		// Select with some randomness: 60% best, 40% random from rest
 		let mut rng = self.rng.borrow_mut();
 		if rng.gen::<f64>() < 0.6 && !weighted_actions.is_empty() {
@@ -986,15 +1006,13 @@ mod tests {
 			],
 			vec![make_tile(2, Player::Two, [Color::Green; 4])],
 		);
-		
+
 		// Place tiles to create a winning opportunity
-		game.board.place(
-			crate::game::core::Position::new(2, 2),
-			game.player_one_stack.remove(0),
-		);
-		
+		game.board
+			.place(crate::game::core::Position::new(2, 2), game.player_one_stack.remove(0));
+
 		game.current_player = Player::One;
-		
+
 		let ai = AiPlayer::new_seeded(
 			AiConfig {
 				depth: 1,
@@ -1008,7 +1026,7 @@ mod tests {
 			},
 			42,
 		);
-		
+
 		let action = ai.choose_action(&game);
 		assert!(action.is_some(), "MCTS should find an action");
 	}
@@ -1023,15 +1041,13 @@ mod tests {
 				make_tile(2, Player::Two, [Color::Green; 4]),
 			],
 		);
-		
+
 		// Place a tile for Player Two
-		game.board.place(
-			crate::game::core::Position::new(2, 2),
-			game.player_two_stack.remove(0),
-		);
-		
+		game.board
+			.place(crate::game::core::Position::new(2, 2), game.player_two_stack.remove(0));
+
 		game.current_player = Player::One;
-		
+
 		let ai = AiPlayer::new_seeded(
 			AiConfig {
 				depth: 1,
@@ -1045,7 +1061,7 @@ mod tests {
 			},
 			42,
 		);
-		
+
 		let action = ai.choose_action(&game);
 		assert!(action.is_some(), "MCTS should find a defensive action");
 	}

@@ -219,27 +219,35 @@ impl PairingStats {
 	fn print_summary(&self) {
 		println!("\n{} vs {}:", self.p1_name, self.p2_name);
 		println!("  Games: {}", self.total_games);
-		println!("  First seat wins: {} ({:.1}%)", self.first_seat_wins, self.first_seat_win_rate() * 100.0);
-		println!("  Second seat wins: {} ({:.1}%)", self.second_seat_wins, (1.0 - self.first_seat_win_rate()) * 100.0);
+		println!(
+			"  First seat wins: {} ({:.1}%)",
+			self.first_seat_wins,
+			self.first_seat_win_rate() * 100.0
+		);
+		println!(
+			"  Second seat wins: {} ({:.1}%)",
+			self.second_seat_wins,
+			(1.0 - self.first_seat_win_rate()) * 100.0
+		);
 		println!("  Draws: {}", self.draws);
-		
+
 		let (ci_low, ci_high) = self.wilson_95_ci();
 		println!("  First seat win rate 95% CI: [{:.1}%, {:.1}%]", ci_low * 100.0, ci_high * 100.0);
-		
+
 		println!("  MOVE%: {:.2}%", self.move_pct());
 		println!("  Captures/game: {:.2}", self.captures_per_game());
 		println!("  Avg turns/game: {:.1}", self.avg_turns_per_game());
 		println!("  Unique outcomes: {}", self.unique_outcomes.len());
-		
+
 		let (avg_adds, avg_moves) = self.avg_branching_factor();
 		println!("  Branching factor: ADD={:.1}, MOVE={:.1}", avg_adds, avg_moves);
-		
+
 		// Only show MCTS/minimax stats if relevant
 		let mcts_iters = self.avg_mcts_iterations();
 		if mcts_iters > 0.0 {
 			println!("  Avg MCTS iterations/move: {:.0}", mcts_iters);
 		}
-		
+
 		let eff_depth = self.avg_effective_depth();
 		if eff_depth > 0.0 {
 			println!("  Avg effective depth (minimax): {:.1}", eff_depth);
@@ -263,7 +271,7 @@ fn play_game(p1: &AiPlayer, p2: &AiPlayer, rule_set: RuleSet, track_depth: bool)
 		if let Some(action) = ai.choose_action(&game) {
 			let move_duration = move_start.elapsed();
 			let stats = ai.stats.borrow();
-			
+
 			// For iterative deepening minimax, track effective depth reached
 			let effective_depth = if track_depth {
 				// Estimate based on nodes searched and branching factor
@@ -281,7 +289,7 @@ fn play_game(p1: &AiPlayer, p2: &AiPlayer, rule_set: RuleSet, track_depth: bool)
 			} else {
 				0
 			};
-			
+
 			profile.move_profiles.push(MoveProfile {
 				nodes_searched: stats.nodes_searched,
 				add_actions: stats.add_actions_generated,
@@ -430,7 +438,8 @@ fn run_pairing(
 		}
 
 		// Write incremental result
-		let result_file = output_dir.join(format!("{}_vs_{}.txt", bot1_type.name(), bot2_type.name()));
+		let result_file =
+			output_dir.join(format!("{}_vs_{}.txt", bot1_type.name(), bot2_type.name()));
 		if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&result_file) {
 			writeln!(
 				file,
@@ -446,11 +455,18 @@ fn run_pairing(
 	}
 
 	// Write final summary
-	let summary_file = output_dir.join(format!("{}_vs_{}_summary.txt", bot1_type.name(), bot2_type.name()));
+	let summary_file =
+		output_dir.join(format!("{}_vs_{}_summary.txt", bot1_type.name(), bot2_type.name()));
 	if let Ok(mut file) = File::create(&summary_file) {
 		writeln!(file, "{} vs {}", stats.p1_name, stats.p2_name).ok();
 		writeln!(file, "Games: {}", stats.total_games).ok();
-		writeln!(file, "First seat wins: {} ({:.1}%)", stats.first_seat_wins, stats.first_seat_win_rate() * 100.0).ok();
+		writeln!(
+			file,
+			"First seat wins: {} ({:.1}%)",
+			stats.first_seat_wins,
+			stats.first_seat_win_rate() * 100.0
+		)
+		.ok();
 		writeln!(file, "Second seat wins: {}", stats.second_seat_wins).ok();
 		writeln!(file, "Draws: {}", stats.draws).ok();
 		let (ci_low, ci_high) = stats.wilson_95_ci();
@@ -480,12 +496,7 @@ fn main() {
 	println!("Games per side: {}", games_per_side);
 	println!();
 
-	let bots = vec![
-		BotType::Ore,
-		BotType::Olusare,
-		BotType::Ologbon,
-		BotType::Mcts,
-	];
+	let bots = vec![BotType::Ore, BotType::Olusare, BotType::Ologbon, BotType::Mcts];
 
 	// Generate all pairings including mirrors
 	let mut pairings = Vec::new();
@@ -504,13 +515,21 @@ fn main() {
 	for (bot1, bot2) in pairings {
 		let results = Arc::clone(&results);
 		let output_dir = output_dir.to_path_buf();
-		
+
 		let handle = thread::spawn(move || {
-			let stats = run_pairing(bot1, bot2, games_per_side, rule_set, time_budget, base_seed, &output_dir);
+			let stats = run_pairing(
+				bot1,
+				bot2,
+				games_per_side,
+				rule_set,
+				time_budget,
+				base_seed,
+				&output_dir,
+			);
 			let key = format!("{}_vs_{}", bot1.name(), bot2.name());
 			results.lock().unwrap().insert(key, stats);
 		});
-		
+
 		handles.push(handle);
 	}
 
@@ -522,11 +541,11 @@ fn main() {
 	// Print all summaries
 	println!("\n\nFinal Results");
 	println!("=============\n");
-	
+
 	let results = results.lock().unwrap();
 	let mut keys: Vec<_> = results.keys().cloned().collect();
 	keys.sort();
-	
+
 	for key in keys {
 		if let Some(stats) = results.get(&key) {
 			stats.print_summary();
