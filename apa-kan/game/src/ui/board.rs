@@ -26,14 +26,14 @@ struct BoardEntity;
 const BOARD_SIZE: f32 = 500.0;
 const SQUARE_SIZE: f32 = BOARD_SIZE / 5.0;
 
-fn setup_board(mut commands: Commands) {
+fn setup_board(mut commands: Commands, game: Res<GameResource>) {
 	for row in 0..5 {
 		for col in 0..5 {
 			let pos = Position::new(row, col);
 			let x = (col as f32 - 2.0) * SQUARE_SIZE;
 			let y = (2.0 - row as f32) * SQUARE_SIZE;
 
-			let color = if pos.is_corner() {
+			let color = if game.0.board.is_corner(pos) {
 				Color::srgb(0.2, 0.2, 0.2)
 			} else if (row + col) % 2 == 0 {
 				Color::srgb(0.9, 0.8, 0.7)
@@ -52,10 +52,10 @@ fn setup_board(mut commands: Commands) {
 				Transform::from_xyz(x, y, 0.0),
 			));
 
-			if pos.is_corner() {
-				commands.spawn((
-					BoardEntity,
-					Text::new("✗"),
+		if game.0.board.is_corner(pos) {
+			commands.spawn((
+				BoardEntity,
+				Text::new("✗"),
 					TextFont { font_size: FontSize::Px(40.0), ..default() },
 					TextColor(Color::srgb(0.5, 0.0, 0.0)),
 					Node {

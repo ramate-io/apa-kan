@@ -36,8 +36,11 @@ impl Rules {
 	}
 
 	fn apply_add(game: &mut Game, tile_index: usize, position: Position) -> Result<(), String> {
-		let is_valid_position =
-			if game.rule_set.edge_add_only { position.is_edge() } else { position.is_valid() };
+		let is_valid_position = if game.rule_set.edge_add_only {
+			game.board.is_edge(position)
+		} else {
+			game.board.is_valid(position)
+		};
 
 		if !is_valid_position {
 			return Err("Invalid position for ADD".to_string());
@@ -101,7 +104,7 @@ impl Rules {
 			return Err("Not your tile".to_string());
 		}
 
-		if !destination.is_valid() {
+		if !game.board.is_valid(destination) {
 			return Err("Invalid destination".to_string());
 		}
 
@@ -148,11 +151,11 @@ impl Rules {
 			let mut matches = 0;
 			let mut mismatches = 0;
 
-			for (direction, neighbor_pos) in position.neighbors() {
-				if neighbor_pos.is_corner() {
-					mismatches += 1;
-					continue;
-				}
+		for (direction, neighbor_pos) in position.neighbors() {
+			if game.board.is_corner(neighbor_pos) {
+				mismatches += 1;
+				continue;
+			}
 
 				if neighbor_pos.row < 0
 					|| neighbor_pos.row >= 5
@@ -403,18 +406,18 @@ mod tests {
 		let mut game =
 			Game::new_with_tiles(vec![], vec![make_tile(0, Player::Two, [Color::Maroon; 4])]);
 
-		for row in 0..5 {
-			for col in 0..5 {
-				let pos = Position::new(row, col);
-				if pos.is_valid() {
-					game.board.place(
-						pos,
-						make_tile(
-							100 + row as u32 * 5 + col as u32,
-							Player::Two,
-							[Color::Maroon; 4],
-						),
-					);
+	for row in 0..5 {
+		for col in 0..5 {
+			let pos = Position::new(row, col);
+			if game.board.is_valid(pos) {
+				game.board.place(
+					pos,
+					make_tile(
+						100 + row as u32 * 5 + col as u32,
+						Player::Two,
+						[Color::Maroon; 4],
+					),
+				);
 				}
 			}
 		}

@@ -242,20 +242,6 @@ impl Position {
 		Self { row, col }
 	}
 
-	pub fn is_corner(&self) -> bool {
-		(self.row == 0 || self.row == 4) && (self.col == 0 || self.col == 4)
-	}
-
-	pub fn is_valid(&self) -> bool {
-		self.row >= 0 && self.row < 5 && self.col >= 0 && self.col < 5 && !self.is_corner()
-	}
-
-	pub fn is_edge(&self) -> bool {
-		if self.is_corner() {
-			return false;
-		}
-		self.row == 0 || self.row == 4 || self.col == 0 || self.col == 4
-	}
 
 	pub fn neighbor(&self, direction: Direction) -> Position {
 		match direction {
@@ -278,11 +264,34 @@ impl Position {
 #[derive(Debug, Clone)]
 pub struct Board {
 	tiles: HashMap<Position, Tile>,
+	size: u8,
 }
 
 impl Board {
-	pub fn new() -> Self {
-		Self { tiles: HashMap::new() }
+	pub fn new(size: u8) -> Self {
+		Self { tiles: HashMap::new(), size }
+	}
+
+	pub fn size(&self) -> u8 {
+		self.size
+	}
+
+	pub fn is_valid(&self, pos: Position) -> bool {
+		let max = self.size as i8;
+		pos.row >= 0 && pos.row < max && pos.col >= 0 && pos.col < max && !self.is_corner(pos)
+	}
+
+	pub fn is_corner(&self, pos: Position) -> bool {
+		let max = (self.size - 1) as i8;
+		(pos.row == 0 || pos.row == max) && (pos.col == 0 || pos.col == max)
+	}
+
+	pub fn is_edge(&self, pos: Position) -> bool {
+		if self.is_corner(pos) {
+			return false;
+		}
+		let max = (self.size - 1) as i8;
+		pos.row == 0 || pos.row == max || pos.col == 0 || pos.col == max
 	}
 
 	pub fn get(&self, pos: Position) -> Option<&Tile> {
@@ -290,7 +299,7 @@ impl Board {
 	}
 
 	pub fn place(&mut self, pos: Position, tile: Tile) {
-		assert!(pos.is_valid(), "Cannot place tile at invalid position {:?}", pos);
+		assert!(self.is_valid(pos), "Cannot place tile at invalid position {:?}", pos);
 		self.tiles.insert(pos, tile);
 	}
 
@@ -313,7 +322,7 @@ impl Board {
 
 impl Default for Board {
 	fn default() -> Self {
-		Self::new()
+		Self::new(5)
 	}
 }
 
@@ -349,7 +358,7 @@ impl Game {
 	pub fn new_with_rules(rule_set: RuleSet) -> Self {
 		let add_bank = if rule_set.add_bank { rule_set.add_bank_size } else { 100 };
 		let mut game = Self {
-			board: Board::new(),
+			board: Board::new(5),
 			player_one_stack: Vec::new(),
 			player_two_stack: Vec::new(),
 			current_player: Player::One,
@@ -387,7 +396,7 @@ impl Game {
 		let add_bank = if rule_set.add_bank { rule_set.add_bank_size } else { 100 };
 
 		Self {
-			board: Board::new(),
+			board: Board::new(5),
 			player_one_stack: player_one_tiles,
 			player_two_stack: player_two_tiles,
 			current_player: Player::One,
@@ -492,55 +501,58 @@ mod tests {
 
 	#[test]
 	fn test_position_corner_detection() {
-		assert!(Position::new(0, 0).is_corner());
-		assert!(Position::new(0, 4).is_corner());
-		assert!(Position::new(4, 0).is_corner());
-		assert!(Position::new(4, 4).is_corner());
-		assert!(!Position::new(0, 2).is_corner());
-		assert!(!Position::new(2, 2).is_corner());
+		let board = Board::new(5);
+		assert!(board.is_corner(Position::new(0, 0)));
+		assert!(board.is_corner(Position::new(0, 4)));
+		assert!(board.is_corner(Position::new(4, 0)));
+		assert!(board.is_corner(Position::new(4, 4)));
+		assert!(!board.is_corner(Position::new(0, 2)));
+		assert!(!board.is_corner(Position::new(2, 2)));
 	}
 
 	#[test]
 	fn test_position_validity() {
-		assert!(!Position::new(0, 0).is_valid()); // corner
-		assert!(!Position::new(-1, 0).is_valid()); // out of bounds
-		assert!(!Position::new(5, 0).is_valid()); // out of bounds
-		assert!(Position::new(2, 2).is_valid()); // center
-		assert!(Position::new(0, 2).is_valid()); // edge but not corner
+		let board = Board::new(5);
+		assert!(!board.is_valid(Position::new(0, 0))); // corner
+		assert!(!board.is_valid(Position::new(-1, 0))); // out of bounds
+		assert!(!board.is_valid(Position::new(5, 0))); // out of bounds
+		assert!(board.is_valid(Position::new(2, 2))); // center
+		assert!(board.is_valid(Position::new(0, 2))); // edge but not corner
 	}
 
 	#[test]
 	fn test_position_edge_detection() {
+		let board = Board::new(5);
 		// Corners are not edges
-		assert!(!Position::new(0, 0).is_edge());
-		assert!(!Position::new(0, 4).is_edge());
-		assert!(!Position::new(4, 0).is_edge());
-		assert!(!Position::new(4, 4).is_edge());
+		assert!(!board.is_edge(Position::new(0, 0)));
+		assert!(!board.is_edge(Position::new(0, 4)));
+		assert!(!board.is_edge(Position::new(4, 0)));
+		assert!(!board.is_edge(Position::new(4, 4)));
 
 		// Top edge (row 0, not corners)
-		assert!(Position::new(0, 1).is_edge());
-		assert!(Position::new(0, 2).is_edge());
-		assert!(Position::new(0, 3).is_edge());
+		assert!(board.is_edge(Position::new(0, 1)));
+		assert!(board.is_edge(Position::new(0, 2)));
+		assert!(board.is_edge(Position::new(0, 3)));
 
 		// Bottom edge (row 4, not corners)
-		assert!(Position::new(4, 1).is_edge());
-		assert!(Position::new(4, 2).is_edge());
-		assert!(Position::new(4, 3).is_edge());
+		assert!(board.is_edge(Position::new(4, 1)));
+		assert!(board.is_edge(Position::new(4, 2)));
+		assert!(board.is_edge(Position::new(4, 3)));
 
 		// Left edge (col 0, not corners)
-		assert!(Position::new(1, 0).is_edge());
-		assert!(Position::new(2, 0).is_edge());
-		assert!(Position::new(3, 0).is_edge());
+		assert!(board.is_edge(Position::new(1, 0)));
+		assert!(board.is_edge(Position::new(2, 0)));
+		assert!(board.is_edge(Position::new(3, 0)));
 
 		// Right edge (col 4, not corners)
-		assert!(Position::new(1, 4).is_edge());
-		assert!(Position::new(2, 4).is_edge());
-		assert!(Position::new(3, 4).is_edge());
+		assert!(board.is_edge(Position::new(1, 4)));
+		assert!(board.is_edge(Position::new(2, 4)));
+		assert!(board.is_edge(Position::new(3, 4)));
 
 		// Interior is not edge
-		assert!(!Position::new(1, 1).is_edge());
-		assert!(!Position::new(2, 2).is_edge());
-		assert!(!Position::new(3, 3).is_edge());
+		assert!(!board.is_edge(Position::new(1, 1)));
+		assert!(!board.is_edge(Position::new(2, 2)));
+		assert!(!board.is_edge(Position::new(3, 3)));
 	}
 
 	#[test]
@@ -567,7 +579,7 @@ mod tests {
 
 	#[test]
 	fn test_board_operations() {
-		let mut board = Board::new();
+		let mut board = Board::new(5);
 		let tile = Tile::new(
 			0,
 			Player::One,
