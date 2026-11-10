@@ -314,17 +314,30 @@ pub fn format_header(bot1: &str, bot2: &str, turn: &str) -> String {
 pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 	match game.status() {
 		GameStatus::InProgress => {
-			let hold = if game.rules().center_hold_win {
-				format!(
-					"{HUD_SEP}center hold P1 {}/{} P2 {}/{}",
+			let mut extra = String::new();
+			if game.rules().center_hold_win {
+				extra.push_str(&format!(
+					"{HUD_SEP}hold P1 {}/{} P2 {}/{}",
 					game.center_hold(Player::One),
 					game.rules().center_hold_n,
 					game.center_hold(Player::Two),
 					game.rules().center_hold_n
-				)
-			} else {
-				String::new()
-			};
+				));
+			}
+			if game.rules().petal_majority_win {
+				extra.push_str(&format!(
+					"{HUD_SEP}petals P1 {}/{} ({}/{}) P2 {}/{} ({}/{})",
+					game.petal_count(Player::One),
+					game.petal_majority_need(),
+					game.petal_majority(Player::One),
+					game.rules().petal_majority_n,
+					game.petal_count(Player::Two),
+					game.petal_majority_need(),
+					game.petal_majority(Player::Two),
+					game.rules().petal_majority_n
+				));
+			}
+			let hold = extra;
 			format!(
 				"Turn {}{HUD_SEP}{} ({}) to play{HUD_SEP}P1 light {}/{}{HUD_SEP}P2 dark {}/{}{hold}",
 				game.turn_count() + 1,

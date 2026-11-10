@@ -97,6 +97,8 @@ pub enum EndReason {
 	LockedOut,
 	/// Occupied the center for N consecutive own turns (`center_hold_win`).
 	CenterHold,
+	/// Held a majority of inner-ring (petal) nodes for N consecutive own turns.
+	PetalMajority,
 }
 
 /// Restriction on moving the same tile on two consecutive own turns.
@@ -261,6 +263,12 @@ pub struct RuleSet {
 	/// Occupant-vs-mover weight comparison used when color-restricted hops are
 	/// on. Default [`HopWeightCmp::Le`] (occupant weight `<=` mover).
 	pub hop_weight_cmp: HopWeightCmp,
+	/// Win by occupying a majority of inner-ring nodes (petal attachments to
+	/// the center; 5 of 8 on the default rosette) for `petal_majority_n`
+	/// consecutive own turns. Experimental; default false.
+	pub petal_majority_win: bool,
+	/// Consecutive own turns holding a petal majority required to win. Default 1.
+	pub petal_majority_n: u8,
 	/// Uniqueness constraint along a single MOVE path.
 	/// Default [`PathConstraint::NoEdgeRevisit`] (`no_repeated_edge` on;
 	/// node revisits via a different arc are allowed).
@@ -286,6 +294,8 @@ impl Default for RuleSet {
 			no_same_piece_twice: SamePieceTwice::WhenBenchEmpty,
 			color_restricted_hops: true,
 			hop_weight_cmp: HopWeightCmp::Le,
+			petal_majority_win: false,
+			petal_majority_n: 1,
 			path_constraint: PathConstraint::NoEdgeRevisit,
 		}
 	}
@@ -347,6 +357,8 @@ pub struct Game {
 	moved_this_turn: Option<u32>,
 	/// Consecutive own turns each player has ended occupying the center.
 	center_hold: [u8; 2],
+	/// Consecutive own turns holding a majority of inner-ring (petal) nodes.
+	petal_majority: [u8; 2],
 }
 
 impl Game {
@@ -388,6 +400,7 @@ impl Game {
 			last_moved: [None, None],
 			moved_this_turn: None,
 			center_hold: [0, 0],
+			petal_majority: [0, 0],
 		};
 		game.deal_opening();
 		game
@@ -416,6 +429,7 @@ impl Game {
 			last_moved: [None, None],
 			moved_this_turn: None,
 			center_hold: [0, 0],
+			petal_majority: [0, 0],
 		}
 	}
 
@@ -470,6 +484,26 @@ impl Game {
 	/// Consecutive own turns `player` has ended occupying the center.
 	pub fn center_hold(&self, player: Player) -> u8 {
 		self.center_hold[player.index()]
+	}
+
+	/// Consecutive own turns `player` has ended holding a petal majority.
+	pub fn petal_majority(&self, player: Player) -> u8 {
+		self.petal_majority[player.index()]
+	}
+
+	/// How many inner-ring (petal-attachment) nodes `player` occupies.
+	pub fn petal_count(&self, player: Player) -> u8 {
+		self.board
+			.inner_ring()
+			.iter()
+			.filter(|&&id| self.tile_at(id).map(|t| t.owner == player).unwrap_or(false))
+			.count() as u8
+	}
+
+	/// Majority threshold: more than half of the inner-ring nodes (5 of 8).
+	pub fn petal_majority_need(&self) -> u8 {
+		let n = self.board.inner_ring().len();
+		(n / 2 + 1) as u8
 	}
 
 	/// Tile moved on `player`'s previous completed turn, if any.
@@ -529,6 +563,11 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn set_status(&mut self, status: GameStatus) {
 		self.status = status;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_center_hold(&mut self, player: Player, n: u8) {
+		self.center_hold[player.index()] = n;
 	}
 
 	pub fn place_tile(&mut self, node: NodeId, tile: Tile) {
@@ -920,6 +959,9 @@ impl Game {
 	fn finish_turn(&mut self, who: Player) {
 		self.last_moved[who.index()] = self.moved_this_turn.take();
 		self.update_center_hold(who);
+		if !self.status.is_over() {
+			self.update_petal_majority(who);
+		}
 		self.actions_this_turn = 0;
 		self.turn_count = self.turn_count.saturating_add(1);
 		if self.status.is_over() {
@@ -954,6 +996,26 @@ impl Game {
 		let opp_holds = occupant.map(|t| t.owner == opp).unwrap_or(false);
 		if !opp_holds {
 			self.center_hold[opp.index()] = 0;
+		}
+	}
+
+	fn update_petal_majority(&mut self, who: Player) {
+		if !self.rules.petal_majority_win {
+			self.petal_majority = [0, 0];
+			return;
+		}
+		let need = self.petal_majority_need();
+		if self.petal_count(who) >= need {
+			self.petal_majority[who.index()] = self.petal_majority[who.index()].saturating_add(1);
+			if self.petal_majority[who.index()] >= self.rules.petal_majority_n.max(1) {
+				self.status = GameStatus::Won { winner: who, reason: EndReason::PetalMajority };
+			}
+		} else {
+			self.petal_majority[who.index()] = 0;
+		}
+		let opp = who.other();
+		if self.petal_count(opp) < need {
+			self.petal_majority[opp.index()] = 0;
 		}
 	}
 
@@ -1623,6 +1685,131 @@ mod tests {
 		game.apply(Action::Move { from: center, to: leave[0] }).unwrap();
 		assert_eq!(game.center_hold(Player::One), 0);
 		assert_eq!(game.status(), GameStatus::InProgress);
+	}
+
+	#[test]
+	fn petal_majority_wins_at_end_of_turn_when_n_is_one() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = true;
+		rules.petal_majority_n = 1;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		assert_eq!(inner.len(), 8);
+		assert_eq!(game.petal_majority_need(), 5);
+		for &node in inner.iter().take(5) {
+			put(&mut game, node, Player::One, TileColor::Green, 3, 1);
+		}
+		{
+			let t = take(&mut game, Player::One, TileColor::Green, 2, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		{
+			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
+			game.set_bench(Player::Two, vec![t]);
+		}
+		game.set_current(Player::One);
+		let spawn = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(game.petal_count(Player::One), 5);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::PetalMajority }
+		);
+	}
+
+	#[test]
+	fn petal_majority_n_three_requires_three_own_turns() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = true;
+		rules.petal_majority_n = 3;
+		rules.no_same_piece_twice = SamePieceTwice::Off;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		for &node in inner.iter().take(5) {
+			put(&mut game, node, Player::One, TileColor::Green, 3, 1);
+		}
+		{
+			let t = take(&mut game, Player::One, TileColor::Green, 2, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		{
+			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
+			game.set_bench(Player::Two, vec![t]);
+		}
+		game.set_current(Player::One);
+		let p1_spawn = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p1_spawn }).unwrap();
+		assert_eq!(game.petal_majority(Player::One), 1);
+		assert_eq!(game.status(), GameStatus::InProgress);
+
+		let p2_spawn = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p2_spawn }).unwrap();
+		assert_eq!(game.petal_majority(Player::One), 1, "P2's turn must not increment P1");
+
+		{
+			let t = take(&mut game, Player::One, TileColor::Blue, 2, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		let p1b = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p1b }).unwrap();
+		assert_eq!(game.petal_majority(Player::One), 2);
+
+		{
+			let t = take(&mut game, Player::Two, TileColor::Green, 1, 1);
+			game.set_bench(Player::Two, vec![t]);
+		}
+		let p2b = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p2b }).unwrap();
+
+		{
+			let t = take(&mut game, Player::One, TileColor::Orange, 1, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		let p1c = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p1c }).unwrap();
+		assert_eq!(game.petal_majority(Player::One), 3);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::PetalMajority }
+		);
 	}
 
 	#[test]

@@ -32,10 +32,9 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 	}
 }
 
-/// Material (board + bench), tiles at risk, safe-match margin, mobility,
-/// spawn control, contact pressure, a repetition penalty, and fade-to-0
-/// as the turn-limit (scored 0) approaches.
-pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
+/// Pre-center-rush heuristic kept so `MinimaxLegacy` can be compared with the
+/// current evaluator on the same search.
+pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	if let Some(term) = terminal_score(game, me) {
 		return term;
 	}
@@ -168,6 +167,222 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	score
 }
 
+/// Material, mobility, center-hold / petal-majority progress, next-turn
+/// center threats, overwhelm pressure on the center occupant, lockout-aware
+/// mobility, and a fade toward 0 as the turn-limit approaches.
+pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
+	if let Some(term) = terminal_score(game, me) {
+		return term;
+	}
+	let opp = me.other();
+	let mut material = 0i32;
+	let mut at_risk = 0i32;
+	let mut margin = 0i32;
+	let mut contact = 0i32;
+	let mut geometry = 0i32;
+	let mut spawn_control = 0i32;
+	let board = game.board();
+	let r0 = board.construction_radius();
+	let turn = game.turn_count();
+	let my_board = game.board_count(me) as i32;
+	let opp_board = game.board_count(opp) as i32;
+	let center = board.center();
+
+	let mut contact_pairs = 0i32;
+	for (node, tile) in game.tiles() {
+		let sign = if tile.owner == me { 1 } else { -1 };
+		material += sign * (48 + 24 * i32::from(tile.weight) + 6 * i32::from(tile.dots));
+		if let Some((matches, mismatches)) = game.tile_score(node) {
+			margin += sign * 8 * (matches - mismatches);
+			if mismatches >= matches - 1 {
+				at_risk += sign;
+			}
+		}
+		let mut enemy_nbs = 0i32;
+		for &nb in board.neighbors(node) {
+			if let Some(other) = game.tile_at(nb) {
+				if other.owner != tile.owner {
+					enemy_nbs += 1;
+				}
+			}
+		}
+		if tile.owner == me {
+			contact_pairs += enemy_nbs;
+		}
+		contact += sign * 20 * enemy_nbs;
+
+		let r = board.radius_of(node);
+		let geo = if node == center {
+			if game.rules().center_hold_win {
+				420
+			} else {
+				22
+			}
+		} else if board.inner_ring().contains(&node) {
+			if game.rules().center_hold_win || game.rules().petal_majority_win {
+				55
+			} else {
+				16
+			}
+		} else if board.is_spawn(node) {
+			if turn > 20 {
+				-12
+			} else {
+				3
+			}
+		} else if r < r0 * 1.15 {
+			16
+		} else {
+			9
+		};
+		geometry += sign * geo;
+	}
+
+	for &spawn in board.spawns() {
+		match game.tile_at(spawn) {
+			Some(tile) => {
+				spawn_control += if tile.owner == me { 6 } else { -6 };
+			}
+			None => {
+				let mut mine = 0i32;
+				let mut theirs = 0i32;
+				for &nb in board.neighbors(spawn) {
+					if let Some(t) = game.tile_at(nb) {
+						if t.owner == me {
+							mine += 1;
+						} else {
+							theirs += 1;
+						}
+					}
+				}
+				spawn_control += 8 * (mine - theirs);
+			}
+		}
+	}
+
+	let mut bench_score = 0i32;
+	for tile in game.bench(me) {
+		bench_score += 28 + 10 * i32::from(tile.weight);
+	}
+	for tile in game.bench(opp) {
+		bench_score -= 28 + 10 * i32::from(tile.weight);
+	}
+	let bag = 3 * (game.bag_len(me) as i32 - game.bag_len(opp) as i32);
+	let presence = 32 * (my_board - opp_board);
+	let mobility = 4 * (mobility_of(game, me) - mobility_of(game, opp));
+
+	let mut score = material
+		+ bench_score
+		+ bag + presence
+		+ margin
+		+ contact
+		+ geometry
+		+ spawn_control
+		+ mobility
+		- 22 * at_risk;
+
+	score += race_score(game, me, opp);
+
+	if contact_pairs == 0 && my_board > 0 && opp_board > 0 {
+		score -= 70 * (material + presence).signum();
+	}
+
+	if repeat_count >= 2 {
+		let extra = i32::from(repeat_count - 1);
+		score -= 30 * extra;
+		if score > 0 {
+			score -= 110 * extra;
+		}
+	}
+
+	if score.abs() < WIN / 2 {
+		let rem = game.rules().turn_limit.saturating_sub(turn);
+		if rem <= 90 {
+			score = (i64::from(score) * i64::from(rem) / 90) as i32;
+		}
+	}
+
+	score
+}
+
+fn race_score(game: &Game, me: Player, opp: Player) -> i32 {
+	let mut s = 0i32;
+	let center = game.board().center();
+	let occupant = game.tile_at(center);
+	let me_can = can_reach_center(game, me);
+	let opp_can = can_reach_center(game, opp);
+
+	if game.rules().center_hold_win {
+		let n = i32::from(game.rules().center_hold_n.max(1));
+		let my = i32::from(game.center_hold(me));
+		let their = i32::from(game.center_hold(opp));
+		s += (WIN / 3) * my / n;
+		s -= (WIN / 2) * their / n;
+		match occupant {
+			Some(t) if t.owner == me => {
+				s += 900;
+				if let Some((matches, mismatches)) = game.tile_score(center) {
+					s -= 180 * (mismatches - (matches - 1)).max(0);
+				}
+			}
+			Some(t) if t.owner == opp => {
+				s -= 1_200;
+				if let Some((matches, mismatches)) = game.tile_score(center) {
+					s += 280 * mismatches;
+					if mismatches >= matches {
+						s += 2_400;
+					}
+				}
+			}
+			_ => {
+				if me_can {
+					s += 700;
+				}
+				if opp_can {
+					s -= 850;
+				}
+			}
+		}
+	}
+
+	let my_petals = i32::from(game.petal_count(me));
+	let opp_petals = i32::from(game.petal_count(opp));
+	s += 90 * my_petals - 110 * opp_petals;
+	if game.rules().petal_majority_win {
+		let n = i32::from(game.rules().petal_majority_n.max(1));
+		let need = i32::from(game.petal_majority_need());
+		s += (WIN / 4) * i32::from(game.petal_majority(me)) / n;
+		s -= (WIN / 3) * i32::from(game.petal_majority(opp)) / n;
+		if my_petals >= need {
+			s += 800;
+		}
+		if opp_petals >= need {
+			s -= 1_000;
+		}
+	}
+	s
+}
+
+fn can_reach_center(game: &Game, player: Player) -> bool {
+	let center = game.board().center();
+	if game.tile_at(center).is_some() {
+		return false;
+	}
+	if player != game.current_player() {
+		// Approximate: an inner-ring tile with a vacant center is a 1-step
+		// threat on the next turn if it is not same-piece-restricted.
+		return game
+			.board()
+			.inner_ring()
+			.iter()
+			.any(|&n| game.tile_at(n).map(|t| t.owner == player).unwrap_or(false));
+	}
+	game.board().inner_ring().iter().any(|&n| {
+		game.tile_at(n).map(|t| t.owner == player).unwrap_or(false)
+			&& game.legal_destinations(n).contains(&center)
+	})
+}
+
 /// Cheap mobility: empty adjacent nodes + empty spawns if the bench can ADD.
 fn mobility_of(game: &Game, player: Player) -> i32 {
 	let mut m = 0i32;
@@ -268,5 +483,30 @@ mod tests {
 		off.place_tile(center, tile);
 		on.place_tile(center, tile);
 		assert!(evaluate(&on, Player::One, 0) > evaluate(&off, Player::One, 0));
+	}
+
+	#[test]
+	fn opponent_near_center_hold_is_urgent() {
+		let mut quiet = Game::empty(RuleSet::default());
+		let mut threat = Game::empty(RuleSet::default());
+		let center = quiet.board().center();
+		let spawn = quiet.board().spawns()[0];
+		let tile = quiet.alloc_tile(Player::Two, crate::game::TileColor::Blue, 3, 1);
+		let p1 = quiet.alloc_tile(Player::One, crate::game::TileColor::Green, 3, 1);
+		quiet.place_tile(center, tile);
+		quiet.place_tile(spawn, p1);
+		threat.place_tile(center, tile);
+		threat.place_tile(spawn, p1);
+		threat.set_center_hold(Player::Two, 4);
+		assert!(evaluate(&threat, Player::One, 0) < evaluate(&quiet, Player::One, 0) - 5_000);
+	}
+
+	#[test]
+	fn petal_majority_win_is_near_mate() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Won { winner: Player::One, reason: EndReason::PetalMajority });
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s > WIN / 2);
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
 	}
 }

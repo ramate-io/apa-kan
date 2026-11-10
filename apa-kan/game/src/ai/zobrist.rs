@@ -19,6 +19,7 @@ pub struct Zobrist {
 	last_moved_none: [u64; 2],
 	last_moved_some: [u64; 2],
 	center_hold: [[u64; 16]; 2],
+	petal_majority: [[u64; 16]; 2],
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
 }
@@ -36,6 +37,7 @@ impl Zobrist {
 			last_moved_none: [next(), next()],
 			last_moved_some: [next(), next()],
 			center_hold: [[0; 16]; 2],
+			petal_majority: [[0; 16]; 2],
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
 		};
@@ -62,6 +64,7 @@ impl Zobrist {
 		for player in 0..2 {
 			for n in 0..16 {
 				z.center_hold[player][n] = next();
+				z.petal_majority[player][n] = next();
 			}
 		}
 		z
@@ -111,6 +114,7 @@ pub fn hash(game: &Game) -> u64 {
 			Some(id) => h ^= z.last_moved_some[player.index()] ^ mix_id(id),
 		}
 		h ^= z.center_hold[player.index()][game.center_hold(player).min(15) as usize];
+		h ^= z.petal_majority[player.index()][game.petal_majority(player).min(15) as usize];
 	}
 	match game.moved_this_turn() {
 		None => h ^= z.moved_this_turn_none,

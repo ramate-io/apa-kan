@@ -93,13 +93,14 @@ Hops are circle-straight: they do not branch with the graph. Multi-arcs between 
 - **Win (elimination):** the opponent has **no tiles on the board and an empty bench**. A remaining bag does not save them. If both players are eliminated in the same resolution, the game is a **draw**.
 - **Win (locked-out):** if `no_moves_loses` is on (default) and the player to move has no legal ADD and no legal MOVE, they **lose immediately**. Detected at the start of their turn (after the previous player’s turn switch) and if they would otherwise pass.
 - **Win (center hold):** if `center_hold_win` is on (default) and a player occupies the center at the end of `center_hold_n` consecutive **own** turns (default 5), they win.
+- **Win (petal majority):** if `petal_majority_win` is on (default **off**) and a player occupies a majority of the inner-ring nodes (the 8 unique neighbors of the center — one attachment per petal) at the end of `petal_majority_n` consecutive **own** turns (default 1), they win.
 - **Draw:** `turn_limit` completed player-turns (default **200**). A **double pass** draw exists only when `no_moves_loses` is off.
 
 `turn_count` increments when a player’s action allotment ends (or they pass / have nothing left).
 
 ### Stall-prevention options
 
-Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut` and `CenterHold` terminals are scored as wins/losses (`±WIN`) in search.
+Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut`, `CenterHold`, and `PetalMajority` terminals are scored as wins/losses (`±WIN`) in search.
 
 #### 1. `no_moves_loses` (default **on**)
 
@@ -149,7 +150,18 @@ When this option is **off**, the legacy rule applies: hopped tiles may be any co
 
 This is the opposite inequality of the legacy hop (`color_restricted_hops` off: hop equal-or-heavier of any color; on: hop equal-or-lighter of your color only, or strictly lighter with `lt`).
 
-#### 5. `no_repeated_edge` / `path_constraint` (default **NoEdgeRevisit**)
+#### 5. `petal_majority_win` (experimental, default **off**, N = 1)
+
+CLI: `--petal-majority-win <on|off>` `--petal-majority-n <1..64>`
+
+A **petal** here is one of the eight generating circles of the rosette. Each petal attaches to the center at exactly one unique inner-ring node (`Board::inner_ring()`, the 8 neighbors of the origin). Holding a **majority of petals** means occupying **more than half** of those nodes (5 of 8). Outer tips and spawn nodes are not counted.
+
+- At the end of player P’s turn: if P occupies at least `need = inner_ring.len()/2 + 1` inner-ring nodes, P’s counter increments; if it reaches `petal_majority_n`, P wins (`EndReason::PetalMajority`). Otherwise P’s counter resets to 0.
+- Default N = 1 (win at the end of the turn you first have 5 inner-ring tiles). N = 3 is the longer-hold setting used in benches.
+- Only one player can have a majority at a time (5+5 > 8). If center-hold and petal-majority would fire on the same turn, **center-hold is checked first**.
+- The HUD shows petal counts and hold progress while this option is on.
+
+#### 6. `no_repeated_edge` / `path_constraint` (default **NoEdgeRevisit**)
 
 CLI: `--path-constraint <no-node-revisit|no-edge-revisit|both>` and `--no-repeated-edge <on|off>` (alias: `off` → `NoNodeRevisit`; `on` keeps `NoEdgeRevisit` or upgrades `NoNodeRevisit` to `Both`).
 
@@ -180,12 +192,13 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --center-hold-win on|off --center-hold-n N
         --no-same-piece-twice off|always|when-bench-empty
         --color-restricted-hops on|off --hop-weight-cmp lt|le
+        --petal-majority-win on|off --petal-majority-n N
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` on (N=5), `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` on (N=5), `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `petal_majority_win` off, `path_constraint` no-edge-revisit.
 
-Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility heuristic; MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out and center-hold terminals are wins/losses in search.
+Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, and petal-majority terminals are wins/losses in search.
 
 Headless round-robin: `apa-kan-bench` (same rule flags; `--bots greedy,minimax,mcts`).
 

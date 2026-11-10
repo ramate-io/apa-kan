@@ -6,7 +6,7 @@ use rand::Rng;
 
 use crate::game::{Action, Game};
 
-use super::eval::{evaluate, terminal_score, WIN};
+use super::eval::{evaluate, evaluate_legacy, terminal_score, WIN};
 use super::search_move::{apply_move, cheap_order, is_capture, legal_search_moves, SearchMove};
 use super::zobrist;
 use super::{count_repeats, HistoryTable, SearchStats};
@@ -73,6 +73,7 @@ pub struct MinimaxState {
 	pub killers: [[Option<SearchMove>; 2]; MAX_PLY],
 	pub history: HistoryTable,
 	pub last_move: Option<SearchMove>,
+	pub legacy: bool,
 }
 
 impl MinimaxState {
@@ -82,6 +83,7 @@ impl MinimaxState {
 			killers: [[None; 2]; MAX_PLY],
 			history: HistoryTable::new(),
 			last_move: None,
+			legacy: false,
 		}
 	}
 }
@@ -97,6 +99,7 @@ struct Ctx<'a> {
 	path: Vec<u64>,
 	path_occ: Vec<u64>,
 	last_move: Option<SearchMove>,
+	legacy: bool,
 }
 
 impl Ctx<'_> {
@@ -137,12 +140,13 @@ pub fn search(
 		path: Vec::with_capacity(16),
 		path_occ: Vec::with_capacity(16),
 		last_move: state.last_move,
+		legacy: state.legacy,
 	};
 
 	let mut best_move = legal[rng.gen_range(0..legal.len())];
 	let mut completed_depth = 0u8;
 
-	for depth in 1..=12u8 {
+	for depth in 1..=16u8 {
 		if Instant::now() >= deadline {
 			break;
 		}
@@ -175,7 +179,7 @@ pub fn search(
 			let mut score = -negamax(&mut child, depth - 1, -beta, -alpha, 1, &mut ctx);
 			ctx.path.pop();
 			ctx.path_occ.pop();
-			if is_reverse(mv, ctx.last_move) {
+			if is_reverse(mv, ctx.last_move) && !center_relevant(game, mv) {
 				score -= 6_000;
 			}
 			if ctx.abort {
@@ -373,7 +377,23 @@ fn quiesce(
 fn eval_now(game: &Game, ctx: &Ctx<'_>) -> i32 {
 	let h = zobrist::occupancy_hash(game);
 	let repeats = count_repeats(ctx.played, &ctx.path_occ, h);
-	evaluate(game, game.current_player(), repeats)
+	let me = game.current_player();
+	if ctx.legacy {
+		evaluate_legacy(game, me, repeats)
+	} else {
+		evaluate(game, me, repeats)
+	}
+}
+
+fn center_relevant(game: &Game, mv: SearchMove) -> bool {
+	let center = game.board().center();
+	match mv {
+		SearchMove::Move { from, to } => {
+			to == center || from == center || game.board().inner_ring().contains(&to)
+		}
+		SearchMove::Add { node, .. } => game.board().inner_ring().contains(&node),
+		SearchMove::Pass => false,
+	}
 }
 
 fn store_killer(killers: &mut [[Option<SearchMove>; 2]; MAX_PLY], ply: usize, mv: SearchMove) {
@@ -420,8 +440,11 @@ fn order_moves(
 				s += 80_000;
 			}
 		}
-		if ply == 0 && is_reverse(*mv, last_move) {
+		if ply == 0 && is_reverse(*mv, last_move) && !center_relevant(game, *mv) {
 			s -= 400_000;
+		}
+		if center_relevant(game, *mv) {
+			s += 8_000;
 		}
 		s += history.get(*mv);
 		-s

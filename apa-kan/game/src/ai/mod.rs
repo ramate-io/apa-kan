@@ -25,6 +25,7 @@ pub enum Actor {
 	Random,
 	Greedy,
 	Minimax,
+	MinimaxLegacy,
 	Mcts,
 }
 
@@ -35,10 +36,11 @@ impl Actor {
 			"random" => Ok(Actor::Random),
 			"greedy" => Ok(Actor::Greedy),
 			"minimax" => Ok(Actor::Minimax),
+			"minimax-legacy" | "minimax_legacy" | "old-minimax" => Ok(Actor::MinimaxLegacy),
 			"mcts" => Ok(Actor::Mcts),
-			other => {
-				Err(format!("unknown actor '{other}' (expected human|random|greedy|minimax|mcts)"))
-			}
+			other => Err(format!(
+					"unknown actor '{other}' (expected human|random|greedy|minimax|minimax-legacy|mcts)"
+				)),
 		}
 	}
 
@@ -48,6 +50,7 @@ impl Actor {
 			Actor::Random => "random",
 			Actor::Greedy => "greedy",
 			Actor::Minimax => "minimax",
+			Actor::MinimaxLegacy => "minimax-legacy",
 			Actor::Mcts => "mcts",
 		}
 	}
@@ -57,7 +60,7 @@ impl Actor {
 	}
 
 	pub fn thinks(self) -> bool {
-		matches!(self, Actor::Minimax | Actor::Mcts)
+		matches!(self, Actor::Minimax | Actor::MinimaxLegacy | Actor::Mcts)
 	}
 }
 
@@ -162,7 +165,8 @@ impl Searcher {
 			Actor::Human => legal[0],
 			Actor::Random => legal[rng.gen_range(0..legal.len())],
 			Actor::Greedy => greedy(game, rng, &self.played_hashes),
-			Actor::Minimax => {
+			Actor::Minimax | Actor::MinimaxLegacy => {
+				self.minimax.legacy = actor == Actor::MinimaxLegacy;
 				let deadline = Instant::now() + think;
 				let (action, stats) =
 					minimax::search(&mut self.minimax, game, &self.played_hashes, rng, deadline);

@@ -184,6 +184,16 @@ where
 		"--hop-weight-cmp" => {
 			rules.hop_weight_cmp = HopWeightCmp::parse(&require_value(arg, it.next())?)?;
 		}
+		"--petal-majority-win" => {
+			rules.petal_majority_win = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--petal-majority-n" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > 64 {
+				return Err("invalid --petal-majority-n (expected 1..64)".into());
+			}
+			rules.petal_majority_n = n as u8;
+		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
 		}
@@ -205,8 +215,8 @@ pub fn usage() -> &'static str {
 	"Usage: apa-kan [OPTIONS]\n\
 	 \n\
 	 Options:\n\
-	   --bot1 <human|random|greedy|minimax|mcts>  Player 1, light (default: human)\n\
-	   --bot2 <human|random|greedy|minimax|mcts>  Player 2, dark (default: greedy)\n\
+	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
+	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
 	   --think-ms <n>                             Bot think time in ms (default: 80)\n\
 	   --delay-ms <n>                             Delay between bot moves (default: 350)\n\
@@ -222,6 +232,8 @@ pub fn usage() -> &'static str {
 	                                              Repeat-piece rule (default: when-bench-empty)\n\
 	   --color-restricted-hops <on|off>           Hop only own color (default: on)\n\
 	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
+	   --petal-majority-win <on|off>              Inner-ring majority win (default: off)\n\
+	   --petal-majority-n <1..64>                 Turns to hold majority (default: 1)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -308,6 +320,8 @@ mod tests {
 		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::WhenBenchEmpty);
 		assert!(cfg.rules.color_restricted_hops);
 		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
+		assert!(!cfg.rules.petal_majority_win);
+		assert_eq!(cfg.rules.petal_majority_n, 1);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 	}
 

@@ -203,6 +203,13 @@ impl Board {
 		self.center
 	}
 
+	/// Unique neighbors of the center — the inner-ring attachments of the
+	/// eight petals. Majority-of-petals reads this set (5 of 8 on the default
+	/// rosette).
+	pub fn inner_ring(&self) -> &[NodeId] {
+		self.neighbors(self.center)
+	}
+
 	pub fn construction_radius(&self) -> f64 {
 		self.construction_radius
 	}
