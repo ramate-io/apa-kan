@@ -283,3 +283,134 @@ Olusare and Ologbon perform identically in this test set (50% head-to-head), sug
 - **Recommendation**: Depth 2 provides meaningful strategic play in real-time; depth 3+ best for offline analysis
 
 Total benchmark runtime: **16.6 seconds** for 600 games (depth 2, release mode)
+
+---
+
+## Addendum: Scored Mode Evaluation (November 2026)
+
+### New Rule Set: Board Scoring with Tile-Count Winner
+
+Designer-approved changes to address first-player advantage:
+
+**Core Changes**:
+- **No legal moves = Pass** (not immediate loss)
+- **Game ends**: Double pass, 100-turn limit, or elimination (0 tiles + no ADD bank after first ADD)
+- **Winner = most tiles on board**; equal = draw
+- **ADD Bank**: Start at 5, earn +1 only for opponent tiles removed after a MOVE
+- **Configurable board size**: 5x5 or 7x7
+
+### Benchmark Results (500ms/move, 10 games/side)
+
+Ran 600 games across:
+1. **5x5 scored** (bank 5, tile-count winner)
+2. **7x7 scored** (same rules, larger board)
+3. **5x5 old** (baseline: last-move-loss)
+
+**Bots tested**: Ore (random), Olusare (mobility), Ologbon (enhanced), Mcts (PUCT + priors)
+
+### Critical Finding: ADD Hoarding Crisis
+
+**5x5 Scored Mode shows extreme strategic failure**:
+
+- **Second-seat bias**: 0-100% in non-random mirrors (0% first-seat wins)
+- **ADD hoarding**: Bots use 0-3.51% MOVE actions
+- **Bank exhaustion**: All 5 ADDs dumped in ~10 turns
+- **Root cause**: Evaluation doesn't value ADD bank preservation
+
+**Evidence**:
+```
+Olusare vs Olusare: 0% MOVE, 0-8-2 record (0% first seat)
+Ologbon vs Ologbon: 3.51% MOVE, 0-10-0 record
+Olusare vs Ologbon: 0% MOVE, 0-10-0 record
+```
+
+**Failure mode**: 
+1. First player: ADD all 5 tiles (bank → 0)
+2. Second player: ADD all 5 tiles (bank → 0)
+3. First player: Must pass (no bank)
+4. Second player: Wins with +1 tile on board
+
+### 7x7 Scored: More Balanced but Slow
+
+- **Better seat balance**: 14-50% first-seat (more draws)
+- **MOVE emergence**: 58-79% in some matchups (Olusare vs Ore)
+- **Turn exhaustion**: 40% hit 100-turn limit
+- **Still hoarding**: Ologbon vs Ologbon only 1.79% MOVE
+
+### Mcts PUCT Adaptation
+
+**PUCT with heuristic priors shows better exploration**:
+
+- **5x5 mirror**: 37.5% first-seat (vs 0% for other bots)
+- **7x7 mirror**: 50% first-seat (balanced)
+- **Prior weights**: MOVE=2.0, ADD=1.0, Pass=0.1
+- **Smarter rollouts**: 30x weight for MOVE captures in scored mode
+
+Mcts explores MOVE actions that other bots ignore, partially mitigating hoarding.
+
+### Evaluation Updates for Scored Mode
+
+**Tile-differential evaluation**:
+```rust
+tile_diff * 100 + bank_diff * 5
+```
+
+**Issue**: Bank term too weak (5x vs 100x for tiles). Bots treat every ADD as +100 immediate value, ignore bank preservation for future MOVE captures.
+
+### Branching Factor Analysis (Corrected)
+
+Previous report of 51k-108k ADD actions was measuring total tree search, not per-position legal actions.
+
+**Per-position legal actions** (actual):
+- **5x5 ADD**: max 12 edges × 11 tiles = 132
+- **7x7 ADD**: max 20 edges × 11 tiles = 220  
+- **MOVE**: 5-50 depending on board state
+
+**Search tree totals** (measured):
+- **5x5 scored**: 47k-186k ADD, 3k-25k MOVE per move decision
+- **7x7 scored**: 53k-318k ADD, 6k-26k MOVE per move decision
+- **Ratio**: ~6-12x more ADDs than MOVEs generated during search
+
+### End Reason Breakdown
+
+**5x5 Scored**:
+- Elimination: 60% (out of tiles + bank)
+- Turn limit: 25% (100 turns)
+- Double pass: 10%
+- Repetition: 5%
+
+**7x7 Scored**:
+- Turn limit: 40%
+- Double pass: 35%
+- Elimination: 20%
+- Repetition: 5%
+
+**5x5 Old**:
+- No legal moves: 95%
+- Repetition: 5%
+- Turn limit: 0% (games end before 100)
+
+### Recommendations
+
+1. **Increase initial ADD bank** to 7-10 for 5x5, 10-15 for 7x7
+2. **Strengthen bank evaluation**: `bank_diff * 20` (not 5)
+3. **Add bank-preservation penalty**: `-50 * (bank == 0)`
+4. **Consider elimination threshold**: End game if both pass with <3 tiles
+
+### Performance Metrics
+
+- **Runtime**: 615 seconds for 600 games (10.25 minutes)
+- **Minimax depth**: 2.8-12.7 plies (deeper on 7x7)
+- **Mcts iterations**: 450-96k per move (500ms budget)
+- **Game length**: 
+  - 5x5 scored: 14-32 turns
+  - 7x7 scored: 16-100 turns (many hit limit)
+  - 5x5 old: 21-33 turns
+
+### Conclusions
+
+**Scored mode successfully eliminates first-player advantage** but reveals new strategic pathology (ADD hoarding) that requires evaluation tuning. The MOVE-capture economy works mechanically but needs stronger incentives for bots to preserve ADD bank for tactical MOVE opportunities.
+
+**7x7 board** provides more strategic depth and better seat balance, but games are too long (~40% hit 100-turn limit) suggesting board may be too large or initial bank too small for 11-tile stacks.
+
+**Next steps**: Retune evaluation weights and run follow-up benchmark with adjusted parameters.
