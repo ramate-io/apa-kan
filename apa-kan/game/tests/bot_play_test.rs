@@ -1,5 +1,6 @@
 use apa_kan::config::{GameConfig, Rules};
-use apa_kan::game::{AiConfig, AiPlayer, BotType, Game, Rules as GameRules};
+use apa_kan::game::actions::generate_legal_actions;
+use apa_kan::game::{ActionType, AiConfig, AiPlayer, BotType, Game, Rules as GameRules};
 use std::time::Duration;
 
 #[test]
@@ -124,4 +125,79 @@ fn test_all_bots_can_play() {
 
 		assert!(moves > 0, "Bot {:?} failed to make any moves", bot_type.name());
 	}
+}
+
+#[test]
+fn test_scored_legal_adds_are_non_corner_edges() {
+	let game = Game::new_with_rules(apa_kan::game::RuleSet::scored());
+	let actions = generate_legal_actions(&game);
+	let adds: Vec<_> = actions
+		.iter()
+		.filter_map(|a| match a.action_type {
+			ActionType::Add { position, .. } => Some(position),
+			_ => None,
+		})
+		.collect();
+	assert!(!adds.is_empty());
+	for pos in adds {
+		assert!(game.board.is_edge(pos), "ADD at {pos:?} is not an edge");
+		assert!(!game.board.is_corner(pos), "ADD at {pos:?} is a corner");
+	}
+}
+
+#[test]
+fn test_action_log_plain_words() {
+	use apa_kan::game::core::Position;
+	use apa_kan::game::Action;
+	use apa_kan::ui::state::describe_action;
+
+	let add = Action::add(apa_kan::game::Player::One, 0, Position::new(0, 2));
+	assert_eq!(
+		describe_action("Bot (Ologbon)", add, None, 0, false),
+		"Bot (Ologbon) ADDed tile at row 0, col 2"
+	);
+
+	let mv = Action::move_tile(apa_kan::game::Player::One, 0, Position::new(1, 2), 0);
+	assert_eq!(
+		describe_action("You", mv, Some(Position::new(1, 0)), 1, false),
+		"You MOVEd row 1 col 0 -> row 1 col 2, captured 1"
+	);
+}
+
+#[test]
+fn test_can_place_two_adjacent_surviving_tiles() {
+	use apa_kan::game::core::Position;
+	use apa_kan::game::Action;
+	use apa_kan::game::Player;
+
+	let start = Game::new_with_rules(apa_kan::game::RuleSet::scored());
+	let p1_pos = Position::new(0, 2);
+	let p2_pos = Position::new(0, 1);
+	let mut found = false;
+	for i in 0..start.stack(Player::One).len() {
+		let mut g1 = start.clone();
+		if GameRules::apply_action(&mut g1, Action::add(Player::One, i, p1_pos)).is_err() {
+			continue;
+		}
+		if g1.board.get(p1_pos).is_none() {
+			continue;
+		}
+		for j in 0..g1.stack(Player::Two).len() {
+			let mut g2 = g1.clone();
+			if g2.current_player != Player::Two {
+				break;
+			}
+			if GameRules::apply_action(&mut g2, Action::add(Player::Two, j, p2_pos)).is_err() {
+				continue;
+			}
+			if g2.board.get(p1_pos).is_some() && g2.board.get(p2_pos).is_some() {
+				found = true;
+				break;
+			}
+		}
+		if found {
+			break;
+		}
+	}
+	assert!(found, "should find an adjacent ADD pair that both survive");
 }

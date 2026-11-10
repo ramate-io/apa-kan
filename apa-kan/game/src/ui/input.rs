@@ -1,436 +1,425 @@
+use crate::config::GameConfig;
 use crate::game::actions::{generate_legal_actions, has_legal_add_or_move, Action, ActionType};
-use crate::game::core::{Game, GameState, Player, Position};
+use crate::game::core::{Game, Player, Position};
 use crate::game::rules::Rules;
-use crate::ui::board::{board_to_screen_pos, BotState, GameResource};
+use crate::ui::board::{BotState, GameResource};
+use crate::ui::layout::{
+	bench_slot_x, bench_tile_size, human_bench_y, opponent_bench_y, screen_to_board,
+};
 use crate::ui::menu::GameScreen;
+use crate::ui::state::{
+	action_squares, actor_label, describe_action, human_player, is_human_turn, opponent_count,
+	InputState, LastMove, Selection,
+};
 use bevy::prelude::*;
-use std::time::Duration;
 
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
 	fn build(&self, app: &mut App) {
-		app.insert_resource(InputState::default()).add_systems(
+		app.init_resource::<InputState>().add_systems(
 			Update,
-			(handle_input, update_highlights, update_turn_display)
-				.run_if(in_state(GameScreen::Playing)),
+			(handle_input, update_hud, handle_pass_button).run_if(in_state(GameScreen::Playing)),
 		);
 	}
 }
 
-#[derive(Resource, Default)]
-struct InputState {
-	selection: Option<Selection>,
-	hold_timer: Option<Timer>,
-	rotation_mode: Option<RotationMode>,
-	feedback_message: Option<(String, Timer)>,
-}
-
-#[derive(Clone)]
-enum Selection {
-	StackTile { player: Player, index: usize },
-	BoardTile { tile_id: u32, position: Position },
-}
-
-#[derive(Clone)]
-struct RotationMode {
-	tile_id: u32,
-	position: Position,
-	rotations: u8,
-	original_north_color: crate::game::core::Color,
-}
+#[derive(Component)]
+struct HudRoot;
 
 #[derive(Component)]
-struct Highlight;
+struct HudStatus;
 
 #[derive(Component)]
-struct TurnIndicator;
+struct HudLastMove;
 
 #[derive(Component)]
-struct FeedbackText;
+struct PassButton;
 
-const HOLD_DURATION: Duration = Duration::from_millis(500);
-const TILE_SIZE: f32 = 80.0;
+pub fn apply_recorded_action(
+	game: &mut Game,
+	config: &GameConfig,
+	input: &mut InputState,
+	action: Action,
+	who: &str,
+) {
+	let from = match action.action_type {
+		ActionType::Move { tile_id, .. } => {
+			game.board.tiles().find(|(_, t)| t.id == tile_id).map(|(pos, _)| *pos)
+		}
+		_ => None,
+	};
+	let opp_before = opponent_count(game, action.player);
+	let self_before = game.board.tiles().filter(|(_, t)| t.owner == action.player).count();
+	match Rules::apply_action(game, action) {
+		Ok(()) => {
+			let captured = opp_before.saturating_sub(opponent_count(game, action.player));
+			let self_after = game.board.tiles().filter(|(_, t)| t.owner == action.player).count();
+			let self_removed =
+				matches!(action.action_type, ActionType::Add { .. }) && self_after <= self_before;
+			let text = describe_action(who, action, from, captured, self_removed);
+			println!("{text}");
+			input.last_move = Some(LastMove { text, squares: action_squares(action, from) });
+			input.selection = Selection::None;
+			input.rotation = 0;
+		}
+		Err(e) => {
+			eprintln!("Action failed: {e}");
+		}
+	}
+}
 
 fn handle_input(
-	mut commands: Commands,
-	mut input_state: ResMut<InputState>,
 	mut game: ResMut<GameResource>,
+	mut input: ResMut<InputState>,
 	bot_state: Res<BotState>,
+	config: Res<GameConfig>,
 	keyboard: Res<ButtonInput<KeyCode>>,
 	mouse: Res<ButtonInput<MouseButton>>,
-	touches: Res<Touches>,
 	windows: Query<&Window>,
-	time: Res<Time>,
 	camera: Query<(&Camera, &GlobalTransform)>,
 ) {
-	if game.0.is_game_over() {
+	if game.0.is_game_over() || bot_state.thinking {
+		return;
+	}
+	if !is_human_turn(&config, game.0.current_player) {
 		return;
 	}
 
-	if bot_state.thinking {
+	if keyboard.just_pressed(KeyCode::Escape) {
+		input.selection = Selection::None;
+		input.rotation = 0;
+		return;
+	}
+
+	if keyboard.just_pressed(KeyCode::KeyR) {
+		if let Selection::MoveTile { .. } = input.selection {
+			let max = if game.0.rule_set.fixed_rotation { 2 } else { 4 };
+			input.rotation = (input.rotation + 1) % max;
+		}
 		return;
 	}
 
 	if keyboard.just_pressed(KeyCode::KeyP) {
-		if !has_legal_add_or_move(&game.0, game.0.current_player) {
-			let pass_action = Action::pass(game.0.current_player);
-			if let Err(e) = Rules::apply_action(&mut game.0, pass_action) {
-				eprintln!("Pass failed: {:?}", e);
-			}
-			return;
-		}
-	}
-
-	if let Some((_, ref mut timer)) = input_state.feedback_message {
-		timer.tick(time.delta());
-		if timer.just_finished() {
-			input_state.feedback_message = None;
-		}
-	}
-
-	if let Some(ref mut timer) = input_state.hold_timer {
-		timer.tick(time.delta());
-
-		if timer.just_finished() {
-			if let Some(Selection::BoardTile { tile_id, position }) = &input_state.selection {
-				let tile = game.0.board.get(*position);
-				if let Some(tile) = tile {
-					input_state.rotation_mode = Some(RotationMode {
-						tile_id: *tile_id,
-						position: *position,
-						rotations: 0,
-						original_north_color: tile.north.color,
-					});
-					input_state.hold_timer = None;
-					input_state.selection = None;
-				}
-			}
-		}
-	}
-
-	let click_pos = get_click_position(&mouse, &touches, &windows, &camera);
-
-	if mouse.just_pressed(MouseButton::Left) || touches.any_just_pressed() {
-		if let Some(pos) = click_pos {
-			handle_click(&mut commands, &mut input_state, &mut game, pos);
-		}
-	}
-
-	if mouse.just_released(MouseButton::Left) || touches.any_just_released() {
-		input_state.hold_timer = None;
-	}
-
-	if mouse.pressed(MouseButton::Left)
-		|| touches.iter().next().is_some() && input_state.hold_timer.is_some()
-	{
-	} else if mouse.just_released(MouseButton::Left) || touches.any_just_released() {
-		input_state.hold_timer = None;
-	}
-}
-
-fn get_click_position(
-	mouse: &Res<ButtonInput<MouseButton>>,
-	touches: &Res<Touches>,
-	windows: &Query<&Window>,
-	camera: &Query<(&Camera, &GlobalTransform)>,
-) -> Option<Vec2> {
-	if let Some(touch) = touches.iter().next() {
-		return Some(touch.position());
-	}
-
-	if mouse.pressed(MouseButton::Left) {
-		if let Ok(window) = windows.single() {
-			if let Some(cursor_pos) = window.cursor_position() {
-				if let Ok((camera, camera_transform)) = camera.single() {
-					if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos)
-					{
-						return Some(world_pos);
-					}
-				}
-			}
-		}
-	}
-
-	None
-}
-
-fn handle_click(
-	_commands: &mut Commands,
-	input_state: &mut InputState,
-	game: &mut GameResource,
-	click_pos: Vec2,
-) {
-	if let Some(ref mut rotation_mode) = input_state.rotation_mode {
-		let tile_pos = board_to_screen_pos(rotation_mode.position, game.0.board.size());
-		let distance = click_pos.distance(tile_pos);
-
-		if distance < TILE_SIZE / 2.0 {
-			rotation_mode.rotations = (rotation_mode.rotations + 1) % 4;
-			return;
-		}
-
-		let board_pos = screen_to_board_pos(click_pos, &game.0);
-		if let Some(dest_pos) = board_pos {
-			if dest_pos != rotation_mode.position {
-				let action = Action::move_tile(
-					game.0.current_player,
-					rotation_mode.tile_id,
-					dest_pos,
-					rotation_mode.rotations,
-				);
-				match Rules::apply_action(&mut game.0, action) {
-					Ok(_) => {
-						input_state.rotation_mode = None;
-					}
-					Err(e) => {
-						set_feedback(input_state, format!("Cannot move: {}", e));
-					}
-				}
-			}
-		}
+		try_pass(&mut game, &config, &mut input);
 		return;
 	}
 
-	let board_pos = screen_to_board_pos(click_pos, &game.0);
-	if let Some(pos) = board_pos {
-		if let Some(selection) = &input_state.selection {
-			match selection {
-				Selection::StackTile { index, .. } => {
-					let action = Action::add(game.0.current_player, *index, pos);
-					match Rules::apply_action(&mut game.0, action) {
-						Ok(_) => {
-							input_state.selection = None;
-						}
-						Err(e) => {
-							set_feedback(input_state, format!("Cannot place: {}", e));
-						}
-					}
-				}
-				Selection::BoardTile { tile_id, position } => {
-					if pos != *position {
-						let action = Action::move_tile(game.0.current_player, *tile_id, pos, 0);
-						match Rules::apply_action(&mut game.0, action) {
-							Ok(_) => {
-								input_state.selection = None;
-							}
-							Err(e) => {
-								set_feedback(input_state, format!("Cannot move: {}", e));
-							}
-						}
-					}
-				}
-			}
-		} else {
-			if let Some(tile) = game.0.board.get(pos) {
-				if tile.owner == game.0.current_player {
-					input_state.selection =
-						Some(Selection::BoardTile { tile_id: tile.id, position: pos });
-					input_state.hold_timer = Some(Timer::new(HOLD_DURATION, TimerMode::Once));
-				}
-			}
-		}
-	} else {
-		let stack_selection = check_stack_click(click_pos, &game.0);
-		if let Some(selection) = stack_selection {
-			input_state.selection = Some(selection);
-		} else {
-			input_state.selection = None;
-			input_state.rotation_mode = None;
-		}
+	if !mouse.just_pressed(MouseButton::Left) {
+		return;
+	}
+
+	let Some(click) = cursor_world(&windows, &camera) else {
+		return;
+	};
+
+	if let Some(index) = bench_hit(click, &game.0, game.0.current_player, &config) {
+		handle_bench_click(&mut game, &mut input, &config, index);
+		return;
+	}
+
+	let Some(pos) = screen_to_board(click, game.0.board.size()) else {
+		input.selection = Selection::None;
+		input.rotation = 0;
+		return;
+	};
+
+	handle_board_click(&mut game, &mut input, &config, pos);
+}
+
+fn handle_bench_click(
+	game: &mut GameResource,
+	input: &mut InputState,
+	config: &GameConfig,
+	index: usize,
+) {
+	if let Selection::PendingAdd { position } = input.selection {
+		let action = Action::add(game.0.current_player, index, position);
+		let who = actor_label(config, game.0.current_player);
+		apply_recorded_action(&mut game.0, config, input, action, &who);
 	}
 }
 
-fn screen_to_board_pos(screen_pos: Vec2, game: &Game) -> Option<Position> {
-	const BOARD_SIZE: f32 = 500.0;
-	let board_size = game.board.size() as i8;
-	let square_size = BOARD_SIZE / board_size as f32;
-	let center = (board_size - 1) as f32 / 2.0;
+fn handle_board_click(
+	game: &mut GameResource,
+	input: &mut InputState,
+	config: &GameConfig,
+	pos: Position,
+) {
+	let legal = generate_legal_actions(&game.0);
 
-	let col = ((screen_pos.x / square_size + center + 0.5).floor() as i8).clamp(0, board_size - 1);
-	let row = ((center + 0.5 - screen_pos.y / square_size).floor() as i8).clamp(0, board_size - 1);
-
-	let pos = Position::new(row, col);
-	if game.board.is_valid(pos) {
-		Some(pos)
-	} else {
-		None
+	if let Selection::MoveTile { tile_id, from } = input.selection {
+		if pos == from {
+			input.selection = Selection::None;
+			input.rotation = 0;
+			return;
+		}
+		if let Some(action) = legal.iter().copied().find(|action| {
+			matches!(
+				action.action_type,
+				ActionType::Move { tile_id: id, destination, rotation_count }
+					if id == tile_id && destination == pos && rotation_count == input.rotation
+			)
+		}) {
+			let who = actor_label(config, game.0.current_player);
+			apply_recorded_action(&mut game.0, config, input, action, &who);
+			return;
+		}
+		if let Some(action) = legal.iter().copied().find(|action| {
+			matches!(
+				action.action_type,
+				ActionType::Move { tile_id: id, destination, .. }
+					if id == tile_id && destination == pos
+			)
+		}) {
+			let who = actor_label(config, game.0.current_player);
+			apply_recorded_action(&mut game.0, config, input, action, &who);
+			return;
+		}
 	}
+
+	if game.0.board.get(pos).is_none() {
+		let can_add = legal.iter().any(
+			|action| matches!(action.action_type, ActionType::Add { position, .. } if position == pos),
+		);
+		if can_add {
+			input.selection = Selection::PendingAdd { position: pos };
+			input.rotation = 0;
+			return;
+		}
+	}
+
+	if let Some(tile) = game.0.board.get(pos) {
+		if tile.owner == game.0.current_player {
+			input.selection = Selection::MoveTile { tile_id: tile.id, from: pos };
+			input.rotation = 0;
+			return;
+		}
+	}
+
+	input.selection = Selection::None;
+	input.rotation = 0;
 }
 
-fn check_stack_click(click_pos: Vec2, game: &Game) -> Option<Selection> {
-	const STACK_OFFSET_X: f32 = 350.0;
+fn try_pass(game: &mut GameResource, config: &GameConfig, input: &mut InputState) {
+	if !game.0.rule_set.scored_mode {
+		return;
+	}
+	if has_legal_add_or_move(&game.0, game.0.current_player) {
+		return;
+	}
+	let action = Action::pass(game.0.current_player);
+	let who = actor_label(config, game.0.current_player);
+	apply_recorded_action(&mut game.0, config, input, action, &who);
+}
 
-	if (click_pos.x + STACK_OFFSET_X).abs() < 60.0 && (click_pos.y - 200.0).abs() < 30.0 {
-		let stack = game.stack(Player::One);
-		if !stack.is_empty() && game.current_player == Player::One {
-			return Some(Selection::StackTile { player: Player::One, index: 0 });
+fn bench_hit(click: Vec2, game: &Game, player: Player, config: &GameConfig) -> Option<usize> {
+	let human = human_player(config);
+	let bottom = match human {
+		Some(Player::Two) => Player::Two,
+		_ => Player::One,
+	};
+	let y = if player == bottom { human_bench_y() } else { opponent_bench_y() };
+	if player != game.current_player {
+		return None;
+	}
+	let stack = game.stack(player);
+	if stack.is_empty() {
+		return None;
+	}
+	let tile_size = bench_tile_size(stack.len());
+	for index in 0..stack.len() {
+		let x = bench_slot_x(index, stack.len(), tile_size);
+		if (click.x - x).abs() <= tile_size * 0.5 && (click.y - y).abs() <= tile_size * 0.5 {
+			return Some(index);
 		}
 	}
-
-	if (click_pos.x - STACK_OFFSET_X).abs() < 60.0 && (click_pos.y - 200.0).abs() < 30.0 {
-		let stack = game.stack(Player::Two);
-		if !stack.is_empty() && game.current_player == Player::Two {
-			return Some(Selection::StackTile { player: Player::Two, index: 0 });
-		}
-	}
-
 	None
 }
 
-fn set_feedback(input_state: &mut InputState, message: String) {
-	input_state.feedback_message = Some((message, Timer::from_seconds(2.0, TimerMode::Once)));
+fn cursor_world(
+	windows: &Query<&Window>,
+	camera: &Query<(&Camera, &GlobalTransform)>,
+) -> Option<Vec2> {
+	let window = windows.single().ok()?;
+	let (camera, transform) = camera.single().ok()?;
+	let cursor = window.cursor_position()?;
+	camera.viewport_to_world_2d(transform, cursor).ok()
 }
 
-fn update_highlights(
-	mut commands: Commands,
-	input_state: Res<InputState>,
-	game: Res<GameResource>,
-	highlights: Query<Entity, With<Highlight>>,
-	mut gizmos: Gizmos,
-) {
-	for entity in highlights.iter() {
-		commands.entity(entity).despawn();
-	}
-
-	if let Some(ref selection) = input_state.selection {
-		let legal_actions = generate_legal_actions(&game.0);
-
-		match selection {
-			Selection::StackTile { index, .. } => {
-				for action in legal_actions {
-					if let ActionType::Add { tile_index, position } = action.action_type {
-						if tile_index == *index {
-							let screen_pos = board_to_screen_pos(position, game.0.board.size());
-							gizmos.circle_2d(
-								Isometry2d::from_translation(screen_pos),
-								40.0,
-								Color::srgba(0.0, 1.0, 0.0, 0.3),
-							);
-						}
-					}
-				}
-			}
-			Selection::BoardTile { tile_id, .. } => {
-				for action in legal_actions {
-					if let ActionType::Move { tile_id: move_tile_id, destination, .. } =
-						action.action_type
-					{
-						if move_tile_id == *tile_id {
-							let screen_pos = board_to_screen_pos(destination, game.0.board.size());
-							gizmos.circle_2d(
-								Isometry2d::from_translation(screen_pos),
-								40.0,
-								Color::srgba(0.0, 1.0, 0.0, 0.3),
-							);
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if let Some(ref rotation_mode) = input_state.rotation_mode {
-		let screen_pos = board_to_screen_pos(rotation_mode.position, game.0.board.size());
-		gizmos.circle_2d(
-			Isometry2d::from_translation(screen_pos),
-			50.0,
-			Color::srgba(1.0, 1.0, 0.0, 0.5),
-		);
-	}
-}
-
-fn update_turn_display(
+fn update_hud(
 	mut commands: Commands,
 	game: Res<GameResource>,
-	bot_state: Res<BotState>,
-	mut query: Query<(Entity, &mut Text), With<TurnIndicator>>,
-	feedback_query: Query<Entity, With<FeedbackText>>,
-	input_state: Res<InputState>,
+	bot: Res<BotState>,
+	config: Res<GameConfig>,
+	input: Res<InputState>,
+	mut status: Query<&mut Text, (With<HudStatus>, Without<HudLastMove>)>,
+	mut last: Query<&mut Text, (With<HudLastMove>, Without<HudStatus>)>,
+	pass_btn: Query<Entity, With<PassButton>>,
 ) {
-	if query.is_empty() {
-		commands.spawn((
-			TurnIndicator,
-			Text::new("Player 1's Turn"),
-			TextFont { font_size: FontSize::Px(30.0), ..default() },
-			TextColor(Color::srgb(1.0, 1.0, 1.0)),
-			Node {
-				position_type: PositionType::Absolute,
-				top: Val::Px(20.0),
-				width: Val::Percent(100.0),
-				..default()
-			},
-			TextLayout { justify: Justify::Center, ..default() },
-		));
-
-		commands.spawn((
-			FeedbackText,
-			Text::new(""),
-			TextFont { font_size: FontSize::Px(24.0), ..default() },
-			TextColor(Color::srgb(1.0, 0.5, 0.0)),
-			Node {
-				position_type: PositionType::Absolute,
-				bottom: Val::Px(20.0),
-				width: Val::Percent(100.0),
-				..default()
-			},
-			TextLayout { justify: Justify::Center, ..default() },
-		));
+	if status.is_empty() {
+		spawn_hud(&mut commands);
+		return;
 	}
 
 	let p1_tiles = game.0.board.tiles().filter(|(_, t)| t.owner == Player::One).count();
 	let p2_tiles = game.0.board.tiles().filter(|(_, t)| t.owner == Player::Two).count();
-
-	for (_, mut text) in query.iter_mut() {
-		let status_line = format!(
-			"P1: {} tiles, {} bank | P2: {} tiles, {} bank | Turn: {}/100",
-			p1_tiles, game.0.add_bank_p1, p2_tiles, game.0.add_bank_p2, game.0.turn_count
-		);
-
-		match game.0.state {
-			GameState::InProgress => {
-				let player_name = match game.0.current_player {
-					Player::One => "Player 1",
-					Player::Two => "Player 2",
+	let turn_line = match game.0.state {
+		crate::game::core::GameState::InProgress => {
+			if bot.thinking {
+				format!("Bot thinking...  ({})", actor_label(&config, game.0.current_player))
+			} else if !has_legal_add_or_move(&game.0, game.0.current_player)
+				&& game.0.rule_set.scored_mode
+				&& is_human_turn(&config, game.0.current_player)
+			{
+				format!(
+					"{} - no legal ADD/MOVE. Press P or Pass.",
+					actor_label(&config, game.0.current_player)
+				)
+			} else {
+				let hint = match input.selection {
+					Selection::PendingAdd { position } => {
+						format!(" | pick a bench tile to ADD at {},{}", position.row, position.col)
+					}
+					Selection::MoveTile { .. } => " | click a MOVE square (R rotates)".to_string(),
+					Selection::None => String::new(),
 				};
-
-				let turn_status = if bot_state.thinking {
-					"Bot thinking...".to_string()
-				} else if !has_legal_add_or_move(&game.0, game.0.current_player) {
-					format!("{} must Pass (press P)", player_name)
-				} else {
-					format!("{}'s Turn", player_name)
-				};
-
-				**text = format!("{}\n{}", turn_status, status_line);
-			}
-			GameState::Won(player) => {
-				let winner = match player {
-					Player::One => "Player 1",
-					Player::Two => "Player 2",
-				};
-				let reason = if game.0.turn_count >= 100 {
-					"(100-turn limit)"
-				} else if p1_tiles == 0 || p2_tiles == 0 {
-					"(elimination)"
-				} else {
-					"(tile count)"
-				};
-				**text = format!("{} Wins! {}\n{}", winner, reason, status_line);
-			}
-			GameState::Draw => {
-				let reason =
-					if game.0.turn_count >= 100 { "(100-turn limit)" } else { "(double pass)" };
-				**text = format!("Draw! {}\n{}", reason, status_line);
+				format!("{} to play{hint}", actor_label(&config, game.0.current_player))
 			}
 		}
+		crate::game::core::GameState::Won(player) => {
+			format!(
+				"{} wins ({})",
+				actor_label(&config, player),
+				end_reason(&game.0, p1_tiles, p2_tiles)
+			)
+		}
+		crate::game::core::GameState::Draw => {
+			format!("Draw ({})", end_reason(&game.0, p1_tiles, p2_tiles))
+		}
+	};
+
+	let stats = format!(
+		"{}: {} on board, {} ADDs left  |  {}: {} on board, {} ADDs left  |  Turn {}/100",
+		actor_label(&config, Player::One),
+		p1_tiles,
+		game.0.add_bank_p1,
+		actor_label(&config, Player::Two),
+		p2_tiles,
+		game.0.add_bank_p2,
+		game.0.turn_count
+	);
+
+	for mut text in status.iter_mut() {
+		**text = format!("{turn_line}\n{stats}");
 	}
 
-	for entity in feedback_query.iter() {
-		if let Some((ref message, _)) = input_state.feedback_message {
-			commands.entity(entity).insert(Text::new(message.clone()));
-		} else {
-			commands.entity(entity).insert(Text::new(""));
+	let last_text = input
+		.last_move
+		.as_ref()
+		.map(|m| format!("Last move: {}", m.text))
+		.unwrap_or_else(|| "Last move: -".to_string());
+	for mut text in last.iter_mut() {
+		**text = last_text.clone();
+	}
+
+	let show_pass = game.0.rule_set.scored_mode
+		&& !game.0.is_game_over()
+		&& !bot.thinking
+		&& is_human_turn(&config, game.0.current_player)
+		&& !has_legal_add_or_move(&game.0, game.0.current_player);
+
+	if show_pass && pass_btn.is_empty() {
+		spawn_pass_button(&mut commands);
+	}
+	if !show_pass {
+		for entity in pass_btn.iter() {
+			commands.entity(entity).despawn();
 		}
+	}
+}
+
+fn spawn_hud(commands: &mut Commands) {
+	commands
+		.spawn((
+			HudRoot,
+			Node {
+				position_type: PositionType::Absolute,
+				top: Val::Px(6.0),
+				left: Val::Px(18.0),
+				right: Val::Px(18.0),
+				flex_direction: FlexDirection::Column,
+				align_items: AlignItems::Center,
+				row_gap: Val::Px(4.0),
+				..default()
+			},
+		))
+		.with_children(|parent| {
+			parent.spawn((
+				HudStatus,
+				Text::new(""),
+				TextFont { font_size: FontSize::Px(20.0), ..default() },
+				TextColor(Color::srgb(1.0, 1.0, 1.0)),
+				TextLayout::justify(Justify::Center),
+			));
+			parent.spawn((
+				HudLastMove,
+				Text::new("Last move: -"),
+				TextFont { font_size: FontSize::Px(16.0), ..default() },
+				TextColor(Color::srgb(1.0, 0.84, 0.35)),
+				TextLayout::justify(Justify::Center),
+			));
+		});
+}
+
+fn spawn_pass_button(commands: &mut Commands) {
+	commands
+		.spawn((
+			PassButton,
+			Button,
+			Node {
+				position_type: PositionType::Absolute,
+				bottom: Val::Px(18.0),
+				right: Val::Px(24.0),
+				padding: UiRect::axes(Val::Px(16.0), Val::Px(10.0)),
+				..default()
+			},
+			BackgroundColor(Color::srgb(0.18, 0.45, 0.28)),
+		))
+		.with_children(|parent| {
+			parent.spawn((
+				Text::new("Pass (P)"),
+				TextFont { font_size: FontSize::Px(18.0), ..default() },
+				TextColor(Color::WHITE),
+			));
+		});
+}
+
+fn handle_pass_button(
+	mut game: ResMut<GameResource>,
+	mut input: ResMut<InputState>,
+	config: Res<GameConfig>,
+	bot: Res<BotState>,
+	interaction: Query<&Interaction, (Changed<Interaction>, With<PassButton>)>,
+) {
+	if bot.thinking || !is_human_turn(&config, game.0.current_player) {
+		return;
+	}
+	for interaction in interaction.iter() {
+		if *interaction == Interaction::Pressed {
+			try_pass(&mut game, &config, &mut input);
+		}
+	}
+}
+
+fn end_reason(game: &Game, p1_tiles: usize, p2_tiles: usize) -> &'static str {
+	if game.turn_count >= 100 {
+		"100-turn limit"
+	} else if p1_tiles == 0 || p2_tiles == 0 {
+		"elimination"
+	} else if game.rule_set.scored_mode {
+		"tile count"
+	} else {
+		"no legal moves"
 	}
 }

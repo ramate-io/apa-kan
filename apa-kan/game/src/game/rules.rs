@@ -191,17 +191,9 @@ impl Rules {
 			let mut matches = 0;
 			let mut mismatches = 0;
 
-			for (direction, neighbor_pos) in position.neighbors() {
+			for (direction, neighbor_pos) in position.neighbors_in(game.board.size()) {
 				if game.board.is_corner(neighbor_pos) {
 					mismatches += 1;
-					continue;
-				}
-
-				if neighbor_pos.row < 0
-					|| neighbor_pos.row >= 5
-					|| neighbor_pos.col < 0
-					|| neighbor_pos.col >= 5
-				{
 					continue;
 				}
 

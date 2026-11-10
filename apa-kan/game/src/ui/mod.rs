@@ -1,6 +1,9 @@
 pub mod board;
 pub mod input;
+pub mod layout;
 pub mod menu;
+pub mod snapshot;
+pub mod state;
 pub mod tiles;
 
 pub use board::BoardPlugin;

@@ -1,3 +1,4 @@
+use crate::config::GameConfig;
 use bevy::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, States, Default)]
@@ -12,9 +13,16 @@ pub struct MenuPlugin;
 impl Plugin for MenuPlugin {
 	fn build(&self, app: &mut App) {
 		app.init_state::<GameScreen>()
+			.add_systems(Startup, skip_title_for_bot)
 			.add_systems(OnEnter(GameScreen::Title), setup_title_screen)
 			.add_systems(Update, title_input.run_if(in_state(GameScreen::Title)))
 			.add_systems(OnExit(GameScreen::Title), cleanup_title_screen);
+	}
+}
+
+fn skip_title_for_bot(config: Res<GameConfig>, mut next_state: ResMut<NextState<GameScreen>>) {
+	if config.bot.is_some() || std::env::var("APA_KAN_SNAPSHOT_DIR").is_ok() {
+		next_state.set(GameScreen::Playing);
 	}
 }
 

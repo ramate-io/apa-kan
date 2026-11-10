@@ -53,9 +53,12 @@ cargo run -p apa-kan -- --bot ore
 - `--think-ms <n>` Bot think time in milliseconds (default: 500)
 
 **Gameplay:**
-- When it's your turn and you have no legal moves in scored mode, press `P` to pass
-- Bot actions are printed to stdout for review
-- Status display shows: tile counts, ADD banks, turn number, and game result
+- On your turn, green **ADD** markers show legal placement squares. Click one, then click a tile from your bench (bottom of the screen).
+- Click one of your tiles on the board to see purple **MOVE** destinations. Press `R` to rotate, then click a destination.
+- Both benches stay visible: yours at the bottom, the opponent's at the top, with edge colors and P1/P2 labels.
+- When it's your turn and you have no legal moves in scored mode, press `P` or the Pass button
+- Each action is described on the **Last move** line and printed to stdout
+- Status display shows: whose turn, tile counts, ADD banks remaining, and turn number
 
 Build for release:
 

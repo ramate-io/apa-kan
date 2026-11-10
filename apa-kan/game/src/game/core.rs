@@ -284,10 +284,15 @@ impl Position {
 	}
 
 	pub fn neighbors(&self) -> Vec<(Direction, Position)> {
+		self.neighbors_in(5)
+	}
+
+	pub fn neighbors_in(&self, size: u8) -> Vec<(Direction, Position)> {
+		let max = size as i8;
 		Direction::all()
 			.iter()
 			.map(|&dir| (dir, self.neighbor(dir)))
-			.filter(|(_, pos)| pos.row >= 0 && pos.row < 5 && pos.col >= 0 && pos.col < 5)
+			.filter(|(_, pos)| pos.row >= 0 && pos.row < max && pos.col >= 0 && pos.col < max)
 			.collect()
 	}
 }

@@ -126,12 +126,13 @@ fn find_reachable_destinations(
 	let mut visited = HashSet::new();
 	let mut queue = VecDeque::new();
 
+	let max = game.board.size() as i8;
 	let has_adjacency = Direction::all().iter().any(|&dir| {
 		let neighbor = start.neighbor(dir);
 		neighbor.row >= 0
-			&& neighbor.row < 5
+			&& neighbor.row < max
 			&& neighbor.col >= 0
-			&& neighbor.col < 5
+			&& neighbor.col < max
 			&& game.board.get(neighbor).is_some()
 	});
 
@@ -147,9 +148,9 @@ fn find_reachable_destinations(
 			let neighbor_pos = current_pos.neighbor(direction);
 
 			if neighbor_pos.row < 0
-				|| neighbor_pos.row >= 5
+				|| neighbor_pos.row >= max
 				|| neighbor_pos.col < 0
-				|| neighbor_pos.col >= 5
+				|| neighbor_pos.col >= max
 			{
 				continue;
 			}
@@ -184,16 +185,20 @@ fn can_cross_edge(
 
 	let crossing_edge_weight = crossing_tile.edge(direction).weight.value();
 
-	let effective_weight =
-		if beyond_pos.row >= 0 && beyond_pos.row < 5 && beyond_pos.col >= 0 && beyond_pos.col < 5 {
-			if let Some(beyond_tile) = game.board.get(beyond_pos) {
-				crossing_edge_weight.max(beyond_tile.edge(direction.opposite()).weight.value())
-			} else {
-				crossing_edge_weight
-			}
+	let max = game.board.size() as i8;
+	let effective_weight = if beyond_pos.row >= 0
+		&& beyond_pos.row < max
+		&& beyond_pos.col >= 0
+		&& beyond_pos.col < max
+	{
+		if let Some(beyond_tile) = game.board.get(beyond_pos) {
+			crossing_edge_weight.max(beyond_tile.edge(direction.opposite()).weight.value())
 		} else {
 			crossing_edge_weight
-		};
+		}
+	} else {
+		crossing_edge_weight
+	};
 
 	let mover_edge_weight = moving_tile.edge(direction).weight.value();
 	effective_weight >= mover_edge_weight

@@ -934,7 +934,7 @@ fn calculate_stability(game: &Game, player: Player) -> i32 {
 		let mut matches = 0;
 		let mut mismatches = 0;
 
-		for (direction, neighbor_pos) in pos.neighbors() {
+		for (direction, neighbor_pos) in pos.neighbors_in(game.board.size()) {
 			if game.board.is_corner(neighbor_pos) {
 				mismatches += 1;
 				continue;
@@ -975,9 +975,9 @@ fn calculate_connectivity(game: &Game, player: Player) -> i32 {
 			.filter(|&&dir| {
 				let neighbor = pos.neighbor(dir);
 				neighbor.row >= 0
-					&& neighbor.row < 5
+					&& neighbor.row < game.board.size() as i8
 					&& neighbor.col >= 0
-					&& neighbor.col < 5
+					&& neighbor.col < game.board.size() as i8
 					&& game.board.get(neighbor).is_some()
 			})
 			.count() as i32;
