@@ -26,4 +26,6 @@ Each RFC directory should contain:
 
 ## Index
 
-(RFCs will be indexed here as they are created)
+- [RFC-001-001-001](rfc-001-001-001-game-rules/README.md) — Game rules
+- [RFC-002-002-002](rfc-002-002-002-ai-heuristics/README.md) — AI heuristics
+- [RFC-003-001-001](rfc-003-001-001-two-action-turns/README.md) — Two actions per turn

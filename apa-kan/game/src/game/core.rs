@@ -183,6 +183,12 @@ pub struct RuleSet {
 	pub scored_mode: bool,
 	pub board_size: u8,
 	pub stack_size: u8,
+	/// How many ADD/MOVE actions a player may take in one turn. Existing
+	/// rulesets keep `1`. Two-action variants set this to `2`.
+	pub actions_per_turn: u8,
+	/// When true and `actions_per_turn > 1`, Player One's first turn is only
+	/// one action (Connect6-style opening). Default on for two-action constructors.
+	pub opening_handicap: bool,
 }
 
 impl RuleSet {
@@ -196,6 +202,8 @@ impl RuleSet {
 			scored_mode: false,
 			board_size: 5,
 			stack_size: 11,
+			actions_per_turn: 1,
+			opening_handicap: false,
 		}
 	}
 
@@ -209,6 +217,8 @@ impl RuleSet {
 			scored_mode: false,
 			board_size: 5,
 			stack_size: 11,
+			actions_per_turn: 1,
+			opening_handicap: false,
 		}
 	}
 
@@ -222,11 +232,25 @@ impl RuleSet {
 			scored_mode: true,
 			board_size: 5,
 			stack_size: 11,
+			actions_per_turn: 1,
+			opening_handicap: false,
 		}
 	}
 
 	pub fn scored_7x7() -> Self {
 		Self { board_size: 7, ..Self::scored() }
+	}
+
+	pub fn scored_double() -> Self {
+		Self { actions_per_turn: 2, opening_handicap: true, ..Self::scored() }
+	}
+
+	pub fn scored_7x7_double() -> Self {
+		Self { board_size: 7, ..Self::scored_double() }
+	}
+
+	pub fn old_double() -> Self {
+		Self { actions_per_turn: 2, opening_handicap: true, ..Self::old() }
 	}
 
 	pub fn with_bank_size(bank_size: u8) -> Self {
@@ -239,6 +263,8 @@ impl RuleSet {
 			scored_mode: false,
 			board_size: 5,
 			stack_size: 11,
+			actions_per_turn: 1,
+			opening_handicap: false,
 		}
 	}
 
@@ -252,6 +278,8 @@ impl RuleSet {
 			scored_mode: false,
 			board_size: 5,
 			stack_size: 11,
+			actions_per_turn: 1,
+			opening_handicap: false,
 		}
 	}
 }
@@ -379,6 +407,8 @@ pub struct Game {
 	pub consecutive_passes: u8,
 	pub p1_has_added: bool,
 	pub p2_has_added: bool,
+	/// Actions already taken by `current_player` during this turn.
+	pub actions_this_turn: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,6 +442,7 @@ impl Game {
 			consecutive_passes: 0,
 			p1_has_added: false,
 			p2_has_added: false,
+			actions_this_turn: 0,
 		};
 		game.initialize_random_tiles();
 		game
@@ -453,6 +484,7 @@ impl Game {
 			consecutive_passes: 0,
 			p1_has_added: false,
 			p2_has_added: false,
+			actions_this_turn: 0,
 		}
 	}
 
@@ -502,6 +534,23 @@ impl Game {
 		matches!(self.state, GameState::Won(_) | GameState::Draw)
 	}
 
+	pub fn actions_allowed_this_turn(&self) -> u8 {
+		let n = self.rule_set.actions_per_turn.max(1);
+		if n > 1
+			&& self.rule_set.opening_handicap
+			&& self.turn_count == 0
+			&& self.current_player == Player::One
+		{
+			1
+		} else {
+			n
+		}
+	}
+
+	pub fn action_number_this_turn(&self) -> u8 {
+		self.actions_this_turn.saturating_add(1)
+	}
+
 	pub fn compute_position_hash(&self) -> u64 {
 		use std::collections::hash_map::DefaultHasher;
 		use std::hash::{Hash, Hasher};
@@ -509,6 +558,7 @@ impl Game {
 		let mut hasher = DefaultHasher::new();
 
 		self.current_player.hash(&mut hasher);
+		self.actions_this_turn.hash(&mut hasher);
 
 		let mut positions: Vec<_> = self.board.tiles().collect();
 		positions.sort_by_key(|(pos, _)| (pos.row, pos.col));

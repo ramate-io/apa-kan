@@ -50,13 +50,7 @@ fn test_ruleset_mapping_old() {
 
 #[test]
 fn test_bot_vs_human_stub_completes() {
-	let config = GameConfig {
-		bot: Some(BotType::Ore),
-		human_seat: 1,
-		board_size: 5,
-		rules: Rules::Scored,
-		think_ms: 10,
-	};
+	let config = GameConfig { bot: Some(BotType::Ore), think_ms: 10, ..GameConfig::default() };
 
 	let mut game = Game::new_with_rules(config.rule_set());
 	let bot = AiPlayer::new(AiConfig {
@@ -90,13 +84,7 @@ fn test_all_bots_can_play() {
 	let bot_types = vec![BotType::Ore, BotType::Olusare, BotType::Ologbon, BotType::Mcts];
 
 	for bot_type in bot_types {
-		let config = GameConfig {
-			bot: Some(bot_type),
-			human_seat: 1,
-			board_size: 5,
-			rules: Rules::Scored,
-			think_ms: 10,
-		};
+		let config = GameConfig { bot: Some(bot_type), think_ms: 10, ..GameConfig::default() };
 
 		let mut game = Game::new_with_rules(config.rule_set());
 		let bot = AiPlayer::new(AiConfig {
@@ -462,4 +450,47 @@ fn test_malformed_cli_arg_exits_nonzero() {
 	let stderr = String::from_utf8_lossy(&output.stderr);
 	assert!(stderr.contains("--rulesscored"), "stderr: {stderr}");
 	assert!(stderr.to_lowercase().contains("usage"), "stderr: {stderr}");
+}
+
+#[test]
+fn test_all_bots_play_two_action_turns() {
+	use apa_kan::game::core::Position;
+	use apa_kan::game::{Action, Player, RuleSet};
+
+	let bot_types = [BotType::Ore, BotType::Olusare, BotType::Ologbon, BotType::Mcts];
+	for bot_type in bot_types {
+		let mut game = Game::new_with_rules(RuleSet::scored_double());
+		let bot = AiPlayer::new(AiConfig {
+			depth: 2,
+			bot_type,
+			time_budget: Some(Duration::from_millis(20)),
+			use_transposition_table: true,
+			use_move_ordering: true,
+			mcts_iterations: None,
+			mcts_exploration: 1.41,
+			mcts_rollout_depth: 8,
+		});
+
+		GameRules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(0, 2)))
+			.expect("opening ADD");
+		assert_eq!(game.current_player, Player::Two);
+
+		let first = bot.choose_action(&game).expect("bot action 1");
+		GameRules::apply_action(&mut game, first).expect("apply bot action 1");
+		if game.is_game_over() {
+			continue;
+		}
+		if game.current_player == Player::Two {
+			let second = bot.choose_action(&game).expect("bot action 2");
+			GameRules::apply_action(&mut game, second).expect("apply bot action 2");
+			assert_eq!(
+				game.current_player,
+				Player::One,
+				"{:?} should hand off after two actions",
+				bot_type.name()
+			);
+		} else {
+			assert_eq!(game.current_player, Player::One);
+		}
+	}
 }

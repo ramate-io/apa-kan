@@ -157,9 +157,15 @@ pub fn log_applied_action(
 		_ => None,
 	};
 	let opp_before = opponent_count(game, action.player);
+	let action_num = game.action_number_this_turn();
+	let allowed = game.actions_allowed_this_turn();
+	let multi = game.rule_set.actions_per_turn > 1;
 	let outcome = Rules::apply_action(game, action)?;
 	let captured = opp_before.saturating_sub(opponent_count(game, action.player));
-	let text = describe_action(who, action, from, captured, &outcome.removals);
+	let mut text = describe_action(who, action, from, captured, &outcome.removals);
+	if multi {
+		text.push_str(&format!(" (action {action_num} of {allowed})"));
+	}
 	let mut squares = action_squares(action, from);
 	for removal in &outcome.removals {
 		if !squares.contains(&removal.position) {

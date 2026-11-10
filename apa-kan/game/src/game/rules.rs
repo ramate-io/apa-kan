@@ -49,7 +49,13 @@ impl Rules {
 				if !game.rule_set.scored_mode {
 					return Err("Passing is only allowed in scored mode".to_string());
 				}
-				game.consecutive_passes += 1;
+				// A whole-turn pass is Pass as the first action of the turn.
+				// Pass after ADD/MOVE only forfeits remaining actions.
+				if game.actions_this_turn == 0 {
+					game.consecutive_passes += 1;
+				} else {
+					game.consecutive_passes = 0;
+				}
 			}
 		}
 
@@ -77,10 +83,21 @@ impl Rules {
 
 		Self::check_win_condition(game);
 
-		game.current_player = game.current_player.other();
-		game.turn_count += 1;
+		if !game.is_game_over() {
+			let was_pass = matches!(action.action_type, ActionType::Pass);
+			game.actions_this_turn = game.actions_this_turn.saturating_add(1);
+			let allowed = game.actions_allowed_this_turn();
+			let no_more_legal = !has_legal_add_or_move(game, game.current_player);
+			let end_turn = was_pass || game.actions_this_turn >= allowed || no_more_legal;
 
-		Self::check_turn_limit_draw(game);
+			if end_turn {
+				game.current_player = game.current_player.other();
+				game.actions_this_turn = 0;
+				game.turn_count += 1;
+				Self::check_turn_limit_draw(game);
+			}
+		}
+
 		Self::check_repetition_draw(game);
 
 		Ok(ActionOutcome { removals })
@@ -777,5 +794,135 @@ mod tests {
 			.removals
 			.iter()
 			.any(|r| r.position == Position::new(1, 0) && r.owner == Player::Two));
+	}
+
+	#[test]
+	fn test_single_action_still_handoffs_after_one() {
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![make_tile(0, Player::One, [Color::Maroon; 4])],
+			vec![make_tile(1, Player::Two, [Color::Green; 4])],
+			RuleSet::scored(),
+		);
+		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(2, 0))).unwrap();
+		assert_eq!(game.current_player, Player::Two);
+		assert_eq!(game.actions_this_turn, 0);
+		assert_eq!(game.turn_count, 1);
+	}
+
+	#[test]
+	fn test_two_action_handoff_after_two() {
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![
+				make_tile(0, Player::One, [Color::Maroon; 4]),
+				make_tile(1, Player::One, [Color::Maroon; 4]),
+			],
+			vec![make_tile(2, Player::Two, [Color::Green; 4])],
+			RuleSet::scored_double(),
+		);
+		assert_eq!(game.actions_allowed_this_turn(), 1, "opening handicap");
+		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(0, 2))).unwrap();
+		assert_eq!(game.current_player, Player::Two);
+		assert_eq!(game.turn_count, 1);
+
+		Rules::apply_action(&mut game, Action::add(Player::Two, 0, Position::new(2, 4))).unwrap();
+		assert_eq!(game.current_player, Player::Two);
+		assert_eq!(game.actions_this_turn, 1);
+		assert_eq!(game.turn_count, 1);
+
+		let pass = Action::pass(Player::Two);
+		// P2 still has legal ADDs; pass is allowed by apply_action in scored mode
+		Rules::apply_action(&mut game, pass).unwrap();
+		assert_eq!(game.current_player, Player::One);
+		assert_eq!(game.actions_this_turn, 0);
+		assert_eq!(game.turn_count, 2);
+	}
+
+	#[test]
+	fn test_opening_handicap_off_allows_two_first_actions() {
+		let mut rules = RuleSet::scored_double();
+		rules.opening_handicap = false;
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![
+				make_tile(0, Player::One, [Color::Maroon; 4]),
+				make_tile(1, Player::One, [Color::Maroon; 4]),
+			],
+			vec![],
+			rules,
+		);
+		assert_eq!(game.actions_allowed_this_turn(), 2);
+		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(0, 2))).unwrap();
+		assert_eq!(game.current_player, Player::One);
+		assert_eq!(game.actions_this_turn, 1);
+		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(4, 2))).unwrap();
+		assert_eq!(game.current_player, Player::Two);
+		assert_eq!(game.turn_count, 1);
+	}
+
+	#[test]
+	fn test_pass_ends_whole_turn() {
+		let mut game = Game::new_with_tiles_and_rules(vec![], vec![], RuleSet::scored_double());
+		game.add_bank_p1 = 0;
+		game.add_bank_p2 = 0;
+		assert_eq!(game.current_player, Player::One);
+		Rules::apply_action(&mut game, Action::pass(Player::One)).unwrap();
+		assert_eq!(game.current_player, Player::Two);
+		assert_eq!(game.actions_this_turn, 0);
+		assert_eq!(game.consecutive_passes, 1);
+		assert_eq!(game.turn_count, 1);
+	}
+
+	#[test]
+	fn test_double_pass_ends_game() {
+		let mut game = Game::new_with_tiles_and_rules(vec![], vec![], RuleSet::scored_double());
+		game.add_bank_p1 = 0;
+		game.add_bank_p2 = 0;
+		Rules::apply_action(&mut game, Action::pass(Player::One)).unwrap();
+		Rules::apply_action(&mut game, Action::pass(Player::Two)).unwrap();
+		assert_eq!(game.state, GameState::Draw);
+	}
+
+	#[test]
+	fn test_add_then_backup_survives_opponent_reply() {
+		let mut rules = RuleSet::scored_double();
+		rules.opening_handicap = false;
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![
+				make_tile(0, Player::One, [Color::Maroon; 4]),
+				make_tile(1, Player::One, [Color::Maroon; 4]),
+			],
+			vec![make_tile(2, Player::Two, [Color::Green; 4])],
+			rules,
+		);
+
+		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(2, 0))).unwrap();
+		assert_eq!(game.current_player, Player::One);
+		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(1, 0))).unwrap();
+		assert!(game.board.get(Position::new(2, 0)).is_some());
+		assert!(game.board.get(Position::new(1, 0)).is_some());
+		assert_eq!(game.current_player, Player::Two);
+
+		Rules::apply_action(&mut game, Action::add(Player::Two, 0, Position::new(3, 0))).unwrap();
+		assert!(
+			game.board.get(Position::new(2, 0)).is_some(),
+			"backed-up tile must survive the opponent mismatch ADD"
+		);
+		assert!(game.board.get(Position::new(1, 0)).is_some());
+	}
+
+	#[test]
+	fn test_pass_after_action_is_not_a_whole_turn_pass() {
+		let mut rules = RuleSet::scored_double();
+		rules.opening_handicap = false;
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![make_tile(0, Player::One, [Color::Maroon; 4])],
+			vec![],
+			rules,
+		);
+		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(0, 2))).unwrap();
+		assert_eq!(game.current_player, Player::One);
+		Rules::apply_action(&mut game, Action::pass(Player::One)).unwrap();
+		assert_eq!(game.consecutive_passes, 0, "ADD then Pass is not a whole-turn pass");
+		assert_eq!(game.current_player, Player::Two);
+		assert_eq!(game.turn_count, 1);
 	}
 }

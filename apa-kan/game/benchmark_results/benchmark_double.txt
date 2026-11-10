@@ -1,0 +1,13 @@
+Two-action scored benchmark
+think 50ms/action, 10 games/seat (20 games/pairing), opening handicap on
+Seat format: P1 <P1-wins>-<draws>-<P2-wins> P2
+First listed bot sits P1 for the first 10 games, then seats swap.
+
+5x5 Ologbon vs Ologbon  games 20  P1 0-19-1 P2  MOVE 29.9%  avg turns 16.8  ends: double_pass 18  turn_limit 1  elimination 1  other_win 0  unfinished 0
+5x5 Olusare vs Ologbon  games 20  P1 7-2-11 P2  MOVE 48.4%  avg turns 23.1  ends: double_pass 3  turn_limit 1  elimination 16  other_win 0  unfinished 0
+5x5 Olusare vs Olusare  games 20  P1 14-0-6 P2  MOVE 70.8%  avg turns 40.4  ends: double_pass 2  turn_limit 4  elimination 14  other_win 0  unfinished 0
+7x7 Ologbon vs Ologbon  games 20  P1 2-0-18 P2  MOVE 66.8%  avg turns 31.6  ends: double_pass 7  turn_limit 4  elimination 9  other_win 0  unfinished 0
+7x7 Olusare vs Ologbon  games 20  P1 10-2-8 P2  MOVE 48.7%  avg turns 23.4  ends: double_pass 6  turn_limit 1  elimination 13  other_win 0  unfinished 0
+7x7 Olusare vs Olusare  games 20  P1 2-1-17 P2  MOVE 86.4%  avg turns 80.2  ends: double_pass 0  turn_limit 13  elimination 7  other_win 0  unfinished 0
+
+Total time: 120.99s

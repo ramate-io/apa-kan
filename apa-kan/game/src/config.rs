@@ -9,6 +9,8 @@ pub struct GameConfig {
 	pub board_size: u8,
 	pub rules: Rules,
 	pub think_ms: u64,
+	pub actions: u8,
+	pub opening_handicap: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,18 +21,33 @@ pub enum Rules {
 
 impl Default for GameConfig {
 	fn default() -> Self {
-		Self { bot: None, human_seat: 1, board_size: 5, rules: Rules::Scored, think_ms: 500 }
+		Self {
+			bot: None,
+			human_seat: 1,
+			board_size: 5,
+			rules: Rules::Scored,
+			think_ms: 500,
+			actions: 1,
+			opening_handicap: true,
+		}
 	}
 }
 
 impl GameConfig {
 	pub fn rule_set(&self) -> RuleSet {
-		match (self.rules, self.board_size) {
-			(Rules::Scored, 5) => RuleSet::scored(),
-			(Rules::Scored, 7) => RuleSet::scored_7x7(),
-			(Rules::Old, _) => RuleSet::old(),
+		let mut rs = match (self.rules, self.board_size, self.actions) {
+			(Rules::Scored, 5, 2) => RuleSet::scored_double(),
+			(Rules::Scored, 7, 2) => RuleSet::scored_7x7_double(),
+			(Rules::Old, _, 2) => RuleSet::old_double(),
+			(Rules::Scored, 5, _) => RuleSet::scored(),
+			(Rules::Scored, 7, _) => RuleSet::scored_7x7(),
+			(Rules::Old, _, _) => RuleSet::old(),
 			_ => RuleSet::scored(),
+		};
+		if rs.actions_per_turn > 1 {
+			rs.opening_handicap = self.opening_handicap;
 		}
+		rs
 	}
 
 	pub fn think_time(&self) -> Duration {
@@ -44,6 +61,8 @@ Options:\n\
   --seat <1|2>                           Human seat (default: 1)\n\
   --size <5|7>                           Board size (default: 5)\n\
   --rules <scored|old>                   Rule set (default: scored)\n\
+  --actions <1|2>                        Actions per turn (default: 1)\n\
+  --no-opening-handicap                  Two-action: P1's first turn also gets 2 actions\n\
   --think-ms <n>                         Bot think time in ms (default: 500)\n\
   -h, --help                             Print help"
 	}
@@ -66,7 +85,11 @@ Options:\n\
 				"-h" | "--help" => {
 					i += 1;
 				}
-				"--bot" | "--seat" | "--size" | "--rules" | "--think-ms" => {
+				"--no-opening-handicap" => {
+					config.opening_handicap = false;
+					i += 1;
+				}
+				"--bot" | "--seat" | "--size" | "--rules" | "--think-ms" | "--actions" => {
 					let flag = arg.to_string();
 					let value = argv
 						.get(i + 1)
@@ -90,6 +113,9 @@ Options:\n\
 								value.parse::<u64>().map_err(|_| {
 									format!("invalid value '{value}' for --think-ms, expected an integer")
 								})?;
+						}
+						"--actions" => {
+							config.actions = parse_choice(value, "--actions", &[1, 2])?;
 						}
 						_ => unreachable!(),
 					}
@@ -177,6 +203,8 @@ mod tests {
 		assert_eq!(config.board_size, 5);
 		assert_eq!(config.rules, Rules::Scored);
 		assert_eq!(config.think_ms, 500);
+		assert_eq!(config.actions, 1);
+		assert!(config.opening_handicap);
 	}
 
 	#[test]
@@ -189,6 +217,7 @@ mod tests {
 		assert_eq!(rs.board_size, 5);
 		assert_eq!(rs.scored_mode, true);
 		assert_eq!(rs.add_bank_size, 5);
+		assert_eq!(rs.actions_per_turn, 1);
 
 		config.board_size = 7;
 		let rs = config.rule_set();
@@ -201,6 +230,19 @@ mod tests {
 		assert_eq!(rs.board_size, 5);
 		assert_eq!(rs.scored_mode, false);
 		assert_eq!(rs.add_bank_size, 100);
+		assert_eq!(rs.actions_per_turn, 1);
+
+		config.rules = Rules::Scored;
+		config.board_size = 5;
+		config.actions = 2;
+		let rs = config.rule_set();
+		assert_eq!(rs.actions_per_turn, 2);
+		assert!(rs.opening_handicap);
+		assert_eq!(rs.scored_mode, true);
+
+		config.opening_handicap = false;
+		let rs = config.rule_set();
+		assert!(!rs.opening_handicap);
 	}
 
 	#[test]
@@ -244,5 +286,23 @@ mod tests {
 	fn test_parse_missing_rules_value() {
 		let err = GameConfig::parse_args(["apa-kan", "--rules"]).unwrap_err();
 		assert!(err.contains("missing value for --rules"), "{err}");
+	}
+
+	#[test]
+	fn test_parse_two_action_flags() {
+		let config = GameConfig::parse_args([
+			"apa-kan",
+			"--bot",
+			"ologbon",
+			"--actions",
+			"2",
+			"--no-opening-handicap",
+		])
+		.expect("valid two-action args");
+		assert_eq!(config.actions, 2);
+		assert!(!config.opening_handicap);
+		let rs = config.rule_set();
+		assert_eq!(rs.actions_per_turn, 2);
+		assert!(!rs.opening_handicap);
 	}
 }

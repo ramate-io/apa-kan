@@ -40,7 +40,7 @@ pub fn generate_legal_actions(game: &Game) -> Vec<Action> {
 	actions.extend(generate_add_actions(game, player));
 	actions.extend(generate_move_actions(game, player));
 
-	if actions.is_empty() && game.rule_set.scored_mode {
+	if game.rule_set.scored_mode && (actions.is_empty() || game.rule_set.actions_per_turn > 1) {
 		actions.push(Action::pass(player));
 	}
 
@@ -204,6 +204,24 @@ fn can_cross_edge(
 	effective_weight >= mover_edge_weight
 }
 
+fn has_legal_add_square(game: &Game) -> bool {
+	let max = game.board.size() as i8;
+	for row in 0..max {
+		for col in 0..max {
+			let pos = Position::new(row, col);
+			let is_legal_position = if game.rule_set.edge_add_only {
+				game.board.is_edge(pos) && game.board.is_empty(pos)
+			} else {
+				game.board.is_valid(pos) && game.board.is_empty(pos)
+			};
+			if is_legal_position {
+				return true;
+			}
+		}
+	}
+	false
+}
+
 pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 	if !game.stack(player).is_empty() {
 		if game.rule_set.add_bank {
@@ -211,35 +229,11 @@ pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 				Player::One => game.add_bank_p1,
 				Player::Two => game.add_bank_p2,
 			};
-			if add_bank > 0 {
-				for row in 0..5 {
-					for col in 0..5 {
-						let pos = Position::new(row, col);
-						let is_legal_position = if game.rule_set.edge_add_only {
-							game.board.is_edge(pos) && game.board.is_empty(pos)
-						} else {
-							game.board.is_valid(pos) && game.board.is_empty(pos)
-						};
-						if is_legal_position {
-							return true;
-						}
-					}
-				}
+			if add_bank > 0 && has_legal_add_square(game) {
+				return true;
 			}
-		} else {
-			for row in 0..5 {
-				for col in 0..5 {
-					let pos = Position::new(row, col);
-					let is_legal_position = if game.rule_set.edge_add_only {
-						game.board.is_edge(pos) && game.board.is_empty(pos)
-					} else {
-						game.board.is_valid(pos) && game.board.is_empty(pos)
-					};
-					if is_legal_position {
-						return true;
-					}
-				}
-			}
+		} else if has_legal_add_square(game) {
+			return true;
 		}
 	}
 
@@ -396,5 +390,24 @@ mod tests {
 			.collect();
 
 		assert!(ccw_rotations.len() > 0, "Should generate rotation=1 moves for CCW tile");
+	}
+
+	#[test]
+	fn test_two_action_scored_includes_pass_even_with_legal_adds() {
+		let one = Game::new_with_rules(crate::game::core::RuleSet::scored());
+		assert!(
+			!generate_legal_actions(&one)
+				.iter()
+				.any(|a| matches!(a.action_type, ActionType::Pass)),
+			"one-action scored must not offer Pass while ADD is legal"
+		);
+
+		let two = Game::new_with_rules(crate::game::core::RuleSet::scored_double());
+		assert!(
+			generate_legal_actions(&two)
+				.iter()
+				.any(|a| matches!(a.action_type, ActionType::Pass)),
+			"two-action scored must offer Pass so the player can end the turn early"
+		);
 	}
 }

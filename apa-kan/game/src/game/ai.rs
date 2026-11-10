@@ -208,7 +208,7 @@ impl AiPlayer {
 						current_depth - 1,
 						alpha,
 						beta,
-						false,
+						game_copy.current_player == game.current_player,
 						game.current_player,
 						&start_time,
 					);
@@ -317,7 +317,7 @@ impl AiPlayer {
 						depth - 1,
 						alpha,
 						beta,
-						false,
+						game_copy.current_player == original_player,
 						original_player,
 						start_time,
 					);
@@ -342,7 +342,7 @@ impl AiPlayer {
 						depth - 1,
 						alpha,
 						beta,
-						true,
+						game_copy.current_player == original_player,
 						original_player,
 						start_time,
 					);
@@ -390,6 +390,7 @@ impl AiPlayer {
 
 		game.current_player.hash(&mut hasher);
 		game.turn_count.hash(&mut hasher);
+		game.actions_this_turn.hash(&mut hasher);
 		game.add_bank_p1.hash(&mut hasher);
 		game.add_bank_p2.hash(&mut hasher);
 

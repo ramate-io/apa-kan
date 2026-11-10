@@ -67,6 +67,7 @@ fn view_fingerprint(
 	use std::hash::{Hash, Hasher};
 	let mut h = std::collections::hash_map::DefaultHasher::new();
 	game.0.turn_count.hash(&mut h);
+	game.0.actions_this_turn.hash(&mut h);
 	game.0.current_player.hash(&mut h);
 	game.0.add_bank_p1.hash(&mut h);
 	game.0.add_bank_p2.hash(&mut h);

@@ -627,6 +627,8 @@ fn main() {
 				scored_mode: false,
 				board_size: 5,
 				stack_size: 11,
+				actions_per_turn: 1,
+				opening_handicap: false,
 			},
 		),
 		("A+B (Rotation + Bank=7)", RuleSet::new()),

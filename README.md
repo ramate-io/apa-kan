@@ -43,6 +43,9 @@ cargo run -p apa-kan -- --bot mcts --rules old
 
 # Play against random bot (Ore)
 cargo run -p apa-kan -- --bot ore
+
+# Two actions per turn (place then back up a matching neighbor)
+cargo run -p apa-kan -- --bot ologbon --actions 2 --rules scored --size 5 --think-ms 500
 ```
 
 **Available options:**
@@ -50,6 +53,8 @@ cargo run -p apa-kan -- --bot ore
 - `--seat <1|2>` Human player's seat (default: 1)
 - `--size <5|7>` Board size (default: 5)
 - `--rules <scored|old>` Rule set (default: scored). The space is required (`--rules scored`, not `--rulesscored`).
+- `--actions <1|2>` Actions per turn (default: 1). `2` uses the two-action constructors; existing one-action rulesets stay the default.
+- `--no-opening-handicap` Two-action only: Player One's first turn also gets two actions (default: first turn is one action).
 - `--think-ms <n>` Bot think time in milliseconds (default: 500)
 
 Unknown or malformed arguments print an error and usage, then exit with a non-zero status.
@@ -58,9 +63,10 @@ Unknown or malformed arguments print an error and usage, then exit with a non-ze
 - On your turn, green **ADD** markers show legal placement squares. Click one, then click a tile from your bench (bottom of the screen).
 - Click one of your tiles on the board to see purple **MOVE** destinations. Press `R` to rotate, then click a destination.
 - Both benches stay visible: yours at the bottom, the opponent's at the top, with edge colors and P1/P2 labels.
-- When it's your turn and you have no legal moves in scored mode, press `P` or the Pass button
+- When it's your turn and you have no legal moves in scored mode, press `P` or the Pass button. In two-action scored games you can also Pass to skip remaining actions.
 - Each action is described on the **Last move** line and printed to stdout. If tiles are removed, the log names whose tile, where, and why (mismatch). A mismatched ADD next to your only tile can remove **both** tiles — that is the current rule, not a UI bug.
-- Status display shows: whose turn, tile counts, ADD banks remaining, and turn number
+- Status display shows: whose turn, tile counts, ADD banks remaining, and turn number. Two-action games also show `action 1 of 2`.
+- Two-action variant: you may ADD or MOVE twice before the opponent replies. Removals still run after each action, so a second ADD can back up a new tile. Passing ends the whole turn. See `rfc/rfc-003-001-001-two-action-turns/README.md`.
 
 Build for release:
 

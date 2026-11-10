@@ -184,7 +184,8 @@ fn try_pass(game: &mut GameResource, config: &GameConfig, input: &mut InputState
 	if !game.0.rule_set.scored_mode {
 		return;
 	}
-	if has_legal_add_or_move(&game.0, game.0.current_player) {
+	let can_pass_with_moves = game.0.rule_set.actions_per_turn > 1;
+	if !can_pass_with_moves && has_legal_add_or_move(&game.0, game.0.current_player) {
 		return;
 	}
 	let action = Action::pass(game.0.current_player);
@@ -246,7 +247,19 @@ fn update_hud(
 	let turn_line = match game.0.state {
 		crate::game::core::GameState::InProgress => {
 			if bot.thinking {
-				format!("Bot thinking...  ({})", actor_label(&config, game.0.current_player))
+				let action_bit = if game.0.rule_set.actions_per_turn > 1 {
+					format!(
+						", action {} of {}",
+						game.0.action_number_this_turn(),
+						game.0.actions_allowed_this_turn()
+					)
+				} else {
+					String::new()
+				};
+				format!(
+					"Bot thinking...  ({}{action_bit})",
+					actor_label(&config, game.0.current_player)
+				)
 			} else if !has_legal_add_or_move(&game.0, game.0.current_player)
 				&& game.0.rule_set.scored_mode
 				&& is_human_turn(&config, game.0.current_player)
@@ -263,7 +276,20 @@ fn update_hud(
 					Selection::MoveTile { .. } => " | click a MOVE square (R rotates)".to_string(),
 					Selection::None => String::new(),
 				};
-				format!("{} to play{hint}", actor_label(&config, game.0.current_player))
+				if game.0.rule_set.actions_per_turn > 1 {
+					let n = game.0.action_number_this_turn();
+					let allowed = game.0.actions_allowed_this_turn();
+					if is_human_turn(&config, game.0.current_player) {
+						format!("Your turn, action {n} of {allowed}{hint}")
+					} else {
+						format!(
+							"{} to play, action {n} of {allowed}{hint}",
+							actor_label(&config, game.0.current_player)
+						)
+					}
+				} else {
+					format!("{} to play{hint}", actor_label(&config, game.0.current_player))
+				}
 			}
 		}
 		crate::game::core::GameState::Won(player) => {
@@ -306,7 +332,8 @@ fn update_hud(
 		&& !game.0.is_game_over()
 		&& !bot.thinking
 		&& is_human_turn(&config, game.0.current_player)
-		&& !has_legal_add_or_move(&game.0, game.0.current_player);
+		&& (game.0.rule_set.actions_per_turn > 1
+			|| !has_legal_add_or_move(&game.0, game.0.current_player));
 
 	if show_pass && pass_btn.is_empty() {
 		spawn_pass_button(&mut commands);

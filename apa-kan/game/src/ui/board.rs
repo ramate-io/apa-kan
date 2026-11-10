@@ -108,6 +108,7 @@ fn check_bot_turn(
 	let game_clone = game.0.clone();
 	let think_time = config.think_time();
 	let task = AsyncComputeTaskPool::get().spawn(async move {
+		let started = std::time::Instant::now();
 		let ai = AiPlayer::new(AiConfig {
 			depth: 3,
 			bot_type,
@@ -118,8 +119,15 @@ fn check_bot_turn(
 			mcts_exploration: 1.41,
 			mcts_rollout_depth: 20,
 		});
-		ai.choose_action(&game_clone)
-			.unwrap_or_else(|| Action::pass(game_clone.current_player))
+		let action = ai
+			.choose_action(&game_clone)
+			.unwrap_or_else(|| Action::pass(game_clone.current_player));
+		if let Some(remaining) = think_time.checked_sub(started.elapsed()) {
+			if remaining > std::time::Duration::from_millis(0) {
+				std::thread::sleep(remaining);
+			}
+		}
+		action
 	});
 	bot_state.task = Some(task);
 }
