@@ -1,9 +1,9 @@
 Olusare vs Ologbon
 Games: 10
-First seat wins: 0 (0.0%)
-Second seat wins: 10
+First seat wins: 1 (10.0%)
+Second seat wins: 9
 Draws: 0
-95% CI: [-0.0%, 27.8%]
-MOVE%: 0.00%
-Captures/game: 7.90
-Unique outcomes: 1
+95% CI: [1.8%, 40.4%]
+MOVE%: 4.35%
+Captures/game: 2.80
+Unique outcomes: 3

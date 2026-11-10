@@ -1,9 +1,9 @@
 Ore vs Ore
 Games: 10
-First seat wins: 3 (30.0%)
-Second seat wins: 7
+First seat wins: 4 (40.0%)
+Second seat wins: 6
 Draws: 0
-95% CI: [10.8%, 60.3%]
-MOVE%: 8.33%
-Captures/game: 4.80
+95% CI: [16.8%, 68.7%]
+MOVE%: 16.67%
+Captures/game: 7.40
 Unique outcomes: 6

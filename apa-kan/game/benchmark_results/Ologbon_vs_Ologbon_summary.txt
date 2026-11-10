@@ -1,9 +1,9 @@
 Ologbon vs Ologbon
 Games: 10
 First seat wins: 0 (0.0%)
-Second seat wins: 10
-Draws: 0
-95% CI: [-0.0%, 27.8%]
-MOVE%: 0.00%
-Captures/game: 8.40
-Unique outcomes: 2
+Second seat wins: 9
+Draws: 1
+95% CI: [0.0%, 29.9%]
+MOVE%: 41.80%
+Captures/game: 2.80
+Unique outcomes: 3

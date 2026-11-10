@@ -4,6 +4,6 @@ First seat wins: 9 (90.0%)
 Second seat wins: 1
 Draws: 0
 95% CI: [59.6%, 98.2%]
-MOVE%: 28.10%
-Captures/game: 6.90
-Unique outcomes: 9
+MOVE%: 50.89%
+Captures/game: 7.00
+Unique outcomes: 8

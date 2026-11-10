@@ -1,9 +1,9 @@
 Olusare vs Mcts
 Games: 10
-First seat wins: 9 (90.0%)
-Second seat wins: 1
+First seat wins: 8 (80.0%)
+Second seat wins: 2
 Draws: 0
-95% CI: [59.6%, 98.2%]
-MOVE%: 36.05%
-Captures/game: 8.10
+95% CI: [49.0%, 94.3%]
+MOVE%: 39.23%
+Captures/game: 6.10
 Unique outcomes: 7

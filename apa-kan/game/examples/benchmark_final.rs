@@ -498,7 +498,7 @@ fn run_pairing(
 fn main() {
 	let start_time = Instant::now();
 	let time_budget = Duration::from_millis(500);
-	let games_per_side = 5;
+	let games_per_side = 10;
 	let base_seed = 42;
 
 	let output_dir = Path::new("benchmark_results");
@@ -516,7 +516,7 @@ fn main() {
 		("5x5-old", RuleSet::old()),
 	];
 
-	let bots = vec![BotType::Olusare, BotType::Ologbon, BotType::Mcts];
+	let bots = vec![BotType::Ore, BotType::Olusare, BotType::Ologbon, BotType::Mcts];
 
 	for (rule_name, rule_set) in rule_sets {
 		println!("\n=== {} ===", rule_name);

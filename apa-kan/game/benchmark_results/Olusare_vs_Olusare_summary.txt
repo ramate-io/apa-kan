@@ -1,9 +1,9 @@
 Olusare vs Olusare
 Games: 10
-First seat wins: 0 (0.0%)
-Second seat wins: 10
+First seat wins: 2 (20.0%)
+Second seat wins: 8
 Draws: 0
-95% CI: [-0.0%, 27.8%]
-MOVE%: 0.00%
-Captures/game: 8.40
-Unique outcomes: 1
+95% CI: [5.7%, 51.0%]
+MOVE%: 11.29%
+Captures/game: 3.30
+Unique outcomes: 5

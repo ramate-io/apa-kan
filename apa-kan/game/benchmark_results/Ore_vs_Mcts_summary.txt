@@ -1,9 +1,9 @@
 Ore vs Mcts
 Games: 10
-First seat wins: 0 (0.0%)
-Second seat wins: 10
+First seat wins: 1 (10.0%)
+Second seat wins: 9
 Draws: 0
-95% CI: [-0.0%, 27.8%]
-MOVE%: 16.67%
-Captures/game: 5.40
-Unique outcomes: 5
+95% CI: [1.8%, 40.4%]
+MOVE%: 19.71%
+Captures/game: 8.20
+Unique outcomes: 7

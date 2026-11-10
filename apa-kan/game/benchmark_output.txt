@@ -1,0 +1,622 @@
+warning: unused import: `rand::seq::SliceRandom`
+   --> apa-kan/game/src/game/ai.rs:588:7
+    |
+588 |         use rand::seq::SliceRandom;
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `rand::Rng`
+   --> apa-kan/game/src/game/core.rs:456:7
+    |
+456 |         use rand::Rng;
+    |             ^^^^^^^^^
+
+warning: unused import: `Tile`
+ --> apa-kan/game/src/game/rules.rs:2:54
+  |
+2 | use super::core::{Game, GameState, Player, Position, Tile};
+  |                                                      ^^^^
+
+warning: unused import: `Position`
+ --> apa-kan/game/src/ui/tiles.rs:1:45
+  |
+1 | use crate::game::core::{Color as TileColor, Position, Tile};
+  |                                             ^^^^^^^^
+
+warning: unused variable: `neighbor_tile`
+   --> apa-kan/game/src/game/actions.rs:163:16
+    |
+163 |             if let Some(neighbor_tile) = game.board.get(neighbor_pos) {
+    |                         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_neighbor_tile`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable `best_score` is assigned to, but never used
+   --> apa-kan/game/src/game/ai.rs:178:7
+    |
+178 |         let mut best_score = i32::MIN;
+    |             ^^^^^^^^^^^^^^
+    |
+    = note: consider using `_best_score` instead
+
+warning: value assigned to `best_score` is never read
+   --> apa-kan/game/src/game/ai.rs:230:5
+    |
+230 |                 best_score = depth_best_score;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `player` is never read
+  --> apa-kan/game/src/game/ai.rs:72:2
+   |
+66 | struct MctsNode {
+   |        -------- field in this struct
+...
+72 |     player: Player,
+   |     ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `position` is never read
+  --> apa-kan/game/src/ui/board.rs:20:2
+   |
+19 | struct BoardSquare {
+   |        ----------- field in this struct
+20 |     position: Position,
+   |     ^^^^^^^^
+
+warning: field `player` is never read
+  --> apa-kan/game/src/ui/input.rs:31:14
+   |
+31 |     StackTile { player: Player, index: usize },
+   |     ---------   ^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `Selection` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `original_north_color` is never read
+  --> apa-kan/game/src/ui/input.rs:40:2
+   |
+36 | struct RotationMode {
+   |        ------------ field in this struct
+...
+40 |     original_north_color: crate::game::core::Color,
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `RotationMode` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `tile_id` is never read
+  --> apa-kan/game/src/ui/tiles.rs:17:2
+   |
+16 | struct TileSprite {
+   |        ---------- field in this struct
+17 |     tile_id: u32,
+   |     ^^^^^^^
+
+warning: struct `StackDisplay` is never constructed
+  --> apa-kan/game/src/ui/tiles.rs:21:8
+   |
+21 | struct StackDisplay;
+   |        ^^^^^^^^^^^^
+
+warning: `apa-kan` (lib) generated 13 warnings (run `cargo fix --lib -p apa-kan` to apply 5 suggestions)
+warning: fields `nodes_searched` and `duration` are never read
+  --> apa-kan/game/examples/benchmark_final.rs:47:2
+   |
+46 | struct MoveProfile {
+   |        ----------- fields in this struct
+47 |     nodes_searched: u64,
+   |     ^^^^^^^^^^^^^^
+...
+50 |     duration: Duration,
+   |     ^^^^^^^^
+   |
+   = note: `MoveProfile` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `avg_nodes_per_move` is never used
+  --> apa-kan/game/examples/benchmark_final.rs:61:5
+   |
+60 | impl GameProfile {
+   | ---------------- method in this implementation
+61 |     fn avg_nodes_per_move(&self) -> f64 {
+   |        ^^^^^^^^^^^^^^^^^^
+
+warning: field `reason` is never read
+   --> apa-kan/game/examples/benchmark_final.rs:101:2
+    |
+ 97 | struct MatchResult {
+    |        ----------- field in this struct
+...
+101 |     reason: EndReason,
+    |     ^^^^^^
+    |
+    = note: `MatchResult` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: method `avg_nodes_per_move` is never used
+   --> apa-kan/game/examples/benchmark_final.rs:172:5
+    |
+122 | impl PairingStats {
+    | ----------------- method in this implementation
+...
+172 |     fn avg_nodes_per_move(&self) -> f64 {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: `apa-kan` (example "benchmark_final") generated 4 warnings
+    Finished `release` profile [optimized] target(s) in 0.20s
+     Running `/workspace/target/release/examples/benchmark_final`
+Final Benchmark: Scored Mode Evaluation
+========================================
+Time budget: 500ms/move
+Games per side: 10
+
+
+=== 5x5-scored ===
+Board: 5x5, Bank: 5, Scored: true
+Running 10 pairings in parallel...
+
+  Running Ore vs Ore (10 games/side)...
+  Running Mcts vs Mcts (10 games/side)...
+  Running Ore vs Ologbon (10 games/side)...
+  Running Ore vs Olusare (10 games/side)...
+  Running Ore vs Mcts (10 games/side)...
+  Running Olusare vs Mcts (10 games/side)...
+  Running Olusare vs Ologbon (10 games/side)...
+  Running Ologbon vs Ologbon (10 games/side)...
+  Running Ologbon vs Mcts (10 games/side)...
+  Running Olusare vs Olusare (10 games/side)...
+
+--- 5x5-scored Results ---
+
+
+Mcts vs Mcts:
+  Games: 10
+  First seat wins: 3 (37.5%)
+  Second seat wins: 5 (62.5%)
+  Draws: 2
+  First seat win rate 95% CI: [13.7%, 69.4%]
+  MOVE%: 48.11%
+  Captures/game: 11.50
+  Avg turns/game: 32.7
+  Unique outcomes: 7
+  Branching factor: ADD=0.0, MOVE=0.0
+  Avg MCTS iterations/move: 95908
+
+Ologbon vs Mcts:
+  Games: 10
+  First seat wins: 10 (100.0%)
+  Second seat wins: 0 (0.0%)
+  Draws: 0
+  First seat win rate 95% CI: [72.2%, 100.0%]
+  MOVE%: 39.56%
+  Captures/game: 8.80
+  Avg turns/game: 32.2
+  Unique outcomes: 7
+  Branching factor: ADD=152867.6, MOVE=25180.0
+  Avg MCTS iterations/move: 87731
+  Avg effective depth (minimax): 5.3
+
+Ologbon vs Ologbon:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 10 (100.0%)
+  Draws: 0
+  First seat win rate 95% CI: [-0.0%, 27.8%]
+  MOVE%: 3.51%
+  Captures/game: 6.60
+  Avg turns/game: 21.7
+  Unique outcomes: 2
+  Branching factor: ADD=186090.9, MOVE=15172.2
+  Avg MCTS iterations/move: 24749
+  Avg effective depth (minimax): 5.6
+
+Olusare vs Mcts:
+  Games: 10
+  First seat wins: 9 (90.0%)
+  Second seat wins: 1 (10.0%)
+  Draws: 0
+  First seat win rate 95% CI: [59.6%, 98.2%]
+  MOVE%: 35.29%
+  Captures/game: 5.30
+  Avg turns/game: 21.2
+  Unique outcomes: 9
+  Branching factor: ADD=87526.1, MOVE=13008.4
+  Avg MCTS iterations/move: 91232
+  Avg effective depth (minimax): 5.5
+
+Olusare vs Ologbon:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 10 (100.0%)
+  Draws: 0
+  First seat win rate 95% CI: [-0.0%, 27.8%]
+  MOVE%: 0.00%
+  Captures/game: 6.00
+  Avg turns/game: 21.0
+  Unique outcomes: 1
+  Branching factor: ADD=151480.7, MOVE=10067.3
+  Avg MCTS iterations/move: 22905
+  Avg effective depth (minimax): 5.6
+
+Olusare vs Olusare:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 8 (100.0%)
+  Draws: 2
+  First seat win rate 95% CI: [0.0%, 32.4%]
+  MOVE%: 0.00%
+  Captures/game: 4.70
+  Avg turns/game: 21.6
+  Unique outcomes: 2
+  Branching factor: ADD=98980.3, MOVE=8189.5
+  Avg MCTS iterations/move: 17973
+  Avg effective depth (minimax): 5.7
+
+Ore vs Mcts:
+  Games: 10
+  First seat wins: 1 (10.0%)
+  Second seat wins: 9 (90.0%)
+  Draws: 0
+  First seat win rate 95% CI: [1.8%, 40.4%]
+  MOVE%: 15.38%
+  Captures/game: 6.20
+  Avg turns/game: 23.6
+  Unique outcomes: 6
+  Branching factor: ADD=0.0, MOVE=0.0
+  Avg MCTS iterations/move: 48647
+
+Ore vs Ologbon:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 10 (100.0%)
+  Draws: 0
+  First seat win rate 95% CI: [-0.0%, 27.8%]
+  MOVE%: 2.65%
+  Captures/game: 2.30
+  Avg turns/game: 14.2
+  Unique outcomes: 6
+  Branching factor: ADD=144403.5, MOVE=9813.7
+  Avg MCTS iterations/move: 25776
+  Avg effective depth (minimax): 2.8
+
+Ore vs Olusare:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 10 (100.0%)
+  Draws: 0
+  First seat win rate 95% CI: [-0.0%, 27.8%]
+  MOVE%: 8.33%
+  Captures/game: 4.10
+  Avg turns/game: 22.0
+  Unique outcomes: 4
+  Branching factor: ADD=47324.7, MOVE=3058.5
+  Avg MCTS iterations/move: 9267
+  Avg effective depth (minimax): 3.2
+
+Ore vs Ore:
+  Games: 10
+  First seat wins: 5 (62.5%)
+  Second seat wins: 3 (37.5%)
+  Draws: 2
+  First seat win rate 95% CI: [30.6%, 86.3%]
+  MOVE%: 11.29%
+  Captures/game: 5.00
+  Avg turns/game: 23.9
+  Unique outcomes: 7
+  Branching factor: ADD=0.0, MOVE=0.0
+
+=== 7x7-scored ===
+Board: 7x7, Bank: 5, Scored: true
+Running 10 pairings in parallel...
+
+  Running Ore vs Ore (10 games/side)...
+  Running Ore vs Olusare (10 games/side)...
+  Running Ologbon vs Mcts (10 games/side)...
+  Running Ore vs Ologbon (10 games/side)...
+  Running Ore vs Mcts (10 games/side)...
+  Running Ologbon vs Ologbon (10 games/side)...
+  Running Olusare vs Mcts (10 games/side)...
+  Running Olusare vs Olusare (10 games/side)...
+  Running Mcts vs Mcts (10 games/side)...
+  Running Olusare vs Ologbon (10 games/side)...
+
+--- 7x7-scored Results ---
+
+
+Mcts vs Mcts:
+  Games: 10
+  First seat wins: 4 (50.0%)
+  Second seat wins: 4 (50.0%)
+  Draws: 2
+  First seat win rate 95% CI: [21.5%, 78.5%]
+  MOVE%: 5.98%
+  Captures/game: 1.90
+  Avg turns/game: 17.7
+  Unique outcomes: 9
+  Branching factor: ADD=0.0, MOVE=0.0
+  Avg MCTS iterations/move: 2718
+
+Ologbon vs Mcts:
+  Games: 10
+  First seat wins: 8 (100.0%)
+  Second seat wins: 0 (0.0%)
+  Draws: 2
+  First seat win rate 95% CI: [67.6%, 100.0%]
+  MOVE%: 58.02%
+  Captures/game: 1.90
+  Avg turns/game: 46.7
+  Unique outcomes: 7
+  Branching factor: ADD=144252.3, MOVE=8877.0
+  Avg MCTS iterations/move: 27002
+  Avg effective depth (minimax): 3.1
+
+Ologbon vs Ologbon:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 1 (100.0%)
+  Draws: 9
+  First seat win rate 95% CI: [0.0%, 79.3%]
+  MOVE%: 1.79%
+  Captures/game: 10.20
+  Avg turns/game: 23.9
+  Unique outcomes: 3
+  Branching factor: ADD=318229.7, MOVE=10395.6
+  Avg MCTS iterations/move: 50795
+  Avg effective depth (minimax): 6.1
+
+Olusare vs Mcts:
+  Games: 10
+  First seat wins: 10 (100.0%)
+  Second seat wins: 0 (0.0%)
+  Draws: 0
+  First seat win rate 95% CI: [72.2%, 100.0%]
+  MOVE%: 68.75%
+  Captures/game: 1.00
+  Avg turns/game: 61.5
+  Unique outcomes: 6
+  Branching factor: ADD=82098.2, MOVE=9812.1
+  Avg MCTS iterations/move: 25901
+  Avg effective depth (minimax): 8.6
+
+Olusare vs Ologbon:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 1 (100.0%)
+  Draws: 9
+  First seat win rate 95% CI: [0.0%, 79.3%]
+  MOVE%: 0.90%
+  Captures/game: 10.10
+  Avg turns/game: 23.9
+  Unique outcomes: 3
+  Branching factor: ADD=219016.4, MOVE=6977.0
+  Avg MCTS iterations/move: 38899
+  Avg effective depth (minimax): 9.1
+
+Olusare vs Olusare:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 7 (100.0%)
+  Draws: 3
+  First seat win rate 95% CI: [0.0%, 35.4%]
+  MOVE%: 79.89%
+  Captures/game: 7.10
+  Avg turns/game: 67.3
+  Unique outcomes: 7
+  Branching factor: ADD=117501.9, MOVE=25979.0
+  Avg MCTS iterations/move: 50940
+  Avg effective depth (minimax): 12.7
+
+Ore vs Mcts:
+  Games: 10
+  First seat wins: 3 (37.5%)
+  Second seat wins: 5 (62.5%)
+  Draws: 2
+  First seat win rate 95% CI: [13.7%, 69.4%]
+  MOVE%: 1.79%
+  Captures/game: 0.60
+  Avg turns/game: 16.2
+  Unique outcomes: 7
+  Branching factor: ADD=0.0, MOVE=0.0
+  Avg MCTS iterations/move: 450
+
+Ore vs Ologbon:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 8 (100.0%)
+  Draws: 2
+  First seat win rate 95% CI: [0.0%, 32.4%]
+  MOVE%: 57.03%
+  Captures/game: 1.30
+  Avg turns/game: 45.8
+  Unique outcomes: 8
+  Branching factor: ADD=138675.4, MOVE=6690.9
+  Avg MCTS iterations/move: 23219
+  Avg effective depth (minimax): 2.7
+
+Ore vs Olusare:
+  Games: 10
+  First seat wins: 1 (10.0%)
+  Second seat wins: 9 (90.0%)
+  Draws: 0
+  First seat win rate 95% CI: [1.8%, 40.4%]
+  MOVE%: 78.85%
+  Captures/game: 2.50
+  Avg turns/game: 99.6
+  Unique outcomes: 2
+  Branching factor: ADD=53354.0, MOVE=11023.1
+  Avg MCTS iterations/move: 25501
+  Avg effective depth (minimax): 9.6
+
+Ore vs Ore:
+  Games: 10
+  First seat wins: 1 (14.3%)
+  Second seat wins: 6 (85.7%)
+  Draws: 3
+  First seat win rate 95% CI: [2.6%, 51.3%]
+  MOVE%: 5.17%
+  Captures/game: 1.50
+  Avg turns/game: 18.7
+  Unique outcomes: 10
+  Branching factor: ADD=0.0, MOVE=0.0
+
+=== 5x5-old ===
+Board: 5x5, Bank: 100, Scored: false
+Running 10 pairings in parallel...
+
+  Running Ore vs Olusare (10 games/side)...
+  Running Ore vs Ologbon (10 games/side)...
+  Running Ore vs Mcts (10 games/side)...
+  Running Ologbon vs Mcts (10 games/side)...
+  Running Ore vs Ore (10 games/side)...
+  Running Mcts vs Mcts (10 games/side)...
+  Running Olusare vs Olusare (10 games/side)...
+  Running Olusare vs Ologbon (10 games/side)...
+  Running Olusare vs Mcts (10 games/side)...
+  Running Ologbon vs Ologbon (10 games/side)...
+
+--- 5x5-old Results ---
+
+
+Mcts vs Mcts:
+  Games: 10
+  First seat wins: 3 (30.0%)
+  Second seat wins: 7 (70.0%)
+  Draws: 0
+  First seat win rate 95% CI: [10.8%, 60.3%]
+  MOVE%: 51.33%
+  Captures/game: 11.30
+  Avg turns/game: 32.3
+  Unique outcomes: 9
+  Branching factor: ADD=0.0, MOVE=0.0
+  Avg MCTS iterations/move: 78007
+
+Ologbon vs Mcts:
+  Games: 10
+  First seat wins: 9 (90.0%)
+  Second seat wins: 1 (10.0%)
+  Draws: 0
+  First seat win rate 95% CI: [59.6%, 98.2%]
+  MOVE%: 50.89%
+  Captures/game: 7.00
+  Avg turns/game: 33.0
+  Unique outcomes: 8
+  Branching factor: ADD=71643.6, MOVE=23314.7
+  Avg MCTS iterations/move: 42051
+  Avg effective depth (minimax): 3.5
+
+Ologbon vs Ologbon:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 9 (100.0%)
+  Draws: 1
+  First seat win rate 95% CI: [0.0%, 29.9%]
+  MOVE%: 41.80%
+  Captures/game: 2.80
+  Avg turns/game: 29.1
+  Unique outcomes: 3
+  Branching factor: ADD=201849.7, MOVE=38325.6
+  Avg MCTS iterations/move: 29332
+  Avg effective depth (minimax): 5.2
+
+Olusare vs Mcts:
+  Games: 10
+  First seat wins: 8 (80.0%)
+  Second seat wins: 2 (20.0%)
+  Draws: 0
+  First seat win rate 95% CI: [49.0%, 94.3%]
+  MOVE%: 39.23%
+  Captures/game: 6.10
+  Avg turns/game: 28.6
+  Unique outcomes: 7
+  Branching factor: ADD=89720.3, MOVE=26088.7
+  Avg MCTS iterations/move: 46286
+  Avg effective depth (minimax): 3.0
+
+Olusare vs Ologbon:
+  Games: 10
+  First seat wins: 1 (10.0%)
+  Second seat wins: 9 (90.0%)
+  Draws: 0
+  First seat win rate 95% CI: [1.8%, 40.4%]
+  MOVE%: 4.35%
+  Captures/game: 2.80
+  Avg turns/game: 22.0
+  Unique outcomes: 3
+  Branching factor: ADD=193286.9, MOVE=27128.4
+  Avg MCTS iterations/move: 23152
+  Avg effective depth (minimax): 4.4
+
+Olusare vs Olusare:
+  Games: 10
+  First seat wins: 2 (20.0%)
+  Second seat wins: 8 (80.0%)
+  Draws: 0
+  First seat win rate 95% CI: [5.7%, 51.0%]
+  MOVE%: 11.29%
+  Captures/game: 3.30
+  Avg turns/game: 23.0
+  Unique outcomes: 5
+  Branching factor: ADD=182952.2, MOVE=23576.5
+  Avg MCTS iterations/move: 17316
+  Avg effective depth (minimax): 4.2
+
+Ore vs Mcts:
+  Games: 10
+  First seat wins: 1 (10.0%)
+  Second seat wins: 9 (90.0%)
+  Draws: 0
+  First seat win rate 95% CI: [1.8%, 40.4%]
+  MOVE%: 19.71%
+  Captures/game: 8.20
+  Avg turns/game: 23.6
+  Unique outcomes: 7
+  Branching factor: ADD=0.0, MOVE=0.0
+  Avg MCTS iterations/move: 18933
+
+Ore vs Ologbon:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 10 (100.0%)
+  Draws: 0
+  First seat win rate 95% CI: [-0.0%, 27.8%]
+  MOVE%: 6.78%
+  Captures/game: 4.50
+  Avg turns/game: 21.8
+  Unique outcomes: 3
+  Branching factor: ADD=61197.2, MOVE=9096.0
+  Avg MCTS iterations/move: 8803
+  Avg effective depth (minimax): 3.0
+
+Ore vs Olusare:
+  Games: 10
+  First seat wins: 0 (0.0%)
+  Second seat wins: 10 (100.0%)
+  Draws: 0
+  First seat win rate 95% CI: [-0.0%, 27.8%]
+  MOVE%: 9.09%
+  Captures/game: 5.20
+  Avg turns/game: 22.1
+  Unique outcomes: 3
+  Branching factor: ADD=74792.2, MOVE=8415.3
+  Avg MCTS iterations/move: 8084
+  Avg effective depth (minimax): 2.9
+
+Ore vs Ore:
+  Games: 10
+  First seat wins: 4 (40.0%)
+  Second seat wins: 6 (60.0%)
+  Draws: 0
+  First seat win rate 95% CI: [16.8%, 68.7%]
+  MOVE%: 16.67%
+  Captures/game: 7.40
+  Avg turns/game: 23.7
+  Unique outcomes: 6
+  Branching factor: ADD=0.0, MOVE=0.0
+
+
+Total time: 615.20s
+Results written to: "benchmark_results"
