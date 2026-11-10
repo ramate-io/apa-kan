@@ -47,19 +47,19 @@ fn setup_board(mut commands: Commands, game: Res<GameResource>) {
 			commands.spawn((
 				BoardEntity,
 				BoardSquare { position: pos },
-			Sprite {
-				color,
-				custom_size: Some(Vec2::new(square_size - 2.0, square_size - 2.0)),
-				..default()
-			},
+				Sprite {
+					color,
+					custom_size: Some(Vec2::new(square_size - 2.0, square_size - 2.0)),
+					..default()
+				},
 				Transform::from_xyz(x, y, 0.0),
 			));
 
-		if game.0.board.is_corner(pos) {
-			let font_size = (square_size * 0.8).min(40.0);
-			commands.spawn((
-				BoardEntity,
-				Text::new("✗"),
+			if game.0.board.is_corner(pos) {
+				let font_size = (square_size * 0.8).min(40.0);
+				commands.spawn((
+					BoardEntity,
+					Text::new("✗"),
 					TextFont { font_size: FontSize::Px(font_size), ..default() },
 					TextColor(Color::srgb(0.5, 0.0, 0.0)),
 					Node {

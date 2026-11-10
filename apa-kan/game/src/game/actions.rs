@@ -69,11 +69,11 @@ fn generate_add_actions(game: &Game, player: Player) -> Vec<Action> {
 		for row in 0..game.board.size() as i8 {
 			for col in 0..game.board.size() as i8 {
 				let pos = Position::new(row, col);
-			let is_legal_position = if game.rule_set.edge_add_only {
-				game.board.is_edge(pos) && game.board.is_empty(pos)
-			} else {
-				game.board.is_valid(pos) && game.board.is_empty(pos)
-			};
+				let is_legal_position = if game.rule_set.edge_add_only {
+					game.board.is_edge(pos) && game.board.is_empty(pos)
+				} else {
+					game.board.is_valid(pos) && game.board.is_empty(pos)
+				};
 
 				if is_legal_position {
 					actions.push(Action::add(player, tile_index, pos));
@@ -161,12 +161,12 @@ fn find_reachable_destinations(
 			visited.insert(neighbor_pos);
 
 			if let Some(neighbor_tile) = game.board.get(neighbor_pos) {
-			if can_cross_edge(game, tile, direction, neighbor_pos) {
-				queue.push_back(neighbor_pos);
+				if can_cross_edge(game, tile, direction, neighbor_pos) {
+					queue.push_back(neighbor_pos);
+				}
+			} else if game.board.is_valid(neighbor_pos) {
+				reachable.push(neighbor_pos);
 			}
-		} else if game.board.is_valid(neighbor_pos) {
-			reachable.push(neighbor_pos);
-		}
 		}
 	}
 
@@ -210,11 +210,11 @@ pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 				for row in 0..5 {
 					for col in 0..5 {
 						let pos = Position::new(row, col);
-			let is_legal_position = if game.rule_set.edge_add_only {
-				game.board.is_edge(pos) && game.board.is_empty(pos)
-			} else {
-				game.board.is_valid(pos) && game.board.is_empty(pos)
-			};
+						let is_legal_position = if game.rule_set.edge_add_only {
+							game.board.is_edge(pos) && game.board.is_empty(pos)
+						} else {
+							game.board.is_valid(pos) && game.board.is_empty(pos)
+						};
 						if is_legal_position {
 							return true;
 						}
@@ -225,11 +225,11 @@ pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 			for row in 0..5 {
 				for col in 0..5 {
 					let pos = Position::new(row, col);
-			let is_legal_position = if game.rule_set.edge_add_only {
-				game.board.is_edge(pos) && game.board.is_empty(pos)
-			} else {
-				game.board.is_valid(pos) && game.board.is_empty(pos)
-			};
+					let is_legal_position = if game.rule_set.edge_add_only {
+						game.board.is_edge(pos) && game.board.is_empty(pos)
+					} else {
+						game.board.is_valid(pos) && game.board.is_empty(pos)
+					};
 					if is_legal_position {
 						return true;
 					}
@@ -243,12 +243,12 @@ pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 			continue;
 		}
 
-	for direction in Direction::all() {
-		let target = pos.neighbor(direction);
-		if game.board.is_valid(target) && game.board.is_empty(target) {
-			return true;
+		for direction in Direction::all() {
+			let target = pos.neighbor(direction);
+			if game.board.is_valid(target) && game.board.is_empty(target) {
+				return true;
+			}
 		}
-	}
 	}
 
 	false

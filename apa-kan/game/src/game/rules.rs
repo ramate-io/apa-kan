@@ -16,10 +16,7 @@ impl Rules {
 		let is_move = matches!(action.action_type, ActionType::Move { .. });
 		let opponent = game.current_player.other();
 		let opponent_tiles_before = if is_move {
-			game.board
-				.tiles()
-				.filter(|(_, tile)| tile.owner == opponent)
-				.count()
+			game.board.tiles().filter(|(_, tile)| tile.owner == opponent).count()
 		} else {
 			0
 		};
@@ -52,15 +49,17 @@ impl Rules {
 		Self::check_and_remove_all_mismatched(game);
 
 		if is_move && game.rule_set.scored_mode {
-			let opponent_tiles_after = game.board
-				.tiles()
-				.filter(|(_, tile)| tile.owner == opponent)
-				.count();
+			let opponent_tiles_after =
+				game.board.tiles().filter(|(_, tile)| tile.owner == opponent).count();
 			let removed = opponent_tiles_before.saturating_sub(opponent_tiles_after);
 			if removed > 0 {
 				match game.current_player {
-					Player::One => game.add_bank_p1 = game.add_bank_p1.saturating_add(removed as u8),
-					Player::Two => game.add_bank_p2 = game.add_bank_p2.saturating_add(removed as u8),
+					Player::One => {
+						game.add_bank_p1 = game.add_bank_p1.saturating_add(removed as u8)
+					}
+					Player::Two => {
+						game.add_bank_p2 = game.add_bank_p2.saturating_add(removed as u8)
+					}
 				}
 			}
 		}
@@ -192,11 +191,11 @@ impl Rules {
 			let mut matches = 0;
 			let mut mismatches = 0;
 
-		for (direction, neighbor_pos) in position.neighbors() {
-			if game.board.is_corner(neighbor_pos) {
-				mismatches += 1;
-				continue;
-			}
+			for (direction, neighbor_pos) in position.neighbors() {
+				if game.board.is_corner(neighbor_pos) {
+					mismatches += 1;
+					continue;
+				}
 
 				if neighbor_pos.row < 0
 					|| neighbor_pos.row >= 5
@@ -257,10 +256,8 @@ impl Rules {
 					continue;
 				}
 
-				let tiles_on_board = game.board
-					.tiles()
-					.filter(|(_, tile)| tile.owner == player)
-					.count();
+				let tiles_on_board =
+					game.board.tiles().filter(|(_, tile)| tile.owner == player).count();
 				if tiles_on_board == 0 {
 					let stack = game.stack(player);
 					let add_bank = match player {
@@ -283,14 +280,8 @@ impl Rules {
 	}
 
 	fn score_game_by_tiles(game: &mut Game) {
-		let p1_tiles = game.board
-			.tiles()
-			.filter(|(_, tile)| tile.owner == Player::One)
-			.count();
-		let p2_tiles = game.board
-			.tiles()
-			.filter(|(_, tile)| tile.owner == Player::Two)
-			.count();
+		let p1_tiles = game.board.tiles().filter(|(_, tile)| tile.owner == Player::One).count();
+		let p2_tiles = game.board.tiles().filter(|(_, tile)| tile.owner == Player::Two).count();
 
 		game.state = match p1_tiles.cmp(&p2_tiles) {
 			std::cmp::Ordering::Greater => GameState::Won(Player::One),
@@ -501,18 +492,18 @@ mod tests {
 		let mut game =
 			Game::new_with_tiles(vec![], vec![make_tile(0, Player::Two, [Color::Maroon; 4])]);
 
-	for row in 0..5 {
-		for col in 0..5 {
-			let pos = Position::new(row, col);
-			if game.board.is_valid(pos) {
-				game.board.place(
-					pos,
-					make_tile(
-						100 + row as u32 * 5 + col as u32,
-						Player::Two,
-						[Color::Maroon; 4],
-					),
-				);
+		for row in 0..5 {
+			for col in 0..5 {
+				let pos = Position::new(row, col);
+				if game.board.is_valid(pos) {
+					game.board.place(
+						pos,
+						make_tile(
+							100 + row as u32 * 5 + col as u32,
+							Player::Two,
+							[Color::Maroon; 4],
+						),
+					);
 				}
 			}
 		}
@@ -692,15 +683,14 @@ mod tests {
 	#[test]
 	fn test_scored_mode_add_bank_from_move_captures() {
 		let mut game = Game::new_with_tiles_and_rules(
-			vec![
-				make_tile(0, Player::One, [Color::Maroon; 4]),
-			],
+			vec![make_tile(0, Player::One, [Color::Maroon; 4])],
 			vec![],
 			RuleSet::scored(),
 		);
 
 		game.board.place(Position::new(0, 1), game.player_one_stack.remove(0));
-		game.board.place(Position::new(1, 1), make_tile(2, Player::Two, [Color::Green; 4]));
+		game.board
+			.place(Position::new(1, 1), make_tile(2, Player::Two, [Color::Green; 4]));
 		game.p1_has_added = true;
 
 		let initial_bank = game.add_bank_p1;
@@ -722,7 +712,8 @@ mod tests {
 			RuleSet::scored(),
 		);
 
-		game.board.place(Position::new(1, 1), make_tile(1, Player::Two, [Color::Green; 4]));
+		game.board
+			.place(Position::new(1, 1), make_tile(1, Player::Two, [Color::Green; 4]));
 
 		let initial_bank = game.add_bank_p1;
 
@@ -742,7 +733,8 @@ mod tests {
 			RuleSet::scored(),
 		);
 
-		game.board.place(Position::new(2, 2), make_tile(0, Player::One, [Color::Maroon; 4]));
+		game.board
+			.place(Position::new(2, 2), make_tile(0, Player::One, [Color::Maroon; 4]));
 		game.p1_has_added = true;
 		game.add_bank_p1 = 0;
 

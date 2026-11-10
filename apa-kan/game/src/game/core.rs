@@ -227,10 +227,7 @@ impl RuleSet {
 	}
 
 	pub fn scored_7x7() -> Self {
-		Self {
-			board_size: 7,
-			..Self::scored()
-		}
+		Self { board_size: 7, ..Self::scored() }
 	}
 
 	pub fn with_bank_size(bank_size: u8) -> Self {
@@ -276,7 +273,6 @@ impl Position {
 	pub fn new(row: i8, col: i8) -> Self {
 		Self { row, col }
 	}
-
 
 	pub fn neighbor(&self, direction: Direction) -> Position {
 		match direction {
