@@ -1,44 +1,65 @@
 //! Bevy 0.19 desktop UI: both benches, ADD/MOVE targeting, last-action log.
 
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::render::view::window::screenshot::{save_to_disk, Capturing, Screenshot};
+use bevy::window::WindowResolution;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
-use crate::game::{Action, Game, GameStatus, Player, Tile, TileColor};
-
-const SCALE: f32 = 210.0;
-const TILE_R: f32 = 22.0;
-const NODE_R: f32 = 8.0;
+use crate::game::{Action, Game, Player, Tile};
+use crate::visual::{self, ArcPaint, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
-	let game = Game::new(cfg.rules, cfg.seed);
+	let screenshot = cfg.screenshot.clone();
+	let game =
+		if screenshot.is_some() { visual::demo_midgame() } else { Game::new(cfg.rules, cfg.seed) };
 	let rng = StdRng::seed_from_u64(cfg.seed ^ 0xA5A5_A5A5);
+	let width = cfg.width;
+	let height = cfg.height;
+	let mut resolution = WindowResolution::new(width, height);
+	resolution.set_scale_factor_override(Some(1.0));
 	App::new()
 		.add_plugins(DefaultPlugins.set(WindowPlugin {
-			primary_window: Some(Window {
-				title: "Apa Kan".into(),
-				resolution: (1280, 900).into(),
-				..default()
-			}),
+			primary_window: Some(Window { title: "Apa Kan".into(), resolution, ..default() }),
 			..default()
 		}))
-		.insert_resource(ClearColor(Color::srgb(0.07, 0.08, 0.10)))
+		.insert_resource(ClearColor(Color::srgb(
+			visual::BG_RGB[0],
+			visual::BG_RGB[1],
+			visual::BG_RGB[2],
+		)))
 		.insert_resource(ConfigRes(cfg))
 		.insert_resource(PlayState {
 			game,
 			selection: Selection::None,
-			log: "Click a spawn then a bench tile to ADD, or click your tile to MOVE.".into(),
+			log: if screenshot.is_some() {
+				"P1 ADD orange w2 d2 at center".into()
+			} else {
+				String::new()
+			},
 			warning: String::new(),
 			last_removals: String::new(),
 			fingerprint: 0,
 		})
 		.insert_resource(RngRes(rng))
 		.insert_resource(BotClock { wait: 0.4 })
+		.insert_resource(UiLayout(ViewLayout::from_window(width as f32, height as f32)))
+		.insert_resource(ShotState {
+			frames: 0,
+			requested_at: 0,
+			requested: false,
+			finished: false,
+		})
 		.add_systems(Startup, setup)
-		.add_systems(Update, (draw_gizmos, handle_click, bot_turn, refresh_view, update_hud))
+		.add_systems(
+			Update,
+			(sync_layout, handle_click, bot_turn, refresh_view, update_hud, screenshot_capture),
+		)
 		.run();
 }
 
@@ -48,6 +69,16 @@ struct ConfigRes(GameConfig);
 impl std::ops::Deref for ConfigRes {
 	type Target = GameConfig;
 	fn deref(&self) -> &GameConfig {
+		&self.0
+	}
+}
+
+#[derive(Resource, Clone)]
+struct UiLayout(ViewLayout);
+
+impl std::ops::Deref for UiLayout {
+	type Target = ViewLayout;
+	fn deref(&self) -> &ViewLayout {
 		&self.0
 	}
 }
@@ -70,6 +101,14 @@ struct BotClock {
 	wait: f32,
 }
 
+#[derive(Resource)]
+struct ShotState {
+	frames: u32,
+	requested_at: u32,
+	requested: bool,
+	finished: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Selection {
 	None,
@@ -85,16 +124,38 @@ struct DynamicView;
 struct StatusHud;
 
 #[derive(Component)]
+struct TurnHud;
+
+#[derive(Component)]
 struct LogHud;
 
 #[derive(Component)]
 struct WarnHud;
 
+#[derive(Component)]
+struct HelpHud;
+
 fn setup(mut commands: Commands) {
 	commands.spawn(Camera2d::default());
-	spawn_hud_line(&mut commands, StatusHud, 16.0, 14.0, 22.0, Color::srgb(0.92, 0.93, 0.90));
-	spawn_hud_line(&mut commands, LogHud, 16.0, 44.0, 16.0, Color::srgb(0.78, 0.82, 0.72));
-	spawn_hud_line(&mut commands, WarnHud, 16.0, 70.0, 16.0, Color::srgb(0.95, 0.72, 0.28));
+	spawn_hud_line(&mut commands, StatusHud, 16.0, 8.0, 17.0, Color::srgb(0.92, 0.93, 0.90));
+	spawn_hud_line(&mut commands, TurnHud, 16.0, 30.0, 15.0, Color::srgb(0.88, 0.90, 0.86));
+	spawn_hud_line(&mut commands, LogHud, 16.0, 52.0, 15.0, Color::srgb(0.78, 0.82, 0.72));
+	spawn_hud_line(&mut commands, WarnHud, 16.0, 74.0, 15.0, Color::srgb(0.95, 0.72, 0.28));
+	commands.spawn((
+		HelpHud,
+		Text::new(visual::HELP_TEXT),
+		TextFont { font_size: FontSize::Px(15.0), ..default() },
+		TextColor(Color::srgb(0.70, 0.74, 0.68)),
+		TextLayout::no_wrap(),
+		Node {
+			position_type: PositionType::Absolute,
+			bottom: Val::Px(10.0),
+			left: Val::Px(16.0),
+			right: Val::Px(16.0),
+			height: Val::Px(22.0),
+			..default()
+		},
+	));
 }
 
 fn spawn_hud_line<M: Component>(
@@ -110,53 +171,32 @@ fn spawn_hud_line<M: Component>(
 		Text::new(""),
 		TextFont { font_size: FontSize::Px(size), ..default() },
 		TextColor(color),
+		TextLayout::no_wrap(),
 		Node {
 			position_type: PositionType::Absolute,
 			top: Val::Px(top),
 			left: Val::Px(left),
-			width: Val::Px(1240.0),
+			right: Val::Px(16.0),
+			height: Val::Px(size + 4.0),
 			..default()
 		},
 	));
 }
 
-fn draw_gizmos(mut gizmos: Gizmos, play: Res<PlayState>) {
-	let board = play.game.board();
-	let arc_color = Color::srgb(0.38, 0.40, 0.45);
-	for arc in board.arcs() {
-		let pts = arc.sample(24);
-		for w in pts.windows(2) {
-			gizmos.line_2d(world(w[0]), world(w[1]), arc_color);
-		}
-	}
-	let dests: Vec<NodeId> = match play.selection {
-		Selection::Piece(n) => play.game.destinations(n),
-		_ => Vec::new(),
+fn sync_layout(windows: Query<&Window>, mut layout: ResMut<UiLayout>, mut play: ResMut<PlayState>) {
+	let Some(window) = windows.iter().next() else {
+		return;
 	};
-	for id in 0..board.node_count() as NodeId {
-		let p = world(board.position(id));
-		if dests.contains(&id) {
-			gizmos.circle_2d(p, TILE_R + 6.0, Color::srgb(0.55, 0.85, 1.0));
-		}
-		if let Selection::Spawn(s) = play.selection {
-			if s == id {
-				gizmos.circle_2d(p, TILE_R + 8.0, Color::srgb(0.95, 0.82, 0.20));
-			}
-		}
-		if play.game.tile_at(id).is_none() {
-			if board.is_spawn(id) {
-				gizmos.circle_2d(p, NODE_R + 3.0, Color::srgb(0.93, 0.84, 0.32));
-			} else if id == board.center() {
-				gizmos.circle_2d(p, NODE_R + 2.0, Color::srgb(0.85, 0.85, 0.85));
-			} else {
-				gizmos.circle_2d(p, NODE_R, Color::srgb(0.75, 0.75, 0.75));
-			}
-		}
+	let next = ViewLayout::from_window(window.width(), window.height());
+	if (next.width - layout.width).abs() > 0.5 || (next.height - layout.height).abs() > 0.5 {
+		layout.0 = next;
+		play.fingerprint = 0;
 	}
 }
 
-fn world(p: [f64; 2]) -> Vec2 {
-	Vec2::new(p[0] as f32 * SCALE, p[1] as f32 * SCALE)
+fn world_v(layout: &ViewLayout, p: [f64; 2]) -> Vec2 {
+	let w = layout.board_to_world(p);
+	Vec2::new(w[0], w[1])
 }
 
 fn handle_click(
@@ -166,6 +206,7 @@ fn handle_click(
 	mut play: ResMut<PlayState>,
 	cfg: Res<ConfigRes>,
 	keys: Res<ButtonInput<KeyCode>>,
+	layout: Res<UiLayout>,
 ) {
 	if keys.just_pressed(KeyCode::Escape) {
 		play.selection = Selection::None;
@@ -195,12 +236,12 @@ fn handle_click(
 		Ok(p) => p,
 		Err(_) => return,
 	};
-	try_click(&mut play, world_pos);
+	try_click(&mut play, &layout.0, world_pos);
 }
 
-fn try_click(play: &mut PlayState, pos: Vec2) {
+fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
 	let current = play.game.current_player();
-	if let Some(idx) = hit_bench(&play.game, current, pos) {
+	if let Some(idx) = hit_bench(&play.game, layout, current, pos) {
 		match play.selection {
 			Selection::Spawn(node) => {
 				attempt_add(play, idx, node);
@@ -213,7 +254,7 @@ fn try_click(play: &mut PlayState, pos: Vec2) {
 		}
 		return;
 	}
-	if let Some(node) = hit_node(&play.game, pos) {
+	if let Some(node) = hit_node(&play.game, layout, pos) {
 		match play.selection {
 			Selection::Bench(idx)
 				if play.game.board().is_spawn(node) && play.game.tile_at(node).is_none() =>
@@ -270,7 +311,7 @@ fn apply_action(play: &mut PlayState, action: Action) {
 						)
 					})
 					.collect::<Vec<_>>()
-					.join(" · ");
+					.join(visual::HUD_SEP);
 			}
 			play.selection = Selection::None;
 			play.warning.clear();
@@ -316,7 +357,7 @@ fn update_add_warning(play: &mut PlayState) {
 					.collect();
 				if bad.is_empty() {
 					play.warning = format!(
-						"Selected {} — click a yellow spawn (ADD markers).",
+						"Selected {} - click a yellow spawn (ADD markers).",
 						tile.kind_label()
 					);
 				} else {
@@ -332,13 +373,17 @@ fn update_add_warning(play: &mut PlayState) {
 	}
 }
 
-fn hit_node(game: &Game, pos: Vec2) -> Option<NodeId> {
+fn hit_node(game: &Game, layout: &ViewLayout, pos: Vec2) -> Option<NodeId> {
 	let mut best = None;
-	let mut best_d = (TILE_R + 8.0) * (TILE_R + 8.0);
+	let mut best_d = (layout.tile_radius + 8.0) * (layout.tile_radius + 8.0);
 	for id in 0..game.board().node_count() as NodeId {
-		let p = world(game.board().position(id));
+		let p = world_v(layout, game.board().position(id));
 		let d = pos.distance_squared(p);
-		let rad = if game.tile_at(id).is_some() { TILE_R + 4.0 } else { NODE_R + 10.0 };
+		let rad = if game.tile_at(id).is_some() {
+			layout.tile_radius + 4.0
+		} else {
+			layout.node_radius + 10.0
+		};
 		if d <= rad * rad && d < best_d {
 			best_d = d;
 			best = Some(id);
@@ -347,26 +392,18 @@ fn hit_node(game: &Game, pos: Vec2) -> Option<NodeId> {
 	best
 }
 
-fn hit_bench(game: &Game, player: Player, pos: Vec2) -> Option<usize> {
+fn hit_bench(game: &Game, layout: &ViewLayout, player: Player, pos: Vec2) -> Option<usize> {
 	let bench = game.bench(player);
 	for (i, _) in bench.iter().enumerate() {
-		let p = bench_pos(player, i, bench.len());
-		if pos.distance_squared(p) <= (TILE_R + 6.0) * (TILE_R + 6.0) {
+		let p = layout.bench_pos(player, i, bench.len());
+		let p = Vec2::new(p[0], p[1]);
+		if pos.distance_squared(p)
+			<= (layout.bench_tile_radius + 6.0) * (layout.bench_tile_radius + 6.0)
+		{
 			return Some(i);
 		}
 	}
 	None
-}
-
-fn bench_pos(player: Player, index: usize, len: usize) -> Vec2 {
-	let y = match player {
-		Player::Two => 390.0,
-		Player::One => -390.0,
-	};
-	let spacing = 56.0;
-	let total = spacing * len.saturating_sub(1) as f32;
-	let start = -total / 2.0;
-	Vec2::new(start + index as f32 * spacing, y)
 }
 
 fn bot_turn(
@@ -377,6 +414,9 @@ fn bot_turn(
 	mut rng: ResMut<RngRes>,
 ) {
 	if play.game.status().is_over() {
+		return;
+	}
+	if cfg.screenshot.is_some() {
 		return;
 	}
 	let actor = cfg.actor(play.game.current_player());
@@ -396,11 +436,12 @@ fn bot_turn(
 fn refresh_view(
 	mut commands: Commands,
 	mut play: ResMut<PlayState>,
+	layout: Res<UiLayout>,
 	existing: Query<Entity, With<DynamicView>>,
 	mut meshes: ResMut<Assets<Mesh>>,
 	mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-	let fp = view_fingerprint(&play);
+	let fp = view_fingerprint(&play, &layout.0);
 	if fp == play.fingerprint && existing.iter().next().is_some() {
 		return;
 	}
@@ -408,46 +449,312 @@ fn refresh_view(
 	for e in existing.iter() {
 		commands.entity(e).despawn();
 	}
+	let layout = &layout.0;
 	let board = play.game.board().clone();
+	let dests: Vec<NodeId> = match play.selection {
+		Selection::Piece(n) => play.game.destinations(n),
+		_ => Vec::new(),
+	};
+
+	for arc in board.arcs() {
+		spawn_arc(
+			&mut commands,
+			&mut meshes,
+			&mut materials,
+			layout,
+			arc,
+			play.game.tile_at(arc.from),
+			play.game.tile_at(arc.to),
+			board.center(),
+		);
+	}
+
+	for id in 0..board.node_count() as NodeId {
+		let p = world_v(layout, board.position(id));
+		if play.game.tile_at(id).is_none() {
+			spawn_empty_node(
+				&mut commands,
+				&mut meshes,
+				&mut materials,
+				layout,
+				p,
+				board.is_spawn(id),
+				id == board.center(),
+			);
+		}
+		if dests.contains(&id) {
+			spawn_ring(
+				&mut commands,
+				&mut meshes,
+				&mut materials,
+				p,
+				layout.tile_radius + 4.0,
+				layout.tile_radius + 7.0,
+				rgb(visual::DEST_RGB),
+				visual::Z_HIGHLIGHT,
+			);
+		}
+		if let Selection::Spawn(s) = play.selection {
+			if s == id {
+				spawn_ring(
+					&mut commands,
+					&mut meshes,
+					&mut materials,
+					p,
+					layout.tile_radius + 6.0,
+					layout.tile_radius + 9.0,
+					rgb(visual::HIGHLIGHT_RGB),
+					visual::Z_HIGHLIGHT,
+				);
+			}
+		}
+	}
+
 	for id in 0..board.node_count() as NodeId {
 		if let Some(tile) = play.game.tile_at(id) {
 			spawn_tile_at(
 				&mut commands,
 				&mut meshes,
 				&mut materials,
-				world(board.position(id)),
+				world_v(layout, board.position(id)),
 				tile,
 				matches!(play.selection, Selection::Piece(n) if n == id),
+				layout.tile_radius,
 			);
-		} else if board.is_spawn(id) {
-			let mesh = meshes.add(Circle::new(NODE_R + 2.0));
-			let mat = materials.add(ColorMaterial::from(Color::srgb(0.93, 0.84, 0.43)));
-			commands.spawn((
-				DynamicView,
-				Mesh2d(mesh),
-				MeshMaterial2d(mat),
-				Transform::from_translation(world(board.position(id)).extend(1.0)),
-			));
-			if matches!(play.selection, Selection::Bench(_)) {
-				spawn_label(&mut commands, world(board.position(id)) + Vec2::Y * 18.0, "ADD");
-			}
+		} else if board.is_spawn(id) && matches!(play.selection, Selection::Bench(_)) {
+			spawn_label(
+				&mut commands,
+				world_v(layout, board.position(id)) + Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
+				"ADD",
+			);
 		}
 	}
+
 	for player in [Player::Two, Player::One] {
 		let bench = play.game.bench(player).to_vec();
 		let selected = play.game.current_player() == player;
 		for (i, tile) in bench.iter().enumerate() {
 			let highlight = selected && play.selection == Selection::Bench(i);
+			let p = layout.bench_pos(player, i, bench.len());
 			spawn_tile_at(
 				&mut commands,
 				&mut meshes,
 				&mut materials,
-				bench_pos(player, i, bench.len()),
+				Vec2::new(p[0], p[1]),
 				*tile,
 				highlight,
+				layout.bench_tile_radius,
 			);
 		}
 	}
+}
+
+fn spawn_empty_node(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	layout: &ViewLayout,
+	pos: Vec2,
+	spawn: bool,
+	center: bool,
+) {
+	let (r, color) = if spawn {
+		(layout.spawn_radius, rgb(visual::SPAWN_RGB))
+	} else if center {
+		(layout.node_radius + 1.5, rgb(visual::CENTER_RGB))
+	} else {
+		(layout.node_radius, rgb(visual::NODE_RGB))
+	};
+	commands.spawn((
+		DynamicView,
+		Mesh2d(meshes.add(Circle::new(r))),
+		MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+		Transform::from_translation(pos.extend(visual::Z_NODE)),
+	));
+}
+
+fn spawn_arc(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	layout: &ViewLayout,
+	arc: &crate::board::ArcEdge,
+	from: Option<Tile>,
+	to: Option<Tile>,
+	center: NodeId,
+) {
+	let samples = arc.sample(40);
+	let pts: Vec<[f64; 2]> = samples
+		.iter()
+		.map(|p| {
+			let w = layout.board_to_world(*p);
+			[f64::from(w[0]), f64::from(w[1])]
+		})
+		.collect();
+	let width = layout.arc_width;
+	match visual::arc_paint(from, to) {
+		ArcPaint::Neutral => {
+			spawn_stroke(
+				commands,
+				meshes,
+				materials,
+				&pts,
+				width,
+				rgb(visual::NEUTRAL_ARC_RGB),
+				visual::Z_ARC,
+			);
+		}
+		ArcPaint::Solid { color, thick } => {
+			let w = if thick { width * visual::ARC_SAME_COLOR_WIDTH_SCALE } else { width };
+			spawn_stroke(
+				commands,
+				meshes,
+				materials,
+				&pts,
+				w,
+				rgb(visual::tile_rgb(color)),
+				visual::Z_ARC,
+			);
+		}
+		ArcPaint::Braid { a, b } => {
+			let amp = if visual::arc_touches_center(arc, center) {
+				f64::from(layout.braid_amp_center)
+			} else {
+				f64::from(layout.braid_amp)
+			};
+			let turns = visual::braid_turns(arc);
+			let braid = visual::braid_strands(&pts, amp, turns);
+			let strand_w = width * visual::BRAID_STRAND_WIDTH_SCALE;
+			spawn_braid_strand(
+				commands,
+				meshes,
+				materials,
+				&braid.a,
+				&braid.phase,
+				true,
+				strand_w,
+				rgb(visual::tile_rgb(a)),
+			);
+			spawn_braid_strand(
+				commands,
+				meshes,
+				materials,
+				&braid.b,
+				&braid.phase,
+				false,
+				strand_w,
+				rgb(visual::tile_rgb(b)),
+			);
+		}
+	}
+}
+
+fn spawn_braid_strand(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f64; 2]],
+	phase: &[f64],
+	strand_a: bool,
+	width: f32,
+	color: Color,
+) {
+	if pts.len() < 2 {
+		return;
+	}
+	let mut start = 0usize;
+	for i in 1..pts.len() {
+		let front_a = phase[i].cos() >= 0.0;
+		let this_front = if strand_a { front_a } else { !front_a };
+		let prev_front_a = phase[i - 1].cos() >= 0.0;
+		let prev_front = if strand_a { prev_front_a } else { !prev_front_a };
+		if this_front != prev_front || i + 1 == pts.len() {
+			let end = if i + 1 == pts.len() { i } else { i };
+			if end > start {
+				let slice = &pts[start..=end];
+				let z = if prev_front { visual::Z_ARC_OVER } else { visual::Z_ARC };
+				spawn_stroke(commands, meshes, materials, slice, width, color, z);
+			}
+			start = i.saturating_sub(1);
+		}
+	}
+}
+
+fn spawn_stroke(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f64; 2]],
+	width: f32,
+	color: Color,
+	z: f32,
+) {
+	if pts.len() < 2 {
+		return;
+	}
+	let mesh = polyline_mesh(pts, width);
+	commands.spawn((
+		DynamicView,
+		Mesh2d(meshes.add(mesh)),
+		MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+		Transform::from_xyz(0.0, 0.0, z),
+	));
+}
+
+fn polyline_mesh(pts: &[[f64; 2]], width: f32) -> Mesh {
+	let n = pts.len();
+	let hw = f64::from(width) / 2.0;
+	let mut positions: Vec<[f32; 3]> = Vec::with_capacity(n * 2);
+	let mut normals: Vec<[f32; 3]> = Vec::with_capacity(n * 2);
+	let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(n * 2);
+	let mut indices: Vec<u32> = Vec::with_capacity((n.saturating_sub(1)) * 6);
+	for i in 0..n {
+		let prev = if i == 0 { pts[0] } else { pts[i - 1] };
+		let next = if i + 1 == n { pts[i] } else { pts[i + 1] };
+		let dx = next[0] - prev[0];
+		let dy = next[1] - prev[1];
+		let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+		let nx = -dy / len;
+		let ny = dx / len;
+		let p = pts[i];
+		positions.push([(p[0] + nx * hw) as f32, (p[1] + ny * hw) as f32, 0.0]);
+		positions.push([(p[0] - nx * hw) as f32, (p[1] - ny * hw) as f32, 0.0]);
+		normals.push([0.0, 0.0, 1.0]);
+		normals.push([0.0, 0.0, 1.0]);
+		let v = i as f32 / n.max(1) as f32;
+		uvs.push([0.0, v]);
+		uvs.push([1.0, v]);
+		if i + 1 < n {
+			let i0 = (i * 2) as u32;
+			indices.extend_from_slice(&[i0, i0 + 2, i0 + 1, i0 + 1, i0 + 2, i0 + 3]);
+		}
+	}
+	Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+		.with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+		.with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+		.with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+		.with_inserted_indices(Indices::U32(indices))
+}
+
+fn spawn_ring(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pos: Vec2,
+	inner: f32,
+	outer: f32,
+	color: Color,
+	z: f32,
+) {
+	if outer <= inner {
+		return;
+	}
+	commands.spawn((
+		DynamicView,
+		Mesh2d(meshes.add(Annulus::new(inner, outer))),
+		MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+		Transform::from_translation(pos.extend(z)),
+	));
 }
 
 fn spawn_tile_at(
@@ -457,49 +764,59 @@ fn spawn_tile_at(
 	pos: Vec2,
 	tile: Tile,
 	highlight: bool,
+	radius: f32,
 ) {
-	let fill = match tile.owner {
-		Player::One => Color::srgb(0.91, 0.89, 0.82),
-		Player::Two => Color::srgb(0.12, 0.12, 0.14),
-	};
-	let ring = tile_color(tile.color);
-	let z = 2.0;
+	let fill = rgb(visual::owner_fill_rgb(tile.owner));
+	let ring = rgb(visual::tile_rgb(tile.color));
+	let z = visual::Z_TILE;
 	commands.spawn((
 		DynamicView,
-		Mesh2d(meshes.add(Circle::new(TILE_R))),
+		Mesh2d(meshes.add(Circle::new(radius))),
 		MeshMaterial2d(materials.add(ColorMaterial::from(fill))),
 		Transform::from_translation(pos.extend(z)),
 	));
+	let scale = radius / visual::PREV_TILE_RADIUS_PX;
+	let ring_gap = 3.5 * scale;
+	let ring_half = 1.6 * scale;
 	for k in 0..tile.weight {
-		let r = TILE_R - 3.0 - f32::from(k) * 3.5;
-		if r > 6.0 {
-			commands.spawn((
-				DynamicView,
-				Mesh2d(meshes.add(Annulus::new(r - 1.6, r))),
-				MeshMaterial2d(materials.add(ColorMaterial::from(ring))),
-				Transform::from_translation(pos.extend(z + 0.1 + f32::from(k) * 0.05)),
-			));
+		let r = radius - 3.0 * scale - f32::from(k) * ring_gap;
+		if r > 6.0 * scale {
+			spawn_ring(
+				commands,
+				meshes,
+				materials,
+				pos,
+				(r - ring_half).max(1.0),
+				r,
+				ring,
+				visual::Z_TILE_RING + f32::from(k) * 0.02,
+			);
 		}
 	}
 	let dots = tile.dots.min(3);
-	let spread = 7.0;
+	let spread = 7.0 * scale;
 	let start = -spread * (f32::from(dots) - 1.0) / 2.0;
+	let dot_r = (2.8 * scale).max(2.0);
 	for i in 0..dots {
 		let dx = start + f32::from(i) * spread;
 		commands.spawn((
 			DynamicView,
-			Mesh2d(meshes.add(Circle::new(2.8))),
+			Mesh2d(meshes.add(Circle::new(dot_r))),
 			MeshMaterial2d(materials.add(ColorMaterial::from(ring))),
-			Transform::from_translation((pos + Vec2::new(dx, 0.0)).extend(z + 0.4)),
+			Transform::from_translation((pos + Vec2::new(dx, 0.0)).extend(visual::Z_TILE_DOT)),
 		));
 	}
 	if highlight {
-		commands.spawn((
-			DynamicView,
-			Mesh2d(meshes.add(Annulus::new(TILE_R + 2.0, TILE_R + 5.0))),
-			MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.95, 0.85, 0.25)))),
-			Transform::from_translation(pos.extend(z - 0.1)),
-		));
+		spawn_ring(
+			commands,
+			meshes,
+			materials,
+			pos,
+			radius + 2.0 * scale,
+			radius + 5.0 * scale,
+			rgb(visual::HIGHLIGHT_RGB),
+			visual::Z_HIGHLIGHT,
+		);
 	}
 }
 
@@ -509,68 +826,98 @@ fn spawn_label(commands: &mut Commands, pos: Vec2, text: &str) {
 		Text2d::new(text),
 		TextFont { font_size: FontSize::Px(12.0), ..default() },
 		TextColor(Color::srgb(0.95, 0.86, 0.30)),
-		Transform::from_translation(pos.extend(4.0)),
+		Transform::from_translation(pos.extend(visual::Z_MARKER)),
 	));
 }
 
-fn tile_color(color: TileColor) -> Color {
-	match color {
-		TileColor::Green => Color::srgb(0.18, 0.66, 0.32),
-		TileColor::Blue => Color::srgb(0.24, 0.48, 0.90),
-		TileColor::Orange => Color::srgb(0.91, 0.52, 0.16),
-	}
+fn rgb(c: [f32; 3]) -> Color {
+	Color::srgb(c[0], c[1], c[2])
 }
 
 fn update_hud(
 	play: Res<PlayState>,
 	cfg: Res<ConfigRes>,
-	mut status: Query<&mut Text, (With<StatusHud>, Without<LogHud>, Without<WarnHud>)>,
-	mut log: Query<&mut Text, (With<LogHud>, Without<StatusHud>, Without<WarnHud>)>,
-	mut warn: Query<&mut Text, (With<WarnHud>, Without<StatusHud>, Without<LogHud>)>,
+	mut status: Query<
+		&mut Text,
+		(With<StatusHud>, Without<TurnHud>, Without<LogHud>, Without<WarnHud>, Without<HelpHud>),
+	>,
+	mut turn: Query<
+		&mut Text,
+		(With<TurnHud>, Without<StatusHud>, Without<LogHud>, Without<WarnHud>, Without<HelpHud>),
+	>,
+	mut log: Query<
+		&mut Text,
+		(With<LogHud>, Without<StatusHud>, Without<TurnHud>, Without<WarnHud>, Without<HelpHud>),
+	>,
+	mut warn: Query<
+		&mut Text,
+		(With<WarnHud>, Without<StatusHud>, Without<TurnHud>, Without<LogHud>, Without<HelpHud>),
+	>,
 ) {
 	let g = &play.game;
 	let a1 = cfg.bot1.name();
 	let a2 = cfg.bot2.name();
-	let turn = match g.status() {
-		GameStatus::InProgress => format!(
-			"Turn {}  ·  {} ({}) to play  ·  P1 light {}/{}  ·  P2 dark {}/{}",
-			g.turn_count() + 1,
-			g.current_player().label(),
-			cfg.actor(g.current_player()).name(),
-			g.bench(Player::One).len(),
-			g.bag_len(Player::One),
-			g.bench(Player::Two).len(),
-			g.bag_len(Player::Two)
-		),
-		GameStatus::Won { winner, reason } => {
-			format!("Game over: {} wins by {:?}", winner.label(), reason)
-		}
-		GameStatus::Draw { reason } => format!("Draw ({reason:?})"),
-	};
-	let header = format!("Apa Kan   P1 {a1} vs P2 {a2}   {turn}");
 	if let Some(mut t) = status.iter_mut().next() {
-		*t = Text::new(header);
+		*t = Text::new(visual::format_title(a1, a2));
+	}
+	if let Some(mut t) = turn.iter_mut().next() {
+		*t = Text::new(visual::format_turn_line(g, cfg.actor(g.current_player()).name()));
 	}
 	if let Some(mut t) = log.iter_mut().next() {
-		let extra = if play.last_removals.is_empty() {
-			String::new()
-		} else {
-			format!("  |  {}", play.last_removals)
-		};
-		*t = Text::new(format!("Last: {}{}", play.log, extra));
+		*t = Text::new(visual::format_log_line(&play.log, &play.last_removals));
 	}
 	if let Some(mut t) = warn.iter_mut().next() {
 		*t = Text::new(play.warning.clone());
 	}
 }
 
-fn view_fingerprint(play: &PlayState) -> u64 {
+fn screenshot_capture(
+	mut commands: Commands,
+	cfg: Res<ConfigRes>,
+	mut shot: ResMut<ShotState>,
+	views: Query<Entity, With<DynamicView>>,
+	capturing: Query<Entity, With<Capturing>>,
+	mut exit: MessageWriter<AppExit>,
+	time: Res<Time>,
+) {
+	let Some(path) = cfg.screenshot.clone() else {
+		return;
+	};
+	shot.frames = shot.frames.saturating_add(1);
+	if time.elapsed_secs() > 20.0 && !shot.finished {
+		eprintln!("screenshot timed out before capture finished");
+		exit.write(AppExit::error());
+		shot.finished = true;
+		return;
+	}
+	if shot.requested {
+		if shot.finished {
+			return;
+		}
+		if capturing.is_empty() && shot.frames > shot.requested_at.saturating_add(12) {
+			shot.finished = true;
+			exit.write(AppExit::Success);
+		}
+		return;
+	}
+	if time.elapsed_secs() < 4.0 || shot.frames < 30 || views.iter().next().is_none() {
+		return;
+	}
+	commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+	shot.requested = true;
+	shot.requested_at = shot.frames;
+}
+
+fn view_fingerprint(play: &PlayState, layout: &ViewLayout) -> u64 {
 	use std::collections::hash_map::DefaultHasher;
 	use std::hash::{Hash, Hasher};
 	let mut h = DefaultHasher::new();
 	play.game.turn_count().hash(&mut h);
 	play.game.current_player().hash(&mut h);
 	play.selection.hash(&mut h);
+	((layout.width * 10.0) as i32).hash(&mut h);
+	((layout.height * 10.0) as i32).hash(&mut h);
+	((layout.scale * 100.0) as i32).hash(&mut h);
 	for (n, t) in play.game.tiles() {
 		n.hash(&mut h);
 		t.id.hash(&mut h);

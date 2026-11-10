@@ -7,19 +7,35 @@ pub mod game;
 pub mod render;
 #[cfg(feature = "desktop")]
 pub mod ui;
+pub mod visual;
 
 use config::GameConfig;
-use game::{Game, RuleSet};
+use game::RuleSet;
 
 pub fn run() {
 	let cfg = GameConfig::from_args();
-	if let Some(path) = &cfg.screenshot {
-		let game = Game::new(cfg.rules, cfg.seed);
-		if let Err(err) = render::write_png(&game, path, "opening position, seed from --seed") {
-			eprintln!("screenshot failed: {err}");
-			std::process::exit(1);
+	if let Some(path) = cfg.screenshot.clone() {
+		#[cfg(feature = "desktop")]
+		{
+			let _ = path;
+			ui::run_app(cfg);
+			return;
 		}
-		return;
+		#[cfg(not(feature = "desktop"))]
+		{
+			let game = visual::demo_midgame();
+			if let Err(err) = render::write_png_sized(
+				&game,
+				path,
+				"mid-game visual fixture",
+				cfg.width,
+				cfg.height,
+			) {
+				eprintln!("screenshot failed: {err}");
+				std::process::exit(1);
+			}
+			return;
+		}
 	}
 	#[cfg(feature = "desktop")]
 	ui::run_app(cfg);

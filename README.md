@@ -28,16 +28,18 @@ Usage: apa-kan [OPTIONS]
   --think-ms <n>                             Bot think time in ms (default: 80)
   --delay-ms <n>                             Delay between bot moves (default: 350)
   --actions <1..8>                           Actions per turn (default: 1)
-  --screenshot <path>                        Write a board PNG and exit
+  --width <px>                               Window width (default: 1280)
+  --height <px>                              Window height (default: 900)
+  --screenshot <path>                        Capture a mid-game board PNG and exit
   -h, --help
 ```
 
 Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`.
 
-Headless screenshot (no window):
+Headless screenshot (Bevy window under xvfb, or the PNG renderer without `desktop`):
 
 ```bash
-cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png
+cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png --width 1280 --height 800
 ```
 
 Round-robin benchmark:

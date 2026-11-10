@@ -4,121 +4,216 @@ use std::path::Path;
 
 use image::{Rgba, RgbaImage};
 
-use crate::game::{Game, Player, Tile, TileColor};
-
-const W: u32 = 1280;
-const H: u32 = 960;
-const CX: f64 = 640.0;
-const CY: f64 = 490.0;
-const SCALE: f64 = 168.0;
+use crate::game::{Game, Player, Tile};
+use crate::visual::{self, ArcPaint, ViewLayout};
 
 pub fn write_png(game: &Game, path: impl AsRef<Path>, caption: &str) -> Result<(), String> {
-	let mut img = RgbaImage::from_pixel(W, H, rgba(18, 20, 26, 255));
-	draw_board(&mut img, game);
-	draw_benches(&mut img, game);
-	draw_text(&mut img, 24, 20, "APA KAN  ·  8-PETAL ROSETTE", rgba(230, 230, 220, 255));
-	draw_text(&mut img, 24, 42, caption, rgba(170, 176, 186, 255));
-	let p2 = format!(
-		"P2 DARK  bench {}  bag {}",
-		game.bench(Player::Two).len(),
-		game.bag_len(Player::Two)
-	);
-	let p1 = format!(
-		"P1 LIGHT  bench {}  bag {}",
-		game.bench(Player::One).len(),
-		game.bag_len(Player::One)
-	);
-	draw_text(&mut img, 24, 78, &p2, rgba(210, 210, 200, 255));
-	draw_text(&mut img, 24, H - 36, &p1, rgba(210, 210, 200, 255));
-	draw_text(
-		&mut img,
-		24,
-		H - 18,
-		"Yellow nodes are spawns. Rings = weight, dots = move steps. Fill = owner.",
-		rgba(140, 146, 156, 255),
-	);
+	write_png_sized(game, path, caption, 1280, 960)
+}
+
+pub fn write_png_sized(
+	game: &Game,
+	path: impl AsRef<Path>,
+	caption: &str,
+	width: u32,
+	height: u32,
+) -> Result<(), String> {
+	let layout = ViewLayout::from_window(width as f32, height as f32);
+	let bg = visual::rgb8(visual::BG_RGB);
+	let mut img = RgbaImage::from_pixel(width, height, rgba(bg[0], bg[1], bg[2], 255));
+	draw_arcs(&mut img, game, &layout);
+	draw_nodes(&mut img, game, &layout);
+	draw_tiles(&mut img, game, &layout);
+	draw_benches(&mut img, game, &layout);
+	draw_hud(&mut img, game, &layout, caption);
 	img.save(path.as_ref()).map_err(|e| e.to_string())
 }
 
-fn draw_board(img: &mut RgbaImage, game: &Game) {
+fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	let board = game.board();
-	let arc_color = rgba(90, 96, 108, 255);
+	let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
+	let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
 	for arc in board.arcs() {
-		let pts = arc.sample(28);
-		for w in pts.windows(2) {
-			let a = world_to_px(w[0]);
-			let b = world_to_px(w[1]);
-			draw_line(img, a, b, arc_color, 2.0);
+		let samples = arc.sample(40);
+		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
+		let width = f64::from(layout.arc_width);
+		match visual::arc_paint(game.tile_at(arc.from), game.tile_at(arc.to)) {
+			ArcPaint::Neutral => {
+				back.push((pts, rgb_of(visual::NEUTRAL_ARC_RGB), width));
+			}
+			ArcPaint::Solid { color, thick } => {
+				let w = if thick {
+					width * f64::from(visual::ARC_SAME_COLOR_WIDTH_SCALE)
+				} else {
+					width
+				};
+				back.push((pts, rgb_of(visual::tile_rgb(color)), w));
+			}
+			ArcPaint::Braid { a, b } => {
+				let amp = if visual::arc_touches_center(arc, board.center()) {
+					f64::from(layout.braid_amp_center)
+				} else {
+					f64::from(layout.braid_amp)
+				};
+				let braid = visual::braid_strands(&pts, amp, visual::braid_turns(arc));
+				let strand_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
+				split_braid(
+					&braid.a,
+					&braid.phase,
+					true,
+					rgb_of(visual::tile_rgb(a)),
+					strand_w,
+					&mut back,
+					&mut front,
+				);
+				split_braid(
+					&braid.b,
+					&braid.phase,
+					false,
+					rgb_of(visual::tile_rgb(b)),
+					strand_w,
+					&mut back,
+					&mut front,
+				);
+			}
 		}
 	}
+	for (pts, color, width) in back.into_iter().chain(front) {
+		stroke_polyline(img, &pts, color, width);
+	}
+}
+
+fn split_braid(
+	pts: &[[f64; 2]],
+	phase: &[f64],
+	strand_a: bool,
+	color: Rgba<u8>,
+	width: f64,
+	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+	front: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+) {
+	if pts.len() < 2 {
+		return;
+	}
+	let mut start = 0usize;
+	for i in 1..pts.len() {
+		let front_a = phase[i].cos() >= 0.0;
+		let this_front = if strand_a { front_a } else { !front_a };
+		let prev_front_a = phase[i - 1].cos() >= 0.0;
+		let prev_front = if strand_a { prev_front_a } else { !prev_front_a };
+		if this_front != prev_front || i + 1 == pts.len() {
+			let end = i;
+			if end > start {
+				let slice = pts[start..=end].to_vec();
+				if prev_front {
+					front.push((slice, color, width));
+				} else {
+					back.push((slice, color, width));
+				}
+			}
+			start = i.saturating_sub(1);
+		}
+	}
+}
+
+fn draw_nodes(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
+	let board = game.board();
 	for id in 0..board.node_count() as u8 {
-		let p = world_to_px(board.position(id));
-		if let Some(tile) = game.tile_at(id) {
-			draw_tile(img, p, 22.0, tile);
-		} else if board.is_spawn(id) {
-			fill_circle(img, p, 9.0, rgba(238, 214, 110, 255));
-			stroke_circle(img, p, 9.0, rgba(40, 36, 20, 255), 1.6);
+		if game.tile_at(id).is_some() {
+			continue;
+		}
+		let p = image_pt(layout, board.position(id));
+		if board.is_spawn(id) {
+			fill_circle(img, tup(p), f64::from(layout.spawn_radius), rgb_of(visual::SPAWN_RGB));
 		} else if id == board.center() {
-			fill_circle(img, p, 8.0, rgba(16, 16, 18, 255));
-			stroke_circle(img, p, 8.0, rgba(220, 220, 220, 255), 1.8);
+			fill_circle(
+				img,
+				tup(p),
+				f64::from(layout.node_radius + 1.5),
+				rgb_of(visual::CENTER_RGB),
+			);
 		} else {
-			fill_circle(img, p, 6.5, rgba(12, 12, 14, 255));
-			stroke_circle(img, p, 6.5, rgba(200, 200, 200, 255), 1.5);
+			fill_circle(img, tup(p), f64::from(layout.node_radius), rgb_of(visual::NODE_RGB));
 		}
 	}
 }
 
-fn draw_benches(img: &mut RgbaImage, game: &Game) {
-	draw_bench_row(img, game, Player::Two, 118);
-	draw_bench_row(img, game, Player::One, H - 88);
+fn draw_tiles(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
+	let board = game.board();
+	for id in 0..board.node_count() as u8 {
+		if let Some(tile) = game.tile_at(id) {
+			let p = image_pt(layout, board.position(id));
+			draw_tile(img, tup(p), f64::from(layout.tile_radius), tile);
+		}
+	}
 }
 
-fn draw_bench_row(img: &mut RgbaImage, game: &Game, player: Player, y: u32) {
-	let bench = game.bench(player);
-	let n = bench.len().max(1);
-	let spacing = 56.0;
-	let total = spacing * (bench.len().saturating_sub(1) as f64);
-	let start = (W as f64 / 2.0) - total / 2.0;
-	let _ = n;
-	for (i, tile) in bench.iter().enumerate() {
-		let x = start + i as f64 * spacing;
-		draw_tile(img, (x, y as f64), 24.0, *tile);
+fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
+	for player in [Player::Two, Player::One] {
+		let bench = game.bench(player);
+		for (i, tile) in bench.iter().enumerate() {
+			let p = layout.bench_pos(player, i, bench.len());
+			let q = layout.world_to_image(p);
+			draw_tile(
+				img,
+				(f64::from(q[0]), f64::from(q[1])),
+				f64::from(layout.bench_tile_radius),
+				*tile,
+			);
+		}
 	}
+}
+
+fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str) {
+	let hi = rgba(230, 230, 220, 255);
+	let mid = rgba(200, 204, 190, 255);
+	let lo = rgba(140, 146, 156, 255);
+	draw_text(img, 16, 12, "APA KAN  |  8-PETAL ROSETTE", hi);
+	draw_text(img, 16, 30, caption, mid);
+	let turn = visual::format_turn_line(game, "human");
+	draw_text(img, 16, 48, &turn, mid);
+	draw_text(img, 16, (layout.height - 22.0) as u32, visual::HELP_TEXT, lo);
 }
 
 fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
-	let fill = match tile.owner {
-		Player::One => rgba(232, 228, 214, 255),
-		Player::Two => rgba(28, 28, 32, 255),
-	};
-	fill_circle(img, c, r, fill);
-	let (col, ring) = color_of(tile.color);
+	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(tile.owner)));
+	let col = rgb_of(visual::tile_rgb(tile.color));
+	let scale = r / f64::from(visual::PREV_TILE_RADIUS_PX);
+	let ring_gap = 3.5 * scale;
 	for k in 0..tile.weight {
-		let rr = r - 2.0 - f64::from(k) * 3.2;
-		if rr > 4.0 {
-			stroke_circle(img, c, rr, col, 2.2);
+		let rr = r - 3.0 * scale - f64::from(k) * ring_gap;
+		if rr > 4.0 * scale {
+			stroke_circle(img, c, rr, col, (2.2 * scale).max(1.6));
 		}
 	}
-	let _ = ring;
 	let dots = tile.dots.min(3);
-	let spread = 7.0;
+	let spread = 7.0 * scale;
 	let start = -spread * (f64::from(dots) - 1.0) / 2.0;
+	let dot_r = (2.6 * scale).max(1.8);
 	for i in 0..dots {
 		let dx = start + f64::from(i) * spread;
-		fill_circle(img, (c.0 + dx, c.1), 2.6, col);
+		fill_circle(img, (c.0 + dx, c.1), dot_r, col);
 	}
 }
 
-fn color_of(color: TileColor) -> (Rgba<u8>, Rgba<u8>) {
-	match color {
-		TileColor::Green => (rgba(46, 168, 82, 255), rgba(46, 168, 82, 255)),
-		TileColor::Blue => (rgba(62, 122, 220, 255), rgba(62, 122, 220, 255)),
-		TileColor::Orange => (rgba(232, 132, 42, 255), rgba(232, 132, 42, 255)),
-	}
+fn image_pt(layout: &ViewLayout, p: [f64; 2]) -> [f64; 2] {
+	let q = layout.board_to_image(p);
+	[f64::from(q[0]), f64::from(q[1])]
 }
 
-fn world_to_px(p: [f64; 2]) -> (f64, f64) {
-	(CX + p[0] * SCALE, CY - p[1] * SCALE)
+fn tup(p: [f64; 2]) -> (f64, f64) {
+	(p[0], p[1])
+}
+
+fn rgb_of(rgb: [f32; 3]) -> Rgba<u8> {
+	let c = visual::rgb8(rgb);
+	rgba(c[0], c[1], c[2], 255)
+}
+
+fn stroke_polyline(img: &mut RgbaImage, pts: &[[f64; 2]], color: Rgba<u8>, width: f64) {
+	for w in pts.windows(2) {
+		draw_line(img, (w[0][0], w[0][1]), (w[1][0], w[1][1]), color, width);
+	}
 }
 
 fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba<u8> {
@@ -260,6 +355,10 @@ fn glyph(c: char) -> [u8; 7] {
 		'=' => [0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000],
 		'+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
 		'/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+		'|' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+		'(' => [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
+		')' => [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
+		'\'' => [0b00100, 0b00100, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
 		' ' | _ => [0; 7],
 	}
 }
@@ -280,5 +379,17 @@ mod tests {
 		let bytes = std::fs::read(&path).unwrap();
 		assert!(bytes.len() > 100);
 		assert_eq!(&bytes[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+	}
+
+	#[test]
+	fn writes_midgame_at_window_sizes() {
+		let game = crate::visual::demo_midgame();
+		for (w, h) in [(1024_u32, 728_u32), (1280, 800), (1920, 1080)] {
+			let path = std::env::temp_dir().join(format!("apa-kan-render-{w}x{h}.png"));
+			write_png_sized(&game, &path, "mid-game visual fixture", w, h).unwrap();
+			let bytes = std::fs::read(&path).unwrap();
+			assert!(bytes.len() > 100);
+			assert_eq!(&bytes[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+		}
 	}
 }
