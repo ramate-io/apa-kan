@@ -46,20 +46,27 @@ fn generate_add_actions(game: &Game, player: Player) -> Vec<Action> {
 		return actions;
 	}
 
-	let add_bank = match player {
-		Player::One => game.add_bank_p1,
-		Player::Two => game.add_bank_p2,
-	};
-
-	if add_bank == 0 {
-		return actions;
+	if game.rule_set.add_bank {
+		let add_bank = match player {
+			Player::One => game.add_bank_p1,
+			Player::Two => game.add_bank_p2,
+		};
+		if add_bank == 0 {
+			return actions;
+		}
 	}
 
 	for tile_index in 0..stack.len() {
 		for row in 0..5 {
 			for col in 0..5 {
 				let pos = Position::new(row, col);
-				if pos.is_valid() && game.board.is_empty(pos) {
+				let is_legal_position = if game.rule_set.corner_adjacent_add_only {
+					pos.is_corner_adjacent() && game.board.is_empty(pos)
+				} else {
+					pos.is_valid() && game.board.is_empty(pos)
+				};
+
+				if is_legal_position {
 					actions.push(Action::add(player, tile_index, pos));
 				}
 			}
@@ -77,7 +84,9 @@ fn generate_move_actions(game: &Game, player: Player) -> Vec<Action> {
 			continue;
 		}
 
-		for rotation_count in 0..4 {
+		let rotation_range = if game.rule_set.fixed_rotation { 0..2 } else { 0..4 };
+
+		for rotation_count in rotation_range {
 			let rotated_tile = tile.rotated_n_times(rotation_count);
 			let reachable = find_reachable_destinations(game, *pos, &rotated_tile);
 			for dest in reachable {
@@ -135,7 +144,7 @@ fn find_reachable_destinations(
 			visited.insert(neighbor_pos);
 
 			if let Some(neighbor_tile) = game.board.get(neighbor_pos) {
-				if can_cross_edge(tile, direction, neighbor_tile) {
+				if can_cross_edge(game, tile, direction, neighbor_pos) {
 					queue.push_back(neighbor_pos);
 				}
 			} else if neighbor_pos.is_valid() {
@@ -148,24 +157,65 @@ fn find_reachable_destinations(
 }
 
 fn can_cross_edge(
+	game: &Game,
 	moving_tile: &super::core::Tile,
 	direction: Direction,
-	adjacent_tile: &super::core::Tile,
+	crossing_pos: Position,
 ) -> bool {
-	let moving_edge = moving_tile.edge(direction);
-	let adjacent_edge = adjacent_tile.edge(direction.opposite());
+	let crossing_tile = game.board.get(crossing_pos).unwrap();
+	let beyond_pos = crossing_pos.neighbor(direction);
 
-	let edge_weight = moving_edge.weight.value().max(adjacent_edge.weight.value());
-	moving_edge.weight.value() <= edge_weight
+	let crossing_edge_weight = crossing_tile.edge(direction).weight.value();
+
+	let effective_weight =
+		if beyond_pos.row >= 0 && beyond_pos.row < 5 && beyond_pos.col >= 0 && beyond_pos.col < 5 {
+			if let Some(beyond_tile) = game.board.get(beyond_pos) {
+				crossing_edge_weight.max(beyond_tile.edge(direction.opposite()).weight.value())
+			} else {
+				crossing_edge_weight
+			}
+		} else {
+			crossing_edge_weight
+		};
+
+	let mover_edge_weight = moving_tile.edge(direction).weight.value();
+	effective_weight >= mover_edge_weight
 }
 
 pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 	if !game.stack(player).is_empty() {
-		for row in 0..5 {
-			for col in 0..5 {
-				let pos = Position::new(row, col);
-				if pos.is_valid() && game.board.is_empty(pos) {
-					return true;
+		if game.rule_set.add_bank {
+			let add_bank = match player {
+				Player::One => game.add_bank_p1,
+				Player::Two => game.add_bank_p2,
+			};
+			if add_bank > 0 {
+				for row in 0..5 {
+					for col in 0..5 {
+						let pos = Position::new(row, col);
+						let is_legal_position = if game.rule_set.corner_adjacent_add_only {
+							pos.is_corner_adjacent() && game.board.is_empty(pos)
+						} else {
+							pos.is_valid() && game.board.is_empty(pos)
+						};
+						if is_legal_position {
+							return true;
+						}
+					}
+				}
+			}
+		} else {
+			for row in 0..5 {
+				for col in 0..5 {
+					let pos = Position::new(row, col);
+					let is_legal_position = if game.rule_set.corner_adjacent_add_only {
+						pos.is_corner_adjacent() && game.board.is_empty(pos)
+					} else {
+						pos.is_valid() && game.board.is_empty(pos)
+					};
+					if is_legal_position {
+						return true;
+					}
 				}
 			}
 		}
@@ -194,11 +244,20 @@ mod tests {
 
 	#[test]
 	fn test_generate_add_actions_empty_board() {
-		let game = Game::new();
+		let game = Game::new_with_rules(crate::game::core::RuleSet::old());
 		let actions = generate_add_actions(&game, Player::One);
 
 		let valid_positions = 21;
 		assert_eq!(actions.len(), valid_positions * 11);
+	}
+
+	#[test]
+	fn test_generate_add_actions_corner_adjacent() {
+		let game = Game::new();
+		let actions = generate_add_actions(&game, Player::One);
+
+		let corner_adjacent_positions = 8;
+		assert_eq!(actions.len(), corner_adjacent_positions * 11);
 	}
 
 	#[test]

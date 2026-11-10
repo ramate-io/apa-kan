@@ -36,8 +36,14 @@ impl Rules {
 	}
 
 	fn apply_add(game: &mut Game, tile_index: usize, position: Position) -> Result<(), String> {
-		if !position.is_valid() {
-			return Err("Invalid position".to_string());
+		let is_valid_position = if game.rule_set.corner_adjacent_add_only {
+			position.is_corner_adjacent()
+		} else {
+			position.is_valid()
+		};
+
+		if !is_valid_position {
+			return Err("Invalid position for ADD".to_string());
 		}
 
 		if !game.board.is_empty(position) {
@@ -46,18 +52,20 @@ impl Rules {
 
 		let player = game.current_player;
 
-		match player {
-			Player::One => {
-				if game.add_bank_p1 == 0 {
-					return Err("No ADD actions remaining".to_string());
+		if game.rule_set.add_bank {
+			match player {
+				Player::One => {
+					if game.add_bank_p1 == 0 {
+						return Err("No ADD actions remaining".to_string());
+					}
+					game.add_bank_p1 -= 1;
 				}
-				game.add_bank_p1 -= 1;
-			}
-			Player::Two => {
-				if game.add_bank_p2 == 0 {
-					return Err("No ADD actions remaining".to_string());
+				Player::Two => {
+					if game.add_bank_p2 == 0 {
+						return Err("No ADD actions remaining".to_string());
+					}
+					game.add_bank_p2 -= 1;
 				}
-				game.add_bank_p2 -= 1;
 			}
 		}
 
@@ -234,6 +242,7 @@ impl Rules {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::game::core::RuleSet;
 	use crate::game::core::{Color, Edge, EdgeWeight, Tile};
 
 	fn make_tile(id: u32, owner: Player, colors: [Color; 4]) -> Tile {
@@ -249,7 +258,7 @@ mod tests {
 
 	#[test]
 	fn test_add_tile_success() {
-		let mut game = Game::new();
+		let mut game = Game::new_with_rules(RuleSet::old());
 		let initial_stack_size = game.player_one_stack.len();
 
 		let action = Action::add(Player::One, 0, Position::new(2, 2));
@@ -283,8 +292,11 @@ mod tests {
 
 	#[test]
 	fn test_empty_adjacent_is_neutral() {
-		let mut game =
-			Game::new_with_tiles(vec![make_tile(0, Player::One, [Color::Maroon; 4])], vec![]);
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![make_tile(0, Player::One, [Color::Maroon; 4])],
+			vec![],
+			RuleSet::old(),
+		);
 
 		let action = Action::add(Player::One, 0, Position::new(2, 2));
 		Rules::apply_action(&mut game, action).ok();
@@ -295,7 +307,7 @@ mod tests {
 
 	#[test]
 	fn test_matching_edges_survive() {
-		let mut game = Game::new_with_tiles(
+		let mut game = Game::new_with_tiles_and_rules(
 			vec![
 				make_tile(
 					0,
@@ -309,6 +321,7 @@ mod tests {
 				),
 			],
 			vec![],
+			RuleSet::old(),
 		);
 
 		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(2, 2))).ok();
@@ -467,8 +480,11 @@ mod tests {
 
 	#[test]
 	fn test_board_boundary_neutral() {
-		let mut game =
-			Game::new_with_tiles(vec![make_tile(0, Player::One, [Color::Maroon; 4])], vec![]);
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![make_tile(0, Player::One, [Color::Maroon; 4])],
+			vec![],
+			RuleSet::old(),
+		);
 
 		let action = Action::add(Player::One, 0, Position::new(2, 0));
 		Rules::apply_action(&mut game, action).ok();

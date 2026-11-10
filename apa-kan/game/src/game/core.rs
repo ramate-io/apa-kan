@@ -178,20 +178,50 @@ impl Player {
 pub struct RuleSet {
 	pub fixed_rotation: bool,
 	pub add_bank: bool,
+	pub add_bank_size: u8,
 	pub moved_tile_immunity: bool,
+	pub corner_adjacent_add_only: bool,
 }
 
 impl RuleSet {
 	pub fn old() -> Self {
-		Self { fixed_rotation: false, add_bank: false, moved_tile_immunity: false }
+		Self {
+			fixed_rotation: false,
+			add_bank: false,
+			add_bank_size: 100,
+			moved_tile_immunity: false,
+			corner_adjacent_add_only: false,
+		}
 	}
 
 	pub fn new() -> Self {
-		Self { fixed_rotation: true, add_bank: true, moved_tile_immunity: false }
+		Self {
+			fixed_rotation: true,
+			add_bank: true,
+			add_bank_size: 7,
+			moved_tile_immunity: false,
+			corner_adjacent_add_only: true,
+		}
+	}
+
+	pub fn with_bank_size(bank_size: u8) -> Self {
+		Self {
+			fixed_rotation: true,
+			add_bank: true,
+			add_bank_size: bank_size,
+			moved_tile_immunity: false,
+			corner_adjacent_add_only: true,
+		}
 	}
 
 	pub fn with_immunity() -> Self {
-		Self { fixed_rotation: true, add_bank: true, moved_tile_immunity: true }
+		Self {
+			fixed_rotation: true,
+			add_bank: true,
+			add_bank_size: 7,
+			moved_tile_immunity: true,
+			corner_adjacent_add_only: true,
+		}
 	}
 }
 
@@ -218,6 +248,13 @@ impl Position {
 
 	pub fn is_valid(&self) -> bool {
 		self.row >= 0 && self.row < 5 && self.col >= 0 && self.col < 5 && !self.is_corner()
+	}
+
+	pub fn is_corner_adjacent(&self) -> bool {
+		matches!(
+			(self.row, self.col),
+			(0, 1) | (1, 0) | (0, 3) | (1, 4) | (3, 0) | (4, 1) | (3, 4) | (4, 3)
+		)
 	}
 
 	pub fn neighbor(&self, direction: Direction) -> Position {
@@ -310,7 +347,7 @@ impl Game {
 	}
 
 	pub fn new_with_rules(rule_set: RuleSet) -> Self {
-		let add_bank = if rule_set.add_bank { 7 } else { 100 };
+		let add_bank = if rule_set.add_bank { rule_set.add_bank_size } else { 100 };
 		let mut game = Self {
 			board: Board::new(),
 			player_one_stack: Vec::new(),
@@ -347,7 +384,7 @@ impl Game {
 			.unwrap_or(0)
 			+ 1;
 
-		let add_bank = if rule_set.add_bank { 7 } else { 100 };
+		let add_bank = if rule_set.add_bank { rule_set.add_bank_size } else { 100 };
 
 		Self {
 			board: Board::new(),
