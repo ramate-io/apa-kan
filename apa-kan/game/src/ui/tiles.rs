@@ -31,7 +31,7 @@ fn render_tiles(
 	}
 
 	for (pos, tile) in game.0.board.tiles() {
-		let screen_pos = board_to_screen_pos(*pos);
+		let screen_pos = board_to_screen_pos(*pos, game.0.board.size());
 		spawn_tile_sprite(&mut commands, tile, screen_pos, &mut gizmos);
 	}
 }

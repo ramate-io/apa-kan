@@ -24,14 +24,17 @@ struct BoardSquare {
 struct BoardEntity;
 
 const BOARD_SIZE: f32 = 500.0;
-const SQUARE_SIZE: f32 = BOARD_SIZE / 5.0;
 
 fn setup_board(mut commands: Commands, game: Res<GameResource>) {
-	for row in 0..5 {
-		for col in 0..5 {
+	let board_size = game.0.board.size() as i8;
+	let square_size = BOARD_SIZE / board_size as f32;
+	let center = (board_size - 1) as f32 / 2.0;
+
+	for row in 0..board_size {
+		for col in 0..board_size {
 			let pos = Position::new(row, col);
-			let x = (col as f32 - 2.0) * SQUARE_SIZE;
-			let y = (2.0 - row as f32) * SQUARE_SIZE;
+			let x = (col as f32 - center) * square_size;
+			let y = (center - row as f32) * square_size;
 
 			let color = if game.0.board.is_corner(pos) {
 				Color::srgb(0.2, 0.2, 0.2)
@@ -44,24 +47,25 @@ fn setup_board(mut commands: Commands, game: Res<GameResource>) {
 			commands.spawn((
 				BoardEntity,
 				BoardSquare { position: pos },
-				Sprite {
-					color,
-					custom_size: Some(Vec2::new(SQUARE_SIZE - 2.0, SQUARE_SIZE - 2.0)),
-					..default()
-				},
+			Sprite {
+				color,
+				custom_size: Some(Vec2::new(square_size - 2.0, square_size - 2.0)),
+				..default()
+			},
 				Transform::from_xyz(x, y, 0.0),
 			));
 
 		if game.0.board.is_corner(pos) {
+			let font_size = (square_size * 0.8).min(40.0);
 			commands.spawn((
 				BoardEntity,
 				Text::new("✗"),
-					TextFont { font_size: FontSize::Px(40.0), ..default() },
+					TextFont { font_size: FontSize::Px(font_size), ..default() },
 					TextColor(Color::srgb(0.5, 0.0, 0.0)),
 					Node {
 						position_type: PositionType::Absolute,
-						left: Val::Px(400.0 + x - 15.0),
-						top: Val::Px(300.0 - y - 20.0),
+						left: Val::Px(400.0 + x - font_size * 0.375),
+						top: Val::Px(300.0 - y - font_size * 0.5),
 						..default()
 					},
 					TextLayout { justify: Justify::Center, ..default() },
@@ -87,8 +91,14 @@ fn setup_board(mut commands: Commands, game: Res<GameResource>) {
 
 fn update_board() {}
 
-pub fn board_to_screen_pos(position: Position) -> Vec2 {
-	let x = (position.col as f32 - 2.0) * SQUARE_SIZE;
-	let y = (2.0 - position.row as f32) * SQUARE_SIZE;
+pub fn board_to_screen_pos(position: Position, board_size: u8) -> Vec2 {
+	let square_size = BOARD_SIZE / board_size as f32;
+	let center = (board_size - 1) as f32 / 2.0;
+	let x = (position.col as f32 - center) * square_size;
+	let y = (center - position.row as f32) * square_size;
 	Vec2::new(x, y)
+}
+
+pub fn square_size(board_size: u8) -> f32 {
+	BOARD_SIZE / board_size as f32
 }
