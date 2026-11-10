@@ -435,7 +435,7 @@ Some metrics appear inconsistent or require interpretation:
 
 ### Summary
 
-1. **Minimax consistently beats MCTS** across all configurations (75-92.5% win rates)
+1. **Minimax consistently beats MCTS** across all configurations (60-92.5% scores)
 2. **Second-seat bias present** in both scored and old rules for strong bot mirrors
 3. **MOVE strategy varies** by bot and configuration:
    - Ologbon: 0.00% MOVE on 5x5 scored (ADD-only), 61.03% on 5x5 old
