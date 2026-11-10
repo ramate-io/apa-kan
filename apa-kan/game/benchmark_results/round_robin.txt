@@ -1,0 +1,21 @@
+# apa-kan round-robin
+# think_ms=20 games_per_pairing_per_seat=20 seed_base=1 turn_limit=200
+# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.
+# pairing  seat  W-D-L  avg_turns  elim  turn_limit  double_pass
+random   vs random    P1  0-20-0  200.00  0  20  0
+random   vs greedy    P1  0-3-17  85.95  17  3  0
+random   vs minimax   P1  0-18-2  191.40  2  18  0
+random   vs mcts      P1  0-20-0  200.00  0  20  0
+greedy   vs random    P1  16-4-0  104.85  16  4  0
+greedy   vs greedy    P1  1-17-2  182.70  3  17  0
+greedy   vs minimax   P1  4-16-0  187.95  4  16  0
+greedy   vs mcts      P1  16-4-0  85.00  16  4  0
+minimax  vs random    P1  2-18-0  188.20  2  18  0
+minimax  vs greedy    P1  0-18-2  191.30  2  18  0
+minimax  vs minimax   P1  0-18-2  189.60  2  18  0
+minimax  vs mcts      P1  0-20-0  200.00  0  20  0
+mcts     vs random    P1  0-20-0  200.00  0  20  0
+mcts     vs greedy    P1  0-2-18  72.80  18  2  0
+mcts     vs minimax   P1  0-19-1  198.70  1  19  0
+mcts     vs mcts      P1  0-18-2  191.50  2  18  0
+# elapsed_sec=579.5

@@ -8,13 +8,37 @@ repository = { workspace = true }
 homepage = { workspace = true }
 publish = { workspace = true }
 rust-version = { workspace = true }
+default-run = "apa-kan"
+
+[lib]
+name = "apa_kan"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:bevy"]
 
 [[bin]]
 name = "apa-kan"
 path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "apa-kan-bench"
+path = "src/bin/bench.rs"
 
 [dependencies]
-bevy = { workspace = true }
+bevy = { workspace = true, optional = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+rand = { version = "0.8", features = ["std", "std_rng"] }
+
+[package.metadata.android]
+package = "io.ramate.apa_kan"
+label = "Apa Kan"
+icon = "@mipmap/ic_launcher"
+fullscreen = false
+orientation = "landscape"
 
 [lints]
 workspace = true
