@@ -1,0 +1,34 @@
+# apa-kan search benchmark
+# think_ms=1000 games_per_pairing_per_seat=6 seed_base=1 turn_limit=200
+
+# branching factor (legal actions per position, from greedy/random games)
+# sample_games=12  (greedy vs random, random vs greedy, greedy vs greedy)
+# kind     n_positions  avg    max
+ADD       286          11.88  40
+MOVE      1522         29.75  74
+ALL       1548         31.45  78
+
+# search head-to-head
+# think_ms=1000 games_per_pairing_per_seat=6 seed_base=1 turn_limit=200
+# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.
+# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).
+# pairing  seat  W-D-L  avg_turns  elim  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters
+minimax  vs mcts      P1  0-6-0  200.00  0  6  0  0  1.17  5.36  2812.7
+mcts     vs minimax   P1  0-6-0  200.00  0  6  0  1  1.67  5.23  2502.7
+minimax  vs greedy    P1  0-6-0  200.00  0  6  0  3  2.50  4.89  0.0
+greedy   vs minimax   P1  0-6-0  200.00  0  6  0  4  2.67  4.34  0.0
+mcts     vs greedy    P1  2-4-0  188.67  2  4  0  0  1.17  0.00  1617.5
+greedy   vs mcts      P1  0-3-3  169.50  3  3  0  1  1.50  0.00  1703.5
+minimax  vs minimax   P1  0-6-0  200.00  0  6  0  1  2.17  5.43  0.0
+mcts     vs mcts      P1  0-6-0  200.00  0  6  0  0  1.50  0.00  2701.5
+
+# stalling (rules unchanged; no threefold draw)
+# games=48  visible_pos_seen_>=2=28  visible_pos_seen_>=3=10  occupancy_seen_>=3=10
+# games_that_both_hit_turn_limit_and_had_a_visible_repeat_>=3 (lower bound via pairing mins) ~ 10
+# Visible hash covers occupancy, tile kind, owner, benches, and side to move.
+# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.
+
+# MCTS bag determinization: remaining bag tiles are a known multiset; each MCTS iteration shuffles both bags (samples a permutation) so capture draws are chance events. Minimax uses the live bag order of the position.
+# Minimax: iterative deepening alpha-beta, Zobrist TT, TT/capture/killer/history ordering, quiescence on capture sequences.
+# game_record=apa-kan/game/benchmark_results/minimax_vs_mcts_game.txt
+# elapsed_sec=1179.5
