@@ -702,55 +702,109 @@ impl AiPlayer {
 	fn select_rollout_action(&self, game: &Game, actions: &[Action]) -> Action {
 		use rand::seq::SliceRandom;
 
+		// Fast heuristic-only evaluation without game clones
 		let mut weighted_actions: Vec<(Action, i32)> = actions
 			.iter()
 			.map(|&action| {
-				let mut game_copy = game.clone();
 				let mut weight = 0;
 
-				// Prefer MOVE actions for captures
 				match action.action_type {
-					ActionType::Move { .. } => weight += 20,
+					ActionType::Move { destination, .. } => {
+						// Prefer MOVE actions
+						weight += 20;
+
+						// Quick heuristic: moves to adjacent positions likely capture
+						// Check if destination has opponent neighbors
+						if destination.row > 0 {
+							if let Some(tile) = game.board.get(crate::game::core::Position {
+								row: destination.row - 1,
+								col: destination.col,
+							}) {
+								if tile.owner != game.current_player {
+									weight += if game.rule_set.scored_mode { 15 } else { 5 };
+								}
+							}
+						}
+						if destination.row < (game.board.size() - 1) as i8 {
+							if let Some(tile) = game.board.get(crate::game::core::Position {
+								row: destination.row + 1,
+								col: destination.col,
+							}) {
+								if tile.owner != game.current_player {
+									weight += if game.rule_set.scored_mode { 15 } else { 5 };
+								}
+							}
+						}
+						if destination.col > 0 {
+							if let Some(tile) = game.board.get(crate::game::core::Position {
+								row: destination.row,
+								col: destination.col - 1,
+							}) {
+								if tile.owner != game.current_player {
+									weight += if game.rule_set.scored_mode { 15 } else { 5 };
+								}
+							}
+						}
+						if destination.col < (game.board.size() - 1) as i8 {
+							if let Some(tile) = game.board.get(crate::game::core::Position {
+								row: destination.row,
+								col: destination.col + 1,
+							}) {
+								if tile.owner != game.current_player {
+									weight += if game.rule_set.scored_mode { 15 } else { 5 };
+								}
+							}
+						}
+					}
 					ActionType::Add { position, .. } => {
 						// Prefer edge placements in scored mode (safer)
 						if game.rule_set.scored_mode && game.board.is_edge(position) {
-							weight += 5;
+							weight += 8;
+						}
+
+						// Check for adjacent opponent tiles
+						if position.row > 0 {
+							if let Some(tile) = game.board.get(crate::game::core::Position {
+								row: position.row - 1,
+								col: position.col,
+							}) {
+								if tile.owner != game.current_player {
+									weight += 2;
+								}
+							}
+						}
+						if position.row < (game.board.size() - 1) as i8 {
+							if let Some(tile) = game.board.get(crate::game::core::Position {
+								row: position.row + 1,
+								col: position.col,
+							}) {
+								if tile.owner != game.current_player {
+									weight += 2;
+								}
+							}
+						}
+						if position.col > 0 {
+							if let Some(tile) = game.board.get(crate::game::core::Position {
+								row: position.row,
+								col: position.col - 1,
+							}) {
+								if tile.owner != game.current_player {
+									weight += 2;
+								}
+							}
+						}
+						if position.col < (game.board.size() - 1) as i8 {
+							if let Some(tile) = game.board.get(crate::game::core::Position {
+								row: position.row,
+								col: position.col + 1,
+							}) {
+								if tile.owner != game.current_player {
+									weight += 2;
+								}
+							}
 						}
 					}
 					ActionType::Pass => weight -= 50,
-				}
-
-				if Rules::apply_action(&mut game_copy, action).is_ok() {
-					let my_tiles_before =
-						game.board.tiles().filter(|(_, t)| t.owner == game.current_player).count();
-					let opp_tiles_before =
-						game.board.tiles().filter(|(_, t)| t.owner != game.current_player).count();
-					let my_tiles_after = game_copy
-						.board
-						.tiles()
-						.filter(|(_, t)| t.owner == game.current_player)
-						.count();
-					let opp_tiles_after = game_copy
-						.board
-						.tiles()
-						.filter(|(_, t)| t.owner != game.current_player)
-						.count();
-
-					// In scored mode, heavily prefer MOVE captures
-					if game.rule_set.scored_mode
-						&& matches!(action.action_type, ActionType::Move { .. })
-					{
-						let captures = opp_tiles_before.saturating_sub(opp_tiles_after);
-						weight += captures as i32 * 30;
-					} else {
-						// Prefer captures (opponent loses tiles)
-						let captures = opp_tiles_before.saturating_sub(opp_tiles_after);
-						weight += captures as i32 * 10;
-					}
-
-					// Heavily avoid self-removal
-					let self_loss = my_tiles_before.saturating_sub(my_tiles_after);
-					weight -= self_loss as i32 * 15;
 				}
 
 				(action, weight)

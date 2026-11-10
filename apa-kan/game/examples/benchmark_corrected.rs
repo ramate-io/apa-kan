@@ -489,7 +489,7 @@ fn run_pairing(
 		let result = play_game(&p1, &p2, rule_set, true);
 
 		// Collect per-bot stats
-		if !p1.stats.borrow().nodes_searched == 0 && bot_a == BotType::Mcts {
+		if p1.stats.borrow().nodes_searched > 0 && bot_a == BotType::Mcts {
 			stats
 				.bot_a_stats
 				.mcts_iterations
