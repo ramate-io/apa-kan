@@ -87,7 +87,15 @@ fn generate_move_actions(game: &Game, player: Player) -> Vec<Action> {
 		let rotation_range = if game.rule_set.fixed_rotation { 0..2 } else { 0..4 };
 
 		for rotation_count in rotation_range {
-			let rotated_tile = tile.rotated_n_times(rotation_count);
+			let rotated_tile = if game.rule_set.fixed_rotation && rotation_count == 1 {
+				match tile.rotation_direction {
+					super::core::RotationDirection::Clockwise => tile.rotate_cw(),
+					super::core::RotationDirection::CounterClockwise => tile.rotate_ccw(),
+				}
+			} else {
+				tile.rotated_n_times(rotation_count)
+			};
+
 			let reachable = find_reachable_destinations(game, *pos, &rotated_tile);
 			for dest in reachable {
 				if dest != *pos {
@@ -329,5 +337,48 @@ mod tests {
 		game.player_one_stack.clear();
 
 		assert!(!has_legal_add_or_move(&game, Player::One));
+	}
+
+	#[test]
+	fn test_fixed_rotation_respects_ccw_direction() {
+		use crate::game::core::RotationDirection;
+
+		let mut game = Game::new_with_rules(crate::game::core::RuleSet::new());
+		let mut ccw_tile = Tile::new(
+			0,
+			Player::One,
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+			Edge { color: Color::Green, weight: EdgeWeight::Single },
+			Edge { color: Color::Blue, weight: EdgeWeight::Single },
+			Edge { color: Color::Orange, weight: EdgeWeight::Single },
+		);
+		ccw_tile.rotation_direction = RotationDirection::CounterClockwise;
+
+		let helper_tile = Tile::new(
+			1,
+			Player::One,
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+			Edge { color: Color::Maroon, weight: EdgeWeight::Single },
+		);
+
+		game.board.place(Position::new(0, 1), ccw_tile);
+		game.board.place(Position::new(0, 2), helper_tile);
+
+		let actions = generate_move_actions(&game, Player::One);
+
+		let ccw_rotations: Vec<_> = actions
+			.iter()
+			.filter(|a| {
+				if let ActionType::Move { tile_id, rotation_count, .. } = a.action_type {
+					tile_id == 0 && rotation_count == 1
+				} else {
+					false
+				}
+			})
+			.collect();
+
+		assert!(ccw_rotations.len() > 0, "Should generate rotation=1 moves for CCW tile");
 	}
 }
