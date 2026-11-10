@@ -146,7 +146,7 @@ fn handle_click(
 	click_pos: Vec2,
 ) {
 	if let Some(ref mut rotation_mode) = input_state.rotation_mode {
-		let tile_pos = board_to_screen_pos(rotation_mode.position);
+		let tile_pos = board_to_screen_pos(rotation_mode.position, game.0.board.size());
 		let distance = click_pos.distance(tile_pos);
 
 		if distance < TILE_SIZE / 2.0 {
@@ -154,7 +154,7 @@ fn handle_click(
 			return;
 		}
 
-		let board_pos = screen_to_board_pos(click_pos);
+		let board_pos = screen_to_board_pos(click_pos, &game.0);
 		if let Some(dest_pos) = board_pos {
 			if dest_pos != rotation_mode.position {
 				let action = Action::move_tile(
@@ -176,7 +176,7 @@ fn handle_click(
 		return;
 	}
 
-	let board_pos = screen_to_board_pos(click_pos);
+	let board_pos = screen_to_board_pos(click_pos, &game.0);
 	if let Some(pos) = board_pos {
 		if let Some(selection) = &input_state.selection {
 			match selection {
@@ -225,14 +225,17 @@ fn handle_click(
 	}
 }
 
-fn screen_to_board_pos(screen_pos: Vec2) -> Option<Position> {
-	const SQUARE_SIZE: f32 = 500.0 / 5.0;
+fn screen_to_board_pos(screen_pos: Vec2, game: &Game) -> Option<Position> {
+	const BOARD_SIZE: f32 = 500.0;
+	let board_size = game.board.size() as i8;
+	let square_size = BOARD_SIZE / board_size as f32;
+	let center = (board_size - 1) as f32 / 2.0;
 
-	let col = ((screen_pos.x / SQUARE_SIZE + 2.5).floor() as i8).clamp(0, 4);
-	let row = ((2.5 - screen_pos.y / SQUARE_SIZE).floor() as i8).clamp(0, 4);
+	let col = ((screen_pos.x / square_size + center + 0.5).floor() as i8).clamp(0, board_size - 1);
+	let row = ((center + 0.5 - screen_pos.y / square_size).floor() as i8).clamp(0, board_size - 1);
 
 	let pos = Position::new(row, col);
-	if pos.is_valid() {
+	if game.board.is_valid(pos) {
 		Some(pos)
 	} else {
 		None
@@ -282,7 +285,7 @@ fn update_highlights(
 				for action in legal_actions {
 					if let ActionType::Add { tile_index, position } = action.action_type {
 						if tile_index == *index {
-							let screen_pos = board_to_screen_pos(position);
+							let screen_pos = board_to_screen_pos(position, game.0.board.size());
 							gizmos.circle_2d(
 								Isometry2d::from_translation(screen_pos),
 								40.0,
@@ -298,7 +301,7 @@ fn update_highlights(
 						action.action_type
 					{
 						if move_tile_id == *tile_id {
-							let screen_pos = board_to_screen_pos(destination);
+							let screen_pos = board_to_screen_pos(destination, game.0.board.size());
 							gizmos.circle_2d(
 								Isometry2d::from_translation(screen_pos),
 								40.0,
@@ -312,7 +315,7 @@ fn update_highlights(
 	}
 
 	if let Some(ref rotation_mode) = input_state.rotation_mode {
-		let screen_pos = board_to_screen_pos(rotation_mode.position);
+		let screen_pos = board_to_screen_pos(rotation_mode.position, game.0.board.size());
 		gizmos.circle_2d(
 			Isometry2d::from_translation(screen_pos),
 			50.0,
