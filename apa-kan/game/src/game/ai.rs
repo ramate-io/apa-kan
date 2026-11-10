@@ -237,7 +237,7 @@ impl AiPlayer {
 		});
 
 		let mobility_diff = (my_actions.len() as i32) - (opponent_actions.len() as i32);
-		
+
 		let my_bank = match player {
 			Player::One => game.add_bank_p1 as i32,
 			Player::Two => game.add_bank_p2 as i32,
@@ -246,7 +246,7 @@ impl AiPlayer {
 			Player::One => game.add_bank_p2 as i32,
 			Player::Two => game.add_bank_p1 as i32,
 		};
-		
+
 		mobility_diff * 10 + (my_bank - opp_bank) * 5
 	}
 

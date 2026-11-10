@@ -1,5 +1,5 @@
 use apa_kan::game::{
-	Action, ActionType, AiConfig, AiPlayer, BotType, Game, GameState, Player, Rules, RuleSet,
+	Action, ActionType, AiConfig, AiPlayer, BotType, Game, GameState, Player, RuleSet, Rules,
 };
 use std::time::Instant;
 
@@ -189,10 +189,8 @@ fn run_pairing(
 	for i in 0..games_per_side {
 		let seed = base_seed.wrapping_mul(1000).wrapping_add(i as u64);
 
-		let p1 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot1_type, time_budget: None },
-			seed,
-		);
+		let p1 =
+			AiPlayer::new_seeded(AiConfig { depth, bot_type: bot1_type, time_budget: None }, seed);
 		let p2 = AiPlayer::new_seeded(
 			AiConfig { depth, bot_type: bot2_type, time_budget: None },
 			seed.wrapping_add(1),
@@ -223,10 +221,8 @@ fn run_pairing(
 	for i in 0..games_per_side {
 		let seed = base_seed.wrapping_mul(3000).wrapping_add(i as u64);
 
-		let p1 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot2_type, time_budget: None },
-			seed,
-		);
+		let p1 =
+			AiPlayer::new_seeded(AiConfig { depth, bot_type: bot2_type, time_budget: None }, seed);
 		let p2 = AiPlayer::new_seeded(
 			AiConfig { depth, bot_type: bot1_type, time_budget: None },
 			seed.wrapping_add(1),
@@ -269,8 +265,7 @@ fn print_variant_results(variant_name: &str, all_pairings: &[PairingStats], elap
 
 	for stats in all_pairings {
 		let move_pct = if stats.total_moves + stats.total_games * 11 > 0 {
-			(stats.total_moves as f64 / (stats.total_moves + stats.total_games * 11) as f64)
-				* 100.0
+			(stats.total_moves as f64 / (stats.total_moves + stats.total_games * 11) as f64) * 100.0
 		} else {
 			0.0
 		};
@@ -343,7 +338,10 @@ fn main() {
 
 	let variants = [
 		("Old Rules", RuleSet::old()),
-		("A Only (Fixed Rotation)", RuleSet { fixed_rotation: true, add_bank: false, moved_tile_immunity: false }),
+		(
+			"A Only (Fixed Rotation)",
+			RuleSet { fixed_rotation: true, add_bank: false, moved_tile_immunity: false },
+		),
 		("A+B (Rotation + Bank)", RuleSet::new()),
 		("A+B+C (All Rules)", RuleSet::with_immunity()),
 	];
