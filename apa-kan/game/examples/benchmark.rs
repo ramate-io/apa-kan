@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use apa_kan::game::{
 	Action, ActionType, AiConfig, AiPlayer, BotType, Game, GameState, Player, Rules,
 };
@@ -100,7 +102,7 @@ impl PairingStats {
 	}
 }
 
-fn play_game(p1: &AiPlayer, p2: &AiPlayer, tile_seed: u64, max_turns: usize) -> MatchResult {
+fn play_game(p1: &AiPlayer, p2: &AiPlayer, _tile_seed: u64, max_turns: usize) -> MatchResult {
 	let mut game = Game::new(); // Will add seed support later if needed
 	let mut p1_actions = ActionCounts::default();
 	let mut p2_actions = ActionCounts::default();

@@ -40,9 +40,7 @@ fn init_game(mut commands: Commands, config: Res<GameConfig>) {
 }
 
 #[derive(Component)]
-struct BoardSquare {
-	position: Position,
-}
+struct BoardSquare;
 
 #[derive(Component)]
 struct BoardEntity;
@@ -73,7 +71,7 @@ fn setup_board(
 
 			commands.spawn((
 				BoardEntity,
-				BoardSquare { position: pos },
+				BoardSquare,
 				Sprite { color, custom_size: Some(Vec2::splat(sq - 3.0)), ..default() },
 				Transform::from_xyz(screen.x, screen.y, 0.0),
 			));
@@ -135,7 +133,7 @@ fn apply_bot_action(
 	if let Some(mut task) = bot_state.task.take() {
 		if let Some(action) = future::block_on(future::poll_once(&mut task)) {
 			let who = actor_label(&config, action.player);
-			apply_recorded_action(&mut game.0, &config, &mut input, action, &who);
+			apply_recorded_action(&mut game.0, &mut input, action, &who);
 			bot_state.thinking = false;
 		} else {
 			bot_state.task = Some(task);

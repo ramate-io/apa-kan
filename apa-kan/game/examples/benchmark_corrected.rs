@@ -1,11 +1,13 @@
+#![allow(dead_code)]
+
 // Corrected benchmark with proper seat swapping and measurements
 // Fixes: seat swapping, per-bot stats, branching from legal actions, capture causation, per-bot depth
 
 use apa_kan::game::{
-	actions::generate_legal_actions, Action, ActionType, AiConfig, AiPlayer, BotType, Game,
-	GameState, Player, RuleSet, Rules,
+	actions::generate_legal_actions, ActionType, AiConfig, AiPlayer, BotType, Game, GameState,
+	Player, RuleSet, Rules,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::Path;

@@ -1,6 +1,6 @@
 // Quick test to diagnose 7x7 Mcts performance
 use apa_kan::game::{AiConfig, AiPlayer, BotType, Game, RuleSet, Rules};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn main() {
 	let time_budget = Duration::from_millis(500);

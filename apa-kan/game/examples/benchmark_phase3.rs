@@ -2,6 +2,8 @@
 // New defaults: corner-adjacent ADD + bank 7 + fixed rotation
 // Seat-correct win counting, incremental disk writes
 
+#![allow(dead_code)]
+
 use apa_kan::game::{
 	Action, ActionType, AiConfig, AiPlayer, BotType, Game, GameState, Player, RuleSet, Rules,
 };
@@ -42,10 +44,10 @@ enum EndReason {
 
 #[derive(Debug, Clone, Default)]
 struct MoveProfile {
-	nodes_searched: u64,
+	_nodes_searched: u64,
 	add_actions: u64,
 	move_actions: u64,
-	duration: Duration,
+	_duration: Duration,
 	mcts_iterations: u64,
 	effective_depth: u8,
 }
@@ -56,14 +58,6 @@ struct GameProfile {
 }
 
 impl GameProfile {
-	fn avg_nodes_per_move(&self) -> f64 {
-		if self.move_profiles.is_empty() {
-			return 0.0;
-		}
-		let total: u64 = self.move_profiles.iter().map(|p| p.nodes_searched).sum();
-		total as f64 / self.move_profiles.len() as f64
-	}
-
 	fn avg_branching_factor(&self) -> (f64, f64) {
 		if self.move_profiles.is_empty() {
 			return (0.0, 0.0);
@@ -96,7 +90,7 @@ struct MatchResult {
 	first_player_won: bool,
 	is_draw: bool,
 	turns: usize,
-	reason: EndReason,
+	_reason: EndReason,
 	p1_actions: ActionStats,
 	p2_actions: ActionStats,
 	profile: GameProfile,
@@ -165,14 +159,6 @@ impl PairingStats {
 		} else {
 			self.total_turns as f64 / self.total_games as f64
 		}
-	}
-
-	fn avg_nodes_per_move(&self) -> f64 {
-		if self.profiles.is_empty() {
-			return 0.0;
-		}
-		let sum: f64 = self.profiles.iter().map(|p| p.avg_nodes_per_move()).sum();
-		sum / self.profiles.len() as f64
 	}
 
 	fn avg_branching_factor(&self) -> (f64, f64) {
@@ -292,10 +278,10 @@ fn play_game(p1: &AiPlayer, p2: &AiPlayer, rule_set: RuleSet, track_depth: bool)
 			};
 
 			profile.move_profiles.push(MoveProfile {
-				nodes_searched: stats.nodes_searched,
+				_nodes_searched: stats.nodes_searched,
 				add_actions: stats.add_actions_generated,
 				move_actions: stats.move_actions_generated,
-				duration: move_duration,
+				_duration: move_duration,
 				mcts_iterations: stats.nodes_searched,
 				effective_depth,
 			});
@@ -314,7 +300,7 @@ fn play_game(p1: &AiPlayer, p2: &AiPlayer, rule_set: RuleSet, track_depth: bool)
 				first_player_won: current_player == Player::Two,
 				is_draw: false,
 				turns: game.turn_count,
-				reason: EndReason::NoLegalMoves,
+				_reason: EndReason::NoLegalMoves,
 				p1_actions,
 				p2_actions,
 				profile,
@@ -327,7 +313,7 @@ fn play_game(p1: &AiPlayer, p2: &AiPlayer, rule_set: RuleSet, track_depth: bool)
 					first_player_won: winner == Player::One,
 					is_draw: false,
 					turns: game.turn_count,
-					reason: EndReason::NoLegalMoves,
+					_reason: EndReason::NoLegalMoves,
 					p1_actions,
 					p2_actions,
 					profile,
@@ -343,7 +329,7 @@ fn play_game(p1: &AiPlayer, p2: &AiPlayer, rule_set: RuleSet, track_depth: bool)
 					first_player_won: false,
 					is_draw: true,
 					turns: game.turn_count,
-					reason,
+					_reason: reason,
 					p1_actions,
 					p2_actions,
 					profile,
@@ -357,7 +343,7 @@ fn play_game(p1: &AiPlayer, p2: &AiPlayer, rule_set: RuleSet, track_depth: bool)
 		first_player_won: false,
 		is_draw: true,
 		turns: game.turn_count,
-		reason: EndReason::TurnLimitDraw,
+		_reason: EndReason::TurnLimitDraw,
 		p1_actions,
 		p2_actions,
 		profile,

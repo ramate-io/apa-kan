@@ -49,15 +49,17 @@ cargo run -p apa-kan -- --bot ore
 - `--bot <none|ore|olusare|ologbon|mcts>` (default: none = hot-seat)
 - `--seat <1|2>` Human player's seat (default: 1)
 - `--size <5|7>` Board size (default: 5)
-- `--rules <scored|old>` Rule set (default: scored)
+- `--rules <scored|old>` Rule set (default: scored). The space is required (`--rules scored`, not `--rulesscored`).
 - `--think-ms <n>` Bot think time in milliseconds (default: 500)
+
+Unknown or malformed arguments print an error and usage, then exit with a non-zero status.
 
 **Gameplay:**
 - On your turn, green **ADD** markers show legal placement squares. Click one, then click a tile from your bench (bottom of the screen).
 - Click one of your tiles on the board to see purple **MOVE** destinations. Press `R` to rotate, then click a destination.
 - Both benches stay visible: yours at the bottom, the opponent's at the top, with edge colors and P1/P2 labels.
 - When it's your turn and you have no legal moves in scored mode, press `P` or the Pass button
-- Each action is described on the **Last move** line and printed to stdout
+- Each action is described on the **Last move** line and printed to stdout. If tiles are removed, the log names whose tile, where, and why (mismatch). A mismatched ADD next to your only tile can remove **both** tiles — that is the current rule, not a UI bug.
 - Status display shows: whose turn, tile counts, ADD banks remaining, and turn number
 
 Build for release:

@@ -1,6 +1,7 @@
 use crate::config::GameConfig;
-use crate::game::core::{Player, Position, TileId};
-use crate::game::{Action, ActionType};
+use crate::game::core::{Game, Player, Position, TileId};
+use crate::game::rules::Rules;
+use crate::game::{Action, ActionType, TileRemoval};
 use bevy::prelude::*;
 
 #[derive(Resource, Default)]
@@ -62,41 +63,110 @@ pub fn actor_label(config: &GameConfig, player: Player) -> String {
 	}
 }
 
+pub struct LoggedAction {
+	pub text: String,
+	pub squares: Vec<Position>,
+	pub removals: Vec<TileRemoval>,
+}
+
+pub fn player_tag(player: Player) -> &'static str {
+	match player {
+		Player::One => "P1",
+		Player::Two => "P2",
+	}
+}
+
+pub fn format_removals(removals: &[TileRemoval]) -> String {
+	if removals.is_empty() {
+		return String::new();
+	}
+
+	let mut items = removals.to_vec();
+	items.sort_by_key(|r| (r.position.row, r.position.col));
+
+	if items.len() == 2 {
+		return format!(
+			"; both tiles removed (mismatch): {} at row {}, col {} and {} at row {}, col {}",
+			player_tag(items[0].owner),
+			items[0].position.row,
+			items[0].position.col,
+			player_tag(items[1].owner),
+			items[1].position.row,
+			items[1].position.col
+		);
+	}
+
+	if items.len() == 1 {
+		return format!(
+			"; {} tile at row {}, col {} removed (mismatch)",
+			player_tag(items[0].owner),
+			items[0].position.row,
+			items[0].position.col
+		);
+	}
+
+	let listed: Vec<String> = items
+		.iter()
+		.map(|r| {
+			format!("{} at row {}, col {}", player_tag(r.owner), r.position.row, r.position.col)
+		})
+		.collect();
+	format!("; tiles removed (mismatch): {}", listed.join(", "))
+}
+
 pub fn describe_action(
 	who: &str,
 	action: Action,
 	from: Option<Position>,
 	captured: usize,
-	self_removed: bool,
+	removals: &[TileRemoval],
 ) -> String {
-	match action.action_type {
+	let mut text = match action.action_type {
 		ActionType::Add { position, .. } => {
-			let mut text =
-				format!("{who} ADDed tile at row {}, col {}", position.row, position.col);
-			if self_removed {
-				text.push_str(" (removed immediately - mismatched)");
-			}
-			text
+			format!("{who} ADDed tile at row {}, col {}", position.row, position.col)
 		}
 		ActionType::Move { destination, rotation_count, .. } => {
 			let origin = from
 				.map(|p| format!("row {} col {}", p.row, p.col))
 				.unwrap_or_else(|| "?".into());
-			let mut text =
+			let mut line =
 				format!("{who} MOVEd {origin} -> row {} col {}", destination.row, destination.col);
 			if rotation_count > 0 {
-				text.push_str(&format!(", rotated {rotation_count}"));
+				line.push_str(&format!(", rotated {rotation_count}"));
 			}
 			if captured > 0 {
-				text.push_str(&format!(", captured {captured}"));
+				line.push_str(&format!(", captured {captured}"));
 			}
-			if self_removed {
-				text.push_str(" (own tile removed)");
-			}
-			text
+			line
 		}
 		ActionType::Pass => format!("{who} passed"),
+	};
+	text.push_str(&format_removals(removals));
+	text
+}
+
+pub fn log_applied_action(
+	game: &mut Game,
+	who: &str,
+	action: Action,
+) -> Result<LoggedAction, String> {
+	let from = match action.action_type {
+		ActionType::Move { tile_id, .. } => {
+			game.board.tiles().find(|(_, t)| t.id == tile_id).map(|(pos, _)| *pos)
+		}
+		_ => None,
+	};
+	let opp_before = opponent_count(game, action.player);
+	let outcome = Rules::apply_action(game, action)?;
+	let captured = opp_before.saturating_sub(opponent_count(game, action.player));
+	let text = describe_action(who, action, from, captured, &outcome.removals);
+	let mut squares = action_squares(action, from);
+	for removal in &outcome.removals {
+		if !squares.contains(&removal.position) {
+			squares.push(removal.position);
+		}
 	}
+	Ok(LoggedAction { text, squares, removals: outcome.removals })
 }
 
 pub fn action_squares(action: Action, from: Option<Position>) -> Vec<Position> {

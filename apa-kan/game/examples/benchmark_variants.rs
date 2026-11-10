@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use apa_kan::game::{
 	Action, ActionType, AiConfig, AiPlayer, BotType, Game, GameState, Player, RuleSet, Rules,
 };

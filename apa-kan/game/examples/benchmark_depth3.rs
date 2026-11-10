@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 // Scoped depth-3 benchmark: 3 variants, 3 pairings, 20 games/side
 // Run pairings sequentially to completion
 

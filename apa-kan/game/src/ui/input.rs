@@ -1,15 +1,13 @@
 use crate::config::GameConfig;
 use crate::game::actions::{generate_legal_actions, has_legal_add_or_move, Action, ActionType};
 use crate::game::core::{Game, Player, Position};
-use crate::game::rules::Rules;
 use crate::ui::board::{BotState, GameResource};
 use crate::ui::layout::{
 	bench_slot_x, bench_tile_size, human_bench_y, opponent_bench_y, screen_to_board,
 };
 use crate::ui::menu::GameScreen;
 use crate::ui::state::{
-	action_squares, actor_label, describe_action, human_player, is_human_turn, opponent_count,
-	InputState, LastMove, Selection,
+	actor_label, human_player, is_human_turn, log_applied_action, InputState, LastMove, Selection,
 };
 use bevy::prelude::*;
 
@@ -36,30 +34,11 @@ struct HudLastMove;
 #[derive(Component)]
 struct PassButton;
 
-pub fn apply_recorded_action(
-	game: &mut Game,
-	config: &GameConfig,
-	input: &mut InputState,
-	action: Action,
-	who: &str,
-) {
-	let from = match action.action_type {
-		ActionType::Move { tile_id, .. } => {
-			game.board.tiles().find(|(_, t)| t.id == tile_id).map(|(pos, _)| *pos)
-		}
-		_ => None,
-	};
-	let opp_before = opponent_count(game, action.player);
-	let self_before = game.board.tiles().filter(|(_, t)| t.owner == action.player).count();
-	match Rules::apply_action(game, action) {
-		Ok(()) => {
-			let captured = opp_before.saturating_sub(opponent_count(game, action.player));
-			let self_after = game.board.tiles().filter(|(_, t)| t.owner == action.player).count();
-			let self_removed =
-				matches!(action.action_type, ActionType::Add { .. }) && self_after <= self_before;
-			let text = describe_action(who, action, from, captured, self_removed);
-			println!("{text}");
-			input.last_move = Some(LastMove { text, squares: action_squares(action, from) });
+pub fn apply_recorded_action(game: &mut Game, input: &mut InputState, action: Action, who: &str) {
+	match log_applied_action(game, who, action) {
+		Ok(logged) => {
+			println!("{}", logged.text);
+			input.last_move = Some(LastMove { text: logged.text, squares: logged.squares });
 			input.selection = Selection::None;
 			input.rotation = 0;
 		}
@@ -136,7 +115,7 @@ fn handle_bench_click(
 	if let Selection::PendingAdd { position } = input.selection {
 		let action = Action::add(game.0.current_player, index, position);
 		let who = actor_label(config, game.0.current_player);
-		apply_recorded_action(&mut game.0, config, input, action, &who);
+		apply_recorded_action(&mut game.0, input, action, &who);
 	}
 }
 
@@ -162,7 +141,7 @@ fn handle_board_click(
 			)
 		}) {
 			let who = actor_label(config, game.0.current_player);
-			apply_recorded_action(&mut game.0, config, input, action, &who);
+			apply_recorded_action(&mut game.0, input, action, &who);
 			return;
 		}
 		if let Some(action) = legal.iter().copied().find(|action| {
@@ -173,7 +152,7 @@ fn handle_board_click(
 			)
 		}) {
 			let who = actor_label(config, game.0.current_player);
-			apply_recorded_action(&mut game.0, config, input, action, &who);
+			apply_recorded_action(&mut game.0, input, action, &who);
 			return;
 		}
 	}
@@ -210,7 +189,7 @@ fn try_pass(game: &mut GameResource, config: &GameConfig, input: &mut InputState
 	}
 	let action = Action::pass(game.0.current_player);
 	let who = actor_label(config, game.0.current_player);
-	apply_recorded_action(&mut game.0, config, input, action, &who);
+	apply_recorded_action(&mut game.0, input, action, &who);
 }
 
 fn bench_hit(click: Vec2, game: &Game, player: Player, config: &GameConfig) -> Option<usize> {

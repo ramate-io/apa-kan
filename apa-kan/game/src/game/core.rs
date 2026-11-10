@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::hash::Hash;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Color {
@@ -458,7 +457,6 @@ impl Game {
 	}
 
 	fn initialize_random_tiles(&mut self) {
-		use rand::Rng;
 		let mut rng = rand::thread_rng();
 
 		for player in [Player::One, Player::Two] {

@@ -1,10 +1,21 @@
 use super::actions::{has_legal_add_or_move, Action, ActionType};
-use super::core::{Game, GameState, Player, Position, Tile};
+use super::core::{Game, GameState, Player, Position};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileRemoval {
+	pub position: Position,
+	pub owner: Player,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ActionOutcome {
+	pub removals: Vec<TileRemoval>,
+}
 
 pub struct Rules;
 
 impl Rules {
-	pub fn apply_action(game: &mut Game, action: Action) -> Result<(), String> {
+	pub fn apply_action(game: &mut Game, action: Action) -> Result<ActionOutcome, String> {
 		if game.is_game_over() {
 			return Err("Game is over".to_string());
 		}
@@ -46,7 +57,7 @@ impl Rules {
 			game.consecutive_passes = 0;
 		}
 
-		Self::check_and_remove_all_mismatched(game);
+		let removals = Self::check_and_remove_all_mismatched(game);
 
 		if is_move && game.rule_set.scored_mode {
 			let opponent_tiles_after =
@@ -72,7 +83,7 @@ impl Rules {
 		Self::check_turn_limit_draw(game);
 		Self::check_repetition_draw(game);
 
-		Ok(())
+		Ok(ActionOutcome { removals })
 	}
 
 	fn apply_add(game: &mut Game, tile_index: usize, position: Position) -> Result<(), String> {
@@ -174,7 +185,7 @@ impl Rules {
 		Ok(())
 	}
 
-	fn check_and_remove_all_mismatched(game: &mut Game) {
+	fn check_and_remove_all_mismatched(game: &mut Game) -> Vec<TileRemoval> {
 		let mut tiles_to_remove = Vec::new();
 
 		let tile_count = game.board.tiles().count();
@@ -214,8 +225,12 @@ impl Rules {
 			}
 		}
 
+		tiles_to_remove.sort_by_key(|pos| (pos.row, pos.col));
+
+		let mut removals = Vec::new();
 		for position in tiles_to_remove {
 			if let Some(tile) = game.board.remove(position) {
+				removals.push(TileRemoval { position, owner: tile.owner });
 				match tile.owner {
 					Player::One => {
 						if game.rule_set.add_bank {
@@ -230,6 +245,7 @@ impl Rules {
 				}
 			}
 		}
+		removals
 	}
 
 	pub fn check_win_condition(game: &mut Game) {
@@ -431,8 +447,6 @@ mod tests {
 
 		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(2, 2))).ok();
 		game.current_player = Player::One;
-
-		let initial_stack_size = game.player_one_stack.len();
 
 		Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(1, 2))).ok();
 
@@ -735,5 +749,33 @@ mod tests {
 		Rules::check_win_condition(&mut game);
 
 		assert_eq!(game.state, GameState::Won(Player::Two));
+	}
+
+	#[test]
+	fn test_adjacent_mismatch_add_removes_both_tiles() {
+		let p1 = make_tile(0, Player::One, [Color::Maroon; 4]);
+		let p2 = make_tile(1, Player::Two, [Color::Green; 4]);
+		let mut game = Game::new_with_tiles_and_rules(vec![p1], vec![p2], RuleSet::scored());
+
+		let first =
+			Rules::apply_action(&mut game, Action::add(Player::One, 0, Position::new(2, 0)))
+				.expect("P1 ADD at (2,0) should be legal");
+		assert!(first.removals.is_empty(), "mid-edge ADD with empty neighbors must stay");
+		assert!(game.board.get(Position::new(2, 0)).is_some());
+
+		let second =
+			Rules::apply_action(&mut game, Action::add(Player::Two, 0, Position::new(1, 0)))
+				.expect("P2 ADD at (1,0) should be legal");
+		assert_eq!(second.removals.len(), 2, "mismatching adjacent ADD removes both tiles");
+		assert!(game.board.get(Position::new(2, 0)).is_none());
+		assert!(game.board.get(Position::new(1, 0)).is_none());
+		assert!(second
+			.removals
+			.iter()
+			.any(|r| r.position == Position::new(2, 0) && r.owner == Player::One));
+		assert!(second
+			.removals
+			.iter()
+			.any(|r| r.position == Position::new(1, 0) && r.owner == Player::Two));
 	}
 }

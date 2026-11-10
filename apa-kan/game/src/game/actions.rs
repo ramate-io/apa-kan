@@ -161,7 +161,7 @@ fn find_reachable_destinations(
 
 			visited.insert(neighbor_pos);
 
-			if let Some(neighbor_tile) = game.board.get(neighbor_pos) {
+			if game.board.get(neighbor_pos).is_some() {
 				if can_cross_edge(game, tile, direction, neighbor_pos) {
 					queue.push_back(neighbor_pos);
 				}

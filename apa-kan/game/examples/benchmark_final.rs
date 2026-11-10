@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 // Phase 3 benchmark: All bots including MCTS, 500ms/move, parallel execution
 // New defaults: corner-adjacent ADD + bank 7 + fixed rotation
 // Seat-correct win counting, incremental disk writes

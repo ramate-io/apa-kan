@@ -37,78 +37,132 @@ impl GameConfig {
 		Duration::from_millis(self.think_ms)
 	}
 
-	#[cfg(not(target_os = "android"))]
-	#[cfg(not(target_os = "ios"))]
-	pub fn from_args() -> Self {
-		let mut config = Self::default();
-		let args: Vec<String> = std::env::args().collect();
-		let mut i = 1;
+	pub fn usage() -> &'static str {
+		"Usage: apa-kan [OPTIONS]\n\n\
+Options:\n\
+  --bot <none|ore|olusare|ologbon|mcts>  AI opponent (default: none)\n\
+  --seat <1|2>                           Human seat (default: 1)\n\
+  --size <5|7>                           Board size (default: 5)\n\
+  --rules <scored|old>                   Rule set (default: scored)\n\
+  --think-ms <n>                         Bot think time in ms (default: 500)\n\
+  -h, --help                             Print help"
+	}
 
-		while i < args.len() {
-			match args[i].as_str() {
-				"--bot" => {
-					if i + 1 < args.len() {
-						config.bot = match args[i + 1].as_str() {
-							"none" => None,
-							"ore" => Some(BotType::Ore),
-							"olusare" => Some(BotType::Olusare),
-							"ologbon" => Some(BotType::Ologbon),
-							"mcts" => Some(BotType::Mcts),
-							_ => None,
-						};
-						i += 1;
-					}
-				}
-				"--seat" => {
-					if i + 1 < args.len() {
-						if let Ok(seat) = args[i + 1].parse::<u8>() {
-							if seat == 1 || seat == 2 {
-								config.human_seat = seat;
-							}
-						}
-						i += 1;
-					}
-				}
-				"--size" => {
-					if i + 1 < args.len() {
-						if let Ok(size) = args[i + 1].parse::<u8>() {
-							if size == 5 || size == 7 {
-								config.board_size = size;
-							}
-						}
-						i += 1;
-					}
-				}
-				"--rules" => {
-					if i + 1 < args.len() {
-						config.rules = match args[i + 1].as_str() {
-							"scored" => Rules::Scored,
-							"old" => Rules::Old,
-							_ => Rules::Scored,
-						};
-						i += 1;
-					}
-				}
-				"--think-ms" => {
-					if i + 1 < args.len() {
-						if let Ok(ms) = args[i + 1].parse::<u64>() {
-							config.think_ms = ms;
-						}
-						i += 1;
-					}
-				}
-				_ => {}
-			}
-			i += 1;
+	pub fn parse_args<I, S>(args: I) -> Result<Self, String>
+	where
+		I: IntoIterator<Item = S>,
+		S: AsRef<str>,
+	{
+		let mut argv: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+		if argv.first().is_some_and(|first| !first.starts_with('-')) {
+			argv.remove(0);
 		}
 
-		config
+		let mut config = Self::default();
+		let mut i = 0;
+		while i < argv.len() {
+			let arg = argv[i].as_str();
+			match arg {
+				"-h" | "--help" => {
+					i += 1;
+				}
+				"--bot" | "--seat" | "--size" | "--rules" | "--think-ms" => {
+					let flag = arg.to_string();
+					let value = argv
+						.get(i + 1)
+						.filter(|v| !v.starts_with('-'))
+						.ok_or_else(|| format!("missing value for {flag}"))?;
+					match flag.as_str() {
+						"--bot" => {
+							config.bot = parse_bot(value)?;
+						}
+						"--seat" => {
+							config.human_seat = parse_choice(value, "--seat", &[1, 2])?;
+						}
+						"--size" => {
+							config.board_size = parse_choice(value, "--size", &[5, 7])?;
+						}
+						"--rules" => {
+							config.rules = parse_rules(value)?;
+						}
+						"--think-ms" => {
+							config.think_ms =
+								value.parse::<u64>().map_err(|_| {
+									format!("invalid value '{value}' for --think-ms, expected an integer")
+								})?;
+						}
+						_ => unreachable!(),
+					}
+					i += 2;
+				}
+				other if other.starts_with('-') => {
+					return Err(format!("unknown argument '{other}'"));
+				}
+				other => {
+					return Err(format!("unexpected argument '{other}'"));
+				}
+			}
+		}
+		Ok(config)
+	}
+
+	#[cfg(not(any(target_os = "android", target_os = "ios")))]
+	pub fn from_args() -> Self {
+		let args: Vec<String> = std::env::args().collect();
+		if args.iter().any(|a| a == "--help" || a == "-h") {
+			println!("{}", Self::usage());
+			std::process::exit(0);
+		}
+		match Self::parse_args(&args) {
+			Ok(config) => config,
+			Err(err) => {
+				eprintln!("error: {err}");
+				eprintln!();
+				eprintln!("{}", Self::usage());
+				std::process::exit(1);
+			}
+		}
 	}
 
 	#[cfg(any(target_os = "android", target_os = "ios"))]
 	pub fn from_args() -> Self {
 		Self::default()
 	}
+}
+
+fn parse_bot(value: &str) -> Result<Option<BotType>, String> {
+	match value {
+		"none" => Ok(None),
+		"ore" => Ok(Some(BotType::Ore)),
+		"olusare" => Ok(Some(BotType::Olusare)),
+		"ologbon" => Ok(Some(BotType::Ologbon)),
+		"mcts" => Ok(Some(BotType::Mcts)),
+		_ => Err(format!(
+			"invalid value '{value}' for --bot, expected none|ore|olusare|ologbon|mcts"
+		)),
+	}
+}
+
+fn parse_rules(value: &str) -> Result<Rules, String> {
+	match value {
+		"scored" => Ok(Rules::Scored),
+		"old" => Ok(Rules::Old),
+		_ => Err(format!("invalid value '{value}' for --rules, expected scored|old")),
+	}
+}
+
+fn parse_choice<T: Copy + PartialEq + std::fmt::Display + std::str::FromStr>(
+	value: &str,
+	flag: &str,
+	allowed: &[T],
+) -> Result<T, String> {
+	if let Ok(parsed) = value.parse::<T>() {
+		if allowed.contains(&parsed) {
+			return Ok(parsed);
+		}
+	}
+	let expected = allowed.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|");
+	Err(format!("invalid value '{value}' for {flag}, expected {expected}"))
 }
 
 #[cfg(test)]
@@ -147,5 +201,48 @@ mod tests {
 		assert_eq!(rs.board_size, 5);
 		assert_eq!(rs.scored_mode, false);
 		assert_eq!(rs.add_bank_size, 100);
+	}
+
+	#[test]
+	fn test_parse_valid_args() {
+		let config = GameConfig::parse_args([
+			"apa-kan",
+			"--bot",
+			"ologbon",
+			"--seat",
+			"1",
+			"--size",
+			"5",
+			"--rules",
+			"scored",
+			"--think-ms",
+			"500",
+		])
+		.expect("valid args");
+		assert_eq!(config.bot, Some(BotType::Ologbon));
+		assert_eq!(config.human_seat, 1);
+		assert_eq!(config.board_size, 5);
+		assert_eq!(config.rules, Rules::Scored);
+		assert_eq!(config.think_ms, 500);
+	}
+
+	#[test]
+	fn test_parse_unknown_glued_rules_arg() {
+		let err = GameConfig::parse_args(["apa-kan", "--bot", "ologbon", "--rulesscored"])
+			.expect_err("glued --rulesscored must fail");
+		assert!(err.contains("--rulesscored"), "{err}");
+		assert!(err.contains("unknown argument"), "{err}");
+	}
+
+	#[test]
+	fn test_parse_invalid_bot() {
+		let err = GameConfig::parse_args(["apa-kan", "--bot", "nope"]).unwrap_err();
+		assert!(err.contains("--bot"), "{err}");
+	}
+
+	#[test]
+	fn test_parse_missing_rules_value() {
+		let err = GameConfig::parse_args(["apa-kan", "--rules"]).unwrap_err();
+		assert!(err.contains("missing value for --rules"), "{err}");
 	}
 }

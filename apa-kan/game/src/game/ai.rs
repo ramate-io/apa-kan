@@ -69,7 +69,6 @@ struct MctsNode {
 	wins: f64,
 	children: Vec<Box<MctsNode>>,
 	untried_actions: Vec<Action>,
-	player: Player,
 }
 
 impl BotType {
@@ -175,7 +174,6 @@ impl AiPlayer {
 		}
 
 		let mut best_action = actions[0];
-		let mut best_score = i32::MIN;
 
 		// Iterative deepening: start at depth 1 and progressively go deeper
 		let mut current_depth = 1;
@@ -227,7 +225,6 @@ impl AiPlayer {
 			// Only update best action if we completed the full depth
 			if completed_depth {
 				best_action = depth_best_action;
-				best_score = depth_best_score;
 				current_depth += 1;
 			} else {
 				break;
@@ -460,7 +457,6 @@ impl AiPlayer {
 			wins: 0.0,
 			children: Vec::new(),
 			untried_actions: actions.clone(),
-			player: game.current_player,
 		};
 
 		let mut iterations = 0;
@@ -503,7 +499,6 @@ impl AiPlayer {
 					wins: 0.0,
 					children: Vec::new(),
 					untried_actions: child_actions,
-					player: game.current_player,
 				};
 
 				// 3. Simulation: rollout from this new child
@@ -585,7 +580,6 @@ impl AiPlayer {
 	}
 
 	fn select_untried_action(&self, node: &mut MctsNode) -> Action {
-		use rand::seq::SliceRandom;
 		let weights: Vec<f64> =
 			node.untried_actions.iter().map(|a| self.action_prior(*a)).collect();
 		let total: f64 = weights.iter().sum();
