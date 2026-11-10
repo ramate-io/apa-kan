@@ -1,12 +1,39 @@
-use super::actions::{generate_legal_actions, has_legal_add_or_move, Action};
+use super::actions::{generate_legal_actions, has_legal_add_or_move, Action, ActionType};
 use super::core::{Game, GameState, Player};
 use super::rules::Rules;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 pub struct AiConfig {
 	pub depth: u8,
 	pub bot_type: BotType,
 	pub time_budget: Option<Duration>,
+	pub use_transposition_table: bool,
+	pub use_move_ordering: bool,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct SearchStats {
+	pub nodes_searched: u64,
+	pub add_actions_generated: u64,
+	pub move_actions_generated: u64,
+	pub positions_evaluated: u64,
+	pub tt_hits: u64,
+	pub tt_misses: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TTFlag {
+	Exact,
+	LowerBound,
+	UpperBound,
+}
+
+#[derive(Debug, Clone)]
+struct TTEntry {
+	depth: u8,
+	score: i32,
+	flag: TTFlag,
 }
 
 impl Default for AiConfig {
@@ -15,6 +42,8 @@ impl Default for AiConfig {
 			depth: 3,
 			bot_type: BotType::Ologbon,
 			time_budget: Some(Duration::from_millis(1000)),
+			use_transposition_table: true,
+			use_move_ordering: true,
 		}
 	}
 }
@@ -47,17 +76,37 @@ impl BotType {
 pub struct AiPlayer {
 	config: AiConfig,
 	rng: std::cell::RefCell<rand::rngs::StdRng>,
+	transposition_table: std::cell::RefCell<HashMap<u64, TTEntry>>,
+	pub stats: std::cell::RefCell<SearchStats>,
 }
 
 impl AiPlayer {
 	pub fn new(config: AiConfig) -> Self {
 		use rand::SeedableRng;
-		Self { config, rng: std::cell::RefCell::new(rand::rngs::StdRng::from_entropy()) }
+		Self {
+			config,
+			rng: std::cell::RefCell::new(rand::rngs::StdRng::from_entropy()),
+			transposition_table: std::cell::RefCell::new(HashMap::new()),
+			stats: std::cell::RefCell::new(SearchStats::default()),
+		}
 	}
 
 	pub fn new_seeded(config: AiConfig, seed: u64) -> Self {
 		use rand::SeedableRng;
-		Self { config, rng: std::cell::RefCell::new(rand::rngs::StdRng::seed_from_u64(seed)) }
+		Self {
+			config,
+			rng: std::cell::RefCell::new(rand::rngs::StdRng::seed_from_u64(seed)),
+			transposition_table: std::cell::RefCell::new(HashMap::new()),
+			stats: std::cell::RefCell::new(SearchStats::default()),
+		}
+	}
+
+	pub fn reset_stats(&self) {
+		*self.stats.borrow_mut() = SearchStats::default();
+	}
+
+	pub fn clear_transposition_table(&self) {
+		self.transposition_table.borrow_mut().clear();
 	}
 
 	pub fn choose_action(&self, game: &Game) -> Option<Action> {
@@ -78,8 +127,19 @@ impl AiPlayer {
 	}
 
 	fn choose_minimax(&self, game: &Game) -> Option<Action> {
+		self.reset_stats();
 		let start_time = Instant::now();
-		let actions = generate_legal_actions(game);
+		let mut actions = generate_legal_actions(game);
+
+		{
+			let mut stats = self.stats.borrow_mut();
+			for action in &actions {
+				match action.action_type {
+					ActionType::Add { .. } => stats.add_actions_generated += 1,
+					ActionType::Move { .. } => stats.move_actions_generated += 1,
+				}
+			}
+		}
 
 		if actions.is_empty() {
 			return None;
@@ -87,6 +147,10 @@ impl AiPlayer {
 
 		if actions.len() == 1 {
 			return Some(actions[0]);
+		}
+
+		if self.config.use_move_ordering {
+			actions = self.order_moves(game, actions);
 		}
 
 		let mut best_action = actions[0];
@@ -135,21 +199,66 @@ impl AiPlayer {
 		original_player: Player,
 		start_time: &Instant,
 	) -> i32 {
+		self.stats.borrow_mut().nodes_searched += 1;
+
 		if let Some(time_budget) = self.config.time_budget {
 			if start_time.elapsed() > time_budget {
+				self.stats.borrow_mut().positions_evaluated += 1;
 				return self.evaluate(game, original_player);
 			}
 		}
 
 		if depth == 0 || game.is_game_over() {
+			self.stats.borrow_mut().positions_evaluated += 1;
 			return self.evaluate(game, original_player);
 		}
 
-		let actions = generate_legal_actions(game);
+		if self.config.use_transposition_table {
+			let hash = self.hash_game(game);
+			if let Some(entry) = self.transposition_table.borrow().get(&hash) {
+				if entry.depth >= depth {
+					self.stats.borrow_mut().tt_hits += 1;
+					match entry.flag {
+						TTFlag::Exact => return entry.score,
+						TTFlag::LowerBound => {
+							alpha = alpha.max(entry.score);
+						}
+						TTFlag::UpperBound => {
+							beta = beta.min(entry.score);
+						}
+					}
+					if alpha >= beta {
+						return entry.score;
+					}
+				}
+			} else {
+				self.stats.borrow_mut().tt_misses += 1;
+			}
+		}
+
+		let mut actions = generate_legal_actions(game);
+
+		{
+			let mut stats = self.stats.borrow_mut();
+			for action in &actions {
+				match action.action_type {
+					ActionType::Add { .. } => stats.add_actions_generated += 1,
+					ActionType::Move { .. } => stats.move_actions_generated += 1,
+				}
+			}
+		}
 
 		if actions.is_empty() {
+			self.stats.borrow_mut().positions_evaluated += 1;
 			return self.evaluate(game, original_player);
 		}
+
+		if self.config.use_move_ordering {
+			actions = self.order_moves(game, actions);
+		}
+
+		let original_alpha = alpha;
+		let score;
 
 		if is_maximizing {
 			let mut max_eval = i32::MIN;
@@ -175,7 +284,7 @@ impl AiPlayer {
 				}
 			}
 
-			max_eval
+			score = max_eval;
 		} else {
 			let mut min_eval = i32::MAX;
 
@@ -200,8 +309,74 @@ impl AiPlayer {
 				}
 			}
 
-			min_eval
+			score = min_eval;
 		}
+
+		if self.config.use_transposition_table {
+			let hash = self.hash_game(game);
+			let flag = if score <= original_alpha {
+				TTFlag::UpperBound
+			} else if score >= beta {
+				TTFlag::LowerBound
+			} else {
+				TTFlag::Exact
+			};
+
+			self.transposition_table.borrow_mut().insert(hash, TTEntry { depth, score, flag });
+		}
+
+		score
+	}
+
+	fn hash_game(&self, game: &Game) -> u64 {
+		use std::collections::hash_map::DefaultHasher;
+		use std::hash::{Hash, Hasher};
+		let mut hasher = DefaultHasher::new();
+		
+		for (pos, tile) in game.board.tiles() {
+			pos.row.hash(&mut hasher);
+			pos.col.hash(&mut hasher);
+			tile.id.hash(&mut hasher);
+			tile.owner.hash(&mut hasher);
+		}
+		
+		game.current_player.hash(&mut hasher);
+		game.turn_count.hash(&mut hasher);
+		game.add_bank_p1.hash(&mut hasher);
+		game.add_bank_p2.hash(&mut hasher);
+		
+		hasher.finish()
+	}
+
+	fn order_moves(&self, game: &Game, mut actions: Vec<Action>) -> Vec<Action> {
+		actions.sort_by_cached_key(|action| {
+			let mut game_copy = game.clone();
+			if Rules::apply_action(&mut game_copy, *action).is_err() {
+				return 1000;
+			}
+			
+			let my_tiles_before = game.board.tiles().filter(|(_, t)| t.owner == game.current_player).count();
+			let opp_tiles_before = game.board.tiles().filter(|(_, t)| t.owner != game.current_player).count();
+			let my_tiles_after = game_copy.board.tiles().filter(|(_, t)| t.owner == game.current_player).count();
+			let opp_tiles_after = game_copy.board.tiles().filter(|(_, t)| t.owner != game.current_player).count();
+			
+			let my_bank_before = match game.current_player {
+				Player::One => game.add_bank_p1,
+				Player::Two => game.add_bank_p2,
+			};
+			let my_bank_after = match game.current_player {
+				Player::One => game_copy.add_bank_p1,
+				Player::Two => game_copy.add_bank_p2,
+			};
+			
+			let captures = opp_tiles_before.saturating_sub(opp_tiles_after);
+			let bank_gain = my_bank_after.saturating_sub(my_bank_before);
+			let material_loss = my_tiles_before.saturating_sub(my_tiles_after);
+			
+			(1000 - captures * 100 - bank_gain as usize * 50 + material_loss * 30) as i32
+		});
+		
+		actions
 	}
 
 	fn evaluate(&self, game: &Game, player: Player) -> i32 {
@@ -378,8 +553,13 @@ mod tests {
 	#[test]
 	fn test_ai_chooses_action() {
 		let game = Game::new();
-		let ai =
-			AiPlayer::new(AiConfig { depth: 2, bot_type: BotType::Olusare, time_budget: None });
+		let ai = AiPlayer::new(AiConfig {
+			depth: 2,
+			bot_type: BotType::Olusare,
+			time_budget: None,
+			use_transposition_table: true,
+			use_move_ordering: true,
+		});
 
 		let action = ai.choose_action(&game);
 		assert!(action.is_some());
@@ -388,8 +568,13 @@ mod tests {
 	#[test]
 	fn test_mobility_heuristic() {
 		let game = Game::new();
-		let ai =
-			AiPlayer::new(AiConfig { depth: 1, bot_type: BotType::Olusare, time_budget: None });
+		let ai = AiPlayer::new(AiConfig {
+			depth: 1,
+			bot_type: BotType::Olusare,
+			time_budget: None,
+			use_transposition_table: false,
+			use_move_ordering: false,
+		});
 
 		let score = ai.evaluate_mobility(&game, Player::One);
 		assert!(score >= 0);
@@ -398,8 +583,13 @@ mod tests {
 	#[test]
 	fn test_enhanced_heuristic() {
 		let game = Game::new();
-		let ai =
-			AiPlayer::new(AiConfig { depth: 1, bot_type: BotType::Ologbon, time_budget: None });
+		let ai = AiPlayer::new(AiConfig {
+			depth: 1,
+			bot_type: BotType::Ologbon,
+			time_budget: None,
+			use_transposition_table: false,
+			use_move_ordering: false,
+		});
 
 		let score = ai.evaluate_enhanced(&game, Player::One);
 		assert!(score.abs() < 1000);
@@ -410,7 +600,13 @@ mod tests {
 		use rand::SeedableRng;
 		let game = Game::new();
 		let ai = AiPlayer::new_seeded(
-			AiConfig { depth: 0, bot_type: BotType::Ore, time_budget: None },
+			AiConfig {
+				depth: 0,
+				bot_type: BotType::Ore,
+				time_budget: None,
+				use_transposition_table: false,
+				use_move_ordering: false,
+			},
 			42,
 		);
 
@@ -418,7 +614,13 @@ mod tests {
 		assert!(action1.is_some());
 
 		let ai2 = AiPlayer::new_seeded(
-			AiConfig { depth: 0, bot_type: BotType::Ore, time_budget: None },
+			AiConfig {
+				depth: 0,
+				bot_type: BotType::Ore,
+				time_budget: None,
+				use_transposition_table: false,
+				use_move_ordering: false,
+			},
 			42,
 		);
 		let action2 = ai2.choose_action(&game);
