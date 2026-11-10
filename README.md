@@ -30,7 +30,9 @@ Usage: apa-kan [OPTIONS]
   --delay-ms <n>                             Delay between bot moves (default: 350)
   --actions <1..8>                           Actions per turn (default: 1)
   --turn-limit <n>                           Safety-net draw (default: 200)
-  --screenshot <path>                        Write a board PNG and exit
+  --width <px>                               Window width (default: 1280)
+  --height <px>                              Window height (default: 900)
+  --screenshot <path>                        Capture a mid-game board PNG and exit
   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)
   --center-hold-win <on|off>                 Center-hold win (default: off)
   --center-hold-n <1..64>                    Turns to hold center (default: 5)
@@ -43,19 +45,26 @@ Usage: apa-kan [OPTIONS]
 
 Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`.
 
-Headless screenshot (no window):
+Watch minimax vs MCTS in the GUI (1 s/move):
 
 ```bash
-cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png
+cargo run -p apa-kan --release -- --bot1 minimax --bot2 mcts --think-ms 1000 --delay-ms 250
+cargo run -p apa-kan --release -- --bot1 mcts --bot2 minimax --think-ms 1000 --delay-ms 250
 ```
 
-Round-robin benchmark:
+Headless screenshot (Bevy window under xvfb, or the PNG renderer without `desktop`):
 
 ```bash
-cargo run -p apa-kan-bench --release --no-default-features -- --games 10 --think-ms 200 --bots greedy,minimax,mcts
+cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png --width 1280 --height 800
 ```
 
-Results: [`apa-kan/game/benchmark_results/`](apa-kan/game/benchmark_results/).
+Search head-to-head (branching factor, stalling, minimax/MCTS/greedy):
+
+```bash
+cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- --games 6 --think-ms 1000
+```
+
+Results: [`apa-kan/game/benchmark_results/search_h2h.txt`](apa-kan/game/benchmark_results/search_h2h.txt). One full minimax vs MCTS move list: [`apa-kan/game/benchmark_results/minimax_vs_mcts_game.txt`](apa-kan/game/benchmark_results/minimax_vs_mcts_game.txt). Stall-prevention logs: [`apa-kan/game/benchmark_results/`](apa-kan/game/benchmark_results/). The earlier 20 ms round-robin is in [`apa-kan/game/benchmark_results/round_robin.txt`](apa-kan/game/benchmark_results/round_robin.txt).
 
 ## Test
 
