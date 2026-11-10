@@ -143,11 +143,11 @@ CLI: `--color-restricted-hops <on|off>` `--hop-weight-cmp <lt|le>`
 1. the **mover’s color** (either owner), and
 2. whose weight compares to the mover’s weight with `hop_weight_cmp`.
 
-Default comparison is **`Lt`** (occupant weight **strictly less than** the mover). `Le` is provided so the designer can confirm equal-weight same-color hops. Owner still does not matter. Other colors cannot be hopped at all.
+Default comparison is **`Le`** (occupant weight **less than or equal to** the mover). `Lt` is the stricter option (occupant **strictly less than** the mover). Owner still does not matter. Other colors cannot be hopped at all.
 
 When this option is **off**, the legacy rule applies: hopped tiles may be any color/owner, and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`. The color-restricted regime **overrides** `hop_requires_ge_weight`.
 
-This is the opposite inequality of the default hop (default: hop equal-or-heavier of any color; color-restricted: hop lighter of your color only). Confirm `lt` vs `le` against the intended reading.
+This is the opposite inequality of the default hop (default: hop equal-or-heavier of any color; color-restricted: hop equal-or-lighter of your color only, or strictly lighter with `lt`).
 
 #### 5. `no_repeated_edge` / `path_constraint` (default **NoEdgeRevisit**)
 
@@ -183,7 +183,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` off, `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` off, `hop_weight_cmp` le, `path_constraint` no-edge-revisit.
 
 Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility heuristic; MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out and center-hold terminals are wins/losses in search.
 
@@ -210,5 +210,5 @@ Headless round-robin: `apa-kan-bench` (same rule flags; `--bots greedy,minimax,m
 
 ## Open questions
 
-- Confirm `hop_weight_cmp` (`lt` vs `le`) for color-restricted hops against the intended reading of “if the weight in your color is less than, you can traverse.” Implementation default is strict `<`.
+- Color-restricted hop weight: default is `le` (occupant `<=` mover). `lt` remains available as the stricter reading of “if the weight in your color is less than, you can traverse.”
 - Whether `WhenBenchEmpty` should look at bench emptiness at the start of the turn or at MOVE time (implemented: at MOVE time).

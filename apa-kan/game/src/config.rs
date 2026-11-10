@@ -221,7 +221,7 @@ pub fn usage() -> &'static str {
 	   --no-same-piece-twice <off|always|when-bench-empty>\n\
 	                                              Repeat-piece rule (default: when-bench-empty)\n\
 	   --color-restricted-hops <on|off>           Hop only own color (default: off)\n\
-	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: lt)\n\
+	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -306,6 +306,7 @@ mod tests {
 		assert!(!cfg.rules.center_hold_win);
 		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::WhenBenchEmpty);
 		assert!(!cfg.rules.color_restricted_hops);
+		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 	}
 

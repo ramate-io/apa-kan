@@ -174,7 +174,7 @@ impl PathConstraint {
 ///
 /// Interpretation of the designer's "if the weight in your color is less than,
 /// you can traverse": hop only over the mover's color, comparing occupant
-/// weight to mover weight with this operator. Default is strict `<` (`Lt`).
+/// weight to mover weight with this operator. Default is `<=` (`Le`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HopWeightCmp {
 	Lt,
@@ -259,7 +259,7 @@ pub struct RuleSet {
 	/// [`Self::hop_weight_cmp`]. Experimental; default false.
 	pub color_restricted_hops: bool,
 	/// Occupant-vs-mover weight comparison used when color-restricted hops are
-	/// on. Default [`HopWeightCmp::Lt`] (the designer's "less than" reading).
+	/// on. Default [`HopWeightCmp::Le`] (occupant weight `<=` mover).
 	pub hop_weight_cmp: HopWeightCmp,
 	/// Uniqueness constraint along a single MOVE path.
 	/// Default [`PathConstraint::NoEdgeRevisit`] (`no_repeated_edge` on;
@@ -285,7 +285,7 @@ impl Default for RuleSet {
 			center_hold_n: 5,
 			no_same_piece_twice: SamePieceTwice::WhenBenchEmpty,
 			color_restricted_hops: false,
-			hop_weight_cmp: HopWeightCmp::Lt,
+			hop_weight_cmp: HopWeightCmp::Le,
 			path_constraint: PathConstraint::NoEdgeRevisit,
 		}
 	}
@@ -1751,6 +1751,7 @@ mod tests {
 
 	#[test]
 	fn color_restricted_hops_only_lighter_same_color() {
+		assert_eq!(RuleSet::default().hop_weight_cmp, HopWeightCmp::Le);
 		let mut rules = RuleSet::default();
 		rules.color_restricted_hops = true;
 		rules.hop_weight_cmp = HopWeightCmp::Lt;
