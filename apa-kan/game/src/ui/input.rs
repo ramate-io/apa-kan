@@ -1,7 +1,7 @@
 use crate::game::actions::{generate_legal_actions, has_legal_add_or_move, Action, ActionType};
 use crate::game::core::{Game, GameState, Player, Position};
 use crate::game::rules::Rules;
-use crate::ui::board::{board_to_screen_pos, GameResource};
+use crate::ui::board::{board_to_screen_pos, BotState, GameResource};
 use crate::ui::menu::GameScreen;
 use bevy::prelude::*;
 use std::time::Duration;
@@ -56,6 +56,8 @@ fn handle_input(
 	mut commands: Commands,
 	mut input_state: ResMut<InputState>,
 	mut game: ResMut<GameResource>,
+	bot_state: Res<BotState>,
+	keyboard: Res<ButtonInput<KeyCode>>,
 	mouse: Res<ButtonInput<MouseButton>>,
 	touches: Res<Touches>,
 	windows: Query<&Window>,
@@ -64,6 +66,20 @@ fn handle_input(
 ) {
 	if game.0.is_game_over() {
 		return;
+	}
+
+	if bot_state.thinking {
+		return;
+	}
+
+	if keyboard.just_pressed(KeyCode::KeyP) {
+		if !has_legal_add_or_move(&game.0, game.0.current_player) {
+			let pass_action = Action::pass(game.0.current_player);
+			if let Err(e) = Rules::apply_action(&mut game.0, pass_action) {
+				eprintln!("Pass failed: {:?}", e);
+			}
+			return;
+		}
 	}
 
 	if let Some((_, ref mut timer)) = input_state.feedback_message {
@@ -327,6 +343,7 @@ fn update_highlights(
 fn update_turn_display(
 	mut commands: Commands,
 	game: Res<GameResource>,
+	bot_state: Res<BotState>,
 	mut query: Query<(Entity, &mut Text), With<TurnIndicator>>,
 	feedback_query: Query<Entity, With<FeedbackText>>,
 	input_state: Res<InputState>,
@@ -361,7 +378,15 @@ fn update_turn_display(
 		));
 	}
 
+	let p1_tiles = game.0.board.tiles().filter(|(_, t)| t.owner == Player::One).count();
+	let p2_tiles = game.0.board.tiles().filter(|(_, t)| t.owner == Player::Two).count();
+
 	for (_, mut text) in query.iter_mut() {
+		let status_line = format!(
+			"P1: {} tiles, {} bank | P2: {} tiles, {} bank | Turn: {}/100",
+			p1_tiles, game.0.add_bank_p1, p2_tiles, game.0.add_bank_p2, game.0.turn_count
+		);
+
 		match game.0.state {
 			GameState::InProgress => {
 				let player_name = match game.0.current_player {
@@ -369,28 +394,34 @@ fn update_turn_display(
 					Player::Two => "Player 2",
 				};
 
-				if !has_legal_add_or_move(&game.0, game.0.current_player) {
-					**text = format!(
-						"{} has no legal moves - {} wins!",
-						player_name,
-						match game.0.current_player {
-							Player::One => "Player 2",
-							Player::Two => "Player 1",
-						}
-					);
+				let turn_status = if bot_state.thinking {
+					"Bot thinking...".to_string()
+				} else if !has_legal_add_or_move(&game.0, game.0.current_player) {
+					format!("{} must Pass (press P)", player_name)
 				} else {
-					**text = format!("{}'s Turn", player_name);
-				}
+					format!("{}'s Turn", player_name)
+				};
+
+				**text = format!("{}\n{}", turn_status, status_line);
 			}
 			GameState::Won(player) => {
 				let winner = match player {
 					Player::One => "Player 1",
 					Player::Two => "Player 2",
 				};
-				**text = format!("{} Wins!", winner);
+				let reason = if game.0.turn_count >= 100 {
+					"(100-turn limit)"
+				} else if p1_tiles == 0 || p2_tiles == 0 {
+					"(elimination)"
+				} else {
+					"(tile count)"
+				};
+				**text = format!("{} Wins! {}\n{}", winner, reason, status_line);
 			}
 			GameState::Draw => {
-				**text = "Draw!".to_string();
+				let reason =
+					if game.0.turn_count >= 100 { "(100-turn limit)" } else { "(double pass)" };
+				**text = format!("Draw! {}\n{}", reason, status_line);
 			}
 		}
 	}

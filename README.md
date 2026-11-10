@@ -27,6 +27,36 @@ Build and run the game:
 cargo run -p apa-kan
 ```
 
+### Play against a bot
+
+The desktop game supports AI opponents with configurable settings:
+
+```bash
+# Play as P1 against Ologbon on 5x5 scored rules (500ms think time)
+cargo run -p apa-kan -- --bot ologbon --seat 1 --size 5 --rules scored --think-ms 500
+
+# Play as P2 against Olusare on 7x7 scored rules
+cargo run -p apa-kan -- --bot olusare --seat 2 --size 7 --rules scored
+
+# Play against MCTS on 5x5 old rules
+cargo run -p apa-kan -- --bot mcts --rules old
+
+# Play against random bot (Ore)
+cargo run -p apa-kan -- --bot ore
+```
+
+**Available options:**
+- `--bot <none|ore|olusare|ologbon|mcts>` (default: none = hot-seat)
+- `--seat <1|2>` Human player's seat (default: 1)
+- `--size <5|7>` Board size (default: 5)
+- `--rules <scored|old>` Rule set (default: scored)
+- `--think-ms <n>` Bot think time in milliseconds (default: 500)
+
+**Gameplay:**
+- When it's your turn and you have no legal moves in scored mode, press `P` to pass
+- Bot actions are printed to stdout for review
+- Status display shows: tile counts, ADD banks, turn number, and game result
+
 Build for release:
 
 ```bash

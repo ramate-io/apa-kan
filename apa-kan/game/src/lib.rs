@@ -1,9 +1,12 @@
 use bevy::prelude::*;
 
+pub mod config;
 pub mod game;
 pub mod ui;
 
 pub fn run() {
+	let config = config::GameConfig::from_args();
+
 	App::new()
 		.add_plugins(DefaultPlugins.set(WindowPlugin {
 			primary_window: Some(Window {
@@ -13,6 +16,7 @@ pub fn run() {
 			}),
 			..default()
 		}))
+		.insert_resource(config)
 		.add_plugins((ui::MenuPlugin, ui::BoardPlugin, ui::TileRenderPlugin, ui::InputPlugin))
 		.add_systems(Startup, setup)
 		.run();

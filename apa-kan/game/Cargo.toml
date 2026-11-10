@@ -21,6 +21,7 @@ path = "src/main.rs"
 [dependencies]
 bevy = { workspace = true, features = ["android-native-activity"] }
 rand = "0.8"
+futures-lite = "2.5"
 
 [lints]
 workspace = true
