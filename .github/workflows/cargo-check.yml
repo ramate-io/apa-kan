@@ -8,7 +8,7 @@ jobs:
   cargo-check:
     uses: ./.github/workflows/nix-command.yml
     with:
-      command: RUSTFLAGS=-D warnings cargo check --workspace --all-targets
+      command: RUSTFLAGS="-Dwarnings" cargo check --workspace --all-targets
       nix_flake_path: '.'
       runner: 'ubuntu-latest'
       rust_cache_key: cargo-check
