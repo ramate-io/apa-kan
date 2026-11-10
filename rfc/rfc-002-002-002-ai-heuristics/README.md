@@ -142,19 +142,20 @@ Full results appended after benchmark completes.
 - **Olusare vs Ologbon**: Balanced (50/50), with Olusare winning all first-seat games, Ologbon winning all second-seat games
 - **Ologbon vs Ologbon**: Perfect balance (50/50)
 
-### Mirror Match First-Move Advantage
+### Mirror Match First-Seat Advantage (CORRECTED)
 
-| Bot | First-Player Win Rate | 95% CI | Draw Rate | Sample Size |
-|-----|----------------------|---------|-----------|-------------|
-| **Ore** | 54.0% | [44.2%, 63.8%] | 0.0% | 100 games |
-| **Olusare** | 100.0% | [96.4%, 100%] | 0.0% | 100 games |
-| **Ologbon** | 100.0% | [96.4%, 100%] | 0.0% | 100 games |
+| Bot | First-Seat Win Rate | 95% CI | Draw Rate | Unique Outcomes | Sample Size |
+|-----|----------------------|---------|-----------|-----------------|-------------|
+| **Ore** | 34.0% | [24.7%, 43.3%] | 0.0% | 15 | 100 games |
+| **Olusare** | **0.0%** | [0.0%, 0.0%] | 0.0% | **2** | 100 games |
+| **Ologbon** | **0.0%** | [0.0%, 0.0%] | 0.0% | **1** | 100 games |
 
-**CRITICAL FINDING - SEVERE First-Move Advantage**: 
-- Strategic bots (Olusare, Ologbon) won **100% of games from first position** (100/100 each)
-- The game is **deterministically won by first player** under depth-2 minimax
-- Ore shows weaker first-player advantage (54%, CI overlaps 50%) - advantage exists but less exploitable with random play
-- **This is a critical balance flaw**: optimal play always wins from first position
+**CRITICAL FINDING - SEVERE SECOND-PLAYER ADVANTAGE**: 
+- Strategic bots (Olusare, Ologbon): **Second player won 100% of games** (0/100 first-seat wins)
+- **Games are deterministic**: Only 1-2 unique outcomes per strategic mirror match
+- **Second player always wins** with optimal minimax depth-2 play
+- Ore (random) shows second-player bias: 34% first-seat win rate
+- **This is a fundamental balance flaw**: The game heavily favors the second player
 
 ### End Reasons
 
