@@ -36,8 +36,8 @@ impl Rules {
 	}
 
 	fn apply_add(game: &mut Game, tile_index: usize, position: Position) -> Result<(), String> {
-		let is_valid_position = if game.rule_set.corner_adjacent_add_only {
-			position.is_corner_adjacent()
+		let is_valid_position = if game.rule_set.edge_add_only {
+			position.is_edge()
 		} else {
 			position.is_valid()
 		};

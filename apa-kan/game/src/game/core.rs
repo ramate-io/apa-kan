@@ -180,7 +180,7 @@ pub struct RuleSet {
 	pub add_bank: bool,
 	pub add_bank_size: u8,
 	pub moved_tile_immunity: bool,
-	pub corner_adjacent_add_only: bool,
+	pub edge_add_only: bool,
 }
 
 impl RuleSet {
@@ -190,7 +190,7 @@ impl RuleSet {
 			add_bank: false,
 			add_bank_size: 100,
 			moved_tile_immunity: false,
-			corner_adjacent_add_only: false,
+			edge_add_only: false,
 		}
 	}
 
@@ -200,7 +200,7 @@ impl RuleSet {
 			add_bank: true,
 			add_bank_size: 7,
 			moved_tile_immunity: false,
-			corner_adjacent_add_only: true,
+			edge_add_only: true,
 		}
 	}
 
@@ -210,7 +210,7 @@ impl RuleSet {
 			add_bank: true,
 			add_bank_size: bank_size,
 			moved_tile_immunity: false,
-			corner_adjacent_add_only: true,
+			edge_add_only: true,
 		}
 	}
 
@@ -220,7 +220,7 @@ impl RuleSet {
 			add_bank: true,
 			add_bank_size: 7,
 			moved_tile_immunity: true,
-			corner_adjacent_add_only: true,
+			edge_add_only: true,
 		}
 	}
 }
@@ -250,11 +250,11 @@ impl Position {
 		self.row >= 0 && self.row < 5 && self.col >= 0 && self.col < 5 && !self.is_corner()
 	}
 
-	pub fn is_corner_adjacent(&self) -> bool {
-		matches!(
-			(self.row, self.col),
-			(0, 1) | (1, 0) | (0, 3) | (1, 4) | (3, 0) | (4, 1) | (3, 4) | (4, 3)
-		)
+	pub fn is_edge(&self) -> bool {
+		if self.is_corner() {
+			return false;
+		}
+		self.row == 0 || self.row == 4 || self.col == 0 || self.col == 4
 	}
 
 	pub fn neighbor(&self, direction: Direction) -> Position {
@@ -507,6 +507,40 @@ mod tests {
 		assert!(!Position::new(5, 0).is_valid()); // out of bounds
 		assert!(Position::new(2, 2).is_valid()); // center
 		assert!(Position::new(0, 2).is_valid()); // edge but not corner
+	}
+
+	#[test]
+	fn test_position_edge_detection() {
+		// Corners are not edges
+		assert!(!Position::new(0, 0).is_edge());
+		assert!(!Position::new(0, 4).is_edge());
+		assert!(!Position::new(4, 0).is_edge());
+		assert!(!Position::new(4, 4).is_edge());
+
+		// Top edge (row 0, not corners)
+		assert!(Position::new(0, 1).is_edge());
+		assert!(Position::new(0, 2).is_edge());
+		assert!(Position::new(0, 3).is_edge());
+
+		// Bottom edge (row 4, not corners)
+		assert!(Position::new(4, 1).is_edge());
+		assert!(Position::new(4, 2).is_edge());
+		assert!(Position::new(4, 3).is_edge());
+
+		// Left edge (col 0, not corners)
+		assert!(Position::new(1, 0).is_edge());
+		assert!(Position::new(2, 0).is_edge());
+		assert!(Position::new(3, 0).is_edge());
+
+		// Right edge (col 4, not corners)
+		assert!(Position::new(1, 4).is_edge());
+		assert!(Position::new(2, 4).is_edge());
+		assert!(Position::new(3, 4).is_edge());
+
+		// Interior is not edge
+		assert!(!Position::new(1, 1).is_edge());
+		assert!(!Position::new(2, 2).is_edge());
+		assert!(!Position::new(3, 3).is_edge());
 	}
 
 	#[test]

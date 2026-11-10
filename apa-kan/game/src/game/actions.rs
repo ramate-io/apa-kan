@@ -60,11 +60,11 @@ fn generate_add_actions(game: &Game, player: Player) -> Vec<Action> {
 		for row in 0..5 {
 			for col in 0..5 {
 				let pos = Position::new(row, col);
-				let is_legal_position = if game.rule_set.corner_adjacent_add_only {
-					pos.is_corner_adjacent() && game.board.is_empty(pos)
-				} else {
-					pos.is_valid() && game.board.is_empty(pos)
-				};
+			let is_legal_position = if game.rule_set.edge_add_only {
+				pos.is_edge() && game.board.is_empty(pos)
+			} else {
+				pos.is_valid() && game.board.is_empty(pos)
+			};
 
 				if is_legal_position {
 					actions.push(Action::add(player, tile_index, pos));
@@ -201,11 +201,11 @@ pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 				for row in 0..5 {
 					for col in 0..5 {
 						let pos = Position::new(row, col);
-						let is_legal_position = if game.rule_set.corner_adjacent_add_only {
-							pos.is_corner_adjacent() && game.board.is_empty(pos)
-						} else {
-							pos.is_valid() && game.board.is_empty(pos)
-						};
+			let is_legal_position = if game.rule_set.edge_add_only {
+				pos.is_edge() && game.board.is_empty(pos)
+			} else {
+				pos.is_valid() && game.board.is_empty(pos)
+			};
 						if is_legal_position {
 							return true;
 						}
@@ -216,11 +216,11 @@ pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 			for row in 0..5 {
 				for col in 0..5 {
 					let pos = Position::new(row, col);
-					let is_legal_position = if game.rule_set.corner_adjacent_add_only {
-						pos.is_corner_adjacent() && game.board.is_empty(pos)
-					} else {
-						pos.is_valid() && game.board.is_empty(pos)
-					};
+			let is_legal_position = if game.rule_set.edge_add_only {
+				pos.is_edge() && game.board.is_empty(pos)
+			} else {
+				pos.is_valid() && game.board.is_empty(pos)
+			};
 					if is_legal_position {
 						return true;
 					}
@@ -260,12 +260,14 @@ mod tests {
 	}
 
 	#[test]
-	fn test_generate_add_actions_corner_adjacent() {
+	fn test_generate_add_actions_edge_only() {
 		let game = Game::new();
 		let actions = generate_add_actions(&game, Player::One);
 
-		let corner_adjacent_positions = 8;
-		assert_eq!(actions.len(), corner_adjacent_positions * 11);
+		// 12 edge positions: (0,1), (0,2), (0,3), (1,0), (1,4), (2,0), (2,4), (3,0), (3,4), (4,1), (4,2), (4,3)
+		// Times 11 tiles in stack
+		let edge_positions = 12;
+		assert_eq!(actions.len(), edge_positions * 11);
 	}
 
 	#[test]
