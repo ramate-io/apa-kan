@@ -1,0 +1,143 @@
+warning: unused import: `rand::seq::SliceRandom`
+   --> apa-kan/game/src/game/ai.rs:588:7
+    |
+588 |         use rand::seq::SliceRandom;
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `rand::Rng`
+   --> apa-kan/game/src/game/core.rs:456:7
+    |
+456 |         use rand::Rng;
+    |             ^^^^^^^^^
+
+warning: unused import: `Tile`
+ --> apa-kan/game/src/game/rules.rs:2:54
+  |
+2 | use super::core::{Game, GameState, Player, Position, Tile};
+  |                                                      ^^^^
+
+warning: unused import: `Position`
+ --> apa-kan/game/src/ui/tiles.rs:1:45
+  |
+1 | use crate::game::core::{Color as TileColor, Position, Tile};
+  |                                             ^^^^^^^^
+
+warning: unused variable: `neighbor_tile`
+   --> apa-kan/game/src/game/actions.rs:163:16
+    |
+163 |             if let Some(neighbor_tile) = game.board.get(neighbor_pos) {
+    |                         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_neighbor_tile`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable `best_score` is assigned to, but never used
+   --> apa-kan/game/src/game/ai.rs:178:7
+    |
+178 |         let mut best_score = i32::MIN;
+    |             ^^^^^^^^^^^^^^
+    |
+    = note: consider using `_best_score` instead
+
+warning: value assigned to `best_score` is never read
+   --> apa-kan/game/src/game/ai.rs:230:5
+    |
+230 |                 best_score = depth_best_score;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `player` is never read
+  --> apa-kan/game/src/game/ai.rs:72:2
+   |
+66 | struct MctsNode {
+   |        -------- field in this struct
+...
+72 |     player: Player,
+   |     ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `position` is never read
+  --> apa-kan/game/src/ui/board.rs:20:2
+   |
+19 | struct BoardSquare {
+   |        ----------- field in this struct
+20 |     position: Position,
+   |     ^^^^^^^^
+
+warning: field `player` is never read
+  --> apa-kan/game/src/ui/input.rs:31:14
+   |
+31 |     StackTile { player: Player, index: usize },
+   |     ---------   ^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `Selection` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `original_north_color` is never read
+  --> apa-kan/game/src/ui/input.rs:40:2
+   |
+36 | struct RotationMode {
+   |        ------------ field in this struct
+...
+40 |     original_north_color: crate::game::core::Color,
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `RotationMode` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `tile_id` is never read
+  --> apa-kan/game/src/ui/tiles.rs:17:2
+   |
+16 | struct TileSprite {
+   |        ---------- field in this struct
+17 |     tile_id: u32,
+   |     ^^^^^^^
+
+warning: struct `StackDisplay` is never constructed
+  --> apa-kan/game/src/ui/tiles.rs:21:8
+   |
+21 | struct StackDisplay;
+   |        ^^^^^^^^^^^^
+
+warning: `apa-kan` (lib) generated 13 warnings (run `cargo fix --lib -p apa-kan` to apply 5 suggestions)
+warning: unused import: `Action`
+ --> apa-kan/game/examples/benchmark_corrected.rs:5:35
+  |
+5 |     actions::generate_legal_actions, Action, ActionType, AiConfig, AiPlayer, BotType, Game,
+  |                                      ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `HashMap`
+ --> apa-kan/game/examples/benchmark_corrected.rs:8:24
+  |
+8 | use std::collections::{HashMap, HashSet};
+  |                        ^^^^^^^
+
+warning: `apa-kan` (example "benchmark_corrected") generated 2 warnings (run `cargo fix --example "benchmark_corrected" -p apa-kan` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.16s
+     Running `/workspace/target/release/examples/benchmark_corrected`
+Corrected Benchmark: Scored Mode Evaluation
+============================================
+Time budget: 500ms/move
+Games per seat: 10 (total 20 per cross-pairing)
+
+
+=== 5x5-scored ===
+Board: 5x5, Bank: 5, Scored: true
+Running 10 pairings in parallel...
+
+  Running Ore vs Ore (10 games/seat)...
+  Running Ore vs Olusare (10 games/seat)...
+  Running Olusare vs Mcts (10 games/seat)...
+  Running Ore vs Mcts (10 games/seat)...
+  Running Ore vs Ologbon (10 games/seat)...
+  Running Ologbon vs Ologbon (10 games/seat)...
+  Running Mcts vs Mcts (10 games/seat)...
+  Running Ologbon vs Mcts (10 games/seat)...
+  Running Olusare vs Olusare (10 games/seat)...
+  Running Olusare vs Ologbon (10 games/seat)...
