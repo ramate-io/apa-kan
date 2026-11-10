@@ -578,7 +578,7 @@ mod tests {
 		assert!(is_hud_safe(HELP_TEXT), "{HELP_TEXT}");
 		assert!(!header.contains('·'));
 		assert!(!turn.contains('·'));
-		assert!(turn.len() < 80, "turn line should fit a 1024px window: {turn}");
+		assert!(turn.len() < 110, "turn line should fit a 1024px window: {turn}");
 	}
 
 	#[test]

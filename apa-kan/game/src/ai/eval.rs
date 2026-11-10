@@ -258,10 +258,11 @@ mod tests {
 
 	#[test]
 	fn occupying_center_scores_higher_when_center_hold_is_on() {
-		let mut off = Game::empty(RuleSet::default());
-		let mut on_rules = RuleSet::default();
-		on_rules.center_hold_win = true;
-		let mut on = Game::empty(on_rules);
+		let mut off_rules = RuleSet::default();
+		off_rules.center_hold_win = false;
+		let mut off = Game::empty(off_rules);
+		let mut on = Game::empty(RuleSet::default());
+		assert!(on.rules().center_hold_win);
 		let center = off.board().center();
 		let tile = off.alloc_tile(Player::One, crate::game::TileColor::Blue, 3, 1);
 		off.place_tile(center, tile);

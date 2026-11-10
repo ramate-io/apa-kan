@@ -248,7 +248,7 @@ pub struct RuleSet {
 	/// this is on (a pass is never legal).
 	pub no_moves_loses: bool,
 	/// Win by occupying the center at the end of `center_hold_n` consecutive
-	/// own turns. Experimental; default false.
+	/// own turns. Default true (N = [`Self::center_hold_n`]).
 	pub center_hold_win: bool,
 	/// Consecutive own turns holding the center required to win. Default 5.
 	pub center_hold_n: u8,
@@ -256,7 +256,7 @@ pub struct RuleSet {
 	/// capture exception. Default [`SamePieceTwice::WhenBenchEmpty`].
 	pub no_same_piece_twice: SamePieceTwice,
 	/// If true, a hop may only cross tiles of the mover's color, compared with
-	/// [`Self::hop_weight_cmp`]. Experimental; default false.
+	/// [`Self::hop_weight_cmp`]. Default true.
 	pub color_restricted_hops: bool,
 	/// Occupant-vs-mover weight comparison used when color-restricted hops are
 	/// on. Default [`HopWeightCmp::Le`] (occupant weight `<=` mover).
@@ -281,10 +281,10 @@ impl Default for RuleSet {
 			move_exact_steps: true,
 			hop_requires_ge_weight: true,
 			no_moves_loses: true,
-			center_hold_win: false,
+			center_hold_win: true,
 			center_hold_n: 5,
 			no_same_piece_twice: SamePieceTwice::WhenBenchEmpty,
-			color_restricted_hops: false,
+			color_restricted_hops: true,
 			hop_weight_cmp: HopWeightCmp::Le,
 			path_constraint: PathConstraint::NoEdgeRevisit,
 		}
@@ -1261,7 +1261,9 @@ mod tests {
 
 	#[test]
 	fn hop_costs_one_and_requires_weight() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut rules = RuleSet::default();
+		rules.color_restricted_hops = false;
+		let mut game = Game::empty(rules);
 		let b = game.board().clone();
 		let (from, hop_over, land) = {
 			let circle = 0u8;
@@ -1285,7 +1287,9 @@ mod tests {
 
 	#[test]
 	fn hop_along_a_run_of_equal_or_greater_weight() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut rules = RuleSet::default();
+		rules.color_restricted_hops = false;
+		let mut game = Game::empty(rules);
 		let b = game.board().clone();
 		let circle = 0u8;
 		let cycle = b.circle_cycle(circle).to_vec();

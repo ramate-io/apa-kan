@@ -216,11 +216,11 @@ pub fn usage() -> &'static str {
 	   --height <px>                              Window height (default: 900)\n\
 	   --screenshot <path>                        Capture a mid-game board PNG and exit\n\
 	   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)\n\
-	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
+	   --center-hold-win <on|off>                 Center-hold win (default: on)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
 	   --no-same-piece-twice <off|always|when-bench-empty>\n\
 	                                              Repeat-piece rule (default: when-bench-empty)\n\
-	   --color-restricted-hops <on|off>           Hop only own color (default: off)\n\
+	   --color-restricted-hops <on|off>           Hop only own color (default: on)\n\
 	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
@@ -303,9 +303,10 @@ mod tests {
 		let cfg = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(cfg.rules, RuleSet::default());
 		assert!(cfg.rules.no_moves_loses);
-		assert!(!cfg.rules.center_hold_win);
+		assert!(cfg.rules.center_hold_win);
+		assert_eq!(cfg.rules.center_hold_n, 5);
 		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::WhenBenchEmpty);
-		assert!(!cfg.rules.color_restricted_hops);
+		assert!(cfg.rules.color_restricted_hops);
 		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 	}

@@ -84,7 +84,7 @@ One action per turn by default (`actions_per_turn`, default 1):
   - `NoEdgeRevisit` — a path may not traverse the same undirected circle-arc twice. Nodes may be revisited via a **different** arc (the two inner↔center petals are distinct arcs).
   - `Both` — node uniqueness and edge uniqueness.
 - **Empty step:** walk along one circle-arc to the next node if it is empty. Cost 1.
-- **Hop (default, `color_restricted_hops` off):** if the next node along a chosen circle and direction is occupied, consider the maximal consecutive occupied run along that same circle in that direction. You may spend **1 step** to skip the whole run and land on the first empty node beyond it, iff every hopped tile has `weight >= mover.weight` (`hop_requires_ge_weight`, default true). Owner does not matter. If any hopped tile is lighter, or the run wraps without an empty landing, the hop is illegal. Hopped nodes are marked visited; hopped arcs are marked used.
+- **Hop (default, `color_restricted_hops` on):** if the next node along a chosen circle and direction is occupied, consider the maximal consecutive occupied run along that same circle in that direction. You may spend **1 step** to skip the whole run and land on the first empty node beyond it, iff every hopped tile is the **mover’s color** and its weight compares to the mover with `hop_weight_cmp` (default `le`: occupant `<=` mover). Owner does not matter. Other colors cannot be hopped. Hopped nodes are marked visited; hopped arcs are marked used. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`.
 
 Hops are circle-straight: they do not branch with the graph. Multi-arcs between the center and an inner node are distinct as circle-arcs (rendering the inner petals) but lead to the same neighbor for an empty step.
 
@@ -92,7 +92,7 @@ Hops are circle-straight: they do not branch with the graph. Multi-arcs between 
 
 - **Win (elimination):** the opponent has **no tiles on the board and an empty bench**. A remaining bag does not save them. If both players are eliminated in the same resolution, the game is a **draw**.
 - **Win (locked-out):** if `no_moves_loses` is on (default) and the player to move has no legal ADD and no legal MOVE, they **lose immediately**. Detected at the start of their turn (after the previous player’s turn switch) and if they would otherwise pass.
-- **Win (center hold):** if `center_hold_win` is on and a player occupies the center at the end of `center_hold_n` consecutive **own** turns, they win.
+- **Win (center hold):** if `center_hold_win` is on (default) and a player occupies the center at the end of `center_hold_n` consecutive **own** turns (default 5), they win.
 - **Draw:** `turn_limit` completed player-turns (default **200**). A **double pass** draw exists only when `no_moves_loses` is off.
 
 `turn_count` increments when a player’s action allotment ends (or they pass / have nothing left).
@@ -111,7 +111,7 @@ If the player to move has no legal action — no ADD from their bench onto an em
 - The legacy **double-pass draw is disabled** while this is on (a pass never occurs). Turn-limit draws remain as a safety net.
 - Running out of extra actions mid-turn after already taking a legal action (`actions_per_turn > 1`) still just ends the turn; lockout applies only when it is that player’s turn to act and they have nothing.
 
-#### 2. `center_hold_win` (experimental, default **off**, N = 5)
+#### 2. `center_hold_win` (default **on**, N = 5)
 
 CLI: `--center-hold-win <on|off>` `--center-hold-n <1..64>`
 
@@ -134,7 +134,7 @@ A player may not MOVE the same tile (by tile id) on two consecutive **own** turn
 
 **Capture exception:** a repeat MOVE **is** legal if that MOVE causes at least one opponent tile to be removed under simultaneous overwhelm (previewed before the action). Own-tile suicides do not count. ADD does not set the “last moved” tile; only a MOVE does.
 
-#### 4. `color_restricted_hops` (experimental, default **off**)
+#### 4. `color_restricted_hops` (default **on**)
 
 CLI: `--color-restricted-hops <on|off>` `--hop-weight-cmp <lt|le>`
 
@@ -147,7 +147,7 @@ Default comparison is **`Le`** (occupant weight **less than or equal to** the mo
 
 When this option is **off**, the legacy rule applies: hopped tiles may be any color/owner, and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`. The color-restricted regime **overrides** `hop_requires_ge_weight`.
 
-This is the opposite inequality of the default hop (default: hop equal-or-heavier of any color; color-restricted: hop equal-or-lighter of your color only, or strictly lighter with `lt`).
+This is the opposite inequality of the legacy hop (`color_restricted_hops` off: hop equal-or-heavier of any color; on: hop equal-or-lighter of your color only, or strictly lighter with `lt`).
 
 #### 5. `no_repeated_edge` / `path_constraint` (default **NoEdgeRevisit**)
 
@@ -183,7 +183,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` off, `hop_weight_cmp` le, `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` on (N=5), `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `path_constraint` no-edge-revisit.
 
 Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility heuristic; MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out and center-hold terminals are wins/losses in search.
 

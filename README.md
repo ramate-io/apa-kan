@@ -10,9 +10,9 @@ See [rfc/rfc-001-001-001-rosette-redesign](rfc/rfc-001-001-001-rosette-redesign/
 - **Tiles:** owner is a light (P1) or dark (P2) fill; **green / blue / orange** rings show color; 1–3 rings = weight; 1–3 dots = MOVE length.
 - **Bench / bag:** each player is dealt 5 tiles from a shuffled 27-kind bag (identical bags by default). ADD places a bench tile on an empty spawn. Opponent tiles removed on a MOVE draw from the bag onto the bench.
 - **Overwhelm (by color):** `matches = weight + same-color neighbors`; `mismatches = different-color neighbors`; removed if `mismatches >= matches`, simultaneously after each action.
-- **MOVE:** exactly `d` steps; default path rule is **no edge revisit** (nodes may be revisited via a different arc). A hop across a straight occupied run costs 1; by default hopped weights must be `>=` the mover. Optional `color_restricted_hops` instead allows hopping only same-color tiles whose weight is `<=` the mover (`le`; `lt` is stricter).
-- **Stall-prevention (defaults):** no legal ADD/MOVE loses immediately; you may not MOVE the same tile on two consecutive turns once your bench is empty (unless the MOVE captures); turn-limit 200 remains a draw. Optional center-hold win (N=5, off).
-- **Win:** opponent has no board tiles and an empty bench, or the opponent is locked out with no legal action. Draw at 200 turns. Double-pass draws only if `no_moves_loses` is off.
+- **MOVE:** exactly `d` steps; default path rule is **no edge revisit** (nodes may be revisited via a different arc). A hop across a straight occupied run costs 1. Default `color_restricted_hops` allows hopping only same-color tiles whose weight is `<=` the mover (`le`; `lt` is stricter). With color hops off, hopped weights must be `>=` the mover (any color).
+- **Stall-prevention (defaults):** no legal ADD/MOVE loses immediately; you may not MOVE the same tile on two consecutive turns once your bench is empty (unless the MOVE captures); occupy the center for 5 consecutive own turns to win; turn-limit 200 remains a draw.
+- **Win:** opponent has no board tiles and an empty bench, the opponent is locked out with no legal action, or you hold the center for N own turns (default 5). Draw at 200 turns. Double-pass draws only if `no_moves_loses` is off.
 
 ## Run
 
@@ -34,10 +34,10 @@ Usage: apa-kan [OPTIONS]
   --height <px>                              Window height (default: 900)
   --screenshot <path>                        Capture a mid-game board PNG and exit
   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)
-  --center-hold-win <on|off>                 Center-hold win (default: off)
+  --center-hold-win <on|off>                 Center-hold win (default: on)
   --center-hold-n <1..64>                    Turns to hold center (default: 5)
   --no-same-piece-twice <off|always|when-bench-empty>
-  --color-restricted-hops <on|off>           Hop only own color (default: off)
+  --color-restricted-hops <on|off>           Hop only own color (default: on)
   --hop-weight-cmp <lt|le>                   Color-hop compare (default: le)
   --path-constraint <no-node-revisit|no-edge-revisit|both>
   -h, --help
