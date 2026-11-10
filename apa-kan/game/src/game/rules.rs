@@ -44,7 +44,24 @@ impl Rules {
 			return Err("Position is occupied".to_string());
 		}
 
-		let stack = game.stack_mut(game.current_player);
+		let player = game.current_player;
+
+		match player {
+			Player::One => {
+				if game.add_bank_p1 == 0 {
+					return Err("No ADD actions remaining".to_string());
+				}
+				game.add_bank_p1 -= 1;
+			}
+			Player::Two => {
+				if game.add_bank_p2 == 0 {
+					return Err("No ADD actions remaining".to_string());
+				}
+				game.add_bank_p2 -= 1;
+			}
+		}
+
+		let stack = game.stack_mut(player);
 		if tile_index >= stack.len() {
 			return Err("Tile index out of bounds".to_string());
 		}
@@ -73,6 +90,7 @@ impl Rules {
 		}
 
 		let tile = game.board.get(from_pos).ok_or_else(|| "Tile not found".to_string())?;
+		let tile_id = tile.id;
 
 		if tile.owner != game.current_player {
 			return Err("Not your tile".to_string());
@@ -87,8 +105,23 @@ impl Rules {
 		}
 
 		let mut tile = game.board.remove(from_pos).expect("Tile should exist");
-		tile = tile.rotated_n_times(rotation_count);
+		tile = if game.rule_set.fixed_rotation {
+			if rotation_count == 0 {
+				tile
+			} else if rotation_count == 1 {
+				match tile.rotation_direction {
+					super::core::RotationDirection::Clockwise => tile.rotate_cw(),
+					super::core::RotationDirection::CounterClockwise => tile.rotate_ccw(),
+				}
+			} else {
+				return Err("Invalid rotation count for fixed rotation rules".to_string());
+			}
+		} else {
+			tile.rotated_n_times(rotation_count)
+		};
 		game.board.place(destination, tile);
+		game.last_moved_tile = Some(tile_id);
+		game.last_moved_turn = game.turn_count;
 
 		Ok(())
 	}
@@ -96,7 +129,17 @@ impl Rules {
 	fn check_and_remove_all_mismatched(game: &mut Game) {
 		let mut tiles_to_remove = Vec::new();
 
+		let tile_count = game.board.tiles().count();
+		let immunity_active = game.rule_set.moved_tile_immunity && tile_count > 7;
+
 		for (position, tile) in game.board.tiles() {
+			if immunity_active
+				&& Some(tile.id) == game.last_moved_tile
+				&& game.turn_count == game.last_moved_turn
+			{
+				continue;
+			}
+
 			let mut matches = 0;
 			let mut mismatches = 0;
 
@@ -132,7 +175,20 @@ impl Rules {
 		}
 
 		for position in tiles_to_remove {
-			game.board.remove(position);
+			if let Some(tile) = game.board.remove(position) {
+				match tile.owner {
+					Player::One => {
+						if game.rule_set.add_bank {
+							game.add_bank_p2 = (game.add_bank_p2 + 1).min(255);
+						}
+					}
+					Player::Two => {
+						if game.rule_set.add_bank {
+							game.add_bank_p1 = (game.add_bank_p1 + 1).min(255);
+						}
+					}
+				}
+			}
 		}
 	}
 

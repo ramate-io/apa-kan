@@ -68,6 +68,12 @@ pub struct Edge {
 	pub weight: EdgeWeight,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RotationDirection {
+	Clockwise,
+	CounterClockwise,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tile {
 	pub id: TileId,
@@ -76,6 +82,7 @@ pub struct Tile {
 	pub east: Edge,
 	pub south: Edge,
 	pub west: Edge,
+	pub rotation_direction: RotationDirection,
 }
 
 impl Tile {
@@ -87,7 +94,25 @@ impl Tile {
 		south: Edge,
 		west: Edge,
 	) -> Self {
-		Self { id, owner, north, east, south, west }
+		use rand::Rng;
+		let rotation_direction = if rand::thread_rng().gen_bool(0.5) {
+			RotationDirection::Clockwise
+		} else {
+			RotationDirection::CounterClockwise
+		};
+		Self { id, owner, north, east, south, west, rotation_direction }
+	}
+
+	pub fn new_with_rotation(
+		id: TileId,
+		owner: Player,
+		north: Edge,
+		east: Edge,
+		south: Edge,
+		west: Edge,
+		rotation_direction: RotationDirection,
+	) -> Self {
+		Self { id, owner, north, east, south, west, rotation_direction }
 	}
 
 	pub fn edge(&self, direction: Direction) -> Edge {
@@ -107,6 +132,7 @@ impl Tile {
 			east: self.north,
 			south: self.east,
 			west: self.south,
+			rotation_direction: self.rotation_direction,
 		}
 	}
 
@@ -126,6 +152,7 @@ impl Tile {
 			east: self.south,
 			south: self.west,
 			west: self.north,
+			rotation_direction: self.rotation_direction,
 		}
 	}
 }
@@ -144,6 +171,33 @@ impl Player {
 			Player::One => Player::Two,
 			Player::Two => Player::One,
 		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuleSet {
+	pub fixed_rotation: bool,
+	pub add_bank: bool,
+	pub moved_tile_immunity: bool,
+}
+
+impl RuleSet {
+	pub fn old() -> Self {
+		Self { fixed_rotation: false, add_bank: false, moved_tile_immunity: false }
+	}
+
+	pub fn new() -> Self {
+		Self { fixed_rotation: true, add_bank: true, moved_tile_immunity: false }
+	}
+
+	pub fn with_immunity() -> Self {
+		Self { fixed_rotation: true, add_bank: true, moved_tile_immunity: true }
+	}
+}
+
+impl Default for RuleSet {
+	fn default() -> Self {
+		Self::new()
 	}
 }
 
@@ -236,6 +290,11 @@ pub struct Game {
 	next_tile_id: TileId,
 	pub position_history: Vec<u64>,
 	pub turn_count: usize,
+	pub rule_set: RuleSet,
+	pub add_bank_p1: u8,
+	pub add_bank_p2: u8,
+	pub last_moved_tile: Option<TileId>,
+	pub last_moved_turn: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,6 +306,11 @@ pub enum GameState {
 
 impl Game {
 	pub fn new() -> Self {
+		Self::new_with_rules(RuleSet::default())
+	}
+
+	pub fn new_with_rules(rule_set: RuleSet) -> Self {
+		let add_bank = if rule_set.add_bank { 7 } else { 100 };
 		let mut game = Self {
 			board: Board::new(),
 			player_one_stack: Vec::new(),
@@ -256,12 +320,25 @@ impl Game {
 			next_tile_id: 0,
 			position_history: Vec::new(),
 			turn_count: 0,
+			rule_set,
+			add_bank_p1: add_bank,
+			add_bank_p2: add_bank,
+			last_moved_tile: None,
+			last_moved_turn: 0,
 		};
 		game.initialize_random_tiles();
 		game
 	}
 
 	pub fn new_with_tiles(player_one_tiles: Vec<Tile>, player_two_tiles: Vec<Tile>) -> Self {
+		Self::new_with_tiles_and_rules(player_one_tiles, player_two_tiles, RuleSet::default())
+	}
+
+	pub fn new_with_tiles_and_rules(
+		player_one_tiles: Vec<Tile>,
+		player_two_tiles: Vec<Tile>,
+		rule_set: RuleSet,
+	) -> Self {
 		let next_id = player_one_tiles
 			.iter()
 			.chain(player_two_tiles.iter())
@@ -269,6 +346,8 @@ impl Game {
 			.max()
 			.unwrap_or(0)
 			+ 1;
+
+		let add_bank = if rule_set.add_bank { 7 } else { 100 };
 
 		Self {
 			board: Board::new(),
@@ -279,6 +358,11 @@ impl Game {
 			next_tile_id: next_id,
 			position_history: Vec::new(),
 			turn_count: 0,
+			rule_set,
+			add_bank_p1: add_bank,
+			add_bank_p2: add_bank,
+			last_moved_tile: None,
+			last_moved_turn: 0,
 		}
 	}
 

@@ -46,6 +46,15 @@ fn generate_add_actions(game: &Game, player: Player) -> Vec<Action> {
 		return actions;
 	}
 
+	let add_bank = match player {
+		Player::One => game.add_bank_p1,
+		Player::Two => game.add_bank_p2,
+	};
+
+	if add_bank == 0 {
+		return actions;
+	}
+
 	for tile_index in 0..stack.len() {
 		for row in 0..5 {
 			for col in 0..5 {
