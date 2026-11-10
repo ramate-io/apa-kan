@@ -520,9 +520,10 @@ fn main() {
 
 	for (rule_name, rule_set) in rule_sets {
 		println!("\n=== {} ===", rule_name);
-		println!("Board: {}x{}, Bank: {}, Scored: {}", 
-			rule_set.board_size, rule_set.board_size, 
-			rule_set.add_bank_size, rule_set.scored_mode);
+		println!(
+			"Board: {}x{}, Bank: {}, Scored: {}",
+			rule_set.board_size, rule_set.board_size, rule_set.add_bank_size, rule_set.scored_mode
+		);
 
 		// Generate all pairings including mirrors
 		let mut pairings = Vec::new();
@@ -535,7 +536,8 @@ fn main() {
 		println!("Running {} pairings in parallel...\n", pairings.len());
 
 		// Run pairings in parallel
-		let results: Arc<Mutex<HashMap<String, PairingStats>>> = Arc::new(Mutex::new(HashMap::new()));
+		let results: Arc<Mutex<HashMap<String, PairingStats>>> =
+			Arc::new(Mutex::new(HashMap::new()));
 		let mut handles = vec![];
 
 		for (bot1, bot2) in pairings {

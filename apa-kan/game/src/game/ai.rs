@@ -647,7 +647,9 @@ impl AiPlayer {
 				GameState::Draw => 0.5,
 				GameState::InProgress => 0.5,
 			}
-		} else if !has_legal_add_or_move(&game_copy, game_copy.current_player) && !game_copy.rule_set.scored_mode {
+		} else if !has_legal_add_or_move(&game_copy, game_copy.current_player)
+			&& !game_copy.rule_set.scored_mode
+		{
 			let winner = game_copy.current_player.other();
 			if winner == original_player {
 				1.0
@@ -764,8 +766,10 @@ impl AiPlayer {
 		}
 
 		if game.rule_set.scored_mode {
-			let my_tiles = game.board.tiles().filter(|(_, tile)| tile.owner == player).count() as i32;
-			let opp_tiles = game.board.tiles().filter(|(_, tile)| tile.owner == player.other()).count() as i32;
+			let my_tiles =
+				game.board.tiles().filter(|(_, tile)| tile.owner == player).count() as i32;
+			let opp_tiles =
+				game.board.tiles().filter(|(_, tile)| tile.owner == player.other()).count() as i32;
 			let tile_diff = my_tiles - opp_tiles;
 
 			let my_bank = match player {
