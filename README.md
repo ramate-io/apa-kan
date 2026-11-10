@@ -28,7 +28,9 @@ Usage: apa-kan [OPTIONS]
   --think-ms <n>                             Bot think time in ms (default: 80)
   --delay-ms <n>                             Delay between bot moves (default: 350)
   --actions <1..8>                           Actions per turn (default: 1)
-  --screenshot <path>                        Write a board PNG and exit
+  --width <px>                               Window width (default: 1280)
+  --height <px>                              Window height (default: 900)
+  --screenshot <path>                        Capture a mid-game board PNG and exit
   -h, --help
 ```
 
@@ -41,10 +43,10 @@ cargo run -p apa-kan --release -- --bot1 minimax --bot2 mcts --think-ms 1000 --d
 cargo run -p apa-kan --release -- --bot1 mcts --bot2 minimax --think-ms 1000 --delay-ms 250
 ```
 
-Headless screenshot (no window):
+Headless screenshot (Bevy window under xvfb, or the PNG renderer without `desktop`):
 
 ```bash
-cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png
+cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png --width 1280 --height 800
 ```
 
 Search head-to-head (branching factor, stalling, minimax/MCTS/greedy):
