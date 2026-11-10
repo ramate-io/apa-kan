@@ -6,7 +6,7 @@ use std::process;
 use std::time::Duration;
 
 use crate::ai::Actor;
-use crate::game::{HopWeightCmp, PathConstraint, RuleSet, SamePieceTwice};
+use crate::game::{HopWeightCmp, InsufficientTilesLoss, PathConstraint, RuleSet, SamePieceTwice};
 
 #[derive(Clone, Debug)]
 pub struct GameConfig {
@@ -194,6 +194,27 @@ where
 			}
 			rules.petal_majority_n = n as u8;
 		}
+		"--control-win" => {
+			rules.control_win = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--control-n" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > 9 {
+				return Err("invalid --control-n (expected 1..9)".into());
+			}
+			rules.control_n = n as u8;
+		}
+		"--control-hold-turns" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > 64 {
+				return Err("invalid --control-hold-turns (expected 1..64)".into());
+			}
+			rules.control_hold_turns = n as u8;
+		}
+		"--insufficient-tiles-loss" => {
+			rules.insufficient_tiles_loss =
+				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
+		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
 		}
@@ -234,6 +255,11 @@ pub fn usage() -> &'static str {
 	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
 	   --petal-majority-win <on|off>              Inner-ring majority win (default: off)\n\
 	   --petal-majority-n <1..64>                 Turns to hold majority (default: 1)\n\
+	   --control-win <on|off>                     Center+inner-ring control win (default: off)\n\
+	   --control-n <1..9>                         Control-set occupancy needed (default: 5)\n\
+	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
+	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
+	                                              Can't-reach-control loss (default: off)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -311,6 +337,31 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_control_and_insufficient_flags() {
+		let cfg = GameConfig::parse([
+			"--control-win",
+			"on",
+			"--control-n",
+			"5",
+			"--control-hold-turns",
+			"3",
+			"--insufficient-tiles-loss",
+			"no-recapture",
+			"--center-hold-win",
+			"off",
+		])
+		.unwrap();
+		assert!(cfg.rules.control_win);
+		assert_eq!(cfg.rules.control_n, 5);
+		assert_eq!(cfg.rules.control_hold_turns, 3);
+		assert_eq!(
+			cfg.rules.insufficient_tiles_loss,
+			crate::game::InsufficientTilesLoss::NoRecapture
+		);
+		assert!(!cfg.rules.center_hold_win);
+	}
+
+	#[test]
 	fn stall_rule_defaults_match_ruleset() {
 		let cfg = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(cfg.rules, RuleSet::default());
@@ -322,6 +373,10 @@ mod tests {
 		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
 		assert!(!cfg.rules.petal_majority_win);
 		assert_eq!(cfg.rules.petal_majority_n, 1);
+		assert!(!cfg.rules.control_win);
+		assert_eq!(cfg.rules.control_n, 5);
+		assert_eq!(cfg.rules.control_hold_turns, 1);
+		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 	}
 

@@ -435,6 +435,73 @@ mod tests {
 	}
 
 	#[test]
+	fn minimax_takes_immediate_control_win() {
+		use crate::game::{EndReason, GameStatus, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 1;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		// Same color: a blue center with four green inner neighbors is overwhelmed.
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(4) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		let extra = game.alloc_tile(Player::One, TileColor::Blue, 2, 1);
+		game.set_bench(Player::One, vec![extra]);
+		let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+		game.set_bench(Player::Two, vec![opp]);
+		game.set_current(Player::One);
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	#[test]
+	fn minimax_completes_control_hold_instead_of_vacating() {
+		use crate::game::{EndReason, GameStatus, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 3;
+		rules.no_same_piece_twice = crate::game::SamePieceTwice::Off;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(4) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		let extra = game.alloc_tile(Player::One, TileColor::Blue, 2, 1);
+		game.set_bench(Player::One, vec![extra]);
+		let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+		game.set_bench(Player::Two, vec![opp]);
+		game.set_control_hold(Player::One, 2);
+		game.set_current(Player::One);
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	#[test]
 	fn minimax_takes_immediate_petal_majority_win() {
 		use crate::game::{EndReason, GameStatus, Player, TileColor};
 

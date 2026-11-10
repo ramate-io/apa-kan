@@ -215,11 +215,16 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 		let geo = if node == center {
 			if game.rules().center_hold_win {
 				420
+			} else if game.rules().control_win {
+				180
 			} else {
 				22
 			}
 		} else if board.inner_ring().contains(&node) {
-			if game.rules().center_hold_win || game.rules().petal_majority_win {
+			if game.rules().center_hold_win
+				|| game.rules().petal_majority_win
+				|| game.rules().control_win
+			{
 				55
 			} else {
 				16
@@ -358,6 +363,35 @@ fn race_score(game: &Game, me: Player, opp: Player) -> i32 {
 		}
 		if opp_petals >= need {
 			s -= 1_000;
+		}
+	}
+
+	if game.rules().control_win {
+		let n = i32::from(game.rules().control_hold_turns.max(1));
+		let need = i32::from(game.control_need());
+		let my_ctl = i32::from(game.control_count(me));
+		let opp_ctl = i32::from(game.control_count(opp));
+		s += 240 * my_ctl - 280 * opp_ctl;
+		s += (WIN / 4) * i32::from(game.control_hold(me)) / n;
+		s -= (WIN / 3) * i32::from(game.control_hold(opp)) / n;
+		if my_ctl >= need {
+			s += 900;
+		}
+		if opp_ctl >= need {
+			s -= 1_100;
+		}
+	}
+
+	if game.rules().insufficient_tiles_loss.is_on() {
+		let need = i32::from(game.control_need());
+		let my_r = game.reachable_tiles(me) as i32;
+		let opp_r = game.reachable_tiles(opp) as i32;
+		s += 350 * (my_r.min(need) - opp_r.min(need));
+		if my_r < need {
+			s -= 2_400;
+		}
+		if opp_r < need {
+			s += 2_800;
 		}
 	}
 	s
@@ -537,5 +571,44 @@ mod tests {
 		let s = evaluate(&game, Player::One, 0);
 		assert!(s > WIN / 2);
 		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+	}
+
+	#[test]
+	fn control_win_is_near_mate() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Won { winner: Player::One, reason: EndReason::Control });
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s > WIN / 2);
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+	}
+
+	#[test]
+	fn insufficient_tiles_loss_is_near_mate() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Won {
+			winner: Player::Two,
+			reason: EndReason::InsufficientTiles,
+		});
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s < -WIN / 2);
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+	}
+
+	#[test]
+	fn control_occupancy_is_scored_when_control_win_is_on() {
+		let mut off_rules = RuleSet::default();
+		off_rules.center_hold_win = false;
+		off_rules.control_win = false;
+		let mut on_rules = off_rules;
+		on_rules.control_win = true;
+		let mut off = Game::empty(off_rules);
+		let mut on = Game::empty(on_rules);
+		let inner = off.board().inner_ring().to_vec();
+		for &node in inner.iter().take(4) {
+			let tile = off.alloc_tile(Player::One, crate::game::TileColor::Green, 3, 1);
+			off.place_tile(node, tile);
+			on.place_tile(node, tile);
+		}
+		assert!(evaluate(&on, Player::One, 0) > evaluate(&off, Player::One, 0));
 	}
 }

@@ -401,12 +401,13 @@ fn eval_now(game: &Game, ctx: &Ctx<'_>) -> i32 {
 
 /// Score `child` from `mover`'s point of view.
 ///
-/// Center-hold and petal-majority wins are applied in `finish_turn` *before*
-/// the side-to-move flips, so the child's `current_player()` is still the
-/// winner. Negating a terminal scored from STM would turn our own win into a
-/// loss (the recorded failure mode: vacating the center on the turn that
-/// would have completed the hold). Lockouts already switch STM to the loser,
-/// so both conventions agree there.
+/// Center-hold, petal-majority, and control wins are applied in `finish_turn`
+/// *before* the side-to-move flips, so the child's `current_player()` is still
+/// the winner. Insufficient-tiles losses are also set before the switch (the
+/// loser may still be to-move). Negating a terminal scored from STM would turn
+/// our own win into a loss (the recorded failure mode: vacating the center on
+/// the turn that would have completed the hold). Lockouts already switch STM
+/// to the loser, so both conventions agree there.
 fn score_from_mover(
 	child: &mut Game,
 	mover: Player,

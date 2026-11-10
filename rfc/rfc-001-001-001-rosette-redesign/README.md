@@ -100,7 +100,7 @@ Hops are circle-straight: they do not branch with the graph. Multi-arcs between 
 
 ### Stall-prevention options
 
-Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut`, `CenterHold`, and `PetalMajority` terminals are scored as wins/losses (`±WIN`) in search.
+Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut`, `CenterHold`, `PetalMajority`, `Control`, and `InsufficientTiles` terminals are scored as wins/losses (`±WIN`) in search from the **mover's** perspective (hold-style wins leave the winner to move; lockouts switch to the loser).
 
 #### 1. `no_moves_loses` (default **on**)
 
@@ -161,7 +161,30 @@ A **petal** here is one of the eight generating circles of the rosette. Each pet
 - Only one player can have a majority at a time (5+5 > 8). If center-hold and petal-majority would fire on the same turn, **center-hold is checked first**.
 - The HUD shows petal counts and hold progress while this option is on.
 
-#### 6. `no_repeated_edge` / `path_constraint` (default **NoEdgeRevisit**)
+#### 6. `control_win` (experimental, default **off**, k = 5, t = 1)
+
+CLI: `--control-win <on|off>` `--control-n <1..9>` `--control-hold-turns <1..64>`
+
+The **control set** is the center (node 0) plus the 8 inner-ring nodes (`Board::inner_ring()`), 9 nodes total. A player wins by occupying at least `control_n` of these 9 (default 5) for `control_hold_turns` consecutive **own** turns (default 1 = end of the turn you first have 5).
+
+- Grabbing the center alone is 1 of 9 and is **not** a win. This is meant as a center-hold replacement so a center rush is not a race to victory.
+- At the end of player P’s turn: if P occupies at least `control_n` control-set nodes, P’s counter increments; if it reaches `control_hold_turns`, P wins (`EndReason::Control`). Otherwise P’s counter resets to 0. The opponent’s counter resets when they drop below `control_n`.
+- Check order at end of turn: center-hold, then petal-majority, then control, then insufficient-tiles, then turn-limit, then lockout of the incoming player.
+- Defaults stay off until a package is chosen from benches. Benches run with center-hold **off** and control-win **on**.
+- Total game clocks (a draw condition) are a planned follow-up; they are not implemented here.
+
+#### 7. `insufficient_tiles_loss` (experimental, default **off**) — "can't reach control"
+
+CLI: `--insufficient-tiles-loss <off|strict|no-recapture>`
+
+A player **loses** (`EndReason::InsufficientTiles`) when they can no longer occupy 5 control-set nodes: `board tiles + bench < control_n` (default 5). Bag tiles are not in play until drawn, and bag draws happen **only** on a MOVE that captures an opponent tile.
+
+Checked at the **turn boundary** (end of `finish_turn`) for **both** players, after hold wins. If both are insufficient at once, the game is a **draw** (`EndReason::InsufficientTiles`).
+
+- **`strict`**: lose as soon as `board + bench < 5`, ignoring the bag and ignoring whether a capture is available.
+- **`no-recapture`**: lose when `board + bench < 5` **and** they cannot gain a tile. "Cannot gain" means the bag is empty, `capture_draw_on_move` is off, **or they have no path-legal MOVE that would remove an opponent tile in the current position** (previewed simultaneous overwhelm; same check as the capture exception, via `has_capturing_move`). The check does not require that player to be to-move, so both sides can be evaluated at the same turn boundary. A capturing MOVE with a non-empty bag saves them even if `board + bench < 5`. This is stricter than bag-empty-only: tiles left in the bag do not help if no capturing MOVE exists right now. Future captures on a later turn are not searched.
+
+#### 8. `no_repeated_edge` / `path_constraint` (default **NoEdgeRevisit**)
 
 CLI: `--path-constraint <no-node-revisit|no-edge-revisit|both>` and `--no-repeated-edge <on|off>` (alias: `off` → `NoNodeRevisit`; `on` keeps `NoEdgeRevisit` or upgrades `NoNodeRevisit` to `Both`).
 
@@ -193,12 +216,14 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --no-same-piece-twice off|always|when-bench-empty
         --color-restricted-hops on|off --hop-weight-cmp lt|le
         --petal-majority-win on|off --petal-majority-n N
+        --control-win on|off --control-n K --control-hold-turns T
+        --insufficient-tiles-loss off|strict|no-recapture
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` on (N=5), `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `petal_majority_win` off, `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` on (N=5), `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `petal_majority_win` off, `control_win` off, `insufficient_tiles_loss` off, `path_constraint` no-edge-revisit.
 
-Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, and petal-majority terminals are wins/losses in search.
+Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, petal-majority, control, and insufficient-tiles terminals are wins/losses in search.
 
 Headless round-robin: `apa-kan-bench` (same rule flags; `--bots greedy,minimax,mcts`).
 

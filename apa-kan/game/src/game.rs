@@ -99,6 +99,11 @@ pub enum EndReason {
 	CenterHold,
 	/// Held a majority of inner-ring (petal) nodes for N consecutive own turns.
 	PetalMajority,
+	/// Occupied at least `control_n` of the 9-node control set (center + inner
+	/// ring) for `control_hold_turns` consecutive own turns.
+	Control,
+	/// Could no longer occupy 5 control-set nodes (`insufficient_tiles_loss`).
+	InsufficientTiles,
 }
 
 /// Restriction on moving the same tile on two consecutive own turns.
@@ -207,6 +212,49 @@ impl HopWeightCmp {
 	}
 }
 
+/// Lose when board tiles + bench cannot reach the control-set occupancy
+/// threshold (`control_n`, default 5). Default [`Self::Off`].
+///
+/// Bag draws happen only on a MOVE that captures, so "can they still get to
+/// 5?" depends on whether future draws are counted:
+///
+/// - [`Self::Strict`]: lose as soon as `board + bench < 5`, ignoring the bag.
+/// - [`Self::NoRecapture`]: lose when `board + bench < 5` **and** they cannot
+///   gain a tile this turn: the bag is empty, capture-draw is off, or they
+///   have no legal MOVE that would remove an opponent tile (previewed
+///   overwhelm). Having a capturing MOVE with a non-empty bag saves them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InsufficientTilesLoss {
+	Off,
+	Strict,
+	NoRecapture,
+}
+
+impl InsufficientTilesLoss {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"off" | "false" | "0" => Ok(Self::Off),
+			"strict" => Ok(Self::Strict),
+			"no-recapture" | "no_recapture" | "norecapture" => Ok(Self::NoRecapture),
+			other => Err(format!(
+				"unknown insufficient-tiles-loss '{other}' (expected off|strict|no-recapture)"
+			)),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Off => "off",
+			Self::Strict => "strict",
+			Self::NoRecapture => "no-recapture",
+		}
+	}
+
+	pub fn is_on(self) -> bool {
+		!matches!(self, Self::Off)
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GameStatus {
 	InProgress,
@@ -269,6 +317,18 @@ pub struct RuleSet {
 	pub petal_majority_win: bool,
 	/// Consecutive own turns holding a petal majority required to win. Default 1.
 	pub petal_majority_n: u8,
+	/// Win by occupying at least [`Self::control_n`] nodes of the control set
+	/// (center + 8 inner-ring = 9) for [`Self::control_hold_turns`] consecutive
+	/// own turns. Experimental; default false. Intended as a center-hold
+	/// replacement so grabbing the center alone is not a rush to victory.
+	pub control_win: bool,
+	/// Control-set occupancy needed to start the hold. Default 5 of 9.
+	pub control_n: u8,
+	/// Consecutive own turns holding `control_n` control-set nodes. Default 1.
+	pub control_hold_turns: u8,
+	/// Lose when board + bench cannot reach 5 tiles (see
+	/// [`InsufficientTilesLoss`]). Default off.
+	pub insufficient_tiles_loss: InsufficientTilesLoss,
 	/// Uniqueness constraint along a single MOVE path.
 	/// Default [`PathConstraint::NoEdgeRevisit`] (`no_repeated_edge` on;
 	/// node revisits via a different arc are allowed).
@@ -296,6 +356,10 @@ impl Default for RuleSet {
 			hop_weight_cmp: HopWeightCmp::Le,
 			petal_majority_win: false,
 			petal_majority_n: 1,
+			control_win: false,
+			control_n: 5,
+			control_hold_turns: 1,
+			insufficient_tiles_loss: InsufficientTilesLoss::Off,
 			path_constraint: PathConstraint::NoEdgeRevisit,
 		}
 	}
@@ -359,6 +423,8 @@ pub struct Game {
 	center_hold: [u8; 2],
 	/// Consecutive own turns holding a majority of inner-ring (petal) nodes.
 	petal_majority: [u8; 2],
+	/// Consecutive own turns occupying at least `control_n` control-set nodes.
+	control_hold: [u8; 2],
 }
 
 impl Game {
@@ -401,6 +467,7 @@ impl Game {
 			moved_this_turn: None,
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
+			control_hold: [0, 0],
 		};
 		game.deal_opening();
 		game
@@ -430,6 +497,7 @@ impl Game {
 			moved_this_turn: None,
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
+			control_hold: [0, 0],
 		}
 	}
 
@@ -504,6 +572,40 @@ impl Game {
 	pub fn petal_majority_need(&self) -> u8 {
 		let n = self.board.inner_ring().len();
 		(n / 2 + 1) as u8
+	}
+
+	/// Consecutive own turns `player` has ended occupying `control_n` of the
+	/// control set (center + inner ring).
+	pub fn control_hold(&self, player: Player) -> u8 {
+		self.control_hold[player.index()]
+	}
+
+	/// How many of the 9 control-set nodes (center + 8 inner-ring) `player`
+	/// occupies.
+	pub fn control_count(&self, player: Player) -> u8 {
+		let mut n = self.petal_count(player);
+		let center = self.board.center();
+		if self.tile_at(center).map(|t| t.owner == player).unwrap_or(false) {
+			n = n.saturating_add(1);
+		}
+		n
+	}
+
+	/// Occupancy needed to start a control hold (`control_n`, capped at the
+	/// 9-node set).
+	pub fn control_need(&self) -> u8 {
+		let set = 1u8 + self.board.inner_ring().len() as u8;
+		self.rules.control_n.max(1).min(set)
+	}
+
+	/// Board tiles + bench tiles. Bag tiles are not in play until drawn.
+	pub fn reachable_tiles(&self, player: Player) -> usize {
+		self.board_count(player) + self.bench(player).len()
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_control_hold(&mut self, player: Player, n: u8) {
+		self.control_hold[player.index()] = n;
 	}
 
 	/// Tile moved on `player`'s previous completed turn, if any.
@@ -729,13 +831,53 @@ impl Game {
 	}
 
 	fn same_piece_is_restricted(&self, tile_id: u32) -> bool {
-		if self.last_moved[self.current.index()] != Some(tile_id) {
+		self.same_piece_is_restricted_for(self.current, tile_id)
+	}
+
+	fn same_piece_is_restricted_for(&self, player: Player, tile_id: u32) -> bool {
+		if self.last_moved[player.index()] != Some(tile_id) {
 			return false;
 		}
 		match self.rules.no_same_piece_twice {
 			SamePieceTwice::Off => false,
 			SamePieceTwice::Always => true,
-			SamePieceTwice::WhenBenchEmpty => self.benches[self.current.index()].is_empty(),
+			SamePieceTwice::WhenBenchEmpty => self.benches[player.index()].is_empty(),
+		}
+	}
+
+	/// True if `player` has a legal MOVE (as if it were their turn) that would
+	/// remove at least one opponent tile. Used by `no-recapture` insufficient-
+	/// tiles: a capturing MOVE is the only way to draw from the bag.
+	pub fn has_capturing_move(&self, player: Player) -> bool {
+		for (node, tile) in self.tiles() {
+			if tile.owner != player {
+				continue;
+			}
+			for dest in self.destinations(node) {
+				if self.move_removes_opponent(node, dest) {
+					return true;
+				}
+			}
+		}
+		false
+	}
+
+	fn cannot_gain_tiles(&self, player: Player) -> bool {
+		if self.bag_len(player) == 0 || !self.rules.capture_draw_on_move {
+			return true;
+		}
+		!self.has_capturing_move(player)
+	}
+
+	fn is_insufficient(&self, player: Player) -> bool {
+		let need = usize::from(self.control_need());
+		if self.reachable_tiles(player) >= need {
+			return false;
+		}
+		match self.rules.insufficient_tiles_loss {
+			InsufficientTilesLoss::Off => false,
+			InsufficientTilesLoss::Strict => true,
+			InsufficientTilesLoss::NoRecapture => self.cannot_gain_tiles(player),
 		}
 	}
 
@@ -962,6 +1104,12 @@ impl Game {
 		if !self.status.is_over() {
 			self.update_petal_majority(who);
 		}
+		if !self.status.is_over() {
+			self.update_control(who);
+		}
+		if !self.status.is_over() {
+			self.check_insufficient_tiles();
+		}
 		self.actions_this_turn = 0;
 		self.turn_count = self.turn_count.saturating_add(1);
 		if self.status.is_over() {
@@ -1017,6 +1165,55 @@ impl Game {
 		if self.petal_count(opp) < need {
 			self.petal_majority[opp.index()] = 0;
 		}
+	}
+
+	fn update_control(&mut self, who: Player) {
+		if !self.rules.control_win {
+			self.control_hold = [0, 0];
+			return;
+		}
+		let need = self.control_need();
+		if self.control_count(who) >= need {
+			self.control_hold[who.index()] = self.control_hold[who.index()].saturating_add(1);
+			if self.control_hold[who.index()] >= self.rules.control_hold_turns.max(1) {
+				self.status = GameStatus::Won { winner: who, reason: EndReason::Control };
+			}
+		} else {
+			self.control_hold[who.index()] = 0;
+		}
+		let opp = who.other();
+		if self.control_count(opp) < need {
+			self.control_hold[opp.index()] = 0;
+		}
+	}
+
+	/// Both players are checked at the turn boundary. If both are insufficient
+	/// at once, the game is a draw (`EndReason::InsufficientTiles`).
+	fn check_insufficient_tiles(&mut self) {
+		if !self.rules.insufficient_tiles_loss.is_on() || self.status.is_over() {
+			return;
+		}
+		let p1 = self.is_insufficient(Player::One);
+		let p2 = self.is_insufficient(Player::Two);
+		match (p1, p2) {
+			(true, true) => {
+				self.status = GameStatus::Draw { reason: EndReason::InsufficientTiles };
+			}
+			(true, false) => {
+				self.status =
+					GameStatus::Won { winner: Player::Two, reason: EndReason::InsufficientTiles };
+			}
+			(false, true) => {
+				self.status =
+					GameStatus::Won { winner: Player::One, reason: EndReason::InsufficientTiles };
+			}
+			(false, false) => {}
+		}
+	}
+
+	#[cfg(test)]
+	pub(crate) fn evaluate_insufficient_tiles_for_test(&mut self) {
+		self.check_insufficient_tiles();
 	}
 
 	fn apply_add(&mut self, bench_index: usize, node: NodeId) -> Result<(), String> {
@@ -1169,6 +1366,26 @@ mod tests {
 	fn put(game: &mut Game, node: NodeId, owner: Player, color: TileColor, weight: u8, dots: u8) {
 		let tile = take(game, owner, color, weight, dots);
 		game.place_tile(node, tile);
+	}
+
+	fn stock_bench(game: &mut Game, player: Player, n: usize) {
+		let colors = [TileColor::Green, TileColor::Blue, TileColor::Orange];
+		let mut tiles = Vec::with_capacity(n);
+		for i in 0..n {
+			tiles.push(take(game, player, colors[i % 3], 1 + (i % 3) as u8, 1));
+		}
+		game.set_bench(player, tiles);
+	}
+
+	/// Center + 4 inner-ring tiles, all the same color so the center is not
+	/// overwhelmed by four mismatch neighbors.
+	fn occupy_control_five(game: &mut Game, player: Player) {
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		put(game, center, player, TileColor::Green, 3, 1);
+		for &node in inner.iter().take(4) {
+			put(game, node, player, TileColor::Green, 3, 1);
+		}
 	}
 
 	#[test]
@@ -1810,6 +2027,308 @@ mod tests {
 			game.status(),
 			GameStatus::Won { winner: Player::One, reason: EndReason::PetalMajority }
 		);
+	}
+
+	#[test]
+	fn control_win_needs_five_of_nine_not_center_alone() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 1;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		put(&mut game, center, Player::One, TileColor::Blue, 3, 1);
+		{
+			let t = take(&mut game, Player::One, TileColor::Green, 2, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		{
+			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
+			game.set_bench(Player::Two, vec![t]);
+		}
+		game.set_current(Player::One);
+		let spawn = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(game.control_count(Player::One), 1);
+		assert_eq!(game.status(), GameStatus::InProgress);
+	}
+
+	#[test]
+	fn control_win_at_end_of_turn_when_t_is_one() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 1;
+		let mut game = Game::empty(rules);
+		occupy_control_five(&mut game, Player::One);
+		{
+			let t = take(&mut game, Player::One, TileColor::Green, 2, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		stock_bench(&mut game, Player::Two, 1);
+		game.set_current(Player::One);
+		assert_eq!(game.control_count(Player::One), 5);
+		assert_eq!(game.control_need(), 5);
+		let spawn = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	#[test]
+	fn control_hold_t_three_requires_three_own_turns() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 3;
+		rules.no_same_piece_twice = SamePieceTwice::Off;
+		let mut game = Game::empty(rules);
+		occupy_control_five(&mut game, Player::One);
+		{
+			let t = take(&mut game, Player::One, TileColor::Green, 2, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		stock_bench(&mut game, Player::Two, 1);
+		game.set_current(Player::One);
+		let p1 = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p1 }).unwrap();
+		assert_eq!(game.control_hold(Player::One), 1);
+		assert_eq!(game.status(), GameStatus::InProgress);
+
+		let p2 = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p2 }).unwrap();
+		assert_eq!(game.control_hold(Player::One), 1, "P2's turn must not increment P1");
+
+		{
+			let t = take(&mut game, Player::One, TileColor::Blue, 2, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		let p1b = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p1b }).unwrap();
+		assert_eq!(game.control_hold(Player::One), 2);
+
+		{
+			let t = take(&mut game, Player::Two, TileColor::Green, 1, 1);
+			game.set_bench(Player::Two, vec![t]);
+		}
+		let p2b = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p2b }).unwrap();
+
+		{
+			let t = take(&mut game, Player::One, TileColor::Orange, 1, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		let p1c = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: p1c }).unwrap();
+		assert_eq!(game.control_hold(Player::One), 3);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	#[test]
+	fn insufficient_tiles_strict_loses_below_five_ignoring_bag() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.insufficient_tiles_loss = InsufficientTilesLoss::Strict;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		for &node in inner.iter().take(3) {
+			put(&mut game, node, Player::One, TileColor::Green, 3, 1);
+		}
+		let bag = take(&mut game, Player::One, TileColor::Blue, 2, 1);
+		game.set_bag(Player::One, vec![bag]);
+		let p1b = take(&mut game, Player::One, TileColor::Green, 1, 1);
+		game.set_bench(Player::One, vec![p1b]);
+		// P2 must sit at >= 5 reachable tiles or both players lose and it draws.
+		stock_bench(&mut game, Player::Two, 5);
+		game.set_current(Player::One);
+		assert_eq!(game.reachable_tiles(Player::One), 4);
+		assert_eq!(game.reachable_tiles(Player::Two), 5);
+		let spawn = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.unwrap();
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(game.reachable_tiles(Player::One), 4);
+		assert_eq!(game.bag_len(Player::One), 1, "bag is ignored in strict mode");
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::InsufficientTiles }
+		);
+	}
+
+	#[test]
+	fn insufficient_tiles_strict_allows_exactly_five() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.insufficient_tiles_loss = InsufficientTilesLoss::Strict;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		for &node in inner.iter().take(4) {
+			put(&mut game, node, Player::One, TileColor::Green, 3, 1);
+		}
+		let p1b = take(&mut game, Player::One, TileColor::Green, 1, 1);
+		game.set_bench(Player::One, vec![p1b]);
+		stock_bench(&mut game, Player::Two, 5);
+		game.set_current(Player::One);
+		let spawn = game.board().spawns()[0];
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(game.reachable_tiles(Player::One), 5);
+		assert_eq!(game.reachable_tiles(Player::Two), 5);
+		assert_eq!(game.status(), GameStatus::InProgress);
+	}
+
+	#[test]
+	fn insufficient_no_recapture_loses_without_a_capturing_move() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.insufficient_tiles_loss = InsufficientTilesLoss::NoRecapture;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		for &node in inner.iter().take(3) {
+			put(&mut game, node, Player::One, TileColor::Green, 3, 1);
+		}
+		let bag = take(&mut game, Player::One, TileColor::Blue, 2, 1);
+		game.set_bag(Player::One, vec![bag]);
+		let p1b = take(&mut game, Player::One, TileColor::Green, 1, 1);
+		game.set_bench(Player::One, vec![p1b]);
+		// P2 is only on the bench, so P1 has a bag but no capturing MOVE.
+		stock_bench(&mut game, Player::Two, 5);
+		game.set_current(Player::One);
+		assert!(!game.has_capturing_move(Player::One));
+		let spawn = game.board().spawns()[0];
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::InsufficientTiles }
+		);
+	}
+
+	#[test]
+	fn insufficient_no_recapture_survives_when_a_capture_can_draw() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.insufficient_tiles_loss = InsufficientTilesLoss::NoRecapture;
+		rules.no_same_piece_twice = SamePieceTwice::Off;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		// Proven capture geometry from `move_capture_draws_one_per_opponent_tile`.
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		let inner = game.board().inner_ring().to_vec();
+		let extra = inner
+			.iter()
+			.copied()
+			.find(|&n| {
+				n != spawn
+					&& n != land && n != from
+					&& n != nbs[1] && game.tile_at(n).is_none()
+					&& !game.board().neighbors(spawn).contains(&n)
+			})
+			.expect("an inner node away from the capture");
+		put(&mut game, extra, Player::One, TileColor::Green, 3, 1);
+		let bag = take(&mut game, Player::One, TileColor::Blue, 2, 1);
+		game.set_bag(Player::One, vec![bag]);
+		{
+			let t = take(&mut game, Player::One, TileColor::Green, 1, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		stock_bench(&mut game, Player::Two, 5);
+		game.set_current(Player::One);
+		assert_eq!(game.reachable_tiles(Player::One), 4);
+		assert!(game.destinations(from).contains(&land));
+		assert!(game.move_removes_opponent(from, land));
+		assert!(game.has_capturing_move(Player::One));
+		// Turn-boundary check without playing the capture: board+bench is 4,
+		// but a capturing MOVE plus a non-empty bag keeps them alive.
+		game.evaluate_insufficient_tiles_for_test();
+		assert_eq!(game.reachable_tiles(Player::One), 4);
+		assert_eq!(game.bag_len(Player::One), 1);
+		assert_eq!(game.status(), GameStatus::InProgress);
+	}
+
+	#[test]
+	fn insufficient_both_players_is_a_draw() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.insufficient_tiles_loss = InsufficientTilesLoss::Strict;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		for &node in inner.iter().take(3) {
+			put(&mut game, node, Player::One, TileColor::Green, 3, 1);
+		}
+		for &node in inner.iter().skip(4).take(3) {
+			put(&mut game, node, Player::Two, TileColor::Orange, 3, 1);
+		}
+		let p1b = take(&mut game, Player::One, TileColor::Green, 1, 1);
+		game.set_bench(Player::One, vec![p1b]);
+		let p2b = take(&mut game, Player::Two, TileColor::Blue, 1, 1);
+		game.set_bench(Player::Two, vec![p2b]);
+		game.set_current(Player::One);
+		let spawn = game.board().spawns()[0];
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(game.status(), GameStatus::Draw { reason: EndReason::InsufficientTiles });
 	}
 
 	#[test]

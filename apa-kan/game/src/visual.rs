@@ -337,6 +337,19 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 					game.rules().petal_majority_n
 				));
 			}
+			if game.rules().control_win {
+				extra.push_str(&format!(
+					"{HUD_SEP}ctl P1 {}/{} {}/{} P2 {}/{} {}/{}",
+					game.control_count(Player::One),
+					game.control_need(),
+					game.control_hold(Player::One),
+					game.rules().control_hold_turns,
+					game.control_count(Player::Two),
+					game.control_need(),
+					game.control_hold(Player::Two),
+					game.rules().control_hold_turns
+				));
+			}
 			let hold = extra;
 			format!(
 				"Turn {}{HUD_SEP}{} ({}) to play{HUD_SEP}P1 light {}/{}{HUD_SEP}P2 dark {}/{}{hold}",

@@ -51,6 +51,8 @@ fn usage() -> &'static str {
 	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
 	   --hop-weight-cmp, --petal-majority-win, --petal-majority-n,\n\
+	   --control-win, --control-n, --control-hold-turns,\n\
+	   --insufficient-tiles-loss,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
@@ -153,6 +155,8 @@ struct SeatStats {
 	locked_out: u32,
 	center_hold: u32,
 	petal_majority: u32,
+	control: u32,
+	insuff: u32,
 	turn_limit: u32,
 	double_pass: u32,
 	games_repeat_ge2: u32,
@@ -206,7 +210,7 @@ fn run(cfg: BenchConfig) {
 		rules.turn_limit
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} path_constraint={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} path_constraint={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -215,6 +219,10 @@ fn run(cfg: BenchConfig) {
 		rules.hop_weight_cmp.name(),
 		on_off(rules.petal_majority_win),
 		rules.petal_majority_n,
+		on_off(rules.control_win),
+		rules.control_n,
+		rules.control_hold_turns,
+		rules.insufficient_tiles_loss.name(),
 		rules.path_constraint.name()
 	));
 	lines.push(
@@ -224,7 +232,7 @@ fn run(cfg: BenchConfig) {
 		"# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).".into(),
 	);
 	lines.push(
-		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters".into(),
+		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters".into(),
 	);
 
 	let record_holder: Mutex<Option<GameRecord>> = Mutex::new(None);
@@ -260,9 +268,31 @@ fn run(cfg: BenchConfig) {
 	let mut stall_rep3 = 0u32;
 	let mut stall_occ3 = 0u32;
 	let mut stall_turn_limit_and_rep3 = 0u32;
+	let mut p1_w = 0u32;
+	let mut p1_d = 0u32;
+	let mut p1_l = 0u32;
+	let mut end_elim = 0u32;
+	let mut end_lock = 0u32;
+	let mut end_hold = 0u32;
+	let mut end_petal = 0u32;
+	let mut end_control = 0u32;
+	let mut end_insuff = 0u32;
+	let mut end_limit = 0u32;
+	let mut end_pass = 0u32;
 	for (_, stats, line) in &pairing_results {
 		println!("{line}");
 		lines.push(line.clone());
+		p1_w += stats.wins;
+		p1_d += stats.draws;
+		p1_l += stats.losses;
+		end_elim += stats.elim;
+		end_lock += stats.locked_out;
+		end_hold += stats.center_hold;
+		end_petal += stats.petal_majority;
+		end_control += stats.control;
+		end_insuff += stats.insuff;
+		end_limit += stats.turn_limit;
+		end_pass += stats.double_pass;
 		stall_games += cfg.games;
 		stall_rep2 += stats.games_repeat_ge2;
 		stall_rep3 += stats.games_repeat_ge3;
@@ -273,6 +303,17 @@ fn run(cfg: BenchConfig) {
 			0
 		};
 	}
+	lines.push(format!(
+		"# seat_totals  P1 {p1_w}-{p1_d}-{p1_l}  P2 {p1_l}-{p1_d}-{p1_w}  games={}",
+		p1_w + p1_d + p1_l
+	));
+	lines.push(format!(
+		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} turn_limit={end_limit} double_pass={end_pass}"
+	));
+	println!(
+		"# seat_totals  P1 {p1_w}-{p1_d}-{p1_l}  P2 {p1_l}-{p1_d}-{p1_w}  games={}",
+		p1_w + p1_d + p1_l
+	);
 
 	lines.push(String::new());
 	lines.push("# stalling (rules unchanged; no threefold draw)".into());
@@ -285,7 +326,7 @@ fn run(cfg: BenchConfig) {
 		stall_turn_limit_and_rep3
 	));
 	lines.push(
-		"# Visible hash covers occupancy, tile kind, owner, benches, side to move, last-moved tile, moved-this-turn, and center-hold counters.".into(),
+		"# Visible hash covers occupancy, tile kind, owner, benches, side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).".into(),
 	);
 	lines.push(
 		"# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.".into(),
@@ -421,7 +462,7 @@ fn run_pairing(
 		if stats.depth_n == 0 { 0.0 } else { stats.depth_sum / f64::from(stats.depth_n) };
 	let avg_iters = if stats.iter_n == 0 { 0.0 } else { stats.iter_sum / f64::from(stats.iter_n) };
 	let line = format!(
-		"{:<15} vs {:<15}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}",
+		"{:<15} vs {:<15}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}",
 		p1.name(),
 		p2.name(),
 		stats.wins,
@@ -432,6 +473,8 @@ fn run_pairing(
 		stats.locked_out,
 		stats.center_hold,
 		stats.petal_majority,
+		stats.control,
+		stats.insuff,
 		stats.turn_limit,
 		stats.double_pass,
 		stats.games_repeat_ge3,
@@ -450,6 +493,8 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 		EndReason::LockedOut => stats.locked_out += 1,
 		EndReason::CenterHold => stats.center_hold += 1,
 		EndReason::PetalMajority => stats.petal_majority += 1,
+		EndReason::Control => stats.control += 1,
+		EndReason::InsufficientTiles => stats.insuff += 1,
 	}
 }
 
