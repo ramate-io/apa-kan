@@ -60,11 +60,11 @@ fn generate_add_actions(game: &Game, player: Player) -> Vec<Action> {
 		for row in 0..5 {
 			for col in 0..5 {
 				let pos = Position::new(row, col);
-			let is_legal_position = if game.rule_set.edge_add_only {
-				pos.is_edge() && game.board.is_empty(pos)
-			} else {
-				pos.is_valid() && game.board.is_empty(pos)
-			};
+				let is_legal_position = if game.rule_set.edge_add_only {
+					pos.is_edge() && game.board.is_empty(pos)
+				} else {
+					pos.is_valid() && game.board.is_empty(pos)
+				};
 
 				if is_legal_position {
 					actions.push(Action::add(player, tile_index, pos));
@@ -201,11 +201,11 @@ pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 				for row in 0..5 {
 					for col in 0..5 {
 						let pos = Position::new(row, col);
-			let is_legal_position = if game.rule_set.edge_add_only {
-				pos.is_edge() && game.board.is_empty(pos)
-			} else {
-				pos.is_valid() && game.board.is_empty(pos)
-			};
+						let is_legal_position = if game.rule_set.edge_add_only {
+							pos.is_edge() && game.board.is_empty(pos)
+						} else {
+							pos.is_valid() && game.board.is_empty(pos)
+						};
 						if is_legal_position {
 							return true;
 						}
@@ -216,11 +216,11 @@ pub fn has_legal_add_or_move(game: &Game, player: Player) -> bool {
 			for row in 0..5 {
 				for col in 0..5 {
 					let pos = Position::new(row, col);
-			let is_legal_position = if game.rule_set.edge_add_only {
-				pos.is_edge() && game.board.is_empty(pos)
-			} else {
-				pos.is_valid() && game.board.is_empty(pos)
-			};
+					let is_legal_position = if game.rule_set.edge_add_only {
+						pos.is_edge() && game.board.is_empty(pos)
+					} else {
+						pos.is_valid() && game.board.is_empty(pos)
+					};
 					if is_legal_position {
 						return true;
 					}

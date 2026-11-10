@@ -36,11 +36,8 @@ impl Rules {
 	}
 
 	fn apply_add(game: &mut Game, tile_index: usize, position: Position) -> Result<(), String> {
-		let is_valid_position = if game.rule_set.edge_add_only {
-			position.is_edge()
-		} else {
-			position.is_valid()
-		};
+		let is_valid_position =
+			if game.rule_set.edge_add_only { position.is_edge() } else { position.is_valid() };
 
 		if !is_valid_position {
 			return Err("Invalid position for ADD".to_string());
