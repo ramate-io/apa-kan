@@ -1,5 +1,5 @@
 // Quick test to diagnose 7x7 Mcts performance
-use apa_kan::game::{AiConfig, AiPlayer, BotType, Game, Rules, RuleSet};
+use apa_kan::game::{AiConfig, AiPlayer, BotType, Game, RuleSet, Rules};
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -41,10 +41,7 @@ fn main() {
 			}
 		}
 	}
-	println!(
-		"  Average: {:.0} iterations/move\n",
-		total_iterations as f64 / move_count as f64
-	);
+	println!("  Average: {:.0} iterations/move\n", total_iterations as f64 / move_count as f64);
 
 	// Test 7x7
 	println!("7x7 scored:");
@@ -78,8 +75,5 @@ fn main() {
 			}
 		}
 	}
-	println!(
-		"  Average: {:.0} iterations/move",
-		total_iterations as f64 / move_count as f64
-	);
+	println!("  Average: {:.0} iterations/move", total_iterations as f64 / move_count as f64);
 }

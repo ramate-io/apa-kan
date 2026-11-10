@@ -202,7 +202,10 @@ impl PairingStats {
 		println!();
 
 		// Bot A stats
-		println!("  {} overall: {}-{}-{}", self.bot_a_name, self.bot_a_stats.wins, self.bot_a_stats.losses, self.bot_a_stats.draws);
+		println!(
+			"  {} overall: {}-{}-{}",
+			self.bot_a_name, self.bot_a_stats.wins, self.bot_a_stats.losses, self.bot_a_stats.draws
+		);
 		println!(
 			"    As P1: {}-{}-{}, As P2: {}-{}-{}",
 			self.bot_a_stats.wins_as_p1,
@@ -214,7 +217,8 @@ impl PairingStats {
 		);
 
 		let a_score = self.bot_a_stats.wins as f64 + self.bot_a_stats.draws as f64 * 0.5;
-		let a_total = (self.bot_a_stats.wins + self.bot_a_stats.losses + self.bot_a_stats.draws) as f64;
+		let a_total =
+			(self.bot_a_stats.wins + self.bot_a_stats.losses + self.bot_a_stats.draws) as f64;
 		let (a_ci_low, a_ci_high) = wilson_95_ci(a_score, a_total);
 		println!(
 			"    Score: {:.1}% (95% CI: [{:.1}%, {:.1}%])",
@@ -235,15 +239,15 @@ impl PairingStats {
 		);
 
 		if !self.bot_a_stats.mcts_iterations.is_empty() {
-			let avg_mcts: f64 =
-				self.bot_a_stats.mcts_iterations.iter().sum::<u64>() as f64
-					/ self.bot_a_stats.mcts_iterations.len() as f64;
+			let avg_mcts: f64 = self.bot_a_stats.mcts_iterations.iter().sum::<u64>() as f64
+				/ self.bot_a_stats.mcts_iterations.len() as f64;
 			println!("    Avg MCTS iterations/move: {:.0}", avg_mcts);
 		}
 
 		if !self.bot_a_stats.minimax_depths.is_empty() {
-			let avg_depth: f64 = self.bot_a_stats.minimax_depths.iter().map(|&d| d as f64).sum::<f64>()
-				/ self.bot_a_stats.minimax_depths.len() as f64;
+			let avg_depth: f64 =
+				self.bot_a_stats.minimax_depths.iter().map(|&d| d as f64).sum::<f64>()
+					/ self.bot_a_stats.minimax_depths.len() as f64;
 			println!("    Avg minimax depth: {:.1}", avg_depth);
 		}
 
@@ -251,7 +255,13 @@ impl PairingStats {
 
 		// Bot B stats (only if different bot)
 		if self.bot_a_name != self.bot_b_name {
-			println!("  {} overall: {}-{}-{}", self.bot_b_name, self.bot_b_stats.wins, self.bot_b_stats.losses, self.bot_b_stats.draws);
+			println!(
+				"  {} overall: {}-{}-{}",
+				self.bot_b_name,
+				self.bot_b_stats.wins,
+				self.bot_b_stats.losses,
+				self.bot_b_stats.draws
+			);
 			println!(
 				"    As P1: {}-{}-{}, As P2: {}-{}-{}",
 				self.bot_b_stats.wins_as_p1,
@@ -262,10 +272,9 @@ impl PairingStats {
 				self.bot_b_stats.draws_as_p2
 			);
 
-			let b_score =
-				self.bot_b_stats.wins as f64 + self.bot_b_stats.draws as f64 * 0.5;
-			let b_total = (self.bot_b_stats.wins + self.bot_b_stats.losses + self.bot_b_stats.draws)
-				as f64;
+			let b_score = self.bot_b_stats.wins as f64 + self.bot_b_stats.draws as f64 * 0.5;
+			let b_total =
+				(self.bot_b_stats.wins + self.bot_b_stats.losses + self.bot_b_stats.draws) as f64;
 			let (b_ci_low, b_ci_high) = wilson_95_ci(b_score, b_total);
 			println!(
 				"    Score: {:.1}% (95% CI: [{:.1}%, {:.1}%])",
@@ -292,8 +301,9 @@ impl PairingStats {
 			}
 
 			if !self.bot_b_stats.minimax_depths.is_empty() {
-				let avg_depth: f64 = self.bot_b_stats.minimax_depths.iter().map(|&d| d as f64).sum::<f64>()
-					/ self.bot_b_stats.minimax_depths.len() as f64;
+				let avg_depth: f64 =
+					self.bot_b_stats.minimax_depths.iter().map(|&d| d as f64).sum::<f64>()
+						/ self.bot_b_stats.minimax_depths.len() as f64;
 				println!("    Avg minimax depth: {:.1}", avg_depth);
 			}
 
@@ -354,12 +364,7 @@ struct GameResult {
 	final_tile_diff: i32,
 }
 
-fn play_game(
-	p1: &AiPlayer,
-	p2: &AiPlayer,
-	rule_set: RuleSet,
-	bot_a_is_p1: bool,
-) -> GameResult {
+fn play_game(p1: &AiPlayer, p2: &AiPlayer, rule_set: RuleSet, bot_a_is_p1: bool) -> GameResult {
 	let mut game = Game::new_with_rules(rule_set);
 	let mut p1_actions = PlayerActionStats::default();
 	let mut p2_actions = PlayerActionStats::default();
@@ -368,11 +373,8 @@ fn play_game(
 	while game.turn_count < 100 && !game.is_game_over() {
 		let current_player = game.current_player;
 		let ai = if current_player == Player::One { p1 } else { p2 };
-		let action_stats = if current_player == Player::One {
-			&mut p1_actions
-		} else {
-			&mut p2_actions
-		};
+		let action_stats =
+			if current_player == Player::One { &mut p1_actions } else { &mut p2_actions };
 
 		// Measure per-position branching from actual legal actions
 		let legal_actions = generate_legal_actions(&game);
@@ -392,8 +394,7 @@ fn play_game(
 
 			// Count tiles before
 			let opp = current_player.other();
-			let opp_tiles_before =
-				game.board.tiles().filter(|(_, t)| t.owner == opp).count();
+			let opp_tiles_before = game.board.tiles().filter(|(_, t)| t.owner == opp).count();
 
 			match action.action_type {
 				ActionType::Add { .. } => action_stats.adds += 1,
@@ -406,8 +407,7 @@ fn play_game(
 			}
 
 			// Count captures
-			let opp_tiles_after =
-				game.board.tiles().filter(|(_, t)| t.owner == opp).count();
+			let opp_tiles_after = game.board.tiles().filter(|(_, t)| t.owner == opp).count();
 			let captured = opp_tiles_before.saturating_sub(opp_tiles_after);
 
 			if captured > 0 {
@@ -422,16 +422,8 @@ fn play_game(
 		}
 	}
 
-	let p1_tiles = game
-		.board
-		.tiles()
-		.filter(|(_, t)| t.owner == Player::One)
-		.count() as i32;
-	let p2_tiles = game
-		.board
-		.tiles()
-		.filter(|(_, t)| t.owner == Player::Two)
-		.count() as i32;
+	let p1_tiles = game.board.tiles().filter(|(_, t)| t.owner == Player::One).count() as i32;
+	let p2_tiles = game.board.tiles().filter(|(_, t)| t.owner == Player::Two).count() as i32;
 
 	GameResult {
 		p1_won: matches!(game.state, GameState::Won(Player::One)),
@@ -471,12 +463,7 @@ fn run_pairing(
 		..Default::default()
 	};
 
-	println!(
-		"  Running {} vs {} ({} games/seat)...",
-		bot_a.name(),
-		bot_b.name(),
-		games_per_seat
-	);
+	println!("  Running {} vs {} ({} games/seat)...", bot_a.name(), bot_b.name(), games_per_seat);
 
 	// Play N games with bot_a as P1
 	for game_idx in 0..games_per_seat {
@@ -490,44 +477,30 @@ fn run_pairing(
 
 		// Collect per-bot stats
 		if p1.stats.borrow().nodes_searched > 0 && bot_a == BotType::Mcts {
-			stats
-				.bot_a_stats
-				.mcts_iterations
-				.push(p1.stats.borrow().nodes_searched);
+			stats.bot_a_stats.mcts_iterations.push(p1.stats.borrow().nodes_searched);
 		}
-		if p1.stats.borrow().nodes_searched > 0 && bot_a != BotType::Mcts && bot_a != BotType::Ore
-		{
+		if p1.stats.borrow().nodes_searched > 0 && bot_a != BotType::Mcts && bot_a != BotType::Ore {
 			// Estimate depth for minimax
 			let s = p1.stats.borrow();
 			let total = s.add_actions_generated + s.move_actions_generated;
 			if total > 0 && s.nodes_searched > 0 {
 				let bf = total as f64 / s.nodes_searched as f64;
 				if bf > 1.0 {
-					stats
-						.bot_a_stats
-						.minimax_depths
-						.push((s.nodes_searched as f64).log(bf) as u8);
+					stats.bot_a_stats.minimax_depths.push((s.nodes_searched as f64).log(bf) as u8);
 				}
 			}
 		}
 
 		if p2.stats.borrow().nodes_searched > 0 && bot_b == BotType::Mcts {
-			stats
-				.bot_b_stats
-				.mcts_iterations
-				.push(p2.stats.borrow().nodes_searched);
+			stats.bot_b_stats.mcts_iterations.push(p2.stats.borrow().nodes_searched);
 		}
-		if p2.stats.borrow().nodes_searched > 0 && bot_b != BotType::Mcts && bot_b != BotType::Ore
-		{
+		if p2.stats.borrow().nodes_searched > 0 && bot_b != BotType::Mcts && bot_b != BotType::Ore {
 			let s = p2.stats.borrow();
 			let total = s.add_actions_generated + s.move_actions_generated;
 			if total > 0 && s.nodes_searched > 0 {
 				let bf = total as f64 / s.nodes_searched as f64;
 				if bf > 1.0 {
-					stats
-						.bot_b_stats
-						.minimax_depths
-						.push((s.nodes_searched as f64).log(bf) as u8);
+					stats.bot_b_stats.minimax_depths.push((s.nodes_searched as f64).log(bf) as u8);
 				}
 			}
 		}
@@ -547,43 +520,29 @@ fn run_pairing(
 
 		// Collect per-bot stats
 		if p1.stats.borrow().nodes_searched > 0 && bot_b == BotType::Mcts {
-			stats
-				.bot_b_stats
-				.mcts_iterations
-				.push(p1.stats.borrow().nodes_searched);
+			stats.bot_b_stats.mcts_iterations.push(p1.stats.borrow().nodes_searched);
 		}
-		if p1.stats.borrow().nodes_searched > 0 && bot_b != BotType::Mcts && bot_b != BotType::Ore
-		{
+		if p1.stats.borrow().nodes_searched > 0 && bot_b != BotType::Mcts && bot_b != BotType::Ore {
 			let s = p1.stats.borrow();
 			let total = s.add_actions_generated + s.move_actions_generated;
 			if total > 0 && s.nodes_searched > 0 {
 				let bf = total as f64 / s.nodes_searched as f64;
 				if bf > 1.0 {
-					stats
-						.bot_b_stats
-						.minimax_depths
-						.push((s.nodes_searched as f64).log(bf) as u8);
+					stats.bot_b_stats.minimax_depths.push((s.nodes_searched as f64).log(bf) as u8);
 				}
 			}
 		}
 
 		if p2.stats.borrow().nodes_searched > 0 && bot_a == BotType::Mcts {
-			stats
-				.bot_a_stats
-				.mcts_iterations
-				.push(p2.stats.borrow().nodes_searched);
+			stats.bot_a_stats.mcts_iterations.push(p2.stats.borrow().nodes_searched);
 		}
-		if p2.stats.borrow().nodes_searched > 0 && bot_a != BotType::Mcts && bot_a != BotType::Ore
-		{
+		if p2.stats.borrow().nodes_searched > 0 && bot_a != BotType::Mcts && bot_a != BotType::Ore {
 			let s = p2.stats.borrow();
 			let total = s.add_actions_generated + s.move_actions_generated;
 			if total > 0 && s.nodes_searched > 0 {
 				let bf = total as f64 / s.nodes_searched as f64;
 				if bf > 1.0 {
-					stats
-						.bot_a_stats
-						.minimax_depths
-						.push((s.nodes_searched as f64).log(bf) as u8);
+					stats.bot_a_stats.minimax_depths.push((s.nodes_searched as f64).log(bf) as u8);
 				}
 			}
 		}
@@ -592,17 +551,20 @@ fn run_pairing(
 	}
 
 	// Write results
-	let filename = format!("{}_{}_vs_{}.txt", 
-		if rule_set.board_size == 5 && rule_set.scored_mode { "5x5scored" }
-		else if rule_set.board_size == 7 && rule_set.scored_mode { "7x7scored" }
-		else { "5x5old" },
-		bot_a.name(), bot_b.name());
+	let filename = format!(
+		"{}_{}_vs_{}.txt",
+		if rule_set.board_size == 5 && rule_set.scored_mode {
+			"5x5scored"
+		} else if rule_set.board_size == 7 && rule_set.scored_mode {
+			"7x7scored"
+		} else {
+			"5x5old"
+		},
+		bot_a.name(),
+		bot_b.name()
+	);
 	let path = output_dir.join(filename);
-	let mut file = OpenOptions::new()
-		.create(true)
-		.append(true)
-		.open(path)
-		.unwrap();
+	let mut file = OpenOptions::new().create(true).append(true).open(path).unwrap();
 	writeln!(file, "Completed {} games", stats.total_games).unwrap();
 
 	stats
