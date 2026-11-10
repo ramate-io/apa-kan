@@ -1,0 +1,15 @@
+# apa-kan defaults
+# think_ms=200 games_per_pairing_per_seat=10 seed_base=1 turn_limit=200
+# rules: no_moves_loses=on center_hold_win=off center_hold_n=5 no_same_piece_twice=when-bench-empty color_restricted_hops=off hop_weight_cmp=lt path_constraint=no-edge-revisit
+# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.
+# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  turn_limit
+greedy   vs greedy    P1  1-8-1  176.30  0  2  0  8
+greedy   vs minimax   P1  1-3-6  103.30  0  7  0  3
+greedy   vs mcts      P1  10-0-0  27.90  1  9  0  0
+minimax  vs greedy    P1  6-3-1  107.40  0  7  0  3
+minimax  vs minimax   P1  3-4-3  142.50  0  6  0  4
+minimax  vs mcts      P1  8-2-0  63.80  0  8  0  2
+mcts     vs greedy    P1  0-2-8  80.30  1  7  0  2
+mcts     vs minimax   P1  0-4-6  94.60  0  6  0  4
+mcts     vs mcts      P1  2-2-6  66.20  0  8  0  2
+# elapsed_sec=1038.1 double_pass=0

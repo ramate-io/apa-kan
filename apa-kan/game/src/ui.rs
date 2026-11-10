@@ -263,7 +263,7 @@ fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
 				return;
 			}
 			Selection::Piece(from) => {
-				if play.game.destinations(from).contains(&node) {
+				if play.game.legal_destinations(from).contains(&node) {
 					apply_action(play, Action::Move { from, to: node });
 					return;
 				}
@@ -452,7 +452,7 @@ fn refresh_view(
 	let layout = &layout.0;
 	let board = play.game.board().clone();
 	let dests: Vec<NodeId> = match play.selection {
-		Selection::Piece(n) => play.game.destinations(n),
+		Selection::Piece(n) => play.game.legal_destinations(n),
 		_ => Vec::new(),
 	};
 

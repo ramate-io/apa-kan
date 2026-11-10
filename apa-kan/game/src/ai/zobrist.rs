@@ -1,4 +1,5 @@
-//! Zobrist keys for visible positions: occupancy, kind, owner, benches, side.
+//! Zobrist keys for visible positions: occupancy, kind, owner, benches, side,
+//! last-moved / moved-this-turn tile ids, and center-hold counters.
 
 use std::sync::OnceLock;
 
@@ -15,6 +16,11 @@ pub struct Zobrist {
 	side_two: u64,
 	pass_phase: [u64; 4],
 	actions_phase: [u64; 8],
+	last_moved_none: [u64; 2],
+	last_moved_some: [u64; 2],
+	center_hold: [[u64; 16]; 2],
+	moved_this_turn_none: u64,
+	moved_this_turn_some: u64,
 }
 
 impl Zobrist {
@@ -27,6 +33,11 @@ impl Zobrist {
 			side_two: next(),
 			pass_phase: [0; 4],
 			actions_phase: [0; 8],
+			last_moved_none: [next(), next()],
+			last_moved_some: [next(), next()],
+			center_hold: [[0; 16]; 2],
+			moved_this_turn_none: next(),
+			moved_this_turn_some: next(),
 		};
 		for node in 0..MAX_NODES {
 			for owner in 0..2 {
@@ -47,6 +58,11 @@ impl Zobrist {
 		}
 		for v in &mut z.actions_phase {
 			*v = next();
+		}
+		for player in 0..2 {
+			for n in 0..16 {
+				z.center_hold[player][n] = next();
+			}
 		}
 		z
 	}
@@ -89,7 +105,25 @@ pub fn hash(game: &Game) -> u64 {
 	}
 	h ^= z.pass_phase[game.consecutive_passes().min(3) as usize];
 	h ^= z.actions_phase[game.actions_this_turn().min(7) as usize];
+	for player in [Player::One, Player::Two] {
+		match game.last_moved_tile(player) {
+			None => h ^= z.last_moved_none[player.index()],
+			Some(id) => h ^= z.last_moved_some[player.index()] ^ mix_id(id),
+		}
+		h ^= z.center_hold[player.index()][game.center_hold(player).min(15) as usize];
+	}
+	match game.moved_this_turn() {
+		None => h ^= z.moved_this_turn_none,
+		Some(id) => h ^= z.moved_this_turn_some ^ mix_id(id),
+	}
 	h
+}
+
+fn mix_id(id: u32) -> u64 {
+	let mut x = u64::from(id).wrapping_add(0x9E37_79B9_7F4A_7C15);
+	x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+	x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+	x ^ (x >> 31)
 }
 
 /// Board occupancy + side to move, ignoring benches. For stall reporting.
@@ -131,5 +165,35 @@ mod tests {
 		let game = crate::game::Game::new(RuleSet::default(), 4);
 		let _ = Action::Pass;
 		assert_eq!(occupancy_hash(&game), occupancy_hash(&game));
+	}
+
+	#[test]
+	fn hash_includes_last_moved_and_center_hold() {
+		use crate::game::{Game, Player, SamePieceTwice, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = true;
+		rules.center_hold_n = 5;
+		rules.no_same_piece_twice = SamePieceTwice::Always;
+		let mut placed = Game::empty(rules);
+		let mut moved = Game::empty(rules);
+		let center = placed.board().center();
+		let from = placed.board().neighbors(center)[0];
+		let tile = placed.alloc_tile(Player::One, TileColor::Blue, 3, 1);
+		placed.place_tile(center, tile);
+		moved.place_tile(from, tile);
+		let opp = placed.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+		placed.set_bench(Player::Two, vec![opp]);
+		moved.set_bench(Player::Two, vec![opp]);
+		placed.set_current(Player::Two);
+		moved.set_current(Player::One);
+		moved.apply(Action::Move { from, to: center }).unwrap();
+		assert_eq!(moved.current_player(), Player::Two);
+		assert_eq!(moved.last_moved_tile(Player::One), Some(tile.id));
+		assert_eq!(moved.center_hold(Player::One), 1);
+		assert_eq!(placed.last_moved_tile(Player::One), None);
+		assert_eq!(placed.center_hold(Player::One), 0);
+		assert_ne!(hash(&placed), hash(&moved));
+		assert_eq!(occupancy_hash(&placed), occupancy_hash(&moved));
 	}
 }
