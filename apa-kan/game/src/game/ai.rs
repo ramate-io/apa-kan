@@ -586,9 +586,10 @@ impl AiPlayer {
 
 	fn select_untried_action(&self, node: &mut MctsNode) -> Action {
 		use rand::seq::SliceRandom;
-		let weights: Vec<f64> = node.untried_actions.iter().map(|a| self.action_prior(*a)).collect();
+		let weights: Vec<f64> =
+			node.untried_actions.iter().map(|a| self.action_prior(*a)).collect();
 		let total: f64 = weights.iter().sum();
-		
+
 		if total <= 0.0 {
 			let idx = self.rng.borrow_mut().gen_range(0..node.untried_actions.len());
 			return node.untried_actions.swap_remove(idx);
@@ -597,14 +598,14 @@ impl AiPlayer {
 		let mut rng = self.rng.borrow_mut();
 		let choice = rng.gen_range(0.0..total);
 		let mut cumulative = 0.0;
-		
+
 		for (i, &weight) in weights.iter().enumerate() {
 			cumulative += weight;
 			if choice < cumulative {
 				return node.untried_actions.swap_remove(i);
 			}
 		}
-		
+
 		node.untried_actions.swap_remove(node.untried_actions.len() - 1)
 	}
 
@@ -736,7 +737,9 @@ impl AiPlayer {
 						.count();
 
 					// In scored mode, heavily prefer MOVE captures
-					if game.rule_set.scored_mode && matches!(action.action_type, ActionType::Move { .. }) {
+					if game.rule_set.scored_mode
+						&& matches!(action.action_type, ActionType::Move { .. })
+					{
 						let captures = opp_tiles_before.saturating_sub(opp_tiles_after);
 						weight += captures as i32 * 30;
 					} else {
@@ -999,7 +1002,7 @@ mod tests {
 
 		let action = ai.choose_action(&game);
 		assert!(action.is_some());
-		
+
 		let stats = ai.stats.borrow();
 		assert!(stats.nodes_searched > 0);
 	}
@@ -1007,11 +1010,11 @@ mod tests {
 	#[test]
 	fn test_action_priors() {
 		let ai = AiPlayer::new(AiConfig::default());
-		
+
 		let move_action = Action::move_tile(Player::One, 0, Position::new(1, 1), 0);
 		let add_action = Action::add(Player::One, 0, Position::new(0, 1));
 		let pass_action = Action::pass(Player::One);
-		
+
 		assert!(ai.action_prior(move_action) > ai.action_prior(add_action));
 		assert!(ai.action_prior(add_action) > ai.action_prior(pass_action));
 	}
