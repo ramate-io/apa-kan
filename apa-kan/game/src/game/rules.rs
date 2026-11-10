@@ -13,16 +13,57 @@ impl Rules {
 			return Err("Not your turn".to_string());
 		}
 
+		let is_move = matches!(action.action_type, ActionType::Move { .. });
+		let opponent = game.current_player.other();
+		let opponent_tiles_before = if is_move {
+			game.board
+				.tiles()
+				.filter(|(_, tile)| tile.owner == opponent)
+				.count()
+		} else {
+			0
+		};
+
 		match action.action_type {
 			ActionType::Add { tile_index, position } => {
 				Self::apply_add(game, tile_index, position)?;
+				if game.rule_set.scored_mode {
+					match game.current_player {
+						Player::One => game.p1_has_added = true,
+						Player::Two => game.p2_has_added = true,
+					}
+				}
 			}
 			ActionType::Move { tile_id, destination, rotation_count } => {
 				Self::apply_move(game, tile_id, destination, rotation_count)?;
 			}
+			ActionType::Pass => {
+				if !game.rule_set.scored_mode {
+					return Err("Passing is only allowed in scored mode".to_string());
+				}
+				game.consecutive_passes += 1;
+			}
+		}
+
+		if !matches!(action.action_type, ActionType::Pass) {
+			game.consecutive_passes = 0;
 		}
 
 		Self::check_and_remove_all_mismatched(game);
+
+		if is_move && game.rule_set.scored_mode {
+			let opponent_tiles_after = game.board
+				.tiles()
+				.filter(|(_, tile)| tile.owner == opponent)
+				.count();
+			let removed = opponent_tiles_before.saturating_sub(opponent_tiles_after);
+			if removed > 0 {
+				match game.current_player {
+					Player::One => game.add_bank_p1 = game.add_bank_p1.saturating_add(removed as u8),
+					Player::Two => game.add_bank_p2 = game.add_bank_p2.saturating_add(removed as u8),
+				}
+			}
+		}
 
 		Self::check_win_condition(game);
 
@@ -200,12 +241,62 @@ impl Rules {
 		}
 	}
 
-	fn check_win_condition(game: &mut Game) {
-		let current_can_move = has_legal_add_or_move(game, game.current_player);
+	pub fn check_win_condition(game: &mut Game) {
+		if game.rule_set.scored_mode {
+			if game.consecutive_passes >= 2 {
+				Self::score_game_by_tiles(game);
+				return;
+			}
 
-		if !current_can_move {
-			game.state = GameState::Won(game.current_player.other());
+			for player in [Player::One, Player::Two] {
+				let has_added = match player {
+					Player::One => game.p1_has_added,
+					Player::Two => game.p2_has_added,
+				};
+				if !has_added {
+					continue;
+				}
+
+				let tiles_on_board = game.board
+					.tiles()
+					.filter(|(_, tile)| tile.owner == player)
+					.count();
+				if tiles_on_board == 0 {
+					let stack = game.stack(player);
+					let add_bank = match player {
+						Player::One => game.add_bank_p1,
+						Player::Two => game.add_bank_p2,
+					};
+					if stack.is_empty() || add_bank == 0 {
+						game.state = GameState::Won(player.other());
+						return;
+					}
+				}
+			}
+		} else {
+			let current_can_move = has_legal_add_or_move(game, game.current_player);
+
+			if !current_can_move {
+				game.state = GameState::Won(game.current_player.other());
+			}
 		}
+	}
+
+	fn score_game_by_tiles(game: &mut Game) {
+		let p1_tiles = game.board
+			.tiles()
+			.filter(|(_, tile)| tile.owner == Player::One)
+			.count();
+		let p2_tiles = game.board
+			.tiles()
+			.filter(|(_, tile)| tile.owner == Player::Two)
+			.count();
+
+		game.state = match p1_tiles.cmp(&p2_tiles) {
+			std::cmp::Ordering::Greater => GameState::Won(Player::One),
+			std::cmp::Ordering::Less => GameState::Won(Player::Two),
+			std::cmp::Ordering::Equal => GameState::Draw,
+		};
 	}
 
 	fn check_turn_limit_draw(game: &mut Game) {
@@ -214,7 +305,11 @@ impl Rules {
 		}
 
 		if game.turn_count >= 100 {
-			game.state = GameState::Draw;
+			if game.rule_set.scored_mode {
+				Self::score_game_by_tiles(game);
+			} else {
+				game.state = GameState::Draw;
+			}
 		}
 	}
 
@@ -559,5 +654,102 @@ mod tests {
 			.collect();
 
 		assert_eq!(move_actions.len(), 0);
+	}
+
+	#[test]
+	fn test_scored_mode_double_pass_draw() {
+		let mut game = Game::new_with_tiles_and_rules(vec![], vec![], RuleSet::scored());
+
+		let pass1 = Action::pass(Player::One);
+		assert!(Rules::apply_action(&mut game, pass1).is_ok());
+		assert_eq!(game.state, GameState::InProgress);
+
+		let pass2 = Action::pass(Player::Two);
+		assert!(Rules::apply_action(&mut game, pass2).is_ok());
+		assert_eq!(game.state, GameState::Draw);
+	}
+
+	#[test]
+	fn test_scored_mode_tile_count_winner() {
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![make_tile(0, Player::One, [Color::Maroon; 4])],
+			vec![make_tile(1, Player::Two, [Color::Green; 4])],
+			RuleSet::scored(),
+		);
+
+		game.board.place(Position::new(1, 1), game.player_one_stack.remove(0));
+		game.p1_has_added = true;
+
+		let pass1 = Action::pass(Player::One);
+		assert!(Rules::apply_action(&mut game, pass1).is_ok());
+
+		let pass2 = Action::pass(Player::Two);
+		assert!(Rules::apply_action(&mut game, pass2).is_ok());
+
+		assert_eq!(game.state, GameState::Won(Player::One));
+	}
+
+	#[test]
+	fn test_scored_mode_add_bank_from_move_captures() {
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![
+				make_tile(0, Player::One, [Color::Maroon; 4]),
+			],
+			vec![],
+			RuleSet::scored(),
+		);
+
+		game.board.place(Position::new(0, 1), game.player_one_stack.remove(0));
+		game.board.place(Position::new(1, 1), make_tile(2, Player::Two, [Color::Green; 4]));
+		game.p1_has_added = true;
+
+		let initial_bank = game.add_bank_p1;
+
+		let tile_id = game.board.get(Position::new(0, 1)).unwrap().id;
+		let action = Action::move_tile(Player::One, tile_id, Position::new(0, 2), 0);
+		let result = Rules::apply_action(&mut game, action);
+
+		if result.is_ok() && game.board.get(Position::new(1, 1)).is_none() {
+			assert_eq!(game.add_bank_p1, initial_bank + 1);
+		}
+	}
+
+	#[test]
+	fn test_scored_mode_no_add_bank_from_add_captures() {
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![make_tile(0, Player::One, [Color::Maroon; 4])],
+			vec![make_tile(1, Player::Two, [Color::Green; 4])],
+			RuleSet::scored(),
+		);
+
+		game.board.place(Position::new(1, 1), make_tile(1, Player::Two, [Color::Green; 4]));
+
+		let initial_bank = game.add_bank_p1;
+
+		let action = Action::add(Player::One, 0, Position::new(0, 1));
+		assert!(Rules::apply_action(&mut game, action).is_ok());
+
+		if game.board.get(Position::new(1, 1)).is_none() {
+			assert_eq!(game.add_bank_p1, initial_bank);
+		}
+	}
+
+	#[test]
+	fn test_scored_mode_elimination() {
+		let mut game = Game::new_with_tiles_and_rules(
+			vec![],
+			vec![make_tile(1, Player::Two, [Color::Green; 4])],
+			RuleSet::scored(),
+		);
+
+		game.board.place(Position::new(2, 2), make_tile(0, Player::One, [Color::Maroon; 4]));
+		game.p1_has_added = true;
+		game.add_bank_p1 = 0;
+
+		game.board.remove(Position::new(2, 2));
+
+		Rules::check_win_condition(&mut game);
+
+		assert_eq!(game.state, GameState::Won(Player::Two));
 	}
 }

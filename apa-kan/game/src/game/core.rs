@@ -181,6 +181,9 @@ pub struct RuleSet {
 	pub add_bank_size: u8,
 	pub moved_tile_immunity: bool,
 	pub edge_add_only: bool,
+	pub scored_mode: bool,
+	pub board_size: u8,
+	pub stack_size: u8,
 }
 
 impl RuleSet {
@@ -191,6 +194,9 @@ impl RuleSet {
 			add_bank_size: 100,
 			moved_tile_immunity: false,
 			edge_add_only: false,
+			scored_mode: false,
+			board_size: 5,
+			stack_size: 11,
 		}
 	}
 
@@ -201,6 +207,29 @@ impl RuleSet {
 			add_bank_size: 7,
 			moved_tile_immunity: false,
 			edge_add_only: true,
+			scored_mode: false,
+			board_size: 5,
+			stack_size: 11,
+		}
+	}
+
+	pub fn scored() -> Self {
+		Self {
+			fixed_rotation: true,
+			add_bank: true,
+			add_bank_size: 5,
+			moved_tile_immunity: false,
+			edge_add_only: true,
+			scored_mode: true,
+			board_size: 5,
+			stack_size: 11,
+		}
+	}
+
+	pub fn scored_7x7() -> Self {
+		Self {
+			board_size: 7,
+			..Self::scored()
 		}
 	}
 
@@ -211,6 +240,9 @@ impl RuleSet {
 			add_bank_size: bank_size,
 			moved_tile_immunity: false,
 			edge_add_only: true,
+			scored_mode: false,
+			board_size: 5,
+			stack_size: 11,
 		}
 	}
 
@@ -221,6 +253,9 @@ impl RuleSet {
 			add_bank_size: 7,
 			moved_tile_immunity: true,
 			edge_add_only: true,
+			scored_mode: false,
+			board_size: 5,
+			stack_size: 11,
 		}
 	}
 }
@@ -341,6 +376,9 @@ pub struct Game {
 	pub add_bank_p2: u8,
 	pub last_moved_tile: Option<TileId>,
 	pub last_moved_turn: usize,
+	pub consecutive_passes: u8,
+	pub p1_has_added: bool,
+	pub p2_has_added: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,7 +396,7 @@ impl Game {
 	pub fn new_with_rules(rule_set: RuleSet) -> Self {
 		let add_bank = if rule_set.add_bank { rule_set.add_bank_size } else { 100 };
 		let mut game = Self {
-			board: Board::new(5),
+			board: Board::new(rule_set.board_size),
 			player_one_stack: Vec::new(),
 			player_two_stack: Vec::new(),
 			current_player: Player::One,
@@ -371,6 +409,9 @@ impl Game {
 			add_bank_p2: add_bank,
 			last_moved_tile: None,
 			last_moved_turn: 0,
+			consecutive_passes: 0,
+			p1_has_added: false,
+			p2_has_added: false,
 		};
 		game.initialize_random_tiles();
 		game
@@ -396,7 +437,7 @@ impl Game {
 		let add_bank = if rule_set.add_bank { rule_set.add_bank_size } else { 100 };
 
 		Self {
-			board: Board::new(5),
+			board: Board::new(rule_set.board_size),
 			player_one_stack: player_one_tiles,
 			player_two_stack: player_two_tiles,
 			current_player: Player::One,
@@ -409,6 +450,9 @@ impl Game {
 			add_bank_p2: add_bank,
 			last_moved_tile: None,
 			last_moved_turn: 0,
+			consecutive_passes: 0,
+			p1_has_added: false,
+			p2_has_added: false,
 		}
 	}
 
@@ -418,7 +462,7 @@ impl Game {
 
 		for player in [Player::One, Player::Two] {
 			let mut tiles = Vec::new();
-			for _ in 0..11 {
+			for _ in 0..self.rule_set.stack_size {
 				let tile = self.generate_random_tile(&mut rng, player);
 				tiles.push(tile);
 			}

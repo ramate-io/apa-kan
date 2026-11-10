@@ -5,6 +5,7 @@ use std::collections::{HashSet, VecDeque};
 pub enum ActionType {
 	Add { tile_index: usize, position: Position },
 	Move { tile_id: TileId, destination: Position, rotation_count: u8 },
+	Pass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +27,10 @@ impl Action {
 	) -> Self {
 		Self { player, action_type: ActionType::Move { tile_id, destination, rotation_count } }
 	}
+
+	pub fn pass(player: Player) -> Self {
+		Self { player, action_type: ActionType::Pass }
+	}
 }
 
 pub fn generate_legal_actions(game: &Game) -> Vec<Action> {
@@ -34,6 +39,10 @@ pub fn generate_legal_actions(game: &Game) -> Vec<Action> {
 
 	actions.extend(generate_add_actions(game, player));
 	actions.extend(generate_move_actions(game, player));
+
+	if actions.is_empty() && game.rule_set.scored_mode {
+		actions.push(Action::pass(player));
+	}
 
 	actions
 }
@@ -57,8 +66,8 @@ fn generate_add_actions(game: &Game, player: Player) -> Vec<Action> {
 	}
 
 	for tile_index in 0..stack.len() {
-		for row in 0..5 {
-			for col in 0..5 {
+		for row in 0..game.board.size() as i8 {
+			for col in 0..game.board.size() as i8 {
 				let pos = Position::new(row, col);
 			let is_legal_position = if game.rule_set.edge_add_only {
 				game.board.is_edge(pos) && game.board.is_empty(pos)
