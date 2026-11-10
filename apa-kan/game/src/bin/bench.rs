@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apa_kan::ai::{self, Actor, BranchingReport, Searcher};
+use apa_kan::config::apply_rule_flag;
 use apa_kan::game::{Action, EndReason, Game, GameStatus, Player, RuleSet};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -28,6 +29,9 @@ struct BenchConfig {
 	out: PathBuf,
 	record: PathBuf,
 	measure_games: u32,
+	bots: Vec<Actor>,
+	rules: RuleSet,
+	label: String,
 }
 
 fn usage() -> &'static str {
@@ -37,9 +41,14 @@ fn usage() -> &'static str {
 	   --games <n>          Games per pairing per seat (default: 6)\n\
 	   --think-ms <n>       Bot think time in ms (default: 1000)\n\
 	   --seed <u64>         Base seed (default: 1)\n\
+	   --bots <list>        Comma-separated actors (default: greedy,minimax,mcts)\n\
 	   --measure-games <n>  Games for branching sample (default: 12)\n\
 	   --out <path>         Output log path\n\
 	   --record <path>      Full minimax vs mcts game record\n\
+	   --label <text>       Header label written into the log\n\
+	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
+	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
+	   --hop-weight-cmp, --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
 
@@ -56,6 +65,9 @@ where
 		out: root.join("search_h2h.txt"),
 		record: root.join("minimax_vs_mcts_game.txt"),
 		measure_games: 12,
+		bots: vec![Actor::Greedy, Actor::Minimax, Actor::Mcts],
+		rules: RuleSet::default(),
+		label: "search head-to-head".into(),
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -81,10 +93,39 @@ where
 			}
 			"--out" => cfg.out = PathBuf::from(need("--out", it.next())?),
 			"--record" => cfg.record = PathBuf::from(need("--record", it.next())?),
-			other => return Err(format!("unknown argument '{other}'")),
+			"--label" => cfg.label = need("--label", it.next())?,
+			"--bots" => cfg.bots = parse_bots(&need("--bots", it.next())?)?,
+			"--turn-limit" => {
+				let n = parse_u64("--turn-limit", &need("--turn-limit", it.next())?)?;
+				if n == 0 {
+					return Err("invalid --turn-limit (expected >= 1)".into());
+				}
+				cfg.rules.turn_limit = n as u32;
+			}
+			other => {
+				if apply_rule_flag(&mut cfg.rules, other, &mut it)? {
+					continue;
+				}
+				return Err(format!("unknown argument '{other}'"));
+			}
 		}
 	}
+	if cfg.bots.is_empty() {
+		return Err("--bots must name at least one actor".into());
+	}
 	Ok(cfg)
+}
+
+fn parse_bots(s: &str) -> Result<Vec<Actor>, String> {
+	let mut out = Vec::new();
+	for part in s.split(',') {
+		let part = part.trim();
+		if part.is_empty() {
+			continue;
+		}
+		out.push(Actor::parse(part)?);
+	}
+	Ok(out)
 }
 
 fn need(flag: &str, v: Option<impl AsRef<str>>) -> Result<String, String> {
@@ -103,6 +144,8 @@ struct SeatStats {
 	losses: u32,
 	turns: u32,
 	elim: u32,
+	locked_out: u32,
+	center_hold: u32,
 	turn_limit: u32,
 	double_pass: u32,
 	games_repeat_ge2: u32,
@@ -116,34 +159,51 @@ struct SeatStats {
 	iter_n: u32,
 }
 
-const PAIRINGS: [(Actor, Actor); 8] = [
-	(Actor::Minimax, Actor::Mcts),
-	(Actor::Mcts, Actor::Minimax),
-	(Actor::Minimax, Actor::Greedy),
-	(Actor::Greedy, Actor::Minimax),
-	(Actor::Mcts, Actor::Greedy),
-	(Actor::Greedy, Actor::Mcts),
-	(Actor::Minimax, Actor::Minimax),
-	(Actor::Mcts, Actor::Mcts),
-];
+fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
+	let mut out = Vec::new();
+	for &p1 in bots {
+		for &p2 in bots {
+			out.push((p1, p2));
+		}
+	}
+	out
+}
+
+fn on_off(v: bool) -> &'static str {
+	if v {
+		"on"
+	} else {
+		"off"
+	}
+}
 
 fn run(cfg: BenchConfig) {
 	let started = Instant::now();
-	let rules = RuleSet::default();
+	let rules = cfg.rules;
 	let mut lines: Vec<String> = Vec::new();
 
 	println!("measuring branching factor ({} games)...", cfg.measure_games);
-	let branching = ai::sample_branching(cfg.measure_games, cfg.seed.wrapping_add(17));
+	let branching = ai::sample_branching(cfg.measure_games, cfg.seed.wrapping_add(17), rules);
 	push_branching(&mut lines, &cfg, &branching, rules.turn_limit);
 
 	lines.push(String::new());
-	lines.push("# search head-to-head".into());
+	lines.push(format!("# {}", cfg.label));
 	lines.push(format!(
 		"# think_ms={} games_per_pairing_per_seat={} seed_base={} turn_limit={}",
 		cfg.think.as_millis(),
 		cfg.games,
 		cfg.seed,
 		rules.turn_limit
+	));
+	lines.push(format!(
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} path_constraint={}",
+		on_off(rules.no_moves_loses),
+		on_off(rules.center_hold_win),
+		rules.center_hold_n,
+		rules.no_same_piece_twice.name(),
+		on_off(rules.color_restricted_hops),
+		rules.hop_weight_cmp.name(),
+		rules.path_constraint.name()
 	));
 	lines.push(
 		"# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.".into(),
@@ -152,15 +212,16 @@ fn run(cfg: BenchConfig) {
 		"# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).".into(),
 	);
 	lines.push(
-		"# pairing  seat  W-D-L  avg_turns  elim  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters".into(),
+		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters".into(),
 	);
 
 	let record_holder: Mutex<Option<GameRecord>> = Mutex::new(None);
 	let mut pairing_results: Vec<(usize, SeatStats, String)> = Vec::new();
+	let pairs = pairings(&cfg.bots);
 
 	std::thread::scope(|scope| {
 		let mut handles = Vec::new();
-		for (pi, &(p1, p2)) in PAIRINGS.iter().enumerate() {
+		for (pi, &(p1, p2)) in pairs.iter().enumerate() {
 			let think = cfg.think;
 			let games = cfg.games;
 			let seed_base = cfg.seed;
@@ -212,7 +273,7 @@ fn run(cfg: BenchConfig) {
 		stall_turn_limit_and_rep3
 	));
 	lines.push(
-		"# Visible hash covers occupancy, tile kind, owner, benches, and side to move.".into(),
+		"# Visible hash covers occupancy, tile kind, owner, benches, side to move, last-moved tile, moved-this-turn, and center-hold counters.".into(),
 	);
 	lines.push(
 		"# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.".into(),
@@ -348,7 +409,7 @@ fn run_pairing(
 		if stats.depth_n == 0 { 0.0 } else { stats.depth_sum / f64::from(stats.depth_n) };
 	let avg_iters = if stats.iter_n == 0 { 0.0 } else { stats.iter_sum / f64::from(stats.iter_n) };
 	let line = format!(
-		"{:<8} vs {:<8}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}",
+		"{:<8} vs {:<8}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}",
 		p1.name(),
 		p2.name(),
 		stats.wins,
@@ -356,6 +417,8 @@ fn run_pairing(
 		stats.losses,
 		avg,
 		stats.elim,
+		stats.locked_out,
+		stats.center_hold,
 		stats.turn_limit,
 		stats.double_pass,
 		stats.games_repeat_ge3,
@@ -371,6 +434,8 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 		EndReason::Elimination => stats.elim += 1,
 		EndReason::TurnLimit => stats.turn_limit += 1,
 		EndReason::DoublePass => stats.double_pass += 1,
+		EndReason::LockedOut => stats.locked_out += 1,
+		EndReason::CenterHold => stats.center_hold += 1,
 	}
 }
 

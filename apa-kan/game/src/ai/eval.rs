@@ -6,7 +6,18 @@ pub const WIN: i32 = 50_000;
 
 pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 	match game.status() {
-		GameStatus::InProgress => None,
+		GameStatus::InProgress => {
+			if game.rules().no_moves_loses && !game.has_add_or_move() {
+				let ply = game.turn_count() as i32;
+				if game.current_player() == me {
+					Some(-WIN + ply)
+				} else {
+					Some(WIN - ply)
+				}
+			} else {
+				None
+			}
+		}
 		GameStatus::Won { winner, .. } => {
 			let ply = game.turn_count() as i32;
 			if winner == me {
@@ -66,7 +77,11 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 
 		let r = board.radius_of(node);
 		let geo = if node == board.center() {
-			22
+			if game.rules().center_hold_win {
+				180
+			} else {
+				22
+			}
 		} else if board.is_spawn(node) {
 			if turn > 20 {
 				-12
@@ -124,6 +139,12 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 		+ spawn_control
 		+ mobility
 		- 22 * at_risk;
+
+	if game.rules().center_hold_win {
+		let n = i32::from(game.rules().center_hold_n.max(1));
+		let unit = 8_000 / n;
+		score += unit * i32::from(game.center_hold(me)) - unit * i32::from(game.center_hold(opp));
+	}
 
 	if contact_pairs == 0 && my_board > 0 && opp_board > 0 {
 		score -= 70 * (material + presence).signum();
@@ -206,5 +227,45 @@ mod tests {
 		let base = evaluate(&game, Player::One, 1);
 		let penalized = evaluate(&game, Player::One, 3);
 		assert!(penalized < base);
+	}
+
+	#[test]
+	fn locked_out_is_a_loss_for_the_side_to_move() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Won { winner: Player::Two, reason: EndReason::LockedOut });
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s < -WIN / 2);
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+	}
+
+	#[test]
+	fn no_moves_loses_empty_board_is_lockout_for_side_to_move() {
+		let game = Game::empty(RuleSet::default());
+		assert!(game.rules().no_moves_loses);
+		assert!(!game.has_add_or_move());
+		assert_eq!(terminal_score(&game, Player::One), Some(-WIN));
+		assert_eq!(terminal_score(&game, Player::Two), Some(WIN));
+	}
+
+	#[test]
+	fn center_hold_win_is_near_mate() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Won { winner: Player::One, reason: EndReason::CenterHold });
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s > WIN / 2);
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+	}
+
+	#[test]
+	fn occupying_center_scores_higher_when_center_hold_is_on() {
+		let mut off = Game::empty(RuleSet::default());
+		let mut on_rules = RuleSet::default();
+		on_rules.center_hold_win = true;
+		let mut on = Game::empty(on_rules);
+		let center = off.board().center();
+		let tile = off.alloc_tile(Player::One, crate::game::TileColor::Blue, 3, 1);
+		off.place_tile(center, tile);
+		on.place_tile(center, tile);
+		assert!(evaluate(&on, Player::One, 0) > evaluate(&off, Player::One, 0));
 	}
 }

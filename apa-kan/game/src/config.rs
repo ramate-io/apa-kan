@@ -6,7 +6,7 @@ use std::process;
 use std::time::Duration;
 
 use crate::ai::Actor;
-use crate::game::RuleSet;
+use crate::game::{HopWeightCmp, PathConstraint, RuleSet, SamePieceTwice};
 
 #[derive(Clone, Debug)]
 pub struct GameConfig {
@@ -102,7 +102,17 @@ impl GameConfig {
 					}
 					cfg.rules.actions_per_turn = n as u8;
 				}
+				"--turn-limit" => {
+					let n = parse_u64("--turn-limit", &require_value("--turn-limit", it.next())?)?;
+					if n == 0 {
+						return Err("invalid --turn-limit (expected >= 1)".into());
+					}
+					cfg.rules.turn_limit = n as u32;
+				}
 				other => {
+					if apply_rule_flag(&mut cfg.rules, other, &mut it)? {
+						continue;
+					}
 					return Err(format!("unknown argument '{other}'"));
 				}
 			}
@@ -129,12 +139,66 @@ fn parse_u64(flag: &str, value: &str) -> Result<u64, String> {
 	value.parse::<u64>().map_err(|_| format!("invalid {flag} '{value}'"))
 }
 
+fn parse_bool(flag: &str, value: &str) -> Result<bool, String> {
+	match value.to_ascii_lowercase().as_str() {
+		"on" | "true" | "1" | "yes" => Ok(true),
+		"off" | "false" | "0" | "no" => Ok(false),
+		other => Err(format!("invalid {flag} '{other}' (expected on|off)")),
+	}
+}
+
 fn parse_u32(flag: &str, value: &str) -> Result<u32, String> {
 	let n = parse_u64(flag, value)?;
 	if n < 320 || n > 7680 {
 		return Err(format!("invalid {flag} '{value}' (expected 320..7680)"));
 	}
 	u32::try_from(n).map_err(|_| format!("invalid {flag} '{value}'"))
+}
+
+/// Apply a RuleSet CLI flag. Returns `Ok(true)` if `arg` was consumed.
+pub fn apply_rule_flag<I, S>(rules: &mut RuleSet, arg: &str, it: &mut I) -> Result<bool, String>
+where
+	I: Iterator<Item = S>,
+	S: AsRef<str>,
+{
+	match arg {
+		"--no-moves-loses" => {
+			rules.no_moves_loses = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--center-hold-win" => {
+			rules.center_hold_win = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--center-hold-n" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > 64 {
+				return Err("invalid --center-hold-n (expected 1..64)".into());
+			}
+			rules.center_hold_n = n as u8;
+		}
+		"--no-same-piece-twice" => {
+			rules.no_same_piece_twice = SamePieceTwice::parse(&require_value(arg, it.next())?)?;
+		}
+		"--color-restricted-hops" => {
+			rules.color_restricted_hops = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--hop-weight-cmp" => {
+			rules.hop_weight_cmp = HopWeightCmp::parse(&require_value(arg, it.next())?)?;
+		}
+		"--path-constraint" => {
+			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
+		}
+		"--no-repeated-edge" => {
+			rules.path_constraint = match parse_bool(arg, &require_value(arg, it.next())?)? {
+				true => match rules.path_constraint {
+					PathConstraint::NoNodeRevisit | PathConstraint::Both => PathConstraint::Both,
+					PathConstraint::NoEdgeRevisit => PathConstraint::NoEdgeRevisit,
+				},
+				false => PathConstraint::NoNodeRevisit,
+			};
+		}
+		_ => return Ok(false),
+	}
+	Ok(true)
 }
 
 pub fn usage() -> &'static str {
@@ -147,9 +211,20 @@ pub fn usage() -> &'static str {
 	   --think-ms <n>                             Bot think time in ms (default: 80)\n\
 	   --delay-ms <n>                             Delay between bot moves (default: 350)\n\
 	   --actions <1..8>                           Actions per turn (default: 1)\n\
+	   --turn-limit <n>                           Safety-net draw (default: 200)\n\
 	   --width <px>                               Window width (default: 1280)\n\
 	   --height <px>                              Window height (default: 900)\n\
 	   --screenshot <path>                        Capture a mid-game board PNG and exit\n\
+	   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)\n\
+	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
+	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
+	   --no-same-piece-twice <off|always|when-bench-empty>\n\
+	                                              Repeat-piece rule (default: when-bench-empty)\n\
+	   --color-restricted-hops <on|off>           Hop only own color (default: off)\n\
+	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: lt)\n\
+	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
+	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
+	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
 	   -h, --help                                 Print help\n"
 }
 
@@ -190,6 +265,48 @@ mod tests {
 	fn glued_unknown_flag_errors() {
 		let err = GameConfig::parse(["--bot1human"]).unwrap_err();
 		assert!(err.contains("unknown argument"));
+	}
+
+	#[test]
+	fn parses_stall_rule_flags() {
+		let cfg = GameConfig::parse([
+			"--no-moves-loses",
+			"off",
+			"--center-hold-win",
+			"on",
+			"--center-hold-n",
+			"3",
+			"--no-same-piece-twice",
+			"always",
+			"--color-restricted-hops",
+			"on",
+			"--hop-weight-cmp",
+			"le",
+			"--path-constraint",
+			"both",
+			"--turn-limit",
+			"50",
+		])
+		.unwrap();
+		assert!(!cfg.rules.no_moves_loses);
+		assert!(cfg.rules.center_hold_win);
+		assert_eq!(cfg.rules.center_hold_n, 3);
+		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::Always);
+		assert!(cfg.rules.color_restricted_hops);
+		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
+		assert_eq!(cfg.rules.path_constraint, PathConstraint::Both);
+		assert_eq!(cfg.rules.turn_limit, 50);
+	}
+
+	#[test]
+	fn stall_rule_defaults_match_ruleset() {
+		let cfg = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(cfg.rules, RuleSet::default());
+		assert!(cfg.rules.no_moves_loses);
+		assert!(!cfg.rules.center_hold_win);
+		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::WhenBenchEmpty);
+		assert!(!cfg.rules.color_restricted_hops);
+		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 	}
 
 	#[test]

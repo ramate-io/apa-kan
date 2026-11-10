@@ -295,11 +295,10 @@ impl BranchingReport {
 }
 
 /// Average and max legal-action branching over real greedy/random games.
-pub fn sample_branching(games: u32, seed: u64) -> BranchingReport {
+pub fn sample_branching(games: u32, seed: u64, rules: RuleSet) -> BranchingReport {
 	use rand::rngs::StdRng;
 	use rand::SeedableRng;
 
-	let rules = RuleSet::default();
 	let mut report = BranchingReport { games, ..BranchingReport::default() };
 	let pairings = [
 		(Actor::Greedy, Actor::Random),
@@ -356,6 +355,28 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(4);
 		let action = choose(&game, Actor::Greedy, &mut rng, Duration::from_millis(1));
 		assert!(game.legal_actions().contains(&action));
+	}
+
+	#[test]
+	fn greedy_prefers_immediate_center_hold_win() {
+		use crate::game::{Action, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = true;
+		rules.center_hold_n = 1;
+		rules.no_same_piece_twice = crate::game::SamePieceTwice::Off;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let from = game.board().neighbors(center).first().copied().expect("center has neighbors");
+		let mover = game.alloc_tile(Player::One, TileColor::Blue, 3, 1);
+		game.place_tile(from, mover);
+		let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+		game.set_bench(Player::Two, vec![opp]);
+		game.set_current(Player::One);
+		assert!(game.legal_destinations(from).contains(&center));
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Greedy, &mut rng, Duration::from_millis(1));
+		assert_eq!(action, Action::Move { from, to: center });
 	}
 
 	#[test]
@@ -428,7 +449,7 @@ mod tests {
 
 	#[test]
 	fn branching_sample_sees_adds() {
-		let report = sample_branching(2, 1);
+		let report = sample_branching(2, 1, RuleSet::default());
 		assert!(report.add_n > 0);
 		assert!(report.add_max >= 8);
 		assert!(report.all_avg() > 0.0);

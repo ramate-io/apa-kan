@@ -313,16 +313,29 @@ pub fn format_header(bot1: &str, bot2: &str, turn: &str) -> String {
 
 pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 	match game.status() {
-		GameStatus::InProgress => format!(
-			"Turn {}{HUD_SEP}{} ({}) to play{HUD_SEP}P1 light {}/{}{HUD_SEP}P2 dark {}/{}",
-			game.turn_count() + 1,
-			game.current_player().label(),
-			actor_name,
-			game.bench(Player::One).len(),
-			game.bag_len(Player::One),
-			game.bench(Player::Two).len(),
-			game.bag_len(Player::Two)
-		),
+		GameStatus::InProgress => {
+			let hold = if game.rules().center_hold_win {
+				format!(
+					"{HUD_SEP}center hold P1 {}/{} P2 {}/{}",
+					game.center_hold(Player::One),
+					game.rules().center_hold_n,
+					game.center_hold(Player::Two),
+					game.rules().center_hold_n
+				)
+			} else {
+				String::new()
+			};
+			format!(
+				"Turn {}{HUD_SEP}{} ({}) to play{HUD_SEP}P1 light {}/{}{HUD_SEP}P2 dark {}/{}{hold}",
+				game.turn_count() + 1,
+				game.current_player().label(),
+				actor_name,
+				game.bench(Player::One).len(),
+				game.bag_len(Player::One),
+				game.bench(Player::Two).len(),
+				game.bag_len(Player::Two)
+			)
+		}
 		GameStatus::Won { winner, reason } => {
 			format!("Game over: {} wins by {:?}", winner.label(), reason)
 		}

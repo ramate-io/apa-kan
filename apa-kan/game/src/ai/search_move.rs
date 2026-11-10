@@ -94,7 +94,7 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	for mv in game.legal_moves() {
 		out.push(SearchMove::from_action(game, mv));
 	}
-	if out.is_empty() {
+	if out.is_empty() && !game.rules().no_moves_loses {
 		out.push(SearchMove::Pass);
 	}
 	out
@@ -175,5 +175,20 @@ mod tests {
 		let mv = legal_search_moves(&game)[0];
 		let action = mv.to_action(&game).unwrap();
 		assert_eq!(SearchMove::from_action(&game, action), mv);
+	}
+
+	#[test]
+	fn no_moves_loses_does_not_inject_pass() {
+		let game = Game::empty(RuleSet::default());
+		assert!(game.rules().no_moves_loses);
+		assert!(legal_search_moves(&game).is_empty());
+	}
+
+	#[test]
+	fn pass_is_injected_when_no_moves_loses_is_off() {
+		let mut rules = RuleSet::default();
+		rules.no_moves_loses = false;
+		let game = Game::empty(rules);
+		assert_eq!(legal_search_moves(&game), vec![SearchMove::Pass]);
 	}
 }
