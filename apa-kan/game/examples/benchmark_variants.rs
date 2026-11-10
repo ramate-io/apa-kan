@@ -49,8 +49,8 @@ struct MatchResult {
 struct PairingStats {
 	p1_name: String,
 	p2_name: String,
-	first_wins: usize,
-	second_wins: usize,
+	first_seat_wins: usize,
+	second_seat_wins: usize,
 	draws: usize,
 	total_games: usize,
 	total_turns: usize,
@@ -59,6 +59,7 @@ struct PairingStats {
 	turn_limit_draw_count: usize,
 	total_moves: usize,
 	total_captures: usize,
+	unique_outcomes: std::collections::HashSet<u64>,
 }
 
 impl PairingStats {
@@ -66,8 +67,8 @@ impl PairingStats {
 		Self {
 			p1_name: p1_name.to_string(),
 			p2_name: p2_name.to_string(),
-			first_wins: 0,
-			second_wins: 0,
+			first_seat_wins: 0,
+			second_seat_wins: 0,
 			draws: 0,
 			total_games: 0,
 			total_turns: 0,
@@ -76,14 +77,24 @@ impl PairingStats {
 			turn_limit_draw_count: 0,
 			total_moves: 0,
 			total_captures: 0,
+			unique_outcomes: std::collections::HashSet::new(),
 		}
 	}
 
-	fn first_player_win_rate(&self) -> f64 {
+	fn first_seat_win_rate(&self) -> f64 {
+		let decided_games = self.first_seat_wins + self.second_seat_wins;
+		if decided_games == 0 {
+			0.0
+		} else {
+			self.first_seat_wins as f64 / decided_games as f64
+		}
+	}
+
+	fn first_seat_win_rate_with_draws(&self) -> f64 {
 		if self.total_games == 0 {
 			0.0
 		} else {
-			self.first_wins as f64 / self.total_games as f64
+			self.first_seat_wins as f64 / self.total_games as f64
 		}
 	}
 
@@ -209,12 +220,22 @@ fn run_pairing(
 		stats.total_moves += result.p1_actions.moves + result.p2_actions.moves;
 		stats.total_captures += result.p1_actions.captures + result.p2_actions.captures;
 
+		let outcome_hash =
+			result.turns as u64 * 1000 + if result.is_draw {
+				999
+			} else if result.first_player_won {
+				1
+			} else {
+				2
+			};
+		stats.unique_outcomes.insert(outcome_hash);
+
 		if result.is_draw {
 			stats.draws += 1;
 		} else if result.first_player_won {
-			stats.first_wins += 1;
+			stats.first_seat_wins += 1;
 		} else {
-			stats.second_wins += 1;
+			stats.second_seat_wins += 1;
 		}
 	}
 
@@ -241,12 +262,22 @@ fn run_pairing(
 		stats.total_moves += result.p1_actions.moves + result.p2_actions.moves;
 		stats.total_captures += result.p1_actions.captures + result.p2_actions.captures;
 
+		let outcome_hash =
+			result.turns as u64 * 1000 + if result.is_draw {
+				999
+			} else if result.first_player_won {
+				1
+			} else {
+				2
+			};
+		stats.unique_outcomes.insert(outcome_hash);
+
 		if result.is_draw {
 			stats.draws += 1;
 		} else if result.first_player_won {
-			stats.second_wins += 1;
+			stats.first_seat_wins += 1;
 		} else {
-			stats.first_wins += 1;
+			stats.second_seat_wins += 1;
 		}
 	}
 
@@ -271,32 +302,40 @@ fn print_variant_results(variant_name: &str, all_pairings: &[PairingStats], elap
 		};
 
 		println!(
-			"{:<12} {:<12} {:>8} {:>8} {:>6} | {:>8.1} {:>7.1}% {:>8.1}",
+			"{:<12} {:<12} {:>9} {:>9} {:>6} | {:>8.1} {:>7.1}% {:>8.1} {:>8}",
 			stats.p1_name,
 			stats.p2_name,
-			stats.first_wins,
-			stats.second_wins,
+			stats.first_seat_wins,
+			stats.second_seat_wins,
 			stats.draws,
 			stats.avg_turns(),
 			move_pct,
-			stats.avg_captures_per_game()
+			stats.avg_captures_per_game(),
+			stats.unique_outcomes.len()
 		);
 	}
 
-	println!("\nMirror Match First-Player Win Rates:");
+	println!("\nFirst-Seat Win Rates (by pairing):");
 	for stats in all_pairings {
-		if stats.p1_name == stats.p2_name {
-			let fwr = stats.first_player_win_rate();
-			let stderr = ((fwr * (1.0 - fwr)) / stats.total_games as f64).sqrt();
-			let ci_95 = 1.96 * stderr;
-			println!(
-				"  {}: {:.1}% [{:.1}%, {:.1}%]",
-				stats.p1_name,
-				fwr * 100.0,
-				(fwr - ci_95) * 100.0,
-				(fwr + ci_95) * 100.0
-			);
-		}
+		let fwr_excl = stats.first_seat_win_rate();
+		let fwr_incl = stats.first_seat_win_rate_with_draws();
+		let decided = stats.first_seat_wins + stats.second_seat_wins;
+		let stderr = if decided > 0 {
+			((fwr_excl * (1.0 - fwr_excl)) / decided as f64).sqrt()
+		} else {
+			0.0
+		};
+		let ci_95 = 1.96 * stderr;
+		println!(
+			"  {} vs {}: {:.1}% excl draws [{:.1}%, {:.1}%], {:.1}% incl draws | {} unique outcomes",
+			stats.p1_name,
+			stats.p2_name,
+			fwr_excl * 100.0,
+			(fwr_excl - ci_95).max(0.0) * 100.0,
+			(fwr_excl + ci_95).min(1.0) * 100.0,
+			fwr_incl * 100.0,
+			stats.unique_outcomes.len()
+		);
 	}
 
 	println!("\nEnd Reasons:");
