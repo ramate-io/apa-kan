@@ -35,7 +35,7 @@ jobs:
 
   ios:
     needs: version
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 180
     env:
       VERSION: ${{ needs.version.outputs.version }}
