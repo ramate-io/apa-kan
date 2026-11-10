@@ -16,6 +16,8 @@ pub struct GameConfig {
 	pub think: Duration,
 	pub delay: Duration,
 	pub screenshot: Option<PathBuf>,
+	pub width: u32,
+	pub height: u32,
 	pub rules: RuleSet,
 }
 
@@ -28,6 +30,8 @@ impl Default for GameConfig {
 			think: Duration::from_millis(80),
 			delay: Duration::from_millis(350),
 			screenshot: None,
+			width: 1280,
+			height: 900,
 			rules: RuleSet::default(),
 		}
 	}
@@ -85,6 +89,12 @@ impl GameConfig {
 				"--screenshot" => {
 					cfg.screenshot = Some(PathBuf::from(require_value("--screenshot", it.next())?));
 				}
+				"--width" => {
+					cfg.width = parse_u32("--width", &require_value("--width", it.next())?)?;
+				}
+				"--height" => {
+					cfg.height = parse_u32("--height", &require_value("--height", it.next())?)?;
+				}
 				"--actions" => {
 					let n = parse_u64("--actions", &require_value("--actions", it.next())?)?;
 					if n == 0 || n > 8 {
@@ -119,6 +129,14 @@ fn parse_u64(flag: &str, value: &str) -> Result<u64, String> {
 	value.parse::<u64>().map_err(|_| format!("invalid {flag} '{value}'"))
 }
 
+fn parse_u32(flag: &str, value: &str) -> Result<u32, String> {
+	let n = parse_u64(flag, value)?;
+	if n < 320 || n > 7680 {
+		return Err(format!("invalid {flag} '{value}' (expected 320..7680)"));
+	}
+	u32::try_from(n).map_err(|_| format!("invalid {flag} '{value}'"))
+}
+
 pub fn usage() -> &'static str {
 	"Usage: apa-kan [OPTIONS]\n\
 	 \n\
@@ -129,7 +147,9 @@ pub fn usage() -> &'static str {
 	   --think-ms <n>                             Bot think time in ms (default: 80)\n\
 	   --delay-ms <n>                             Delay between bot moves (default: 350)\n\
 	   --actions <1..8>                           Actions per turn (default: 1)\n\
-	   --screenshot <path>                        Write a board PNG and exit\n\
+	   --width <px>                               Window width (default: 1280)\n\
+	   --height <px>                              Window height (default: 900)\n\
+	   --screenshot <path>                        Capture a mid-game board PNG and exit\n\
 	   -h, --help                                 Print help\n"
 }
 
@@ -170,5 +190,12 @@ mod tests {
 	fn glued_unknown_flag_errors() {
 		let err = GameConfig::parse(["--bot1human"]).unwrap_err();
 		assert!(err.contains("unknown argument"));
+	}
+
+	#[test]
+	fn parses_window_size() {
+		let cfg = GameConfig::parse(["--width", "1920", "--height", "1080"]).unwrap();
+		assert_eq!(cfg.width, 1920);
+		assert_eq!(cfg.height, 1080);
 	}
 }
