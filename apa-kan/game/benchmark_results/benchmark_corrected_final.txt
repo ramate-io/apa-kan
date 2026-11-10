@@ -1,0 +1,816 @@
+game $ cd /workspace/apa-kan/game && cargo run --release --example benchmark_cor
+rected 2>&1 | tee benchmark_corrected_output.txt
+warning: unused import: `rand::seq::SliceRandom`
+   --> apa-kan/game/src/game/ai.rs:588:7
+    |
+588 |         use rand::seq::SliceRandom;
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `rand::Rng`
+   --> apa-kan/game/src/game/core.rs:456:7
+    |
+456 |         use rand::Rng;
+    |             ^^^^^^^^^
+
+warning: unused import: `Tile`
+ --> apa-kan/game/src/game/rules.rs:2:54
+  |
+2 | use super::core::{Game, GameState, Player, Position, Tile};
+  |                                                      ^^^^
+
+warning: unused import: `Position`
+ --> apa-kan/game/src/ui/tiles.rs:1:45
+  |
+1 | use crate::game::core::{Color as TileColor, Position, Tile};
+  |                                             ^^^^^^^^
+
+warning: unused variable: `neighbor_tile`
+   --> apa-kan/game/src/game/actions.rs:163:16
+    |
+163 |             if let Some(neighbor_tile) = game.board.get(neighbor_pos) {
+    |                         ^^^^^^^^^^^^^ help: if this is intentional, prefix
+ it with an underscore: `_neighbor_tile`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by defaul
+t
+
+warning: variable `best_score` is assigned to, but never used
+   --> apa-kan/game/src/game/ai.rs:178:7
+    |
+178 |         let mut best_score = i32::MIN;
+    |             ^^^^^^^^^^^^^^
+    |
+    = note: consider using `_best_score` instead
+
+warning: value assigned to `best_score` is never read
+   --> apa-kan/game/src/game/ai.rs:230:5
+    |
+230 |                 best_score = depth_best_score;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by defa
+ult
+
+warning: field `player` is never read
+  --> apa-kan/game/src/game/ai.rs:72:2
+   |
+66 | struct MctsNode {
+   |        -------- field in this struct
+...
+72 |     player: Player,
+   |     ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `position` is never read
+  --> apa-kan/game/src/ui/board.rs:20:2
+   |
+19 | struct BoardSquare {
+   |        ----------- field in this struct
+20 |     position: Position,
+   |     ^^^^^^^^
+
+warning: field `player` is never read
+  --> apa-kan/game/src/ui/input.rs:31:14
+   |
+31 |     StackTile { player: Player, index: usize },
+   |     ---------   ^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `Selection` has a derived impl for the trait `Clone`, but this is int
+entionally ignored during dead code analysis
+
+warning: field `original_north_color` is never read
+  --> apa-kan/game/src/ui/input.rs:40:2
+   |
+36 | struct RotationMode {
+   |        ------------ field in this struct
+...
+40 |     original_north_color: crate::game::core::Color,
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `RotationMode` has a derived impl for the trait `Clone`, but this is
+intentionally ignored during dead code analysis
+
+warning: field `tile_id` is never read
+  --> apa-kan/game/src/ui/tiles.rs:17:2
+   |
+16 | struct TileSprite {
+   |        ---------- field in this struct
+17 |     tile_id: u32,
+   |     ^^^^^^^
+
+warning: struct `StackDisplay` is never constructed
+  --> apa-kan/game/src/ui/tiles.rs:21:8
+   |
+21 | struct StackDisplay;
+   |        ^^^^^^^^^^^^
+
+warning: `apa-kan` (lib) generated 13 warnings (run `cargo fix --lib -p apa-kan`
+ to apply 5 suggestions)
+warning: unused import: `Action`
+ --> apa-kan/game/examples/benchmark_corrected.rs:5:35
+  |
+5 |     actions::generate_legal_actions, Action, ActionType, AiConfig, AiPlayer,
+ BotType, Game,
+  |                                      ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `HashMap`
+ --> apa-kan/game/examples/benchmark_corrected.rs:8:24
+  |
+8 | use std::collections::{HashMap, HashSet};
+  |                        ^^^^^^^
+
+warning: `apa-kan` (example "benchmark_corrected") generated 2 warnings (run `ca
+rgo fix --example "benchmark_corrected" -p apa-kan` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.20s
+     Running `/workspace/target/release/examples/benchmark_corrected`
+Corrected Benchmark: Scored Mode Evaluation
+============================================
+Time budget: 500ms/move
+Games per seat: 10 (total 20 per cross-pairing)
+
+
+=== 5x5-scored ===
+Board: 5x5, Bank: 5, Scored: true
+Running 10 pairings in parallel...
+
+  Running Ore vs Ologbon (10 games/seat)...
+  Running Ore vs Ore (10 games/seat)...
+  Running Olusare vs Ologbon (10 games/seat)...
+  Running Ore vs Olusare (10 games/seat)...
+  Running Olusare vs Olusare (10 games/seat)...
+  Running Mcts vs Mcts (10 games/seat)...
+  Running Ologbon vs Mcts (10 games/seat)...
+  Running Olusare vs Mcts (10 games/seat)...
+  Running Ologbon vs Ologbon (10 games/seat)...
+  Running Ore vs Mcts (10 games/seat)...
+
+--- 5x5-scored Results ---
+
+
+Ore vs Ore:
+  Total games: 20
+
+  Ore overall: 9-7-4
+    As P1: 3-4-3, As P2: 6-3-1
+    Score: 55.0% (95% CI: [34.2%, 74.2%])
+    MOVE%: 3.17%
+    Captures: 2 from MOVE, 18 other
+
+  Seat stats: P1 6-4-10 P2
+  Avg turns/game: 23.2
+  Unique outcomes: 11
+
+  Per-position branching: ADD mean=62.2, p95=132, max=132
+                         MOVE mean=1.1, p95=10, max=22
+
+Ore vs Ologbon:
+  Total games: 20
+
+  Ore overall: 0-20-0
+    As P1: 0-10-0, As P2: 0-10-0
+    Score: 0.0% (95% CI: [-0.0%, 16.1%])
+    MOVE%: 0.00%
+    Captures: 0 from MOVE, 27 other
+
+  Ologbon overall: 20-0-0
+    As P1: 10-0-0, As P2: 10-0-0
+    Score: 100.0% (95% CI: [83.9%, 100.0%])
+    MOVE%: 27.14%
+    Captures: 14 from MOVE, 46 other
+    Avg minimax depth: 9.8
+
+  Seat stats: P1 10-0-10 P2
+  Avg turns/game: 21.2
+  Unique outcomes: 19
+
+  Per-position branching: ADD mean=58.0, p95=132, max=132
+                         MOVE mean=4.5, p95=19, max=43
+
+Ologbon vs Ologbon:
+  Total games: 20
+
+  Ologbon overall: 8-9-3
+    As P1: 0-9-1, As P2: 8-0-2
+    Score: 47.5% (95% CI: [27.9%, 68.0%])
+    MOVE%: 0.00%
+    Captures: 0 from MOVE, 100 other
+    Avg minimax depth: 4.9
+
+  Seat stats: P1 0-3-17 P2
+  Avg turns/game: 21.4
+  Unique outcomes: 2
+
+  Per-position branching: ADD mean=70.3, p95=121, max=132
+                         MOVE mean=0.0, p95=0, max=0
+
+Olusare vs Ologbon:
+  Total games: 20
+
+  Olusare overall: 9-10-1
+    As P1: 0-10-0, As P2: 9-0-1
+    Score: 47.5% (95% CI: [27.9%, 68.0%])
+    MOVE%: 0.00%
+    Captures: 0 from MOVE, 77 other
+    Avg minimax depth: 5.2
+
+  Ologbon overall: 10-9-1
+    As P1: 0-9-1, As P2: 10-0-0
+    Score: 52.5% (95% CI: [32.0%, 72.1%])
+    MOVE%: 0.47%
+    Captures: 1 from MOVE, 120 other
+    Avg minimax depth: 5.9
+
+  Seat stats: P1 0-1-19 P2
+  Avg turns/game: 21.2
+  Unique outcomes: 3
+
+  Per-position branching: ADD mean=68.2, p95=132, max=132
+                         MOVE mean=0.0, p95=0, max=6
+
+Ore vs Olusare:
+  Total games: 20
+
+  Ore overall: 0-20-0
+    As P1: 0-10-0, As P2: 0-10-0
+    Score: 0.0% (95% CI: [-0.0%, 16.1%])
+    MOVE%: 3.82%
+    Captures: 0 from MOVE, 3 other
+
+  Olusare overall: 20-0-0
+    As P1: 10-0-0, As P2: 10-0-0
+    Score: 100.0% (95% CI: [83.9%, 100.0%])
+    MOVE%: 64.98%
+    Captures: 23 from MOVE, 3 other
+    Avg minimax depth: 33.2
+
+  Seat stats: P1 10-0-10 P2
+  Avg turns/game: 23.6
+  Unique outcomes: 16
+
+  Per-position branching: ADD mean=62.3, p95=132, max=132
+                         MOVE mean=7.7, p95=28, max=48
+
+Olusare vs Olusare:
+  Total games: 20
+
+  Olusare overall: 9-11-0
+    As P1: 2-8-0, As P2: 7-3-0
+    Score: 45.0% (95% CI: [25.8%, 65.8%])
+    MOVE%: 61.02%
+    Captures: 50 from MOVE, 39 other
+    Avg minimax depth: 22.1
+
+  Seat stats: P1 5-0-15 P2
+  Avg turns/game: 49.8
+  Unique outcomes: 20
+
+  Per-position branching: ADD mean=45.9, p95=110, max=132
+                         MOVE mean=27.0, p95=75, max=120
+
+Ore vs Mcts:
+  Total games: 20
+
+  Ore overall: 1-19-0
+    As P1: 1-9-0, As P2: 0-10-0
+    Score: 5.0% (95% CI: [0.9%, 23.6%])
+    MOVE%: 1.59%
+    Captures: 1 from MOVE, 18 other
+
+  Mcts overall: 19-1-0
+    As P1: 10-0-0, As P2: 9-1-0
+    Score: 95.0% (95% CI: [76.4%, 99.1%])
+    MOVE%: 27.75%
+    Captures: 10 from MOVE, 30 other
+    Avg MCTS iterations/move: 323581
+
+  Seat stats: P1 11-0-9 P2
+  Avg turns/game: 19.6
+  Unique outcomes: 18
+
+  Per-position branching: ADD mean=73.3, p95=132, max=132
+                         MOVE mean=1.9, p95=12, max=24
+
+Ologbon vs Mcts:
+  Total games: 20
+
+  Ologbon overall: 15-5-0
+    As P1: 5-5-0, As P2: 10-0-0
+    Score: 75.0% (95% CI: [53.1%, 88.8%])
+    MOVE%: 6.99%
+    Captures: 8 from MOVE, 128 other
+    Avg minimax depth: 15.4
+
+  Mcts overall: 5-15-0
+    As P1: 0-10-0, As P2: 5-5-0
+    Score: 25.0% (95% CI: [11.2%, 46.9%])
+    MOVE%: 3.69%
+    Captures: 5 from MOVE, 54 other
+    Avg MCTS iterations/move: 1879858
+
+  Seat stats: P1 5-0-15 P2
+  Avg turns/game: 23.0
+  Unique outcomes: 6
+
+  Per-position branching: ADD mean=65.2, p95=121, max=132
+                         MOVE mean=2.2, p95=12, max=107
+
+Olusare vs Mcts:
+  Total games: 20
+
+  Olusare overall: 17-2-1
+    As P1: 8-1-1, As P2: 9-1-0
+    Score: 87.5% (95% CI: [66.9%, 96.0%])
+    MOVE%: 63.46%
+    Captures: 50 from MOVE, 88 other
+    Avg minimax depth: 35.5
+
+  Mcts overall: 2-17-1
+    As P1: 1-9-0, As P2: 1-8-1
+    Score: 12.5% (95% CI: [4.0%, 33.1%])
+    MOVE%: 36.77%
+    Captures: 7 from MOVE, 15 other
+    Avg MCTS iterations/move: 1369001
+
+  Seat stats: P1 9-1-10 P2
+  Avg turns/game: 50.8
+  Unique outcomes: 18
+
+  Per-position branching: ADD mean=35.4, p95=110, max=132
+                         MOVE mean=15.0, p95=54, max=158
+
+Mcts vs Mcts:
+  Total games: 20
+
+  Mcts overall: 10-9-1
+    As P1: 4-5-1, As P2: 6-4-0
+    Score: 52.5% (95% CI: [32.0%, 72.1%])
+    MOVE%: 9.66%
+    Captures: 10 from MOVE, 105 other
+    Avg MCTS iterations/move: 1739624
+
+  Seat stats: P1 8-1-11 P2
+  Avg turns/game: 24.9
+  Unique outcomes: 9
+
+  Per-position branching: ADD mean=65.2, p95=121, max=132
+                         MOVE mean=1.1, p95=12, max=24
+
+=== 7x7-scored ===
+Board: 7x7, Bank: 5, Scored: true
+Running 10 pairings in parallel...
+
+  Running Ore vs Ore (10 games/seat)...
+  Running Olusare vs Ologbon (10 games/seat)...
+  Running Ologbon vs Ologbon (10 games/seat)...
+  Running Ore vs Mcts (10 games/seat)...
+  Running Mcts vs Mcts (10 games/seat)...
+  Running Olusare vs Olusare (10 games/seat)...
+  Running Ore vs Ologbon (10 games/seat)...
+  Running Ologbon vs Mcts (10 games/seat)...
+  Running Olusare vs Mcts (10 games/seat)...
+  Running Ore vs Olusare (10 games/seat)...
+
+--- 7x7-scored Results ---
+
+
+Ore vs Ore:
+  Total games: 20
+
+  Ore overall: 8-10-2
+    As P1: 4-5-1, As P2: 4-5-1
+    Score: 45.0% (95% CI: [25.8%, 65.8%])
+    MOVE%: 6.88%
+    Captures: 1 from MOVE, 9 other
+
+  Seat stats: P1 9-2-9 P2
+  Avg turns/game: 20.2
+  Unique outcomes: 17
+
+  Per-position branching: ADD mean=90.7, p95=220, max=220
+                         MOVE mean=0.7, p95=6, max=20
+
+Ore vs Ologbon:
+  Total games: 20
+
+  Ore overall: 0-16-4
+    As P1: 0-9-1, As P2: 0-7-3
+    Score: 10.0% (95% CI: [2.8%, 30.1%])
+    MOVE%: 2.14%
+    Captures: 1 from MOVE, 7 other
+
+  Ologbon overall: 16-0-4
+    As P1: 7-0-3, As P2: 9-0-1
+    Score: 90.0% (95% CI: [69.9%, 97.2%])
+    MOVE%: 45.75%
+    Captures: 3 from MOVE, 38 other
+    Avg minimax depth: 2.0
+
+  Seat stats: P1 7-4-9 P2
+  Avg turns/game: 31.9
+  Unique outcomes: 17
+
+  Per-position branching: ADD mean=59.5, p95=209, max=220
+                         MOVE mean=7.5, p95=32, max=50
+
+Ologbon vs Ologbon:
+  Total games: 20
+
+  Ologbon overall: 5-5-10
+    As P1: 0-5-5, As P2: 5-0-5
+    Score: 50.0% (95% CI: [29.9%, 70.1%])
+    MOVE%: 0.90%
+    Captures: 0 from MOVE, 94 other
+
+  Seat stats: P1 0-10-10 P2
+  Avg turns/game: 24.6
+  Unique outcomes: 5
+
+  Per-position branching: ADD mean=104.7, p95=209, max=220
+                         MOVE mean=0.1, p95=0, max=12
+
+Olusare vs Ologbon:
+  Total games: 20
+
+  Olusare overall: 3-5-12
+    As P1: 0-4-6, As P2: 3-1-6
+    Score: 45.0% (95% CI: [25.8%, 65.8%])
+    MOVE%: 49.17%
+    Captures: 14 from MOVE, 79 other
+
+  Ologbon overall: 5-3-12
+    As P1: 1-3-6, As P2: 4-0-6
+    Score: 55.0% (95% CI: [34.2%, 74.2%])
+    MOVE%: 30.70%
+    Captures: 6 from MOVE, 89 other
+    Avg minimax depth: 1.7
+
+  Seat stats: P1 1-12-7 P2
+  Avg turns/game: 47.8
+  Unique outcomes: 13
+
+  Per-position branching: ADD mean=56.7, p95=200, max=220
+                         MOVE mean=9.1, p95=47, max=68
+
+Ore vs Mcts:
+  Total games: 20
+
+  Ore overall: 1-16-3
+    As P1: 0-8-2, As P2: 1-8-1
+    Score: 12.5% (95% CI: [4.0%, 33.1%])
+    MOVE%: 5.04%
+    Captures: 2 from MOVE, 5 other
+
+  Mcts overall: 16-1-3
+    As P1: 8-1-1, As P2: 8-0-2
+    Score: 87.5% (95% CI: [66.9%, 96.0%])
+    MOVE%: 4.29%
+    Captures: 4 from MOVE, 17 other
+
+  Seat stats: P1 8-3-9 P2
+  Avg turns/game: 18.4
+  Unique outcomes: 18
+
+  Per-position branching: ADD mean=97.4, p95=220, max=220
+                         MOVE mean=0.3, p95=0, max=12
+
+Ologbon vs Mcts:
+  Total games: 20
+
+  Ologbon overall: 15-2-3
+    As P1: 7-1-2, As P2: 8-1-1
+    Score: 82.5% (95% CI: [61.1%, 93.4%])
+    MOVE%: 73.31%
+    Captures: 7 from MOVE, 26 other
+    Avg minimax depth: 2.0
+
+  Mcts overall: 2-15-3
+    As P1: 1-8-1, As P2: 1-7-2
+    Score: 17.5% (95% CI: [6.6%, 38.9%])
+    MOVE%: 4.44%
+    Captures: 1 from MOVE, 12 other
+
+  Seat stats: P1 8-3-9 P2
+  Avg turns/game: 58.5
+  Unique outcomes: 17
+
+  Per-position branching: ADD mean=31.0, p95=180, max=220
+                         MOVE mean=10.3, p95=36, max=57
+
+Ore vs Olusare:
+  Total games: 20
+
+  Ore overall: 0-13-7
+    As P1: 0-5-5, As P2: 0-8-2
+    Score: 17.5% (95% CI: [6.6%, 38.9%])
+    MOVE%: 0.69%
+    Captures: 0 from MOVE, 5 other
+
+  Olusare overall: 13-0-7
+    As P1: 8-0-2, As P2: 5-0-5
+    Score: 82.5% (95% CI: [61.1%, 93.4%])
+    MOVE%: 85.30%
+    Captures: 14 from MOVE, 32 other
+    Avg minimax depth: 7.5
+
+  Seat stats: P1 8-7-5 P2
+  Avg turns/game: 100.0
+  Unique outcomes: 8
+
+  Per-position branching: ADD mean=50.0, p95=162, max=220
+                         MOVE mean=18.5, p95=68, max=173
+
+Mcts vs Mcts:
+  Total games: 20
+
+  Mcts overall: 5-7-8
+    As P1: 2-4-4, As P2: 3-3-4
+    Score: 45.0% (95% CI: [25.8%, 65.8%])
+    MOVE%: 5.67%
+    Captures: 7 from MOVE, 11 other
+
+  Seat stats: P1 5-8-7 P2
+  Avg turns/game: 17.2
+  Unique outcomes: 12
+
+  Per-position branching: ADD mean=94.5, p95=220, max=220
+                         MOVE mean=0.2, p95=0, max=14
+
+Olusare vs Mcts:
+  Total games: 20
+
+  Olusare overall: 10-6-4
+    As P1: 7-2-1, As P2: 3-4-3
+    Score: 60.0% (95% CI: [38.7%, 78.1%])
+    MOVE%: 87.00%
+    Captures: 11 from MOVE, 18 other
+    Avg minimax depth: 11.0
+
+  Mcts overall: 6-10-4
+    As P1: 4-3-3, As P2: 2-7-1
+    Score: 40.0% (95% CI: [21.9%, 61.3%])
+    MOVE%: 6.43%
+    Captures: 0 from MOVE, 12 other
+    Avg MCTS iterations/move: 510860
+
+  Seat stats: P1 11-4-5 P2
+  Avg turns/game: 100.0
+  Unique outcomes: 8
+
+  Per-position branching: ADD mean=54.7, p95=144, max=220
+                         MOVE mean=20.4, p95=71, max=131
+
+Olusare vs Olusare:
+  Total games: 20
+
+  Olusare overall: 9-8-3
+    As P1: 3-4-3, As P2: 6-4-0
+    Score: 52.5% (95% CI: [32.0%, 72.1%])
+    MOVE%: 71.82%
+    Captures: 30 from MOVE, 48 other
+    Avg minimax depth: 36.3
+
+  Seat stats: P1 7-3-10 P2
+  Avg turns/game: 74.0
+  Unique outcomes: 16
+
+  Per-position branching: ADD mean=68.6, p95=180, max=220
+                         MOVE mean=19.1, p95=48, max=136
+
+=== 5x5-old ===
+Board: 5x5, Bank: 100, Scored: false
+Running 10 pairings in parallel...
+
+  Running Ore vs Ologbon (10 games/seat)...
+  Running Olusare vs Ologbon (10 games/seat)...
+  Running Ore vs Olusare (10 games/seat)...
+  Running Ore vs Ore (10 games/seat)...
+  Running Ore vs Mcts (10 games/seat)...
+  Running Ologbon vs Mcts (10 games/seat)...
+  Running Olusare vs Mcts (10 games/seat)...
+  Running Ologbon vs Ologbon (10 games/seat)...
+  Running Olusare vs Olusare (10 games/seat)...
+  Running Mcts vs Mcts (10 games/seat)...
+
+--- 5x5-old Results ---
+
+
+Ore vs Ore:
+  Total games: 20
+
+  Ore overall: 4-3-13
+    As P1: 3-3-4, As P2: 1-0-9
+    Score: 52.5% (95% CI: [32.0%, 72.1%])
+    MOVE%: 7.79%
+    Captures: 8 from MOVE, 30 other
+
+  Seat stats: P1 3-13-4 P2
+  Avg turns/game: 23.1
+  Unique outcomes: 15
+
+  Per-position branching: ADD mean=109.3, p95=231, max=231
+                         MOVE mean=5.4, p95=40, max=58
+
+Olusare vs Olusare:
+  Total games: 20
+
+  Olusare overall: 10-9-1
+    As P1: 0-9-1, As P2: 10-0-0
+    Score: 52.5% (95% CI: [32.0%, 72.1%])
+    MOVE%: 0.00%
+    Captures: 0 from MOVE, 9 other
+    Avg minimax depth: 3.1
+
+  Seat stats: P1 0-1-19 P2
+  Avg turns/game: 21.1
+  Unique outcomes: 2
+
+  Per-position branching: ADD mean=130.4, p95=231, max=231
+                         MOVE mean=0.0, p95=0, max=10
+
+Ore vs Olusare:
+  Total games: 20
+
+  Ore overall: 0-12-8
+    As P1: 0-5-5, As P2: 0-7-3
+    Score: 20.0% (95% CI: [8.1%, 41.6%])
+    MOVE%: 4.35%
+    Captures: 2 from MOVE, 9 other
+
+  Olusare overall: 12-0-8
+    As P1: 7-0-3, As P2: 5-0-5
+    Score: 80.0% (95% CI: [58.4%, 91.9%])
+    MOVE%: 11.40%
+    Captures: 15 from MOVE, 47 other
+    Avg minimax depth: 22.3
+
+  Seat stats: P1 7-8-5 P2
+  Avg turns/game: 22.9
+  Unique outcomes: 14
+
+  Per-position branching: ADD mean=105.9, p95=231, max=231
+                         MOVE mean=52.9, p95=276, max=338
+
+Ore vs Ologbon:
+  Total games: 20
+
+  Ore overall: 0-10-10
+    As P1: 0-2-8, As P2: 0-8-2
+    Score: 25.0% (95% CI: [11.2%, 46.9%])
+    MOVE%: 4.76%
+    Captures: 0 from MOVE, 8 other
+
+  Ologbon overall: 10-0-10
+    As P1: 8-0-2, As P2: 2-0-8
+    Score: 75.0% (95% CI: [53.1%, 88.8%])
+    MOVE%: 17.32%
+    Captures: 15 from MOVE, 40 other
+    Avg minimax depth: 21.5
+
+  Seat stats: P1 8-10-2 P2
+  Avg turns/game: 23.1
+  Unique outcomes: 15
+
+  Per-position branching: ADD mean=103.6, p95=231, max=231
+                         MOVE mean=63.7, p95=288, max=346
+
+Ore vs Mcts:
+  Total games: 20
+
+  Ore overall: 0-6-14
+    As P1: 0-4-6, As P2: 0-2-8
+    Score: 35.0% (95% CI: [18.1%, 56.7%])
+    MOVE%: 6.38%
+    Captures: 5 from MOVE, 28 other
+
+  Mcts overall: 6-0-14
+    As P1: 2-0-8, As P2: 4-0-6
+    Score: 65.0% (95% CI: [43.3%, 81.9%])
+    MOVE%: 23.85%
+    Captures: 15 from MOVE, 56 other
+    Avg MCTS iterations/move: 329196
+
+  Seat stats: P1 2-14-4 P2
+  Avg turns/game: 23.7
+  Unique outcomes: 14
+
+  Per-position branching: ADD mean=116.5, p95=220, max=231
+                         MOVE mean=5.7, p95=39, max=75
+
+Olusare vs Ologbon:
+  Total games: 20
+
+  Olusare overall: 11-1-8
+    As P1: 1-1-8, As P2: 10-0-0
+    Score: 75.0% (95% CI: [53.1%, 88.8%])
+    MOVE%: 49.03%
+    Captures: 21 from MOVE, 16 other
+    Avg minimax depth: 5.1
+
+  Ologbon overall: 1-11-8
+    As P1: 0-10-0, As P2: 1-1-8
+    Score: 25.0% (95% CI: [11.2%, 46.9%])
+    MOVE%: 48.10%
+    Captures: 21 from MOVE, 47 other
+    Avg minimax depth: 4.4
+
+  Seat stats: P1 1-8-11 P2
+  Avg turns/game: 41.6
+  Unique outcomes: 9
+
+  Per-position branching: ADD mean=62.1, p95=210, max=231
+                         MOVE mean=62.0, p95=156, max=200
+
+Ologbon vs Ologbon:
+  Total games: 20
+
+  Ologbon overall: 2-4-14
+    As P1: 0-2-8, As P2: 2-2-6
+    Score: 45.0% (95% CI: [25.8%, 65.8%])
+    MOVE%: 61.03%
+    Captures: 64 from MOVE, 39 other
+    Avg minimax depth: 5.4
+
+  Seat stats: P1 2-14-4 P2
+  Avg turns/game: 56.1
+  Unique outcomes: 18
+
+  Per-position branching: ADD mean=43.8, p95=200, max=231
+                         MOVE mean=89.8, p95=182, max=240
+
+Olusare vs Mcts:
+  Total games: 20
+
+  Olusare overall: 17-0-3
+    As P1: 9-0-1, As P2: 8-0-2
+    Score: 92.5% (95% CI: [73.1%, 98.2%])
+    MOVE%: 39.22%
+    Captures: 86 from MOVE, 63 other
+    Avg minimax depth: 22.9
+
+  Mcts overall: 0-17-3
+    As P1: 0-8-2, As P2: 0-9-1
+    Score: 7.5% (95% CI: [1.8%, 26.9%])
+    MOVE%: 39.56%
+    Captures: 7 from MOVE, 7 other
+    Avg MCTS iterations/move: 716185
+
+  Seat stats: P1 9-3-8 P2
+  Avg turns/game: 36.0
+  Unique outcomes: 16
+
+  Per-position branching: ADD mean=83.8, p95=220, max=231
+                         MOVE mean=93.9, p95=312, max=365
+
+Ologbon vs Mcts:
+  Total games: 20
+
+  Ologbon overall: 12-0-8
+    As P1: 5-0-5, As P2: 7-0-3
+    Score: 80.0% (95% CI: [58.4%, 91.9%])
+    MOVE%: 58.41%
+    Captures: 72 from MOVE, 53 other
+    Avg minimax depth: 16.4
+
+  Mcts overall: 0-12-8
+    As P1: 0-7-3, As P2: 0-5-5
+    Score: 20.0% (95% CI: [8.1%, 41.6%])
+    MOVE%: 58.83%
+    Captures: 15 from MOVE, 9 other
+    Avg MCTS iterations/move: 744050
+
+  Seat stats: P1 5-8-7 P2
+  Avg turns/game: 53.0
+  Unique outcomes: 20
+
+  Per-position branching: ADD mean=60.1, p95=200, max=231
+                         MOVE mean=110.7, p95=310, max=373
+
+Mcts vs Mcts:
+  Total games: 20
+
+  Mcts overall: 1-2-17
+    As P1: 0-0-10, As P2: 1-2-7
+    Score: 47.5% (95% CI: [27.9%, 68.0%])
+    MOVE%: 54.43%
+    Captures: 44 from MOVE, 47 other
+    Avg MCTS iterations/move: 990854
+
+  Seat stats: P1 2-17-1 P2
+  Avg turns/game: 46.3
+  Unique outcomes: 19
+
+  Per-position branching: ADD mean=98.7, p95=210, max=231
+                         MOVE mean=21.1, p95=59, max=87
+
+
+Total time: 1060.72s
+Results written to: "benchmark_results_corrected"
+game $
