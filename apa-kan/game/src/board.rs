@@ -251,6 +251,15 @@ impl Board {
 		self.spawns.contains(&id)
 	}
 
+	/// Index of the unique generating-circle arc whose endpoints are `a` and `b`
+	/// (either direction) on `circle`. Used for no-edge-revisit MOVE paths.
+	pub fn undirected_arc_index(&self, circle: u8, a: NodeId, b: NodeId) -> Option<usize> {
+		self.arcs.iter().position(|arc| {
+			arc.circle == circle
+				&& ((arc.from == a && arc.to == b) || (arc.from == b && arc.to == a))
+		})
+	}
+
 	pub fn next_on_circle(&self, circle: u8, node: NodeId, ccw: bool) -> Option<NodeId> {
 		let cycle = self.circle_cycles.get(circle as usize)?;
 		let i = cycle.iter().position(|&n| n == node)?;
@@ -504,6 +513,23 @@ mod tests {
 				assert_eq!(nbs, rnbs, "adjacency preserved under {k}*45° for node {id}");
 			}
 		}
+	}
+
+	#[test]
+	fn undirected_arc_index_distinguishes_double_center_edges() {
+		let b = board();
+		let inner = (1..b.node_count() as NodeId)
+			.find(|&id| b.neighbors(id).contains(&b.center()))
+			.expect("an inner node");
+		let mut idxs = Vec::new();
+		for circle in b.circles_through(inner) {
+			if let Some(i) = b.undirected_arc_index(circle, inner, b.center()) {
+				idxs.push(i);
+			}
+		}
+		idxs.sort();
+		idxs.dedup();
+		assert_eq!(idxs.len(), 2, "two distinct circle-arcs between inner and center");
 	}
 
 	#[test]

@@ -26,4 +26,4 @@ Each RFC directory should contain:
 
 ## Index
 
-- [rfc-001-001-001-rosette-redesign](./rfc-001-001-001-rosette-redesign/README.md) — 8-petal rosette board, color overwhelm, bench/bag, exact-`d` MOVE
+- [rfc-001-001-001-rosette-redesign](./rfc-001-001-001-rosette-redesign/README.md) — 8-petal rosette board, color overwhelm, bench/bag, exact-`d` MOVE, stall-prevention RuleSet options

@@ -5,11 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use apa_kan::ai::{self, Actor};
+use apa_kan::config::apply_rule_flag;
 use apa_kan::game::{Action, EndReason, Game, GameStatus, Player, RuleSet};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-
-const BOTS: [Actor; 4] = [Actor::Random, Actor::Greedy, Actor::Minimax, Actor::Mcts];
 
 fn main() {
 	match parse(std::env::args().skip(1)) {
@@ -26,6 +25,9 @@ struct BenchConfig {
 	think: Duration,
 	seed: u64,
 	out: PathBuf,
+	bots: Vec<Actor>,
+	rules: RuleSet,
+	label: String,
 }
 
 fn usage() -> &'static str {
@@ -35,7 +37,12 @@ fn usage() -> &'static str {
 	   --games <n>       Games per pairing per seat (default: 20)\n\
 	   --think-ms <n>    Bot think time in ms (default: 20)\n\
 	   --seed <u64>      Base seed (default: 1)\n\
+	   --bots <list>     Comma-separated actors (default: random,greedy,minimax,mcts)\n\
 	   --out <path>      Output log path\n\
+	   --label <text>    Header label written into the log\n\
+	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
+	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
+	   --hop-weight-cmp, --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
 
@@ -49,6 +56,9 @@ where
 		think: Duration::from_millis(20),
 		seed: 1,
 		out: Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmark_results/round_robin.txt"),
+		bots: vec![Actor::Random, Actor::Greedy, Actor::Minimax, Actor::Mcts],
+		rules: RuleSet::default(),
+		label: "round-robin".into(),
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -69,10 +79,41 @@ where
 			}
 			"--seed" => cfg.seed = parse_u64("--seed", &need("--seed", it.next())?)?,
 			"--out" => cfg.out = PathBuf::from(need("--out", it.next())?),
-			other => return Err(format!("unknown argument '{other}'")),
+			"--label" => cfg.label = need("--label", it.next())?,
+			"--bots" => {
+				cfg.bots = parse_bots(&need("--bots", it.next())?)?;
+			}
+			"--turn-limit" => {
+				let n = parse_u64("--turn-limit", &need("--turn-limit", it.next())?)?;
+				if n == 0 {
+					return Err("invalid --turn-limit (expected >= 1)".into());
+				}
+				cfg.rules.turn_limit = n as u32;
+			}
+			other => {
+				if apply_rule_flag(&mut cfg.rules, other, &mut it)? {
+					continue;
+				}
+				return Err(format!("unknown argument '{other}'"));
+			}
 		}
 	}
+	if cfg.bots.is_empty() {
+		return Err("--bots must name at least one actor".into());
+	}
 	Ok(cfg)
+}
+
+fn parse_bots(s: &str) -> Result<Vec<Actor>, String> {
+	let mut out = Vec::new();
+	for part in s.split(',') {
+		let part = part.trim();
+		if part.is_empty() {
+			continue;
+		}
+		out.push(Actor::parse(part)?);
+	}
+	Ok(out)
 }
 
 fn need(flag: &str, v: Option<impl AsRef<str>>) -> Result<String, String> {
@@ -91,15 +132,17 @@ struct SeatStats {
 	losses: u32,
 	turns: u32,
 	elim: u32,
+	locked_out: u32,
+	center_hold: u32,
 	turn_limit: u32,
 	double_pass: u32,
 }
 
 fn run(cfg: BenchConfig) {
 	let started = Instant::now();
-	let rules = RuleSet::default();
+	let rules = cfg.rules;
 	let mut lines: Vec<String> = Vec::new();
-	lines.push("# apa-kan round-robin".into());
+	lines.push(format!("# apa-kan {}", cfg.label));
 	lines.push(format!(
 		"# think_ms={} games_per_pairing_per_seat={} seed_base={} turn_limit={}",
 		cfg.think.as_millis(),
@@ -107,14 +150,27 @@ fn run(cfg: BenchConfig) {
 		cfg.seed,
 		rules.turn_limit
 	));
+	lines.push(format!(
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} path_constraint={}",
+		on_off(rules.no_moves_loses),
+		on_off(rules.center_hold_win),
+		rules.center_hold_n,
+		rules.no_same_piece_twice.name(),
+		on_off(rules.color_restricted_hops),
+		rules.hop_weight_cmp.name(),
+		rules.path_constraint.name()
+	));
 	lines.push(
 		"# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.".into(),
 	);
-	lines.push("# pairing  seat  W-D-L  avg_turns  elim  turn_limit  double_pass".into());
+	lines.push(
+		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  turn_limit".into(),
+	);
 
 	let mut pairing_index = 0u64;
-	for &p1 in &BOTS {
-		for &p2 in &BOTS {
+	let mut double_pass_total = 0u32;
+	for &p1 in &cfg.bots {
+		for &p2 in &cfg.bots {
 			let mut stats = SeatStats::default();
 			for g in 0..cfg.games {
 				let seed = cfg
@@ -145,7 +201,7 @@ fn run(cfg: BenchConfig) {
 			let n = cfg.games.max(1);
 			let avg = f64::from(stats.turns) / f64::from(n);
 			let line = format!(
-				"{:<8} vs {:<8}  P1  {}-{}-{}  {:.2}  {}  {}  {}",
+				"{:<8} vs {:<8}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}",
 				p1.name(),
 				p2.name(),
 				stats.wins,
@@ -153,16 +209,22 @@ fn run(cfg: BenchConfig) {
 				stats.losses,
 				avg,
 				stats.elim,
-				stats.turn_limit,
-				stats.double_pass
+				stats.locked_out,
+				stats.center_hold,
+				stats.turn_limit
 			);
 			println!("{line}");
 			lines.push(line);
+			double_pass_total += stats.double_pass;
 			pairing_index += 1;
 		}
 	}
 
-	lines.push(format!("# elapsed_sec={:.1}", started.elapsed().as_secs_f64()));
+	lines.push(format!(
+		"# elapsed_sec={:.1} double_pass={}",
+		started.elapsed().as_secs_f64(),
+		double_pass_total
+	));
 	if let Some(parent) = cfg.out.parent() {
 		let _ = fs::create_dir_all(parent);
 	}
@@ -174,11 +236,21 @@ fn run(cfg: BenchConfig) {
 	println!("wrote {}", cfg.out.display());
 }
 
+fn on_off(v: bool) -> &'static str {
+	if v {
+		"on"
+	} else {
+		"off"
+	}
+}
+
 fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 	match reason {
 		EndReason::Elimination => stats.elim += 1,
 		EndReason::TurnLimit => stats.turn_limit += 1,
 		EndReason::DoublePass => stats.double_pass += 1,
+		EndReason::LockedOut => stats.locked_out += 1,
+		EndReason::CenterHold => stats.center_hold += 1,
 	}
 }
 

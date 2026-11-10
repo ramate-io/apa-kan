@@ -10,8 +10,9 @@ See [rfc/rfc-001-001-001-rosette-redesign](rfc/rfc-001-001-001-rosette-redesign/
 - **Tiles:** owner is a light (P1) or dark (P2) fill; **green / blue / orange** rings show color; 1–3 rings = weight; 1–3 dots = MOVE length.
 - **Bench / bag:** each player is dealt 5 tiles from a shuffled 27-kind bag (identical bags by default). ADD places a bench tile on an empty spawn. Opponent tiles removed on a MOVE draw from the bag onto the bench.
 - **Overwhelm (by color):** `matches = weight + same-color neighbors`; `mismatches = different-color neighbors`; removed if `mismatches >= matches`, simultaneously after each action.
-- **MOVE:** exactly `d` steps through empty nodes; a hop across a straight occupied run on one circle costs 1 and requires hopped weights `>=` the mover.
-- **Win:** opponent has no board tiles and an empty bench. Draw at 200 turns or on a double pass.
+- **MOVE:** exactly `d` steps; default path rule is **no edge revisit** (nodes may be revisited via a different arc). A hop across a straight occupied run costs 1; by default hopped weights must be `>=` the mover. Optional `color_restricted_hops` instead allows hopping only lighter tiles of the mover's color.
+- **Stall-prevention (defaults):** no legal ADD/MOVE loses immediately; you may not MOVE the same tile on two consecutive turns once your bench is empty (unless the MOVE captures); turn-limit 200 remains a draw. Optional center-hold win (N=5, off).
+- **Win:** opponent has no board tiles and an empty bench, or the opponent is locked out with no legal action. Draw at 200 turns. Double-pass draws only if `no_moves_loses` is off.
 
 ## Run
 
@@ -28,7 +29,15 @@ Usage: apa-kan [OPTIONS]
   --think-ms <n>                             Bot think time in ms (default: 80)
   --delay-ms <n>                             Delay between bot moves (default: 350)
   --actions <1..8>                           Actions per turn (default: 1)
+  --turn-limit <n>                           Safety-net draw (default: 200)
   --screenshot <path>                        Write a board PNG and exit
+  --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)
+  --center-hold-win <on|off>                 Center-hold win (default: off)
+  --center-hold-n <1..64>                    Turns to hold center (default: 5)
+  --no-same-piece-twice <off|always|when-bench-empty>
+  --color-restricted-hops <on|off>           Hop only own color (default: off)
+  --hop-weight-cmp <lt|le>                   Color-hop compare (default: lt)
+  --path-constraint <no-node-revisit|no-edge-revisit|both>
   -h, --help
 ```
 
@@ -43,10 +52,10 @@ cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png
 Round-robin benchmark:
 
 ```bash
-cargo run -p apa-kan-bench --release --no-default-features -- --games 20 --think-ms 20
+cargo run -p apa-kan-bench --release --no-default-features -- --games 10 --think-ms 200 --bots greedy,minimax,mcts
 ```
 
-Results: [`apa-kan/game/benchmark_results/round_robin.txt`](apa-kan/game/benchmark_results/round_robin.txt).
+Results: [`apa-kan/game/benchmark_results/`](apa-kan/game/benchmark_results/).
 
 ## Test
 

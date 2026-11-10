@@ -387,4 +387,83 @@ mod tests {
 		assert!(Actor::parse("ologbon").is_err());
 		assert_eq!(Actor::parse("MINIMAX").unwrap(), Actor::Minimax);
 	}
+
+	#[test]
+	fn evaluate_scores_lockout_and_center_hold_as_terminals() {
+		let mut lock_rules = RuleSet::default();
+		lock_rules.no_moves_loses = true;
+		let mut locked = crate::game::Game::empty(lock_rules);
+		for id in 0..locked.board().node_count() as u8 {
+			let owner = if id % 2 == 0 { Player::One } else { Player::Two };
+			let tile = locked.alloc_tile(owner, crate::game::TileColor::Green, 3, 1);
+			locked.place_tile(id, tile);
+		}
+		locked.set_current(Player::One);
+		locked.apply(crate::game::Action::Pass).unwrap();
+		assert!(matches!(
+			locked.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::LockedOut }
+		));
+		assert!(evaluate(&locked, Player::Two) >= WIN - 50);
+		assert!(evaluate(&locked, Player::One) <= -WIN + 50);
+
+		let mut hold_rules = RuleSet::default();
+		hold_rules.center_hold_win = true;
+		hold_rules.center_hold_n = 1;
+		let mut hold = crate::game::Game::empty(hold_rules);
+		let center = hold.board().center();
+		let inner = {
+			let b = hold.board();
+			let r = b.construction_radius();
+			let target = 2.0 * r * (3.0 * std::f64::consts::PI / 8.0).cos();
+			(0..b.node_count() as u8)
+				.find(|&id| (b.radius_of(id) - target).abs() < 0.05 * r)
+				.expect("inner")
+		};
+		let t = hold.alloc_tile(Player::One, crate::game::TileColor::Blue, 3, 1);
+		hold.place_tile(inner, t);
+		{
+			let extra = hold.alloc_tile(Player::Two, crate::game::TileColor::Orange, 3, 1);
+			hold.set_bench(Player::Two, vec![extra]);
+		}
+		hold.set_current(Player::One);
+		hold.apply(crate::game::Action::Move { from: inner, to: center }).unwrap();
+		assert!(matches!(
+			hold.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::CenterHold }
+		));
+		assert!(evaluate(&hold, Player::One) >= WIN - 50);
+		assert!(evaluate(&hold, Player::Two) <= -WIN + 50);
+	}
+
+	#[test]
+	fn greedy_prefers_immediate_center_hold_win() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = true;
+		rules.center_hold_n = 1;
+		let mut game = crate::game::Game::empty(rules);
+		let center = game.board().center();
+		let inner = {
+			let b = game.board();
+			let r = b.construction_radius();
+			let target = 2.0 * r * (3.0 * std::f64::consts::PI / 8.0).cos();
+			(0..b.node_count() as u8)
+				.find(|&id| (b.radius_of(id) - target).abs() < 0.05 * r)
+				.expect("inner")
+		};
+		let t = game.alloc_tile(Player::One, crate::game::TileColor::Blue, 3, 1);
+		game.place_tile(inner, t);
+		{
+			let extra = game.alloc_tile(Player::One, crate::game::TileColor::Green, 3, 1);
+			game.set_bench(Player::One, vec![extra]);
+		}
+		{
+			let extra = game.alloc_tile(Player::Two, crate::game::TileColor::Orange, 3, 1);
+			game.set_bench(Player::Two, vec![extra]);
+		}
+		game.set_current(Player::One);
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Greedy, &mut rng, Duration::from_millis(1));
+		assert_eq!(action, crate::game::Action::Move { from: inner, to: center });
+	}
 }

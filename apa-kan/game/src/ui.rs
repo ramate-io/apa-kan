@@ -130,7 +130,7 @@ fn draw_gizmos(mut gizmos: Gizmos, play: Res<PlayState>) {
 		}
 	}
 	let dests: Vec<NodeId> = match play.selection {
-		Selection::Piece(n) => play.game.destinations(n),
+		Selection::Piece(n) => play.game.legal_destinations(n),
 		_ => Vec::new(),
 	};
 	for id in 0..board.node_count() as NodeId {
@@ -222,7 +222,7 @@ fn try_click(play: &mut PlayState, pos: Vec2) {
 				return;
 			}
 			Selection::Piece(from) => {
-				if play.game.destinations(from).contains(&node) {
+				if play.game.legal_destinations(from).contains(&node) {
 					apply_action(play, Action::Move { from, to: node });
 					return;
 				}
@@ -531,9 +531,20 @@ fn update_hud(
 	let g = &play.game;
 	let a1 = cfg.bot1.name();
 	let a2 = cfg.bot2.name();
+	let hold = if g.rules().center_hold_win {
+		format!(
+			"  ·  center hold P1 {}/{} P2 {}/{}",
+			g.center_hold(Player::One),
+			g.rules().center_hold_n,
+			g.center_hold(Player::Two),
+			g.rules().center_hold_n
+		)
+	} else {
+		String::new()
+	};
 	let turn = match g.status() {
 		GameStatus::InProgress => format!(
-			"Turn {}  ·  {} ({}) to play  ·  P1 light {}/{}  ·  P2 dark {}/{}",
+			"Turn {}  ·  {} ({}) to play  ·  P1 light {}/{}  ·  P2 dark {}/{}{hold}",
 			g.turn_count() + 1,
 			g.current_player().label(),
 			cfg.actor(g.current_player()).name(),
