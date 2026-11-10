@@ -5,5 +5,5 @@ Second seat wins: 10
 Draws: 0
 95% CI: [-0.0%, 27.8%]
 MOVE%: 0.00%
-Captures/game: 0.00
-Unique outcomes: 1
+Captures/game: 3.40
+Unique outcomes: 2

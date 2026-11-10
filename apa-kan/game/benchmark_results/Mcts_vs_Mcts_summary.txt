@@ -1,9 +1,9 @@
 Mcts vs Mcts
 Games: 10
-First seat wins: 0 (0.0%)
-Second seat wins: 10
+First seat wins: 5 (50.0%)
+Second seat wins: 5
 Draws: 0
-95% CI: [-0.0%, 27.8%]
-MOVE%: 0.00%
-Captures/game: 0.00
-Unique outcomes: 1
+95% CI: [23.7%, 76.3%]
+MOVE%: 59.26%
+Captures/game: 12.40
+Unique outcomes: 9
