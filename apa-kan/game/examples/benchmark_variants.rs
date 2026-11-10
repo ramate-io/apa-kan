@@ -21,6 +21,7 @@ impl ActionStats {
 					self.moves_with_rotation += 1;
 				}
 			}
+			ActionType::Pass => {}
 		}
 		if tiles_after < tiles_before {
 			self.captures += tiles_before - tiles_after;
@@ -621,6 +622,9 @@ fn main() {
 				add_bank_size: 100,
 				moved_tile_immunity: false,
 				edge_add_only: false,
+				scored_mode: false,
+				board_size: 5,
+				stack_size: 11,
 			},
 		),
 		("A+B (Rotation + Bank=7)", RuleSet::new()),

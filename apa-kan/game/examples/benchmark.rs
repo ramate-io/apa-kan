@@ -24,6 +24,7 @@ impl ActionCounts {
 					self.moves_with_rotation += 1;
 				}
 			}
+			ActionType::Pass => {}
 		}
 	}
 }

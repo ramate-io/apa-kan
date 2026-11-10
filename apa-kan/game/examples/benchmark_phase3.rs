@@ -25,6 +25,7 @@ impl ActionStats {
 		match action.action_type {
 			ActionType::Add { .. } => self.adds += 1,
 			ActionType::Move { .. } => self.moves += 1,
+			ActionType::Pass => {}
 		}
 		if tiles_after < tiles_before {
 			self.captures += tiles_before - tiles_after;
