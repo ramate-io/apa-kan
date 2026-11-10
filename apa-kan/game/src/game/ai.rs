@@ -322,7 +322,9 @@ impl AiPlayer {
 				TTFlag::Exact
 			};
 
-			self.transposition_table.borrow_mut().insert(hash, TTEntry { depth, score, flag });
+			self.transposition_table
+				.borrow_mut()
+				.insert(hash, TTEntry { depth, score, flag });
 		}
 
 		score
@@ -332,19 +334,19 @@ impl AiPlayer {
 		use std::collections::hash_map::DefaultHasher;
 		use std::hash::{Hash, Hasher};
 		let mut hasher = DefaultHasher::new();
-		
+
 		for (pos, tile) in game.board.tiles() {
 			pos.row.hash(&mut hasher);
 			pos.col.hash(&mut hasher);
 			tile.id.hash(&mut hasher);
 			tile.owner.hash(&mut hasher);
 		}
-		
+
 		game.current_player.hash(&mut hasher);
 		game.turn_count.hash(&mut hasher);
 		game.add_bank_p1.hash(&mut hasher);
 		game.add_bank_p2.hash(&mut hasher);
-		
+
 		hasher.finish()
 	}
 
@@ -354,12 +356,16 @@ impl AiPlayer {
 			if Rules::apply_action(&mut game_copy, *action).is_err() {
 				return 1000;
 			}
-			
-			let my_tiles_before = game.board.tiles().filter(|(_, t)| t.owner == game.current_player).count();
-			let opp_tiles_before = game.board.tiles().filter(|(_, t)| t.owner != game.current_player).count();
-			let my_tiles_after = game_copy.board.tiles().filter(|(_, t)| t.owner == game.current_player).count();
-			let opp_tiles_after = game_copy.board.tiles().filter(|(_, t)| t.owner != game.current_player).count();
-			
+
+			let my_tiles_before =
+				game.board.tiles().filter(|(_, t)| t.owner == game.current_player).count();
+			let opp_tiles_before =
+				game.board.tiles().filter(|(_, t)| t.owner != game.current_player).count();
+			let my_tiles_after =
+				game_copy.board.tiles().filter(|(_, t)| t.owner == game.current_player).count();
+			let opp_tiles_after =
+				game_copy.board.tiles().filter(|(_, t)| t.owner != game.current_player).count();
+
 			let my_bank_before = match game.current_player {
 				Player::One => game.add_bank_p1,
 				Player::Two => game.add_bank_p2,
@@ -368,14 +374,14 @@ impl AiPlayer {
 				Player::One => game_copy.add_bank_p1,
 				Player::Two => game_copy.add_bank_p2,
 			};
-			
+
 			let captures = opp_tiles_before.saturating_sub(opp_tiles_after);
 			let bank_gain = my_bank_after.saturating_sub(my_bank_before);
 			let material_loss = my_tiles_before.saturating_sub(my_tiles_after);
-			
+
 			(1000 - captures * 100 - bank_gain as usize * 50 + material_loss * 30) as i32
 		});
-		
+
 		actions
 	}
 

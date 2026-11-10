@@ -77,11 +77,10 @@ impl GameProfile {
 		if self.move_profiles.is_empty() {
 			return (0.0, 0.0);
 		}
-		let mut durations: Vec<f64> = self.move_profiles.iter()
-			.map(|p| p.duration.as_secs_f64() * 1000.0)
-			.collect();
+		let mut durations: Vec<f64> =
+			self.move_profiles.iter().map(|p| p.duration.as_secs_f64() * 1000.0).collect();
 		durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
-		
+
 		let mean = durations.iter().sum::<f64>() / durations.len() as f64;
 		let p95_idx = ((durations.len() as f64) * 0.95) as usize;
 		let p95 = if p95_idx < durations.len() {
@@ -207,7 +206,9 @@ impl PairingStats {
 		if self.profiles.is_empty() {
 			return (0.0, 0.0);
 		}
-		let (total_adds, total_moves): (f64, f64) = self.profiles.iter()
+		let (total_adds, total_moves): (f64, f64) = self
+			.profiles
+			.iter()
 			.map(|p| p.avg_branching_factor())
 			.fold((0.0, 0.0), |(a1, m1), (a2, m2)| (a1 + a2, m1 + m2));
 		let count = self.profiles.len() as f64;
@@ -269,7 +270,7 @@ fn play_game(p1: &AiPlayer, p2: &AiPlayer, rule_set: RuleSet, _base_seed: u64) -
 		let move_start = Instant::now();
 		if let Some(action) = ai.choose_action(&game) {
 			let move_duration = move_start.elapsed();
-			
+
 			let stats = ai.stats.borrow();
 			profile.move_profiles.push(MoveProfile {
 				nodes_searched: stats.nodes_searched,
@@ -394,8 +395,8 @@ fn run_pairing(
 		stats.total_moves += result.p1_actions.moves + result.p2_actions.moves;
 		stats.total_captures += result.p1_actions.captures + result.p2_actions.captures;
 
-		let outcome_hash =
-			result.turns as u64 * 1000 + if result.is_draw {
+		let outcome_hash = result.turns as u64 * 1000
+			+ if result.is_draw {
 				999
 			} else if result.first_player_won {
 				1
@@ -451,8 +452,8 @@ fn run_pairing(
 		stats.total_moves += result.p1_actions.moves + result.p2_actions.moves;
 		stats.total_captures += result.p1_actions.captures + result.p2_actions.captures;
 
-		let outcome_hash =
-			result.turns as u64 * 1000 + if result.is_draw {
+		let outcome_hash = result.turns as u64 * 1000
+			+ if result.is_draw {
 				999
 			} else if result.first_player_won {
 				1
@@ -509,11 +510,8 @@ fn print_variant_results(variant_name: &str, all_pairings: &[PairingStats], elap
 		let fwr_excl = stats.first_seat_win_rate();
 		let fwr_incl = stats.first_seat_win_rate_with_draws();
 		let decided = stats.first_seat_wins + stats.second_seat_wins;
-		let stderr = if decided > 0 {
-			((fwr_excl * (1.0 - fwr_excl)) / decided as f64).sqrt()
-		} else {
-			0.0
-		};
+		let stderr =
+			if decided > 0 { ((fwr_excl * (1.0 - fwr_excl)) / decided as f64).sqrt() } else { 0.0 };
 		let ci_95 = 1.96 * stderr;
 		println!(
 			"  {} vs {}: {:.1}% excl draws [{:.1}%, {:.1}%], {:.1}% incl draws | {} unique outcomes",
@@ -567,24 +565,22 @@ fn print_variant_results(variant_name: &str, all_pairings: &[PairingStats], elap
 
 fn main() {
 	let args: Vec<String> = std::env::args().collect();
-	
-	let depth = if args.len() > 1 {
-		args[1].parse().unwrap_or(2)
-	} else {
-		2
-	};
-	
+
+	let depth = if args.len() > 1 { args[1].parse().unwrap_or(2) } else { 2 };
+
 	let games_per_side = if args.len() > 2 {
 		args[2].parse().unwrap_or(50)
 	} else {
-		if depth >= 4 { 20 } else if depth == 3 { 30 } else { 50 }
+		if depth >= 4 {
+			20
+		} else if depth == 3 {
+			30
+		} else {
+			50
+		}
 	};
-	
-	let use_optimizations = if args.len() > 3 {
-		args[3] == "true" || args[3] == "1"
-	} else {
-		true
-	};
+
+	let use_optimizations = if args.len() > 3 { args[3] == "true" || args[3] == "1" } else { true };
 
 	println!("=== Apa Kan Multi-Depth Variant Benchmark ===\n");
 	println!("Configuration:");
@@ -607,7 +603,12 @@ fn main() {
 		("Old Rules", RuleSet::old()),
 		(
 			"A Only (Fixed Rotation)",
-			RuleSet { fixed_rotation: true, add_bank: false, add_bank_size: 100, moved_tile_immunity: false },
+			RuleSet {
+				fixed_rotation: true,
+				add_bank: false,
+				add_bank_size: 100,
+				moved_tile_immunity: false,
+			},
 		),
 		("A+B (Rotation + Bank=7)", RuleSet::new()),
 		("A+B (Rotation + Bank=5)", RuleSet::with_bank_size(5)),
@@ -642,5 +643,8 @@ fn main() {
 	println!("Depth: {}", depth);
 	println!("Optimizations: TT={}, MO={}", use_optimizations, use_optimizations);
 	println!("Games per pairing: {} per side ({} total)", games_per_side, games_per_side * 2);
-	println!("Total games across all variants: {}", variants.len() * bots.len() * (bots.len() + 1) / 2 * games_per_side * 2);
+	println!(
+		"Total games across all variants: {}",
+		variants.len() * bots.len() * (bots.len() + 1) / 2 * games_per_side * 2
+	);
 }

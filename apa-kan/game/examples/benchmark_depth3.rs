@@ -68,13 +68,16 @@ impl GameProfile {
 		if self.move_profiles.is_empty() {
 			return (0.0, 0.0);
 		}
-		let mut times: Vec<f64> = self.move_profiles.iter()
-			.map(|p| p.duration.as_secs_f64() * 1000.0)
-			.collect();
+		let mut times: Vec<f64> =
+			self.move_profiles.iter().map(|p| p.duration.as_secs_f64() * 1000.0).collect();
 		times.sort_by(|a, b| a.partial_cmp(b).unwrap());
 		let mean = times.iter().sum::<f64>() / times.len() as f64;
 		let p95_idx = ((times.len() as f64) * 0.95) as usize;
-		let p95 = if p95_idx < times.len() { times[p95_idx] } else { times.last().copied().unwrap_or(0.0) };
+		let p95 = if p95_idx < times.len() {
+			times[p95_idx]
+		} else {
+			times.last().copied().unwrap_or(0.0)
+		};
 		(mean, p95)
 	}
 }
@@ -124,7 +127,11 @@ impl PairingStats {
 
 	fn first_seat_win_rate(&self) -> f64 {
 		let decided = self.first_seat_wins + self.second_seat_wins;
-		if decided == 0 { 0.0 } else { self.first_seat_wins as f64 / decided as f64 }
+		if decided == 0 {
+			0.0
+		} else {
+			self.first_seat_wins as f64 / decided as f64
+		}
 	}
 
 	fn move_pct(&self) -> f64 {
@@ -136,36 +143,54 @@ impl PairingStats {
 	}
 
 	fn captures_per_game(&self) -> f64 {
-		if self.total_games == 0 { 0.0 } else { self.total_captures as f64 / self.total_games as f64 }
+		if self.total_games == 0 {
+			0.0
+		} else {
+			self.total_captures as f64 / self.total_games as f64
+		}
 	}
 
 	fn avg_nodes_per_move(&self) -> f64 {
-		if self.profiles.is_empty() { return 0.0; }
+		if self.profiles.is_empty() {
+			return 0.0;
+		}
 		let sum: f64 = self.profiles.iter().map(|p| p.avg_nodes_per_move()).sum();
 		sum / self.profiles.len() as f64
 	}
 
 	fn avg_branching_factor(&self) -> (f64, f64) {
-		if self.profiles.is_empty() { return (0.0, 0.0); }
-		let (total_adds, total_moves) = self.profiles.iter()
+		if self.profiles.is_empty() {
+			return (0.0, 0.0);
+		}
+		let (total_adds, total_moves) = self
+			.profiles
+			.iter()
 			.map(|p| p.avg_branching_factor())
 			.fold((0.0, 0.0), |(a1, m1), (a2, m2)| (a1 + a2, m1 + m2));
 		(total_adds / self.profiles.len() as f64, total_moves / self.profiles.len() as f64)
 	}
 
 	fn avg_time_per_move(&self) -> (f64, f64) {
-		if self.profiles.is_empty() { return (0.0, 0.0); }
+		if self.profiles.is_empty() {
+			return (0.0, 0.0);
+		}
 		let mut all_times: Vec<f64> = Vec::new();
 		for p in &self.profiles {
 			for m in &p.move_profiles {
 				all_times.push(m.duration.as_secs_f64() * 1000.0);
 			}
 		}
-		if all_times.is_empty() { return (0.0, 0.0); }
+		if all_times.is_empty() {
+			return (0.0, 0.0);
+		}
 		all_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
 		let mean = all_times.iter().sum::<f64>() / all_times.len() as f64;
 		let p95_idx = ((all_times.len() as f64) * 0.95) as usize;
-		let p95 = if p95_idx < all_times.len() { all_times[p95_idx] } else { all_times.last().copied().unwrap_or(0.0) };
+		let p95 = if p95_idx < all_times.len() {
+			all_times[p95_idx]
+		} else {
+			all_times.last().copied().unwrap_or(0.0)
+		};
 		(mean, p95)
 	}
 }
@@ -266,16 +291,33 @@ fn run_pairing(
 ) -> PairingStats {
 	let mut stats = PairingStats::new(bot1_type.name(), bot2_type.name());
 
-	println!("  Running {} vs {} ({} games/side)...", bot1_type.name(), bot2_type.name(), games_per_side);
+	println!(
+		"  Running {} vs {} ({} games/side)...",
+		bot1_type.name(),
+		bot2_type.name(),
+		games_per_side
+	);
 
 	for i in 0..games_per_side {
 		let seed = base_seed.wrapping_mul(1000).wrapping_add(i as u64);
 		let p1 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot1_type, time_budget: None, use_transposition_table: true, use_move_ordering: true },
+			AiConfig {
+				depth,
+				bot_type: bot1_type,
+				time_budget: None,
+				use_transposition_table: true,
+				use_move_ordering: true,
+			},
 			seed,
 		);
 		let p2 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot2_type, time_budget: None, use_transposition_table: true, use_move_ordering: true },
+			AiConfig {
+				depth,
+				bot_type: bot2_type,
+				time_budget: None,
+				use_transposition_table: true,
+				use_move_ordering: true,
+			},
 			seed.wrapping_add(1),
 		);
 
@@ -286,7 +328,14 @@ fn run_pairing(
 		stats.total_moves += result.p1_actions.moves + result.p2_actions.moves;
 		stats.total_captures += result.p1_actions.captures + result.p2_actions.captures;
 
-		let outcome_hash = result.turns as u64 * 1000 + if result.is_draw { 999 } else if result.first_player_won { 1 } else { 2 };
+		let outcome_hash = result.turns as u64 * 1000
+			+ if result.is_draw {
+				999
+			} else if result.first_player_won {
+				1
+			} else {
+				2
+			};
 		stats.unique_outcomes.insert(outcome_hash);
 
 		if result.is_draw {
@@ -301,11 +350,23 @@ fn run_pairing(
 	for i in 0..games_per_side {
 		let seed = base_seed.wrapping_mul(3000).wrapping_add(i as u64);
 		let p1 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot2_type, time_budget: None, use_transposition_table: true, use_move_ordering: true },
+			AiConfig {
+				depth,
+				bot_type: bot2_type,
+				time_budget: None,
+				use_transposition_table: true,
+				use_move_ordering: true,
+			},
 			seed,
 		);
 		let p2 = AiPlayer::new_seeded(
-			AiConfig { depth, bot_type: bot1_type, time_budget: None, use_transposition_table: true, use_move_ordering: true },
+			AiConfig {
+				depth,
+				bot_type: bot1_type,
+				time_budget: None,
+				use_transposition_table: true,
+				use_move_ordering: true,
+			},
 			seed.wrapping_add(1),
 		);
 
@@ -316,7 +377,14 @@ fn run_pairing(
 		stats.total_moves += result.p1_actions.moves + result.p2_actions.moves;
 		stats.total_captures += result.p1_actions.captures + result.p2_actions.captures;
 
-		let outcome_hash = result.turns as u64 * 1000 + if result.is_draw { 999 } else if result.first_player_won { 1 } else { 2 };
+		let outcome_hash = result.turns as u64 * 1000
+			+ if result.is_draw {
+				999
+			} else if result.first_player_won {
+				1
+			} else {
+				2
+			};
 		stats.unique_outcomes.insert(outcome_hash);
 
 		if result.is_draw {
@@ -367,14 +435,23 @@ fn main() {
 		let elapsed = start.elapsed().as_secs_f64();
 
 		println!("\nResults:");
-		println!("{:<12} {:<12} {:>9} {:>9} {:>6} | MOVE%  Cap/Gm Unique", "Bot1", "Bot2", "1st Wins", "2nd Wins", "Draws");
+		println!(
+			"{:<12} {:<12} {:>9} {:>9} {:>6} | MOVE%  Cap/Gm Unique",
+			"Bot1", "Bot2", "1st Wins", "2nd Wins", "Draws"
+		);
 		println!("{}", "-".repeat(70));
 
 		for stats in &all_pairings {
 			println!(
 				"{:<12} {:<12} {:>9} {:>9} {:>6} | {:>5.1}% {:>6.1} {:>6}",
-				stats.p1_name, stats.p2_name, stats.first_seat_wins, stats.second_seat_wins, stats.draws,
-				stats.move_pct(), stats.captures_per_game(), stats.unique_outcomes.len()
+				stats.p1_name,
+				stats.p2_name,
+				stats.first_seat_wins,
+				stats.second_seat_wins,
+				stats.draws,
+				stats.move_pct(),
+				stats.captures_per_game(),
+				stats.unique_outcomes.len()
 			);
 		}
 
@@ -382,12 +459,16 @@ fn main() {
 		for stats in &all_pairings {
 			let fwr = stats.first_seat_win_rate();
 			let decided = stats.first_seat_wins + stats.second_seat_wins;
-			let stderr = if decided > 0 { ((fwr * (1.0 - fwr)) / decided as f64).sqrt() } else { 0.0 };
+			let stderr =
+				if decided > 0 { ((fwr * (1.0 - fwr)) / decided as f64).sqrt() } else { 0.0 };
 			let ci_95 = 1.96 * stderr;
 			println!(
 				"  {} vs {}: {:.1}% [{:.1}%, {:.1}%]",
-				stats.p1_name, stats.p2_name, fwr * 100.0,
-				(fwr - ci_95).max(0.0) * 100.0, (fwr + ci_95).min(1.0) * 100.0
+				stats.p1_name,
+				stats.p2_name,
+				fwr * 100.0,
+				(fwr - ci_95).max(0.0) * 100.0,
+				(fwr + ci_95).min(1.0) * 100.0
 			);
 		}
 
@@ -401,7 +482,11 @@ fn main() {
 			println!("    Time/move: {:.0}ms mean, {:.0}ms p95", mean_time, p95_time);
 		}
 
-		println!("\nRuntime: {:.1}s for {} games", elapsed, all_pairings.iter().map(|s| s.total_games).sum::<usize>());
+		println!(
+			"\nRuntime: {:.1}s for {} games",
+			elapsed,
+			all_pairings.iter().map(|s| s.total_games).sum::<usize>()
+		);
 	}
 
 	println!("\n{}", "=".repeat(60));
