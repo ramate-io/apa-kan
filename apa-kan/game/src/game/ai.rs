@@ -157,6 +157,7 @@ impl AiPlayer {
 				match action.action_type {
 					ActionType::Add { .. } => stats.add_actions_generated += 1,
 					ActionType::Move { .. } => stats.move_actions_generated += 1,
+					ActionType::Pass => {}
 				}
 			}
 		}
@@ -291,6 +292,7 @@ impl AiPlayer {
 				match action.action_type {
 					ActionType::Add { .. } => stats.add_actions_generated += 1,
 					ActionType::Move { .. } => stats.move_actions_generated += 1,
+					ActionType::Pass => {}
 				}
 			}
 		}
@@ -645,7 +647,7 @@ impl AiPlayer {
 				GameState::Draw => 0.5,
 				GameState::InProgress => 0.5,
 			}
-		} else if !has_legal_add_or_move(&game_copy, game_copy.current_player) {
+		} else if !has_legal_add_or_move(&game_copy, game_copy.current_player) && !game_copy.rule_set.scored_mode {
 			let winner = game_copy.current_player.other();
 			if winner == original_player {
 				1.0
@@ -655,8 +657,13 @@ impl AiPlayer {
 		} else {
 			// Use Ologbon's heuristic normalized to [0, 1]
 			let heuristic = self.evaluate_enhanced(&game_copy, original_player);
-			// Normalize from roughly [-100, 100] to [0, 1]
-			(heuristic as f64 / 200.0 + 0.5).clamp(0.0, 1.0)
+			if game_copy.rule_set.scored_mode {
+				// In scored mode, use tile differential normalized
+				(heuristic as f64 / 1000.0 + 0.5).clamp(0.0, 1.0)
+			} else {
+				// Normalize from roughly [-100, 100] to [0, 1]
+				(heuristic as f64 / 200.0 + 0.5).clamp(0.0, 1.0)
+			}
 		}
 	}
 
@@ -756,36 +763,54 @@ impl AiPlayer {
 			GameState::InProgress => {}
 		}
 
-		if !has_legal_add_or_move(game, game.current_player) {
-			let winner = game.current_player.other();
-			return if winner == player { 10000 } else { -10000 };
+		if game.rule_set.scored_mode {
+			let my_tiles = game.board.tiles().filter(|(_, tile)| tile.owner == player).count() as i32;
+			let opp_tiles = game.board.tiles().filter(|(_, tile)| tile.owner == player.other()).count() as i32;
+			let tile_diff = my_tiles - opp_tiles;
+
+			let my_bank = match player {
+				Player::One => game.add_bank_p1 as i32,
+				Player::Two => game.add_bank_p2 as i32,
+			};
+			let opp_bank = match player {
+				Player::One => game.add_bank_p2 as i32,
+				Player::Two => game.add_bank_p1 as i32,
+			};
+			let bank_diff = my_bank - opp_bank;
+
+			tile_diff * 100 + bank_diff * 5
+		} else {
+			if !has_legal_add_or_move(game, game.current_player) {
+				let winner = game.current_player.other();
+				return if winner == player { 10000 } else { -10000 };
+			}
+
+			let mobility_score = self.evaluate_mobility(game, player);
+
+			let my_stack_size = game.stack(player).len() as i32;
+			let opponent_stack_size = game.stack(player.other()).len() as i32;
+			let stack_diff = my_stack_size - opponent_stack_size;
+
+			let my_tiles_on_board =
+				game.board.tiles().filter(|(_, tile)| tile.owner == player).count() as i32;
+			let opponent_tiles_on_board =
+				game.board.tiles().filter(|(_, tile)| tile.owner == player.other()).count() as i32;
+			let board_presence = my_tiles_on_board - opponent_tiles_on_board;
+
+			let my_stability = calculate_stability(game, player);
+			let opponent_stability = calculate_stability(game, player.other());
+			let stability_diff = my_stability - opponent_stability;
+
+			let my_connectivity = calculate_connectivity(game, player);
+			let opponent_connectivity = calculate_connectivity(game, player.other());
+			let connectivity_diff = my_connectivity - opponent_connectivity;
+
+			mobility_score * 15
+				+ stack_diff * 5
+				+ board_presence * 4
+				+ stability_diff * 3
+				+ connectivity_diff * 8
 		}
-
-		let mobility_score = self.evaluate_mobility(game, player);
-
-		let my_stack_size = game.stack(player).len() as i32;
-		let opponent_stack_size = game.stack(player.other()).len() as i32;
-		let stack_diff = my_stack_size - opponent_stack_size;
-
-		let my_tiles_on_board =
-			game.board.tiles().filter(|(_, tile)| tile.owner == player).count() as i32;
-		let opponent_tiles_on_board =
-			game.board.tiles().filter(|(_, tile)| tile.owner == player.other()).count() as i32;
-		let board_presence = my_tiles_on_board - opponent_tiles_on_board;
-
-		let my_stability = calculate_stability(game, player);
-		let opponent_stability = calculate_stability(game, player.other());
-		let stability_diff = my_stability - opponent_stability;
-
-		let my_connectivity = calculate_connectivity(game, player);
-		let opponent_connectivity = calculate_connectivity(game, player.other());
-		let connectivity_diff = my_connectivity - opponent_connectivity;
-
-		mobility_score * 15
-			+ stack_diff * 5
-			+ board_presence * 4
-			+ stability_diff * 3
-			+ connectivity_diff * 8
 	}
 }
 
@@ -801,16 +826,12 @@ fn calculate_stability(game: &Game, player: Player) -> i32 {
 		let mut mismatches = 0;
 
 		for (direction, neighbor_pos) in pos.neighbors() {
-			if neighbor_pos.is_corner() {
+			if game.board.is_corner(neighbor_pos) {
 				mismatches += 1;
 				continue;
 			}
 
-			if neighbor_pos.row < 0
-				|| neighbor_pos.row >= 5
-				|| neighbor_pos.col < 0
-				|| neighbor_pos.col >= 5
-			{
+			if !game.board.is_valid(neighbor_pos) {
 				continue;
 			}
 
