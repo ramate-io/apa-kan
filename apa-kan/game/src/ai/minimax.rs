@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use rand::Rng;
 
-use crate::game::{Action, Game};
+use crate::game::{Action, Game, Player};
 
 use super::eval::{evaluate, evaluate_legacy, terminal_score, WIN};
 use super::search_move::{apply_move, cheap_order, is_capture, legal_search_moves, SearchMove};
@@ -143,6 +143,7 @@ pub fn search(
 		legacy: state.legacy,
 	};
 
+	let me = game.current_player();
 	let mut best_move = legal[rng.gen_range(0..legal.len())];
 	let mut completed_depth = 0u8;
 
@@ -176,7 +177,15 @@ pub fn search(
 			};
 			ctx.path.push(zobrist::hash(&child));
 			ctx.path_occ.push(zobrist::occupancy_hash(&child));
-			let mut score = -negamax(&mut child, depth - 1, -beta, -alpha, 1, &mut ctx);
+			let mut score = score_from_mover(
+				&mut child,
+				me,
+				depth.saturating_sub(1),
+				-beta,
+				-alpha,
+				1,
+				&mut ctx,
+			);
 			ctx.path.pop();
 			ctx.path_occ.pop();
 			if is_reverse(mv, ctx.last_move) && !center_relevant(game, mv) {
@@ -276,7 +285,8 @@ fn negamax(
 		};
 		ctx.path.push(zobrist::hash(&child));
 		ctx.path_occ.push(zobrist::occupancy_hash(&child));
-		let score = -negamax(&mut child, depth - 1, -beta, -alpha, ply + 1, ctx);
+		let score =
+			score_from_mover(&mut child, me, depth.saturating_sub(1), -beta, -alpha, ply + 1, ctx);
 		ctx.path.pop();
 		ctx.path_occ.pop();
 		if ctx.abort {
@@ -358,7 +368,11 @@ fn quiesce(
 		}
 		ctx.path.push(zobrist::hash(&child));
 		ctx.path_occ.push(zobrist::occupancy_hash(&child));
-		let score = -quiesce(&mut child, -beta, -alpha, qply + 1, ply + 1, ctx);
+		let score = if let Some(term) = terminal_score(&child, me) {
+			term
+		} else {
+			-quiesce(&mut child, -beta, -alpha, qply + 1, ply + 1, ctx)
+		};
 		ctx.path.pop();
 		ctx.path_occ.pop();
 		if ctx.abort {
@@ -385,12 +399,33 @@ fn eval_now(game: &Game, ctx: &Ctx<'_>) -> i32 {
 	}
 }
 
+/// Score `child` from `mover`'s point of view.
+///
+/// Center-hold and petal-majority wins are applied in `finish_turn` *before*
+/// the side-to-move flips, so the child's `current_player()` is still the
+/// winner. Negating a terminal scored from STM would turn our own win into a
+/// loss (the recorded failure mode: vacating the center on the turn that
+/// would have completed the hold). Lockouts already switch STM to the loser,
+/// so both conventions agree there.
+fn score_from_mover(
+	child: &mut Game,
+	mover: Player,
+	depth: u8,
+	alpha: i32,
+	beta: i32,
+	ply: usize,
+	ctx: &mut Ctx<'_>,
+) -> i32 {
+	if let Some(term) = terminal_score(child, mover) {
+		return term;
+	}
+	-negamax(child, depth, alpha, beta, ply, ctx)
+}
+
 fn center_relevant(game: &Game, mv: SearchMove) -> bool {
 	let center = game.board().center();
 	match mv {
-		SearchMove::Move { from, to } => {
-			to == center || from == center || game.board().inner_ring().contains(&to)
-		}
+		SearchMove::Move { to, .. } => to == center || game.board().inner_ring().contains(&to),
 		SearchMove::Add { node, .. } => game.board().inner_ring().contains(&node),
 		SearchMove::Pass => false,
 	}

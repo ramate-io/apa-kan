@@ -472,6 +472,35 @@ mod tests {
 	}
 
 	#[test]
+	fn center_hold_win_keeps_winner_to_move() {
+		use crate::game::{Action, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = true;
+		rules.center_hold_n = 1;
+		rules.no_same_piece_twice = crate::game::SamePieceTwice::Off;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let from = game.board().neighbors(center)[0];
+		let mover = game.alloc_tile(Player::One, TileColor::Blue, 3, 1);
+		game.place_tile(from, mover);
+		let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+		game.set_bench(Player::Two, vec![opp]);
+		game.set_current(Player::One);
+		game.apply(Action::Move { from, to: center }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::CenterHold }
+		);
+		assert_eq!(game.current_player(), Player::One);
+		let from_mover = terminal_score(&game, Player::One).expect("terminal");
+		assert!(from_mover > WIN / 2);
+		// Negating a STM terminal would flip the win into a loss — the minimax
+		// bug that made it vacate the center instead of completing the hold.
+		assert!(-terminal_score(&game, game.current_player()).unwrap() < -WIN / 2);
+	}
+
+	#[test]
 	fn occupying_center_scores_higher_when_center_hold_is_on() {
 		let mut off_rules = RuleSet::default();
 		off_rules.center_hold_win = false;

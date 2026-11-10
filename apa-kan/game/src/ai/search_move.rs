@@ -122,7 +122,8 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 				s += 220;
 			}
 			if from == center {
-				s += 80;
+				// Vacating our own center is almost never right under hold-to-win.
+				s -= if game.rules().center_hold_win { 1_200 } else { 40 };
 			}
 			if let Some(tile) = game.tile_at(from) {
 				for &nb in game.board().neighbors(to) {
