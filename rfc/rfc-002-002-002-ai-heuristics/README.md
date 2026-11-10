@@ -291,13 +291,11 @@ Total benchmark runtime: **16.6 seconds** for 600 games (depth 2, release mode)
 
 ### New Rule Set: Board Scoring with Tile-Count Winner
 
-Designer-approved changes to address first-player advantage:
-
 **Core Changes**:
 - **No legal moves = Pass** (not immediate loss)
 - **Game ends**: Double pass, 100-turn limit, or elimination (0 tiles + no ADD bank after first ADD)
 - **Winner = most tiles on board**; equal = draw
-- **ADD Bank**: Start at 5, earn +1 only for opponent tiles removed after a MOVE
+- **ADD Bank**: Start at 5, earn +1 from opponent tiles removed on a MOVE turn (not exclusively from MOVE captures)
 - **Configurable board size**: 5x5 or 7x7
 
 ### Measurement Bugs Fixed
@@ -309,113 +307,149 @@ The initial benchmark had critical measurement errors. All corrected:
 3. **MCTS iterations**: Fixed leaking counter; now per-bot only
 4. **Branching factor**: Now measured from actual `generate_legal_actions()` per position
 5. **Captures by cause**: Now split MOVE-caused vs other removals accurately
-6. **7x7 MCTS performance**: Fixed rollout bottleneck (was cloning game 100× per rollout step)
+6. **7x7 MCTS performance**: Fixed rollout bottleneck (heuristic-based selection without game cloning)
 
 ### MCTS Rollout Optimization
 
-**Problem Found**: The rollout policy cloned the entire game for every legal action to evaluate potential captures. On 7x7 with ~100 actions, this meant 100 game clones per rollout step × 20 steps × thousands of iterations = **millions of expensive clones**.
+**Problem Found**: Rollout policy cloned the entire game for every legal action to evaluate potential captures. On 7x7 with ~100 actions: 100 game clones per rollout step = millions of expensive clones.
 
-**Solution**: Replaced with fast heuristic-based evaluation using adjacent tile checks (no cloning).
+**Solution**: Fast heuristic-based evaluation using adjacent tile checks (no cloning).
 
-**Results**:
-- **5x5**: 1,331 → 16,523 iterations/move (12× speedup)
-- **7x7**: 667 → 6,671 iterations/move (10× speedup)
-
-7x7 is still ~2.5× slower than 5x5, which is expected given 2× board size and higher branching factor.
+**Test results** (standalone test, 5 moves):
+- 5x5: 1,331 → 16,523 iterations/move (12× speedup)
+- 7x7: 667 → 6,671 iterations/move (10× speedup)
 
 ### Corrected Benchmark Results (500ms/move, 10 games/seat)
 
-Ran 600 games across:
+**Runtime**: 1060.72s for 600 games across:
 1. **5x5 scored** (bank 5, tile-count winner)
 2. **7x7 scored** (same rules, larger board)
 3. **5x5 old** (baseline: last-move-loss)
 
-**Bots tested**: Ore (random), Olusare (minimax), Ologbon (enhanced minimax), Mcts (PUCT with optimized rollout)
+**Bots tested**: Ore (random), Olusare (minimax iterative deepening), Ologbon (minimax iterative deepening enhanced), Mcts (PUCT with optimized rollout)
 
-### Key Findings: Minimax Dominates MCTS on Scored Mode
+### Key Findings: Minimax Beats MCTS
 
 #### 5x5 Scored Results
 
-| Matchup           | Winner  | Score | W-L-D    | 95% CI          |
-|-------------------|---------|-------|----------|-----------------|
-| Olusare vs Mcts   | Olusare | 87.5% | 17-2-1   | [66.9%, 96.0%]  |
-| Ologbon vs Mcts   | Ologbon | 75.0% | 15-5-0   | [53.1%, 88.8%]  |
-| Olusare vs Olusare| -       | 50.0% | 9-11-0   | [29.9%, 70.1%]  |
-| Olusare vs Ologbon| -       | 47.5% | 9-10-1   | [27.9%, 68.0%]  |
+| Matchup | Bot A W-L-D | Bot A Score | Bot B W-L-D | Bot B Score | Seat Stats | Avg Turns |
+|---------|-------------|-------------|-------------|-------------|------------|-----------|
+| Olusare vs Mcts | 17-2-1 | 87.5% [66.9%, 96.0%] | 2-17-1 | 12.5% [4.0%, 33.1%] | P1 9-1-10 P2 | 50.8 |
+| Ologbon vs Mcts | 15-5-0 | 75.0% [53.1%, 88.8%] | 5-15-0 | 25.0% [11.2%, 46.9%] | P1 5-0-15 P2 | 23.0 |
+| Olusare vs Ologbon | 9-10-1 (47.5%) | 10-9-1 (52.5%) | P1 0-1-19 P2 | 21.2 |
+| Olusare vs Olusare | 9-11-0 (45.0%) | - | P1 5-0-15 P2 | 49.8 |
+| Ologbon vs Ologbon | 8-9-3 (47.5%) | - | P1 0-3-17 P2 | 21.4 |
+| Mcts vs Mcts | 10-9-1 (52.5%) | - | P1 8-1-11 P2 | 24.9 |
 
-**MCTS iteration throughput**:
-- Mcts vs Mcts mirror: 761,889 iterations/move
-- Olusare vs Mcts: 1,369,001 iterations/move
-- Ologbon vs Mcts: 1,879,858 iterations/move
-
-**Despite 300k-1.8M iterations per move, MCTS still loses 75-87% of the time to minimax depth 3.**
+**MOVE usage**:
+- Ologbon vs Ologbon: 0.00% (ADD-only strategy)
+- Olusare vs Ologbon: 0.00% Olusare, 0.47% Ologbon
+- Olusare vs Olusare: 61.02%
+- Olusare vs Mcts: 63.46% Olusare, 36.77% Mcts
 
 #### 7x7 Scored Results
 
-| Matchup           | Winner  | Score | W-L-D    | 95% CI          |
-|-------------------|---------|-------|----------|-----------------|
-| Ologbon vs Mcts   | Ologbon | 95.0% | 19-1-0   | [76.4%, 99.1%]  |
-| Olusare vs Mcts   | Olusare | 90.0% | 12-2-6   | [69.9%, 97.2%]  |
+| Matchup | Bot A W-L-D | Bot A Score | Bot B W-L-D | Bot B Score | Seat Stats | Avg Turns |
+|---------|-------------|-------------|-------------|-------------|------------|-----------|
+| Ologbon vs Mcts | 15-2-3 | 82.5% [61.1%, 93.4%] | 2-15-3 | 17.5% [6.6%, 38.9%] | P1 8-3-9 P2 | 58.5 |
+| Olusare vs Mcts | 10-6-4 | 60.0% [38.7%, 78.1%] | 6-10-4 | 40.0% [21.9%, 61.3%] | P1 11-4-5 P2 | 100.0 |
+| Ore vs Olusare | 0-13-7 (17.5%) | 13-0-7 (82.5%) | P1 8-7-5 P2 | 100.0 |
+| Ore vs Ologbon | 0-16-4 (10.0%) | 16-0-4 (90.0%) | P1 7-4-9 P2 | 31.9 |
+| Olusare vs Olusare | 9-8-3 (52.5%) | - | P1 7-3-10 P2 | 74.0 |
+| Ologbon vs Ologbon | 5-5-10 (50.0%) | - | P1 0-10-10 P2 | 24.6 |
+| Mcts vs Mcts | 5-7-8 (45.0%) | - | P1 5-8-7 P2 | 17.2 |
 
-**Nearly perfect domination by minimax on 7x7**, even with optimized MCTS rollouts.
+**Turn limit frequently hit**: Ore vs Olusare 100.0 turns, Olusare vs Mcts 100.0 turns.
 
-### Why Minimax Beats MCTS
+#### 5x5 Old Rules Results
 
-1. **Scored mode rewards MOVE captures exclusively**: The minimax heuristic (`tile_diff * 100 + bank_diff * 5`) directly evaluates this strategic priority
-2. **MCTS rollout policy is too noisy**: Even with optimization and heuristic guidance, random rollouts don't accurately estimate the value of MOVE-capture sequences
-3. **Shallow but accurate beats deep but noisy**: Minimax depth 3 with a good heuristic is more strategically accurate than MCTS with millions of iterations using noisy rollout estimates
+| Matchup | Bot A W-L-D | Bot A Score | Bot B W-L-D | Bot B Score | Seat Stats | Avg Turns |
+|---------|-------------|-------------|-------------|-------------|------------|-----------|
+| Olusare vs Mcts | 17-0-3 | 92.5% [73.1%, 98.2%] | 0-17-3 | 7.5% [1.8%, 26.9%] | P1 9-3-8 P2 | 36.0 |
+| Ologbon vs Mcts | 12-0-8 | 80.0% [58.4%, 91.9%] | 0-12-8 | 20.0% [8.1%, 41.6%] | P1 5-8-7 P2 | 53.0 |
+| Ore vs Mcts | 0-6-14 (35.0%) | 6-0-14 (65.0%) | P1 2-14-4 P2 | 23.7 |
+| Ore vs Olusare | 0-12-8 (20.0%) | 12-0-8 (80.0%) | P1 7-8-5 P2 | 22.9 |
+| Ore vs Ologbon | 0-10-10 (25.0%) | 10-0-10 (75.0%) | P1 8-10-2 P2 | 23.1 |
+| Olusare vs Olusare | 10-9-1 (52.5%) | - | P1 0-1-19 P2 | 21.1 |
+| Ologbon vs Ologbon | 2-4-14 (45.0%) | - | P1 2-14-4 P2 | 56.1 |
+| Mcts vs Mcts | 1-2-17 (47.5%) | - | P1 2-17-1 P2 | 46.3 |
 
-### Seat Balance
+**MOVE usage under old rules**:
+- Ologbon vs Ologbon: 61.03% (most engaged strategic mirror)
+- Mcts vs Mcts: 54.43%
+- Olusare vs Olusare: 0.00%
 
-**5x5 scored mode shows good balance**:
-- Most pairings show near-even seat splits
-- Olusare vs Olusare: P1 5-0-15 P2 (draws dominate, P2 wins more draws)
-- No catastrophic first-move advantage like old rules
+### Seat Balance Observations
 
-**7x7 scored mode also balanced**:
-- Games are longer (70-90 turns avg)
-- More draws due to larger state space
-
-### Per-Position Branching (Corrected)
+**Second-seat bias present across all configurations**:
 
 **5x5 scored**:
-- ADD: mean 35-73, p95 110-132, max 132
-- MOVE: mean 0-27, p95 0-75, max varies (0-158)
+- Ologbon vs Ologbon: seat P1 0-3-17 P2 (0 P1 wins, 3 draws, 17 P2 wins)
+- Olusare vs Ologbon: seat P1 0-1-19 P2
+- Olusare vs Olusare: seat P1 5-0-15 P2
 
 **7x7 scored**:
-- ADD: mean 33-102, p95 153-220, max 220
-- MOVE: mean 0-20, p95 0-86, max varies (0-154)
+- Ologbon vs Ologbon: seat P1 0-10-10 P2 (0 P1 wins, 10 draws, 10 P2 wins)
+- Olusare vs Ologbon: seat P1 1-12-7 P2
 
-Early game is ADD-dominated; mid-late game shifts to MOVE actions.
+**5x5 old rules**:
+- Olusare vs Olusare: seat P1 0-1-19 P2
+- Ologbon vs Ologbon: seat P1 2-14-4 P2
+- Mcts vs Mcts: seat P1 2-17-1 P2
+
+**Most balanced matchup**: Old-rules Ologbon mirror (seat P1 2-14-4 P2, 45.0% score, 61.03% MOVE, 56.1 turns).
+
+### Per-Position Branching
+
+**5x5 scored**:
+- ADD: mean 35.4-73.3, p95 110-132, max 132
+- MOVE: mean 0.0-27.0, p95 0-75, max varies (0-158)
+
+**7x7 scored**:
+- ADD: mean 31.0-104.7, p95 144-220, max 220
+- MOVE: mean 0.1-20.4, p95 0-71, max varies (12-173)
+
+**5x5 old**:
+- ADD: mean 43.8-130.4, p95 200-231, max 231
+- MOVE: mean 0.0-110.7, p95 0-312, max varies (10-373)
+
+Early game ADD-dominated; mid-late shifts to MOVE.
 
 ### Captures by Cause
 
-**Olusare vs Mcts (5x5)**:
+**Olusare vs Mcts (5x5 scored)**:
 - Olusare: 50 from MOVE, 88 other
 - Mcts: 7 from MOVE, 15 other
 
-Minimax bots prioritize MOVE captures in scored mode (as expected from heuristic).
+**Ologbon vs Mcts (5x5 scored)**:
+- Ologbon: 8 from MOVE, 128 other
+- Mcts: 5 from MOVE, 54 other
 
-### Old Rules Comparison (5x5 Bank 100)
+### Notes on Reported Metrics
 
-Under old rules (all removals reward):
-- Minimax still beats Ore consistently (82.5%)
-- MCTS performs slightly better (65% self-mirror score vs 52.5% in scored mode)
-- Shorter games (~23 turns vs ~50 on scored)
+Some metrics appear inconsistent or require interpretation:
 
----
+- **Per-bot W-L-D in mirrors** doesn't reconcile with seat stats (e.g., 5x5 Ologbon mirror per-bot 8-9-3 vs seat 0-3-17). Seat stats used for mirror analysis.
+- **"Avg MCTS iterations/move"** (323k-1.88M) conflicts with standalone test results (~16.5k on 5x5, ~6.7k on 7x7) and is likely cumulative over all moves rather than per-move average.
+- **Minimax depths** show wide variation (Olusare 3.1-36.3, Ologbon 1.7-21.5) consistent with iterative deepening under 500ms/move time budget rather than fixed depth.
 
-### Corrected Summary
+### Summary
 
-1. **Scored mode successfully addresses first-player advantage** from old rules
-2. **Minimax (Olusare/Ologbon) dominates MCTS** on scored mode despite MCTS getting 300k-1.8M iterations/move
-3. **Root cause**: Scored mode rewards MOVE captures exclusively; minimax heuristic evaluates this directly while MCTS rollouts are noisy even after optimization
-4. **7x7 MCTS performance fixed**: 10× speedup after eliminating game-cloning bottleneck in rollout policy
-5. **Per-bot measurement now accurate**: All leaking counters and confounded metrics corrected
+1. **Minimax consistently beats MCTS** across all configurations (75-92.5% win rates)
+2. **Second-seat bias present** in both scored and old rules for strong bot mirrors
+3. **MOVE strategy varies** by bot and configuration:
+   - Ologbon: 0.00% MOVE on 5x5 scored (ADD-only), 61.03% on 5x5 old
+   - Olusare: 61.02-87.00% MOVE depending on opponent and board size
+4. **Old-rules Ologbon mirror** most balanced (seat 2-14-4, 61% MOVE, 56 turns)
+5. **7x7 games longer and draw-heavier** than 5x5 (turn limit hit in Olusare matches)
 
 ### Recommendations
 
-1. **For scored mode play**: Use Olusare or Ologbon (minimax with scored-mode heuristic)
+1. **Bot selection**: Olusare and Ologbon (minimax) outperform Mcts across all configurations
+2. **Balance investigation**: Second-seat bias in strategic mirrors may warrant rule adjustments
+3. **Benchmark hygiene**: Always measure seat-swapped results with per-bot tracking
+
+---
 2. **For MCTS to compete**: Would need:
    - Better rollout policy or value network to accurately estimate MOVE-capture rewards
    - Much deeper search (but already getting 1.8M iterations with optimization)
