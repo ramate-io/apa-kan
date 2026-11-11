@@ -51,7 +51,7 @@ Default:
 - **ADD** places one concrete bench tile onto an empty spawn (not an abstract “any kind” picker).
 - On a **MOVE**, each **opponent** tile removed draws one more tile from the mover’s bag onto their bench. ADD captures do not draw. Empty bag → the draw is skipped.
 - Remaining bag tiles do **not** keep a player alive.
-- **Scenarios** (`--scenario <name|path>`, TOML under `apa-kan/game/scenarios/`): replace the default deal with a named or file-backed deck. Builtins: `default`/`same` (mirrored 27-kind shuffle, current `identical_bags` behavior); `complementary` (P1 green+orange, P2 blue+orange, 18 tiles, mirrored weight/dot order); `complementary-swapped` (exclusive colors flipped). Optional per-player `colors` / `tiles` / `bench`. The app and `apa-kan-bench` share the loader.
+- **Scenarios** (`--scenario <name|path>`, TOML under `apa-kan/game/scenarios/`): replace the default deal with a named or file-backed deck. Builtins: `default`/`same` (mirrored 27-kind shuffle, current `identical_bags` behavior); `independent` (each player's 27-kind bag shuffled separately); `complementary` (P1 green+orange, P2 blue+orange, 18 tiles, mirrored weight/dot order); `complementary-swapped` (exclusive colors flipped). Optional per-player `colors` / `tiles` / `bench`. The app and `apa-kan-bench` share the loader.
 
 Options: `starting_bench_size`, `identical_bags`, `bag_one_of_each_kind`, `capture_draw_on_move`, plus scenario files.
 
