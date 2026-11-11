@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use apa_kan::ai::{self, Actor, BranchingReport, Searcher};
 use apa_kan::config::apply_rule_flag;
-use apa_kan::game::{Action, EndReason, Game, GameStatus, Player, RuleSet};
+use apa_kan::game::{
+	sample_tile, Action, EndReason, Game, GameStatus, Player, RuleSet, Tile, TileColor,
+};
 use apa_kan::scenario::{self, DeckStrength, Scenario};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -56,7 +58,7 @@ fn usage() -> &'static str {
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
 	   --hop-weight-cmp, --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
-	   --insufficient-tiles-loss, --starting-bench,\n\
+	   --insufficient-tiles-loss, --starting-bench, --max-rings,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
@@ -225,7 +227,7 @@ fn run(cfg: BenchConfig) {
 		rules.turn_limit
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} max_rings={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -239,9 +241,11 @@ fn run(cfg: BenchConfig) {
 		rules.control_hold_turns,
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
+		rules.max_rings,
 		rules.path_constraint.name(),
 		cfg.scenario.as_ref().map(|s| s.name.as_str()).unwrap_or("default")
 	));
+	push_ring_process(&mut lines, rules, cfg.seed);
 	lines.push(
 		"# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.".into(),
 	);
@@ -364,6 +368,7 @@ fn run(cfg: BenchConfig) {
 	);
 
 	let deck_rows = deck_holder.lock().unwrap_or_else(|e| e.into_inner()).clone();
+	push_observed_rings(&mut lines, &deck_rows);
 	push_deck_fairness(&mut lines, &deck_rows);
 
 	lines.push(String::new());
@@ -616,6 +621,8 @@ struct DeckRow {
 	p2_bench: String,
 	p1_played: DeckStrength,
 	p2_played: DeckStrength,
+	ring_n: [u32; 4],
+	color_n: [u32; 6],
 	outcome: i8,
 	turns: u32,
 }
@@ -637,6 +644,13 @@ fn play_game(
 	let p2_open = DeckStrength::of(game.bench(Player::Two));
 	let p1_bench = scenario::format_kind_list(game.bench(Player::One));
 	let p2_bench = scenario::format_kind_list(game.bench(Player::Two));
+	let mut ring_n = [0u32; 4];
+	let mut color_n = [0u32; 6];
+	tally_tiles(
+		game.bench(Player::One).iter().chain(game.bench(Player::Two)),
+		&mut ring_n,
+		&mut color_n,
+	);
 	let mut rng = StdRng::seed_from_u64(seed ^ 0x51ed);
 	let mut s1 = Searcher::new();
 	let mut s2 = Searcher::new();
@@ -763,6 +777,8 @@ fn play_game(
 			p2_bench,
 			p1_played,
 			p2_played,
+			ring_n,
+			color_n,
 			outcome,
 			turns: game.turn_count(),
 		},
@@ -797,6 +813,66 @@ fn fmt_r(v: Option<f64>) -> String {
 		None => "n/a".into(),
 		Some(r) => format!("{r:.3}"),
 	}
+}
+
+fn tally_tiles<'a, I>(tiles: I, ring_n: &mut [u32; 4], color_n: &mut [u32; 6])
+where
+	I: IntoIterator<Item = &'a Tile>,
+{
+	for t in tiles {
+		let k = t.n_rings.clamp(1, 3) as usize;
+		ring_n[k] += 1;
+		for &c in t.ring_colors() {
+			color_n[c as usize] += 1;
+		}
+	}
+}
+
+fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
+	let mut rng = StdRng::seed_from_u64(seed.wrapping_add(0x52494E47));
+	let mut next_id = 1u32;
+	let n = 20_000u32;
+	let mut ring_n = [0u32; 4];
+	let mut color_n = [0u32; 6];
+	for _ in 0..n {
+		let t = sample_tile(Player::One, rules.max_rings, &mut next_id, &mut rng);
+		tally_tiles(std::iter::once(&t), &mut ring_n, &mut color_n);
+	}
+	lines.push(format!(
+		"# ring_process  sample={n} max_rings={}  n1={} n2={} n3={}",
+		rules.max_rings, ring_n[1], ring_n[2], ring_n[3]
+	));
+	let names = TileColor::ALL.map(|c| c.name());
+	let mut bits = Vec::new();
+	for (i, name) in names.iter().enumerate() {
+		bits.push(format!("{name}={}", color_n[i]));
+	}
+	lines.push(format!("# ring_process_colors  {}", bits.join(" ")));
+}
+
+fn push_observed_rings(lines: &mut Vec<String>, rows: &[DeckRow]) {
+	let mut ring_n = [0u32; 4];
+	let mut color_n = [0u32; 6];
+	for r in rows {
+		for i in 0..4 {
+			ring_n[i] += r.ring_n[i];
+		}
+		for i in 0..6 {
+			color_n[i] += r.color_n[i];
+		}
+	}
+	let tiles = ring_n[1] + ring_n[2] + ring_n[3];
+	lines.push(String::new());
+	lines.push(format!(
+		"# observed_opening_rings  tiles={tiles}  n1={} n2={} n3={}",
+		ring_n[1], ring_n[2], ring_n[3]
+	));
+	let names = TileColor::ALL.map(|c| c.name());
+	let mut bits = Vec::new();
+	for (i, name) in names.iter().enumerate() {
+		bits.push(format!("{name}={}", color_n[i]));
+	}
+	lines.push(format!("# observed_opening_colors  {}", bits.join(" ")));
 }
 
 fn push_deck_fairness(lines: &mut Vec<String>, rows: &[DeckRow]) {

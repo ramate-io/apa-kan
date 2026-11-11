@@ -80,7 +80,7 @@ pub struct HistoryTable {
 
 impl HistoryTable {
 	pub fn new() -> Self {
-		Self { moves: vec![0; 32 * 32], adds: vec![0; 27 * 32] }
+		Self { moves: vec![0; 32 * 32], adds: vec![0; crate::game::KIND_COUNT * 32] }
 	}
 
 	pub fn get(&self, mv: SearchMove) -> i32 {

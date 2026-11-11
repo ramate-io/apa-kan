@@ -177,13 +177,17 @@ fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str
 
 fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(tile.owner)));
-	let col = rgb_of(visual::tile_rgb(tile.color));
+	let ring_colors = tile.ring_colors();
+	let primary = rgb_of(visual::tile_rgb(tile.primary()));
 	let scale = r / f64::from(visual::PREV_TILE_RADIUS_PX);
 	let ring_gap = 3.5 * scale;
-	for k in 0..tile.weight {
+	let strokes = tile.weight.max(tile.n_rings);
+	for k in 0..strokes {
 		let rr = r - 3.0 * scale - f64::from(k) * ring_gap;
 		if rr > 4.0 * scale {
-			stroke_circle(img, c, rr, col, (2.2 * scale).max(1.6));
+			let idx = (k as usize).min(ring_colors.len().saturating_sub(1));
+			let color = ring_colors.get(idx).copied().unwrap_or(tile.primary());
+			stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), (2.2 * scale).max(1.6));
 		}
 	}
 	let dots = tile.dots.min(3);
@@ -192,7 +196,7 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 	let dot_r = (2.6 * scale).max(1.8);
 	for i in 0..dots {
 		let dx = start + f64::from(i) * spread;
-		fill_circle(img, (c.0 + dx, c.1), dot_r, col);
+		fill_circle(img, (c.0 + dx, c.1), dot_r, primary);
 	}
 }
 

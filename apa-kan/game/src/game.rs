@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 
 use crate::board::{Board, NodeId};
 
@@ -45,55 +45,194 @@ impl Player {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum TileColor {
-	Green,
-	Blue,
-	Orange,
+	Green = 0,
+	Blue = 1,
+	Orange = 2,
+	LavenderPink = 3,
+	Teal = 4,
+	Maroon = 5,
 }
 
+/// Common 81, uncommon 9, rare 1. Total 262.
+pub const COLOR_WEIGHTS: [(TileColor, u32); 6] = [
+	(TileColor::Green, 81),
+	(TileColor::Blue, 81),
+	(TileColor::Orange, 81),
+	(TileColor::LavenderPink, 9),
+	(TileColor::Teal, 9),
+	(TileColor::Maroon, 1),
+];
+pub const COLOR_WEIGHT_TOTAL: u32 = 262;
+/// Ring 2/3: weight 7 keep the last existing color, weight 1 draw any color.
+pub const RING_SAME_WEIGHT: u32 = 7;
+pub const RING_ANY_WEIGHT: u32 = 1;
+pub const RING_EXIST_TOTAL: u32 = RING_SAME_WEIGHT + RING_ANY_WEIGHT;
+/// Sampled bag size (replaces the old 27 unique 3-color kinds).
+pub const BAG_SIZE: usize = 27;
+pub const MAX_COLOR_RINGS: u8 = 3;
+
 impl TileColor {
-	pub const ALL: [TileColor; 3] = [TileColor::Green, TileColor::Blue, TileColor::Orange];
+	pub const ALL: [TileColor; 6] = [
+		TileColor::Green,
+		TileColor::Blue,
+		TileColor::Orange,
+		TileColor::LavenderPink,
+		TileColor::Teal,
+		TileColor::Maroon,
+	];
+	pub const COMMON: [TileColor; 3] = [TileColor::Green, TileColor::Blue, TileColor::Orange];
 
 	pub fn name(self) -> &'static str {
 		match self {
 			TileColor::Green => "green",
 			TileColor::Blue => "blue",
 			TileColor::Orange => "orange",
+			TileColor::LavenderPink => "lavender-pink",
+			TileColor::Teal => "teal",
+			TileColor::Maroon => "maroon",
+		}
+	}
+
+	pub fn tag(self) -> &'static str {
+		match self {
+			TileColor::Green => "g",
+			TileColor::Blue => "b",
+			TileColor::Orange => "o",
+			TileColor::LavenderPink => "p",
+			TileColor::Teal => "t",
+			TileColor::Maroon => "m",
 		}
 	}
 
 	pub fn parse(s: &str) -> Result<Self, String> {
-		match s.to_ascii_lowercase().as_str() {
+		match s.to_ascii_lowercase().replace('_', "-").as_str() {
 			"green" | "g" => Ok(Self::Green),
 			"blue" | "b" => Ok(Self::Blue),
 			"orange" | "o" => Ok(Self::Orange),
-			other => Err(format!("unknown color '{other}' (green|blue|orange)")),
+			"lavender-pink" | "lavender" | "pink" | "lp" | "p" => Ok(Self::LavenderPink),
+			"teal" | "t" => Ok(Self::Teal),
+			"maroon" | "m" => Ok(Self::Maroon),
+			other => Err(format!(
+				"unknown color '{other}' (green|blue|orange|lavender-pink|teal|maroon)"
+			)),
 		}
 	}
+
+	pub fn bit(self) -> u8 {
+		1u8 << (self as u8)
+	}
+}
+
+/// Draw one color from the 81/81/81/9/9/1 tree.
+pub fn sample_color(rng: &mut impl Rng) -> TileColor {
+	let mut roll = rng.gen_range(0..COLOR_WEIGHT_TOTAL);
+	for &(color, w) in &COLOR_WEIGHTS {
+		if roll < w {
+			return color;
+		}
+		roll -= w;
+	}
+	TileColor::Maroon
+}
+
+/// 1–3 distinct normal-ring colors. Ring 1 is always drawn. Rings 2 and 3
+/// keep the last existing color with weight 7, or draw any color with weight 1
+/// (a redraw of an already-present color is not a new ring).
+pub fn sample_rings(rng: &mut impl Rng, max_rings: u8) -> ([TileColor; 3], u8) {
+	let max_rings = max_rings.clamp(1, MAX_COLOR_RINGS);
+	let r1 = sample_color(rng);
+	let mut rings = [r1, r1, r1];
+	let mut n = 1u8;
+	if max_rings >= 2 && rng.gen_range(0..RING_EXIST_TOTAL) < RING_ANY_WEIGHT {
+		let c = sample_color(rng);
+		if c != r1 {
+			rings[1] = c;
+			n = 2;
+		}
+	}
+	if max_rings >= 3 && rng.gen_range(0..RING_EXIST_TOTAL) < RING_ANY_WEIGHT {
+		let last = rings[(n - 1) as usize];
+		let c = sample_color(rng);
+		if c != last && !rings[..n as usize].contains(&c) {
+			rings[n as usize] = c;
+			n += 1;
+		}
+	}
+	(rings, n)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Tile {
 	pub id: u32,
 	pub owner: Player,
-	pub color: TileColor,
+	/// Distinct normal-ring colors, first [`Self::n_rings`] entries live.
+	pub rings: [TileColor; 3],
+	pub n_rings: u8,
 	pub weight: u8,
 	pub dots: u8,
 }
 
-/// One of each (color × weight × dots) in `1..=3`.
-pub const KIND_COUNT: usize = 27;
+/// Kind space: color-mask (6 bits) × weight × dots. Mask 0 is unused.
+pub const KIND_COUNT: usize = 64 * 9;
 
 impl Tile {
-	pub fn kind_label(self) -> String {
-		format!("{} w{} d{}", self.color.name(), self.weight, self.dots)
+	pub fn mono(id: u32, owner: Player, color: TileColor, weight: u8, dots: u8) -> Self {
+		Self::with_rings(id, owner, &[color], weight, dots)
 	}
 
-	/// Stable 0..26 index for the 27 (color, weight, dots) kinds.
+	pub fn with_rings(id: u32, owner: Player, colors: &[TileColor], weight: u8, dots: u8) -> Self {
+		let first = colors.first().copied().unwrap_or(TileColor::Green);
+		let mut rings = [first; 3];
+		let mut n = 0u8;
+		for &c in colors.iter().take(MAX_COLOR_RINGS as usize) {
+			if rings[..n as usize].contains(&c) {
+				continue;
+			}
+			rings[n as usize] = c;
+			n += 1;
+		}
+		if n == 0 {
+			n = 1;
+		}
+		Self { id, owner, rings, n_rings: n, weight, dots }
+	}
+
+	pub fn ring_colors(&self) -> &[TileColor] {
+		&self.rings[..self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize]
+	}
+
+	pub fn primary(self) -> TileColor {
+		self.rings[0]
+	}
+
+	pub fn has_color(self, color: TileColor) -> bool {
+		self.ring_colors().contains(&color)
+	}
+
+	pub fn color_mask(self) -> u8 {
+		let mut m = 0u8;
+		for &c in self.ring_colors() {
+			m |= c.bit();
+		}
+		m.max(1)
+	}
+
+	pub fn shares_color(self, other: Tile) -> bool {
+		(self.color_mask() & other.color_mask()) != 0
+	}
+
+	pub fn kind_label(self) -> String {
+		let rings = self.ring_colors().iter().map(|c| c.name()).collect::<Vec<_>>().join("+");
+		format!("{rings} w{} d{}", self.weight, self.dots)
+	}
+
+	/// `color_mask * 9 + (weight-1)*3 + (dots-1)`, in `9..KIND_COUNT`.
 	pub fn kind_index(self) -> usize {
 		let w = (self.weight.clamp(1, 3) - 1) as usize;
 		let d = (self.dots.clamp(1, 3) - 1) as usize;
-		(self.color as usize) * 9 + w * 3 + d
+		(self.color_mask() as usize) * 9 + w * 3 + d
 	}
 }
 
@@ -282,13 +421,17 @@ impl GameStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
 	/// Starting tiles dealt from each bag onto the bench. Default 7.
-	/// The bag is still 27 unique kinds; a deal of 7 leaves 20 capture
-	/// draws (vs 22 at 5). Empty bag skips the draw.
+	/// The bag is [`BAG_SIZE`] independently sampled tiles; a deal of 7
+	/// leaves 20 capture draws. Empty bag skips the draw.
 	pub starting_bench_size: u8,
-	/// Both players receive the same shuffled 27-tile bag. Default true.
+	/// Both players receive the same shuffled [`BAG_SIZE`]-tile bag. Default true.
 	pub identical_bags: bool,
-	/// Bag contains one tile of each (color × weight × dots) kind (27). Default true.
+	/// Fill the bag by sampling [`BAG_SIZE`] tiles (historical name: one-of-each
+	/// 27-kind). Default true. False leaves an empty bag.
 	pub bag_one_of_each_kind: bool,
+	/// Max distinct normal rings per tile (1–3). Default 3. `1` is the
+	/// single-ring baseline (still the six-color tree).
+	pub max_rings: u8,
 	/// On a MOVE, each removed opponent tile draws one bag tile onto the mover's bench.
 	pub capture_draw_on_move: bool,
 	/// If true, a mismatch adds the neighbor's weight instead of 1. Default false.
@@ -352,6 +495,7 @@ impl Default for RuleSet {
 			starting_bench_size: 7,
 			identical_bags: true,
 			bag_one_of_each_kind: true,
+			max_rings: MAX_COLOR_RINGS,
 			capture_draw_on_move: true,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
@@ -460,17 +604,22 @@ impl Game {
 		seed: u64,
 		scenario: &crate::scenario::Scenario,
 	) -> Result<Self, String> {
+		if scenario.generative {
+			let mut rules = rules;
+			rules.identical_bags = scenario.mirror;
+			return Ok(Self::new(rules, seed));
+		}
 		let board = Arc::new(Board::rosette_8());
 		let n = board.node_count();
 		let (bags, benches) = crate::scenario::materialize(scenario, seed)?;
 		let mut next_tile_id = 1u32;
-		let to_tiles = |owner: Player, kinds: Vec<(TileColor, u8, u8)>, next_id: &mut u32| {
+		let to_tiles = |owner: Player, kinds: Vec<crate::scenario::TileSpec>, next_id: &mut u32| {
 			kinds
 				.into_iter()
-				.map(|(color, weight, dots)| {
+				.map(|spec| {
 					let id = *next_id;
 					*next_id += 1;
-					Tile { id, owner, color, weight, dots }
+					Tile::with_rings(id, owner, spec.ring_colors(), spec.weight, spec.dots)
 				})
 				.collect::<Vec<_>>()
 		};
@@ -508,8 +657,13 @@ impl Game {
 		let n = board.node_count();
 		let mut next_tile_id = 1u32;
 		let mut rng = StdRng::seed_from_u64(seed);
-		let p1_bag =
-			build_bag(Player::One, rules.bag_one_of_each_kind, &mut next_tile_id, &mut rng);
+		let p1_bag = build_bag(
+			Player::One,
+			rules.bag_one_of_each_kind,
+			rules.max_rings,
+			&mut next_tile_id,
+			&mut rng,
+		);
 		let p2_bag = if rules.identical_bags {
 			p1_bag
 				.iter()
@@ -520,7 +674,13 @@ impl Game {
 				})
 				.collect()
 		} else {
-			build_bag(Player::Two, rules.bag_one_of_each_kind, &mut next_tile_id, &mut rng)
+			build_bag(
+				Player::Two,
+				rules.bag_one_of_each_kind,
+				rules.max_rings,
+				&mut next_tile_id,
+				&mut rng,
+			)
 		};
 		let mut game = Self {
 			board,
@@ -774,9 +934,19 @@ impl Game {
 	}
 
 	pub fn alloc_tile(&mut self, owner: Player, color: TileColor, weight: u8, dots: u8) -> Tile {
+		self.alloc_rings(owner, &[color], weight, dots)
+	}
+
+	pub fn alloc_rings(
+		&mut self,
+		owner: Player,
+		colors: &[TileColor],
+		weight: u8,
+		dots: u8,
+	) -> Tile {
 		let id = self.next_tile_id;
 		self.next_tile_id += 1;
-		Tile { id, owner, color, weight, dots }
+		Tile::with_rings(id, owner, colors, weight, dots)
 	}
 
 	pub fn tile_score(&self, node: NodeId) -> Option<(i32, i32)> {
@@ -785,7 +955,7 @@ impl Game {
 		let mut mismatches = 0i32;
 		for &nb in self.board.neighbors(node) {
 			if let Some(other) = self.tile_at(nb) {
-				if other.color == tile.color {
+				if other.shares_color(tile) {
 					matches += 1;
 				} else if self.rules.mismatch_uses_neighbor_weight {
 					mismatches += i32::from(other.weight);
@@ -813,7 +983,7 @@ impl Game {
 		let mut mismatches = 0i32;
 		for &nb in self.board.neighbors(node) {
 			if let Some(other) = self.tile_at(nb) {
-				if other.color == tile.color {
+				if other.shares_color(tile) {
 					matches += 1;
 				} else if self.rules.mismatch_uses_neighbor_weight {
 					mismatches += i32::from(other.weight);
@@ -1063,7 +1233,7 @@ impl Game {
 
 	fn hop_occupant_ok(&self, occupant: Tile, mover: Tile) -> bool {
 		if self.rules.color_restricted_hops {
-			occupant.color == mover.color
+			occupant.shares_color(mover)
 				&& self.rules.hop_weight_cmp.allows(occupant.weight, mover.weight)
 		} else if self.rules.hop_requires_ge_weight {
 			occupant.weight >= mover.weight
@@ -1355,19 +1525,28 @@ struct PathState {
 	visited_edges: u64,
 }
 
-fn build_bag(owner: Player, one_of_each: bool, next_id: &mut u32, rng: &mut StdRng) -> Vec<Tile> {
-	let mut bag = Vec::new();
-	if !one_of_each {
-		return bag;
+pub fn sample_tile(owner: Player, max_rings: u8, next_id: &mut u32, rng: &mut impl Rng) -> Tile {
+	let (rings, n_rings) = sample_rings(rng, max_rings);
+	let weight = rng.gen_range(1..=3);
+	let dots = rng.gen_range(1..=3);
+	let id = *next_id;
+	*next_id += 1;
+	Tile { id, owner, rings, n_rings, weight, dots }
+}
+
+fn build_bag(
+	owner: Player,
+	fill: bool,
+	max_rings: u8,
+	next_id: &mut u32,
+	rng: &mut StdRng,
+) -> Vec<Tile> {
+	if !fill {
+		return Vec::new();
 	}
-	for color in TileColor::ALL {
-		for weight in 1..=3 {
-			for dots in 1..=3 {
-				let id = *next_id;
-				*next_id += 1;
-				bag.push(Tile { id, owner, color, weight, dots });
-			}
-		}
+	let mut bag = Vec::with_capacity(BAG_SIZE);
+	for _ in 0..BAG_SIZE {
+		bag.push(sample_tile(owner, max_rings, next_id, rng));
 	}
 	bag.shuffle(rng);
 	bag
@@ -1469,7 +1648,10 @@ mod tests {
 		assert_eq!(a.bag_len(Player::One), 20);
 		assert_eq!(a.bag_len(Player::Two), 20);
 		let kinds = |g: &Game, p: Player| {
-			g.bench(p).iter().map(|t| (t.color, t.weight, t.dots)).collect::<Vec<_>>()
+			g.bench(p)
+				.iter()
+				.map(|t| (t.primary(), t.n_rings, t.weight, t.dots, t.color_mask()))
+				.collect::<Vec<_>>()
 		};
 		assert_eq!(kinds(&a, Player::One), kinds(&b, Player::One));
 		assert_eq!(kinds(&a, Player::One), kinds(&a, Player::Two));
@@ -1497,6 +1679,7 @@ mod tests {
 		assert_eq!(rules.control_n, 5);
 		assert_eq!(rules.control_hold_turns, 1);
 		assert_eq!(rules.starting_bench_size, 7);
+		assert_eq!(rules.max_rings, 3);
 		assert!(!rules.petal_majority_win);
 		assert_eq!(rules.insufficient_tiles_loss, InsufficientTilesLoss::Off);
 		let game = Game::new(rules, 1);
@@ -2735,19 +2918,128 @@ mod tests {
 	}
 
 	#[test]
-	fn kind_index_covers_the_27_kinds() {
+	fn kind_index_covers_mono_and_multi_rings() {
 		use std::collections::HashSet;
 		let mut seen = HashSet::new();
 		for color in TileColor::ALL {
 			for weight in 1..=3 {
 				for dots in 1..=3 {
-					let t = Tile { id: 0, owner: Player::One, color, weight, dots };
+					let t = Tile::mono(0, Player::One, color, weight, dots);
 					assert!(t.kind_index() < KIND_COUNT);
 					assert!(seen.insert(t.kind_index()));
 				}
 			}
 		}
-		assert_eq!(seen.len(), KIND_COUNT);
+		assert_eq!(seen.len(), TileColor::ALL.len() * 9);
+		let dual = Tile::with_rings(0, Player::One, &[TileColor::Green, TileColor::Teal], 2, 1);
+		assert!(dual.kind_index() < KIND_COUNT);
+		assert!(seen.insert(dual.kind_index()));
+	}
+
+	#[test]
+	fn multi_color_tiles_match_on_any_shared_ring() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let a = game.alloc_rings(Player::One, &[TileColor::Green, TileColor::Teal], 1, 1);
+		game.place_tile(spawn, a);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Teal, TileColor::Maroon], 1, 1);
+		game.place_tile(nbs[0], b);
+		let (m, n) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, n), (2, 0), "shared teal is a match");
+		assert!(!game.is_overwhelmed(spawn));
+
+		game.clear_tile(nbs[0]);
+		let c = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		game.place_tile(nbs[0], c);
+		let (m, n) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, n), (1, 1), "no shared ring is a mismatch");
+	}
+
+	#[test]
+	fn color_restricted_hops_allow_any_shared_ring() {
+		let mut rules = RuleSet::default();
+		rules.color_restricted_hops = true;
+		rules.hop_weight_cmp = HopWeightCmp::Le;
+		let mut game = Game::empty(rules);
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, hop_over, land) = (cycle[0], cycle[1], cycle[2]);
+		let mover = game.alloc_rings(Player::One, &[TileColor::Green, TileColor::Blue], 3, 1);
+		game.place_tile(from, mover);
+		let occ = game.alloc_rings(Player::Two, &[TileColor::Blue], 2, 1);
+		game.place_tile(hop_over, occ);
+		game.set_current(Player::One);
+		assert!(
+			game.destinations(from).contains(&land),
+			"shared blue ring should allow a color-restricted hop"
+		);
+	}
+
+	#[test]
+	fn ring_generation_follows_color_tree_weights() {
+		let mut rng = StdRng::seed_from_u64(1);
+		let n = 80_000u32;
+		let mut color_hits = [0u32; 6];
+		let mut ring_n = [0u32; 4];
+		for _ in 0..n {
+			let (rings, k) = sample_rings(&mut rng, 3);
+			ring_n[k as usize] += 1;
+			color_hits[rings[0] as usize] += 1;
+		}
+		assert_eq!(ring_n[0], 0);
+		assert!(ring_n[1] > ring_n[2] && ring_n[2] > ring_n[3]);
+		let two_plus = f64::from(ring_n[2] + ring_n[3]) / f64::from(n);
+		assert!(
+			(0.12..0.22).contains(&two_plus),
+			"P(2+ rings)={two_plus:.4} (expected ~0.17; ring 3 can still add a second color)"
+		);
+		let three = f64::from(ring_n[3]) / f64::from(n);
+		assert!((0.002..0.02).contains(&three), "P(3 rings)={three:.4}");
+		let total_rings = color_hits.iter().sum::<u32>() as f64;
+		let share = |i: usize| f64::from(color_hits[i]) / total_rings;
+		for i in 0..3 {
+			assert!((0.26..0.36).contains(&share(i)), "common color {i} share {}", share(i));
+		}
+		for i in 3..5 {
+			assert!((0.02..0.05).contains(&share(i)), "uncommon color {i} share {}", share(i));
+		}
+		assert!((0.001..0.008).contains(&share(5)), "maroon share {}", share(5));
+
+		let mut rng = StdRng::seed_from_u64(2);
+		for _ in 0..2_000 {
+			let (_, k) = sample_rings(&mut rng, 1);
+			assert_eq!(k, 1);
+		}
+	}
+
+	#[test]
+	fn sampled_bags_are_mirrored_and_size_27() {
+		let game = Game::new(RuleSet::default(), 11);
+		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), BAG_SIZE);
+		let p1: Vec<_> = game
+			.bench(Player::One)
+			.iter()
+			.chain(game.bag(Player::One))
+			.map(|t| (t.color_mask(), t.n_rings, t.weight, t.dots))
+			.collect();
+		let p2: Vec<_> = game
+			.bench(Player::Two)
+			.iter()
+			.chain(game.bag(Player::Two))
+			.map(|t| (t.color_mask(), t.n_rings, t.weight, t.dots))
+			.collect();
+		assert_eq!(p1, p2);
+	}
+
+	#[test]
+	fn max_rings_one_never_deals_extra_rings() {
+		let mut rules = RuleSet::default();
+		rules.max_rings = 1;
+		let game = Game::new(rules, 3);
+		for t in game.bench(Player::One).iter().chain(game.bag(Player::One)) {
+			assert_eq!(t.n_rings, 1);
+		}
 	}
 
 	#[test]

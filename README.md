@@ -7,10 +7,10 @@ A turn-based game of colors and adjacency on an 8-petal rosette, built with Rust
 See [rfc/rfc-001-001-001-rosette-redesign](rfc/rfc-001-001-001-rosette-redesign/README.md) for the full spec and every `RuleSet` knob.
 
 - **Board:** 25 nodes (center + three 8-node rings) with circular-arc edges. Eight yellow **spawn** nodes; no two are adjacent.
-- **Tiles:** owner is a light (P1) or dark (P2) fill; **green / blue / orange** rings show color; 1–3 rings = weight; 1–3 dots = MOVE length.
-- **Bench / bag:** each player is dealt 7 tiles from a shuffled 27-kind bag (identical bags by default; `--starting-bench N` deals N, still from 27). ADD places a bench tile on an empty spawn. Opponent tiles removed on a MOVE draw from the bag onto the bench.
-- **Overwhelm (by color):** `matches = weight + same-color neighbors`; `mismatches = different-color neighbors`; removed if `mismatches >= matches`, simultaneously after each action.
-- **MOVE:** exactly `d` steps; default path rule is **no edge revisit** (nodes may be revisited via a different arc). A hop across a straight occupied run costs 1. Default `color_restricted_hops` allows hopping only same-color tiles whose weight is `<=` the mover (`le`; `lt` is stricter). With color hops off, hopped weights must be `>=` the mover (any color).
+- **Tiles:** owner is a light (P1) or dark (P2) fill. Each tile has 1–3 **normal rings** of distinct colors (match colors). Color tree: green/blue/orange (81), lavender-pink/teal (9), maroon (1). Ring 1 always exists; rings 2–3 keep the last color with weight 7 or draw any color with weight 1. Weight 1–3 is still the overwhelm base and hop compare; dots 1–3 are MOVE length. Concentric strokes show the ring colors (and extra weight strokes when weight > ring count).
+- **Bench / bag:** each player is dealt 7 tiles from a shuffled bag of 27 independently sampled tiles (identical bags by default; `--starting-bench N` deals N). `--max-rings 1` is the single-ring baseline. ADD places a bench tile on an empty spawn. Opponent tiles removed on a MOVE draw from the bag onto the bench.
+- **Overwhelm (by color):** a neighbor **matches** if the two tiles share any ring color, else it **mismatches**. `matches = weight + matching neighbors`; `mismatches = mismatching neighbors`; removed if `mismatches >= matches`, simultaneously after each action.
+- **MOVE:** exactly `d` steps; default path rule is **no edge revisit** (nodes may be revisited via a different arc). A hop across a straight occupied run costs 1. Default `color_restricted_hops` allows hopping a tile that **shares any ring color** with the mover and whose weight is `<=` the mover (`le`; `lt` is stricter). With color hops off, hopped weights must be `>=` the mover (any color).
 - **Stall-prevention (defaults):** no legal ADD/MOVE loses immediately; you may not MOVE the same tile on two consecutive turns once your bench is empty (unless the MOVE captures); occupy 5 of 9 (center + inner ring) for 1 own turn to win; turn-limit 200 remains a draw. Optional `--center-hold-win` wins by occupying the center for 5 consecutive own turns. Optional `--petal-majority-win` wins by occupying 5 of 8 inner-ring (petal) nodes. Optional `--insufficient-tiles-loss` is a can't-reach-control loss.
 - **Win:** opponent has no board tiles and an empty bench, the opponent is locked out with no legal action, or you occupy 5 of the 9-node control set (center + inner ring) for 1 own turn. Draw at 200 turns. Double-pass draws only if `no_moves_loses` is off.
 
@@ -48,7 +48,8 @@ Usage: apa-kan [OPTIONS]
   --control-hold-turns <1..64>               Turns to hold control (default: 1)
   --insufficient-tiles-loss <off|strict|no-recapture>
                                              Can't-reach-control loss (default: off)
-  --starting-bench <1..27>                   Opening deal from the 27-kind bag (default: 7)
+  --starting-bench <1..27>                   Opening deal from the 27-tile bag (default: 7)
+  --max-rings <1..3>                         Distinct normal rings per tile (default: 3)
   --path-constraint <no-node-revisit|no-edge-revisit|both>
   -h, --help
 ```
@@ -57,7 +58,7 @@ A plain `cargo run -p apa-kan` uses the new defaults (control-win 5 of 9 at t=1,
 
 Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`.
 
-Deck scenarios (see [`apa-kan/game/scenarios/`](apa-kan/game/scenarios/)): `--scenario same` is the default mirrored 27-kind deal; `--scenario independent` shuffles each player's 27-kind bag separately; `--scenario complementary` gives P1 green+orange and P2 blue+orange (18 tiles each, same weight/dot order); `--scenario complementary-swapped` flips the exclusive colors.
+Deck scenarios (see [`apa-kan/game/scenarios/`](apa-kan/game/scenarios/)): `--scenario same` is the default mirrored generative 27-tile deal; `--scenario independent` samples each player's bag separately; `--scenario complementary` gives P1 green+orange and P2 blue+orange (18 one-ring tiles each, same weight/dot order); `--scenario complementary-swapped` flips the exclusive colors. Tiles may list `colors = ["green", "teal"]` for multiple normal rings.
 
 Watch minimax vs MCTS in the GUI (1 s/move):
 

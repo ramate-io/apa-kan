@@ -1,6 +1,7 @@
-# Independent 27-kind bags: each player is shuffled separately, so opening
+# Independent generative bags: each player is sampled separately, so opening
 # benches can differ. Contrast with `same` / the default mirrored deal.
 name = "independent"
-description = "Two independent 27-kind shuffles; opening benches can differ."
+description = "Two independent generative 27-tile shuffles; opening benches can differ."
+generative = true
 mirror = false
 shuffle = true

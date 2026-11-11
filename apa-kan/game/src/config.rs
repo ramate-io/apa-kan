@@ -228,9 +228,16 @@ where
 		"--starting-bench" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n == 0 || n > 27 {
-				return Err("invalid --starting-bench (expected 1..27, bag has 27 kinds)".into());
+				return Err("invalid --starting-bench (expected 1..27, bag has 27 tiles)".into());
 			}
 			rules.starting_bench_size = n as u8;
+		}
+		"--max-rings" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > 3 {
+				return Err("invalid --max-rings (expected 1..3)".into());
+			}
+			rules.max_rings = n as u8;
 		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
@@ -279,7 +286,8 @@ pub fn usage() -> &'static str {
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
-	   --starting-bench <1..27>                   Opening deal from the 27-kind bag (default: 7)\n\
+	   --starting-bench <1..27>                   Opening deal from the 27-tile bag (default: 7)\n\
+	   --max-rings <1..3>                         Distinct normal rings per tile (default: 3)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -398,7 +406,16 @@ mod tests {
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
+		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
+	}
+
+	#[test]
+	fn parses_max_rings() {
+		let cfg = GameConfig::parse(["--max-rings", "1"]).unwrap();
+		assert_eq!(cfg.rules.max_rings, 1);
+		let err = GameConfig::parse(["--max-rings", "4"]).unwrap_err();
+		assert!(err.contains("max-rings"));
 	}
 
 	#[test]

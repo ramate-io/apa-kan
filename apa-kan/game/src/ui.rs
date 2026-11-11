@@ -776,7 +776,8 @@ fn spawn_tile_at(
 	radius: f32,
 ) {
 	let fill = rgb(visual::owner_fill_rgb(tile.owner));
-	let ring = rgb(visual::tile_rgb(tile.color));
+	let ring_colors = tile.ring_colors();
+	let primary = rgb(visual::tile_rgb(tile.primary()));
 	let z = visual::Z_TILE;
 	commands.spawn((
 		DynamicView,
@@ -787,9 +788,12 @@ fn spawn_tile_at(
 	let scale = radius / visual::PREV_TILE_RADIUS_PX;
 	let ring_gap = 3.5 * scale;
 	let ring_half = 1.6 * scale;
-	for k in 0..tile.weight {
+	let strokes = tile.weight.max(tile.n_rings);
+	for k in 0..strokes {
 		let r = radius - 3.0 * scale - f32::from(k) * ring_gap;
 		if r > 6.0 * scale {
+			let idx = (k as usize).min(ring_colors.len().saturating_sub(1));
+			let color = ring_colors.get(idx).copied().unwrap_or(tile.primary());
 			spawn_ring(
 				commands,
 				meshes,
@@ -797,7 +801,7 @@ fn spawn_tile_at(
 				pos,
 				(r - ring_half).max(1.0),
 				r,
-				ring,
+				rgb(visual::tile_rgb(color)),
 				visual::Z_TILE_RING + f32::from(k) * 0.02,
 			);
 		}
@@ -811,7 +815,7 @@ fn spawn_tile_at(
 		commands.spawn((
 			DynamicView,
 			Mesh2d(meshes.add(Circle::new(dot_r))),
-			MeshMaterial2d(materials.add(ColorMaterial::from(ring))),
+			MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
 			Transform::from_translation((pos + Vec2::new(dx, 0.0)).extend(visual::Z_TILE_DOT)),
 		));
 	}

@@ -76,12 +76,21 @@ pub enum ArcPaint {
 	Braid { a: TileColor, b: TileColor },
 }
 
+pub fn shared_ring_color(a: Tile, b: Tile) -> Option<TileColor> {
+	a.ring_colors().iter().copied().find(|&c| b.has_color(c))
+}
+
 pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
-	match (from.map(|t| t.color), to.map(|t| t.color)) {
+	match (from, to) {
 		(None, None) => ArcPaint::Neutral,
-		(Some(c), None) | (None, Some(c)) => ArcPaint::Solid { color: c, thick: false },
-		(Some(a), Some(b)) if a == b => ArcPaint::Solid { color: a, thick: true },
-		(Some(a), Some(b)) => ArcPaint::Braid { a, b },
+		(Some(t), None) | (None, Some(t)) => ArcPaint::Solid { color: t.primary(), thick: false },
+		(Some(a), Some(b)) => {
+			if let Some(color) = shared_ring_color(a, b) {
+				ArcPaint::Solid { color, thick: true }
+			} else {
+				ArcPaint::Braid { a: a.primary(), b: b.primary() }
+			}
+		}
 	}
 }
 
@@ -90,6 +99,9 @@ pub fn tile_rgb(color: TileColor) -> [f32; 3] {
 		TileColor::Green => [0.18, 0.66, 0.32],
 		TileColor::Blue => [0.24, 0.48, 0.90],
 		TileColor::Orange => [0.91, 0.52, 0.16],
+		TileColor::LavenderPink => [0.90, 0.48, 0.74],
+		TileColor::Teal => [0.08, 0.66, 0.64],
+		TileColor::Maroon => [0.52, 0.10, 0.18],
 	}
 }
 
@@ -452,6 +464,11 @@ pub fn demo_midgame() -> Game {
 	if let Some(&n) = outer.get(5) {
 		place(&mut game, n, Player::Two, TileColor::Orange, 2, 3);
 	}
+	if let Some(&n) = outer.get(7) {
+		let tile =
+			game.alloc_rings(Player::One, &[TileColor::Green, TileColor::LavenderPink], 2, 1);
+		game.place_tile(n, tile);
+	}
 
 	let p1_bench = vec![
 		game.alloc_tile(Player::One, TileColor::Orange, 2, 2),
@@ -556,9 +573,8 @@ mod tests {
 
 	#[test]
 	fn arc_paint_covers_gray_one_two_and_same() {
-		let orange =
-			Tile { id: 1, owner: Player::One, color: TileColor::Orange, weight: 1, dots: 1 };
-		let green = Tile { id: 2, color: TileColor::Green, ..orange };
+		let orange = Tile::mono(1, Player::One, TileColor::Orange, 1, 1);
+		let green = Tile::mono(2, Player::One, TileColor::Green, 1, 1);
 		assert_eq!(arc_paint(None, None), ArcPaint::Neutral);
 		assert_eq!(
 			arc_paint(Some(orange), None),
@@ -571,6 +587,11 @@ mod tests {
 		assert_eq!(
 			arc_paint(Some(orange), Some(green)),
 			ArcPaint::Braid { a: TileColor::Orange, b: TileColor::Green }
+		);
+		let duo = Tile::with_rings(3, Player::One, &[TileColor::Green, TileColor::Teal], 1, 1);
+		assert_eq!(
+			arc_paint(Some(green), Some(duo)),
+			ArcPaint::Solid { color: TileColor::Green, thick: true }
 		);
 	}
 
