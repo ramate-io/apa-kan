@@ -538,9 +538,13 @@ mod tests {
 	fn occupying_center_scores_higher_when_center_hold_is_on() {
 		let mut off_rules = RuleSet::default();
 		off_rules.center_hold_win = false;
+		off_rules.control_win = false;
+		let mut on_rules = off_rules;
+		on_rules.center_hold_win = true;
 		let mut off = Game::empty(off_rules);
-		let mut on = Game::empty(RuleSet::default());
+		let mut on = Game::empty(on_rules);
 		assert!(on.rules().center_hold_win);
+		assert!(!off.rules().center_hold_win);
 		let center = off.board().center();
 		let tile = off.alloc_tile(Player::One, crate::game::TileColor::Blue, 3, 1);
 		off.place_tile(center, tile);
@@ -550,8 +554,11 @@ mod tests {
 
 	#[test]
 	fn opponent_near_center_hold_is_urgent() {
-		let mut quiet = Game::empty(RuleSet::default());
-		let mut threat = Game::empty(RuleSet::default());
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = true;
+		rules.control_win = false;
+		let mut quiet = Game::empty(rules);
+		let mut threat = Game::empty(rules);
 		let center = quiet.board().center();
 		let spawn = quiet.board().spawns()[0];
 		let tile = quiet.alloc_tile(Player::Two, crate::game::TileColor::Blue, 3, 1);

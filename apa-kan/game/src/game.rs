@@ -272,9 +272,9 @@ impl GameStatus {
 /// in `rfc/rfc-001-001-001-rosette-redesign`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
-	/// Starting tiles dealt from each bag onto the bench. Default 5.
-	/// The bag is still 27 unique kinds; a larger deal leaves fewer capture
-	/// draws (7 leaves 20 in the bag vs 22 at 5). Empty bag skips the draw.
+	/// Starting tiles dealt from each bag onto the bench. Default 7.
+	/// The bag is still 27 unique kinds; a deal of 7 leaves 20 capture
+	/// draws (vs 22 at 5). Empty bag skips the draw.
 	pub starting_bench_size: u8,
 	/// Both players receive the same shuffled 27-tile bag. Default true.
 	pub identical_bags: bool,
@@ -300,7 +300,7 @@ pub struct RuleSet {
 	/// this is on (a pass is never legal).
 	pub no_moves_loses: bool,
 	/// Win by occupying the center at the end of `center_hold_n` consecutive
-	/// own turns. Default true (N = [`Self::center_hold_n`]).
+	/// own turns. Default false (optional; N = [`Self::center_hold_n`]).
 	pub center_hold_win: bool,
 	/// Consecutive own turns holding the center required to win. Default 5.
 	pub center_hold_n: u8,
@@ -321,7 +321,7 @@ pub struct RuleSet {
 	pub petal_majority_n: u8,
 	/// Win by occupying at least [`Self::control_n`] nodes of the control set
 	/// (center + 8 inner-ring = 9) for [`Self::control_hold_turns`] consecutive
-	/// own turns. Experimental; default false. Intended as a center-hold
+	/// own turns. Default true (k = 5, t = 1). Intended as a center-hold
 	/// replacement so grabbing the center alone is not a rush to victory.
 	pub control_win: bool,
 	/// Control-set occupancy needed to start the hold. Default 5 of 9.
@@ -340,7 +340,7 @@ pub struct RuleSet {
 impl Default for RuleSet {
 	fn default() -> Self {
 		Self {
-			starting_bench_size: 5,
+			starting_bench_size: 7,
 			identical_bags: true,
 			bag_one_of_each_kind: true,
 			capture_draw_on_move: true,
@@ -351,14 +351,14 @@ impl Default for RuleSet {
 			move_exact_steps: true,
 			hop_requires_ge_weight: true,
 			no_moves_loses: true,
-			center_hold_win: true,
+			center_hold_win: false,
 			center_hold_n: 5,
 			no_same_piece_twice: SamePieceTwice::WhenBenchEmpty,
 			color_restricted_hops: true,
 			hop_weight_cmp: HopWeightCmp::Le,
 			petal_majority_win: false,
 			petal_majority_n: 1,
-			control_win: false,
+			control_win: true,
 			control_n: 5,
 			control_hold_turns: 1,
 			insufficient_tiles_loss: InsufficientTilesLoss::Off,
@@ -1391,13 +1391,13 @@ mod tests {
 	}
 
 	#[test]
-	fn opening_deal_is_five_from_identical_bags() {
+	fn opening_deal_is_seven_from_identical_bags() {
 		let a = Game::new(RuleSet::default(), 7);
 		let b = Game::new(RuleSet::default(), 7);
-		assert_eq!(a.bench(Player::One).len(), 5);
-		assert_eq!(a.bench(Player::Two).len(), 5);
-		assert_eq!(a.bag_len(Player::One), 22);
-		assert_eq!(a.bag_len(Player::Two), 22);
+		assert_eq!(a.bench(Player::One).len(), 7);
+		assert_eq!(a.bench(Player::Two).len(), 7);
+		assert_eq!(a.bag_len(Player::One), 20);
+		assert_eq!(a.bag_len(Player::Two), 20);
 		let kinds = |g: &Game, p: Player| {
 			g.bench(p).iter().map(|t| (t.color, t.weight, t.dots)).collect::<Vec<_>>()
 		};
@@ -1410,12 +1410,29 @@ mod tests {
 	#[test]
 	fn opening_deal_respects_starting_bench_size() {
 		let mut rules = RuleSet::default();
-		rules.starting_bench_size = 7;
+		rules.starting_bench_size = 5;
+		let game = Game::new(rules, 1);
+		assert_eq!(game.bench(Player::One).len(), 5);
+		assert_eq!(game.bench(Player::Two).len(), 5);
+		assert_eq!(game.bag_len(Player::One), 22);
+		assert_eq!(game.bag_len(Player::Two), 22);
+		assert_eq!(game.legal_adds().len(), 5 * 8);
+	}
+
+	#[test]
+	fn default_rules_are_control_win_with_bench_seven() {
+		let rules = RuleSet::default();
+		assert!(!rules.center_hold_win);
+		assert!(rules.control_win);
+		assert_eq!(rules.control_n, 5);
+		assert_eq!(rules.control_hold_turns, 1);
+		assert_eq!(rules.starting_bench_size, 7);
+		assert!(!rules.petal_majority_win);
+		assert_eq!(rules.insufficient_tiles_loss, InsufficientTilesLoss::Off);
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bench(Player::Two).len(), 7);
 		assert_eq!(game.bag_len(Player::One), 20);
-		assert_eq!(game.bag_len(Player::Two), 20);
 		assert_eq!(game.legal_adds().len(), 7 * 8);
 	}
 
@@ -1726,6 +1743,7 @@ mod tests {
 	fn double_pass_is_a_draw() {
 		let mut rules = RuleSet::default();
 		rules.no_moves_loses = false;
+		rules.control_win = false;
 		let mut game = Game::empty(rules);
 		fill_board_all_green(&mut game);
 		assert!(!game.has_add_or_move());
@@ -1738,6 +1756,7 @@ mod tests {
 	fn turn_limit_is_a_draw() {
 		let mut rules = RuleSet::default();
 		rules.no_moves_loses = false;
+		rules.control_win = false;
 		rules.turn_limit = 2;
 		let mut game = Game::empty(rules);
 		fill_board_all_green(&mut game);
@@ -1783,7 +1802,7 @@ mod tests {
 	fn new_game_has_legal_adds_on_all_spawns() {
 		let game = Game::new(RuleSet::default(), 1);
 		let adds = game.legal_adds();
-		assert_eq!(adds.len(), 5 * 8);
+		assert_eq!(adds.len(), 7 * 8);
 		assert!(game.legal_moves().is_empty());
 	}
 
@@ -1798,7 +1817,9 @@ mod tests {
 
 	#[test]
 	fn locked_down_player_loses_instead_of_passing() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		let mut game = Game::empty(rules);
 		assert!(game.rules().no_moves_loses);
 		fill_board_all_green(&mut game);
 		assert!(!game.has_add_or_move());
@@ -1815,6 +1836,7 @@ mod tests {
 	fn opponent_is_locked_out_immediately_after_turn_switch() {
 		let mut rules = RuleSet::default();
 		rules.no_moves_loses = true;
+		rules.control_win = false;
 		let mut game = Game::empty(rules);
 		let spawns = game.board().spawns().to_vec();
 		// Fill every node except spawn 0 so P1 can ADD and then P2 has nowhere
@@ -1922,6 +1944,7 @@ mod tests {
 	fn petal_majority_wins_at_end_of_turn_when_n_is_one() {
 		let mut rules = RuleSet::default();
 		rules.center_hold_win = false;
+		rules.control_win = false;
 		rules.petal_majority_win = true;
 		rules.petal_majority_n = 1;
 		let mut game = Game::empty(rules);
@@ -1959,6 +1982,7 @@ mod tests {
 	fn petal_majority_n_three_requires_three_own_turns() {
 		let mut rules = RuleSet::default();
 		rules.center_hold_win = false;
+		rules.control_win = false;
 		rules.petal_majority_win = true;
 		rules.petal_majority_n = 3;
 		rules.no_same_piece_twice = SamePieceTwice::Off;

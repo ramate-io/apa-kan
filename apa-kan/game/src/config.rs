@@ -254,7 +254,7 @@ pub fn usage() -> &'static str {
 	   --height <px>                              Window height (default: 900)\n\
 	   --screenshot <path>                        Capture a mid-game board PNG and exit\n\
 	   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)\n\
-	   --center-hold-win <on|off>                 Center-hold win (default: on)\n\
+	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
 	   --no-same-piece-twice <off|always|when-bench-empty>\n\
 	                                              Repeat-piece rule (default: when-bench-empty)\n\
@@ -262,12 +262,12 @@ pub fn usage() -> &'static str {
 	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
 	   --petal-majority-win <on|off>              Inner-ring majority win (default: off)\n\
 	   --petal-majority-n <1..64>                 Turns to hold majority (default: 1)\n\
-	   --control-win <on|off>                     Center+inner-ring control win (default: off)\n\
+	   --control-win <on|off>                     Center+inner-ring control win (default: on)\n\
 	   --control-n <1..9>                         Control-set occupancy needed (default: 5)\n\
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
-	   --starting-bench <1..27>                   Opening deal from the 27-kind bag (default: 5)\n\
+	   --starting-bench <1..27>                   Opening deal from the 27-kind bag (default: 7)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -374,25 +374,25 @@ mod tests {
 		let cfg = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(cfg.rules, RuleSet::default());
 		assert!(cfg.rules.no_moves_loses);
-		assert!(cfg.rules.center_hold_win);
+		assert!(!cfg.rules.center_hold_win);
 		assert_eq!(cfg.rules.center_hold_n, 5);
 		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::WhenBenchEmpty);
 		assert!(cfg.rules.color_restricted_hops);
 		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
 		assert!(!cfg.rules.petal_majority_win);
 		assert_eq!(cfg.rules.petal_majority_n, 1);
-		assert!(!cfg.rules.control_win);
+		assert!(cfg.rules.control_win);
 		assert_eq!(cfg.rules.control_n, 5);
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
-		assert_eq!(cfg.rules.starting_bench_size, 5);
+		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 	}
 
 	#[test]
 	fn parses_starting_bench() {
-		let cfg = GameConfig::parse(["--starting-bench", "7"]).unwrap();
-		assert_eq!(cfg.rules.starting_bench_size, 7);
+		let cfg = GameConfig::parse(["--starting-bench", "5"]).unwrap();
+		assert_eq!(cfg.rules.starting_bench_size, 5);
 		let err = GameConfig::parse(["--starting-bench", "28"]).unwrap_err();
 		assert!(err.contains("starting-bench"));
 	}

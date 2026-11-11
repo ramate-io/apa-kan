@@ -507,6 +507,7 @@ mod tests {
 
 		let mut rules = RuleSet::default();
 		rules.center_hold_win = false;
+		rules.control_win = false;
 		rules.petal_majority_win = true;
 		rules.petal_majority_n = 1;
 		let mut game = Game::empty(rules);
