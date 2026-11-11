@@ -41,6 +41,11 @@ pub const BRAID_AMP_CENTER_UNITS: f32 = 0.016;
 pub const ZAG_AMP_UNITS: f32 = 0.008;
 pub const ZAG_AMP_CENTER_UNITS: f32 = 0.006;
 pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.42;
+/// Parallel zag-lane spacing as a fraction of the highway stripe offset.
+/// Small enough that 3–6 lines stay a tight bundle, large enough to read.
+pub const ZAG_LANE_SPACING_SCALE: f64 = 0.70;
+/// One overlay line per zag stroke; two tiles × 3 strokes.
+pub const MAX_ARC_ZAGS: usize = 6;
 pub const ARC_SAMPLES: usize = 96;
 /// Tile-ring layout in 22px-tile units; scaled by `radius / PREV_TILE_RADIUS_PX`.
 pub const TILE_RING_INSET: f32 = 1.7;
@@ -86,7 +91,8 @@ pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArcPaint {
 	pub body: ArcBody,
-	pub zags: [Option<TileColor>; 2],
+	/// One squiggle per zag **stroke** (not unique color). Empty slots are `None`.
+	pub zags: [Option<TileColor>; MAX_ARC_ZAGS],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,29 +116,37 @@ pub enum ArcBody {
 		zag_b: bool,
 	},
 	/// A firing zag is the only stroke on this arc. The match line is
-	/// omitted visually; scoring is unchanged (pending a rules call).
+	/// omitted; each firing zag stroke is drawn as its own parallel squiggle.
 	Hidden,
 }
 
 impl ArcPaint {
+	fn no_zags() -> [Option<TileColor>; MAX_ARC_ZAGS] {
+		[None; MAX_ARC_ZAGS]
+	}
+
 	pub fn neutral() -> Self {
-		Self { body: ArcBody::Neutral, zags: [None; 2] }
+		Self { body: ArcBody::Neutral, zags: Self::no_zags() }
 	}
 
 	pub fn solid(color: TileColor, thick: bool) -> Self {
-		Self { body: ArcBody::Solid { color, thick }, zags: [None; 2] }
+		Self { body: ArcBody::Solid { color, thick }, zags: Self::no_zags() }
 	}
 
 	pub fn braid(a: TileColor, b: TileColor) -> Self {
-		Self { body: ArcBody::Braid { a, b }, zags: [None; 2] }
+		Self { body: ArcBody::Braid { a, b }, zags: Self::no_zags() }
 	}
 
 	pub fn stripes(a: TileColor, b: TileColor, zag_a: bool, zag_b: bool) -> Self {
-		Self { body: ArcBody::Stripes { a, b, zag_a, zag_b }, zags: [None; 2] }
+		Self { body: ArcBody::Stripes { a, b, zag_a, zag_b }, zags: Self::no_zags() }
 	}
 
-	pub fn zag_only(zags: [Option<TileColor>; 2]) -> Self {
+	pub fn zag_only(zags: [Option<TileColor>; MAX_ARC_ZAGS]) -> Self {
 		Self { body: ArcBody::Hidden, zags }
+	}
+
+	pub fn zag_count(self) -> usize {
+		self.zags.iter().filter(|z| z.is_some()).count()
 	}
 }
 
@@ -151,19 +165,40 @@ pub fn shared_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 	out
 }
 
-/// Zag colors that actually fire on this edge (either tile's zag vs the other).
-pub fn firing_zags(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
-	let mut out = [None; 2];
+fn pack_zags(colors: impl IntoIterator<Item = TileColor>) -> [Option<TileColor>; MAX_ARC_ZAGS] {
+	let mut out = [None; MAX_ARC_ZAGS];
 	let mut n = 0usize;
+	for c in colors {
+		if n >= MAX_ARC_ZAGS {
+			break;
+		}
+		out[n] = Some(c);
+		n += 1;
+	}
+	out
+}
+
+/// Zag **strokes** that fire on this edge. Each zag ring (including extra
+/// weight strokes) is its own line; colors are not collapsed.
+pub fn firing_zag_strokes(a: Tile, b: Tile) -> [Option<TileColor>; MAX_ARC_ZAGS] {
+	let mut colors = Vec::new();
 	for (src, dst) in [(a, b), (b, a)] {
-		for (i, &c) in src.ring_colors().iter().enumerate() {
-			if src.zag[i] && dst.has_color(c) && !out.contains(&Some(c)) && n < 2 {
-				out[n] = Some(c);
-				n += 1;
+		for k in 0..src.ring_strokes() {
+			if src.stroke_is_zag(k) && dst.has_color(src.stroke_color(k)) {
+				colors.push(src.stroke_color(k));
 			}
 		}
 	}
-	out
+	pack_zags(colors)
+}
+
+/// Zag strokes on a single tile, one color per drawn zag ring.
+pub fn tile_zag_strokes(tile: Tile) -> [Option<TileColor>; MAX_ARC_ZAGS] {
+	pack_zags(
+		(0..tile.ring_strokes())
+			.filter(|&k| tile.stroke_is_zag(k))
+			.map(|k| tile.stroke_color(k)),
+	)
 }
 
 pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
@@ -171,7 +206,7 @@ pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
 		(None, None) => ArcPaint::neutral(),
 		(Some(t), None) | (None, Some(t)) => one_ended(t),
 		(Some(a), Some(b)) => {
-			let zags = firing_zags(a, b);
+			let zags = firing_zag_strokes(a, b);
 			if zags[0].is_some() {
 				return ArcPaint::zag_only(zags);
 			}
@@ -183,26 +218,32 @@ pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
 				}
 				(None, _) => ArcBody::Braid { a: a.primary(), b: b.primary() },
 			};
-			ArcPaint { body, zags: [None; 2] }
+			ArcPaint { body, zags: ArcPaint::no_zags() }
 		}
 	}
 }
 
-/// One-ended edges are undecided: highway stripes of the occupying tile's
-/// candidate colors. Zag candidates are squiggle strands, not a braid.
+/// One-ended edges are undecided: unique **normal** colors as a highway,
+/// plus one squiggle per zag stroke.
 fn one_ended(tile: Tile) -> ArcPaint {
-	let mut parts: Vec<(TileColor, bool)> = Vec::new();
-	for (i, &c) in tile.ring_colors().iter().enumerate() {
-		if !parts.iter().any(|(x, _)| *x == c) {
-			parts.push((c, tile.ring_is_zag(i)));
+	let mut normals: Vec<TileColor> = Vec::new();
+	let zags = tile_zag_strokes(tile);
+	for k in 0..tile.ring_strokes() {
+		if tile.stroke_is_zag(k) {
+			continue;
+		}
+		let c = tile.stroke_color(k);
+		if !normals.contains(&c) {
+			normals.push(c);
 		}
 	}
-	match parts.as_slice() {
-		[] => ArcPaint::neutral(),
-		[(c, false)] => ArcPaint::solid(*c, false),
-		[(c, true)] => ArcPaint::zag_only([Some(*c), None]),
-		[(a, za), (b, zb), ..] => ArcPaint::stripes(*a, *b, *za, *zb),
-	}
+	let body = match normals.as_slice() {
+		[] if zags[0].is_none() => ArcBody::Neutral,
+		[] => ArcBody::Hidden,
+		[c] => ArcBody::Solid { color: *c, thick: false },
+		[a, b, ..] => ArcBody::Stripes { a: *a, b: *b, zag_a: false, zag_b: false },
+	};
+	ArcPaint { body, zags }
 }
 
 /// Stroke counts and radii for concentric tile rings, including zag amplitude
@@ -520,13 +561,20 @@ pub fn braid_turns(arc: &ArcEdge) -> f64 {
 	(arc_length(arc) / 0.42).clamp(1.2, 3.6)
 }
 
-pub fn zag_side_offset(index: usize, n_zags: usize, stripe_off: f64) -> f64 {
-	if n_zags <= 1 {
-		0.0
-	} else if index == 0 {
-		-stripe_off
+/// Tight parallel-lane offsets centered on the path. `alongside` shifts the
+/// whole bundle off a solid centerline so a match stroke and zags do not sit
+/// on top of each other.
+pub fn zag_side_offset(index: usize, n_zags: usize, stripe_off: f64, alongside: bool) -> f64 {
+	if n_zags == 0 {
+		return 0.0;
+	}
+	let spacing = stripe_off * ZAG_LANE_SPACING_SCALE;
+	let mid = (n_zags - 1) as f64 / 2.0;
+	let pack = (index as f64 - mid) * spacing;
+	if alongside {
+		pack + stripe_off * 0.90
 	} else {
-		stripe_off
+		pack
 	}
 }
 
@@ -793,6 +841,16 @@ pub fn demo_midgame() -> Game {
 		);
 		game.place_tile(n, tile);
 	}
+	if let Some(n) = outer.iter().copied().find(|&id| game.tile_at(id).is_none()) {
+		// One-ended triple zag: three parallel squiggles, no match body.
+		let tile = game.alloc_ring_kinds(
+			Player::Two,
+			&[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)],
+			3,
+			1,
+		);
+		game.place_tile(n, tile);
+	}
 
 	let p1_bench = vec![
 		game.alloc_ring_kinds(
@@ -915,11 +973,70 @@ mod tests {
 		assert!(shared_normal_colors(a, b)[0].is_none());
 		let paint = arc_paint(Some(a), Some(b));
 		assert_eq!(paint.body, ArcBody::Hidden, "zag-on-zag must not draw a match stroke");
-		assert_eq!(paint.zags[0], Some(TileColor::Blue));
+		assert_eq!(paint.zag_count(), 6, "three zag rings on each tile → six parallel lines");
+		assert!(paint.zags.iter().filter_map(|c| *c).all(|c| c == TileColor::Blue));
 		let one = Tile::with_ring_kinds(3, Player::One, &[(TileColor::Blue, true)], 1, 1);
 		let paint = arc_paint(Some(one), Some(one));
 		assert_eq!(paint.body, ArcBody::Hidden);
+		assert_eq!(paint.zag_count(), 2);
 		assert_eq!(paint.zags[0], Some(TileColor::Blue));
+	}
+
+	#[test]
+	fn each_zag_stroke_is_its_own_arc_line() {
+		let three = Tile::with_ring_kinds(
+			1,
+			Player::One,
+			&[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)],
+			3,
+			1,
+		);
+		let two = Tile::with_ring_kinds(
+			2,
+			Player::One,
+			&[(TileColor::Orange, true), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		let one_ended_three = arc_paint(Some(three), None);
+		assert_eq!(one_ended_three.body, ArcBody::Hidden);
+		assert_eq!(one_ended_three.zag_count(), 3);
+		let one_ended_two = arc_paint(Some(two), None);
+		assert_eq!(one_ended_two.body, ArcBody::Hidden);
+		assert_eq!(one_ended_two.zag_count(), 2);
+		let two_ended_two = arc_paint(Some(two), Some(two));
+		assert_eq!(two_ended_two.body, ArcBody::Hidden);
+		assert_eq!(two_ended_two.zag_count(), 4);
+		let mixed = Tile::with_ring_kinds(
+			3,
+			Player::One,
+			&[(TileColor::Green, false), (TileColor::Orange, true), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		let paint = arc_paint(Some(mixed), None);
+		assert_eq!(paint.body, ArcBody::Solid { color: TileColor::Green, thick: false });
+		assert_eq!(paint.zag_count(), 2);
+		assert_eq!(paint.zags[0], Some(TileColor::Orange));
+		assert_eq!(paint.zags[1], Some(TileColor::Orange));
+	}
+
+	#[test]
+	fn zag_lanes_are_fine_and_closely_spaced() {
+		let off = 4.0;
+		let a = zag_side_offset(0, 3, off, false);
+		let b = zag_side_offset(1, 3, off, false);
+		let c = zag_side_offset(2, 3, off, false);
+		assert!((b - 0.0).abs() < 1e-9);
+		assert!((c - a).abs() > 0.5, "lanes must be distinct");
+		assert!(
+			(c - a).abs() < off * 1.8,
+			"triple-zag bundle should stay tight, span={}",
+			c - a
+		);
+		assert!(zag_side_offset(0, 1, off, false).abs() < 1e-9);
+		let side = zag_side_offset(0, 1, off, true);
+		assert!(side > 0.0, "solid-body zags sit alongside the match stroke");
 	}
 
 	#[test]
@@ -1016,10 +1133,10 @@ mod tests {
 			2,
 			1,
 		);
-		assert_eq!(
-			arc_paint(Some(mixed), None),
-			ArcPaint::stripes(TileColor::Green, TileColor::Orange, false, true)
-		);
+		let mixed_one = arc_paint(Some(mixed), None);
+		assert_eq!(mixed_one.body, ArcBody::Solid { color: TileColor::Green, thick: false });
+		assert_eq!(mixed_one.zag_count(), 1);
+		assert_eq!(mixed_one.zags[0], Some(TileColor::Orange));
 		assert_eq!(arc_paint(Some(orange_zag), None).body, ArcBody::Hidden);
 		assert_eq!(arc_paint(Some(orange_zag), None).zags[0], Some(TileColor::Orange));
 	}
@@ -1035,6 +1152,8 @@ mod tests {
 		let mut stripes = 0;
 		let mut two_ended_stripes = 0;
 		let mut stripe_with_zag = 0;
+		let mut one_ended_zag_highway = 0;
+		let mut one_ended_triple_zag = 0;
 		let mut hidden = 0;
 		let mut zag_arcs = 0;
 		let mut zag_on_zag = 0;
@@ -1057,6 +1176,17 @@ mod tests {
 			let paint = arc_paint(from, to);
 			if paint.zags[0].is_some() {
 				zag_arcs += 1;
+			}
+			match (from, to) {
+				(Some(_), None) | (None, Some(_)) => {
+					if paint.zag_count() > 0 && !matches!(paint.body, ArcBody::Hidden) {
+						one_ended_zag_highway += 1;
+					}
+					if paint.body == ArcBody::Hidden && paint.zag_count() >= 3 {
+						one_ended_triple_zag += 1;
+					}
+				}
+				_ => {}
 			}
 			if let (Some(a), Some(b)) = (from, to) {
 				if paint.body == ArcBody::Hidden
@@ -1101,7 +1231,11 @@ mod tests {
 		assert!(braid > 0, "need two-ended conflicting braids");
 		assert!(stripes > 0, "need highway-stripe arcs");
 		assert!(two_ended_stripes > 0, "need a two-ended multi-shared-color highway");
-		assert!(stripe_with_zag > 0, "need an undecided highway with a zag strand");
+		assert!(
+			stripe_with_zag > 0 || one_ended_zag_highway > 0,
+			"need an undecided highway with a zag strand"
+		);
+		assert!(one_ended_triple_zag > 0, "need a one-ended triple-zag arc");
 		assert!(zag_arcs > 0, "need a firing zag on an arc");
 		assert!(hidden > 0, "need a decided zag-only arc (no match line)");
 		assert!(zag_on_zag > 0, "need a zag-on-zag edge with no match stroke");

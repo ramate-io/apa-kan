@@ -124,13 +124,14 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			f64::from(layout.zag_amp)
 		};
 		let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
-		let n_zags = paint.zags.iter().filter(|z| z.is_some()).count();
+		let n_zags = paint.zag_count();
 		let teeth = visual::zag_teeth(arc);
+		let alongside = matches!(paint.body, ArcBody::Solid { .. });
 		for (i, zag) in paint.zags.iter().enumerate() {
 			let Some(color) = *zag else {
 				continue;
 			};
-			let side = visual::zag_side_offset(i, n_zags, stripe_off);
+			let side = visual::zag_side_offset(i, n_zags, stripe_off, alongside);
 			let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
 			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
 		}
