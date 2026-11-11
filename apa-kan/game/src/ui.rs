@@ -631,33 +631,61 @@ fn spawn_arc(
 				visual::Z_ARC,
 			);
 		}
-		ArcBody::Braid { a, b } => {
-			let amp = if visual::arc_touches_center(arc, center) {
-				f64::from(layout.braid_amp_center)
+		ArcBody::Knot { from, to } => {
+			let knot_r = if visual::arc_touches_center(arc, center) {
+				f64::from(layout.knot_r_center)
 			} else {
-				f64::from(layout.braid_amp)
+				f64::from(layout.knot_r)
 			};
-			let braid = visual::braid_strands(&pts, amp, visual::braid_turns(arc));
-			let strand_w = width * visual::BRAID_STRAND_WIDTH_SCALE;
-			spawn_braid_strand(
+			let frame = visual::midpoint_frame(&pts);
+			let clearance = visual::knot_clearance(knot_r);
+			if frame.index < pts.len() {
+				let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
+				let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
+				spawn_knot_half(
+					commands,
+					meshes,
+					materials,
+					&from_pts,
+					from,
+					stripe_off,
+					f64::from(width),
+				);
+				spawn_knot_half(
+					commands,
+					meshes,
+					materials,
+					&to_pts,
+					to,
+					stripe_off,
+					f64::from(width),
+				);
+			}
+			let disc_r = (knot_r * 0.28) as f32;
+			commands.spawn((
+				DynamicView,
+				Mesh2d(meshes.add(Circle::new(disc_r.max(1.0)))),
+				MeshMaterial2d(materials.add(ColorMaterial::from(rgb(visual::BG_RGB)))),
+				Transform::from_xyz(frame.mid[0] as f32, frame.mid[1] as f32, visual::Z_ARC_OVER),
+			));
+			let glyph = visual::knot_polyline(frame.mid, frame.tangent, frame.normal, knot_r);
+			spawn_stroke(
 				commands,
 				meshes,
 				materials,
-				&braid.a,
-				&braid.phase,
-				true,
-				strand_w,
-				rgb(visual::tile_rgb(a)),
+				&glyph,
+				width * visual::KNOT_STRAND_WIDTH_SCALE * visual::KNOT_OUTLINE_WIDTH_SCALE,
+				rgb(visual::KNOT_OUTLINE_RGB),
+				visual::Z_ARC_OVER + 0.04,
 			);
-			spawn_braid_strand(
+			spawn_stroke(
 				commands,
 				meshes,
 				materials,
-				&braid.b,
-				&braid.phase,
-				false,
-				strand_w,
-				rgb(visual::tile_rgb(b)),
+				&glyph,
+				width * visual::KNOT_STRAND_WIDTH_SCALE,
+				rgb(visual::KNOT_RGB),
+				visual::Z_ARC_OVER + 0.05,
 			);
 		}
 		ArcBody::Stripes { a, b, zag_a, zag_b } => {
@@ -694,15 +722,15 @@ fn spawn_arc(
 	} else {
 		f64::from(layout.zag_amp)
 	};
-	let braid_amp = if visual::arc_touches_center(arc, center) {
-		f64::from(layout.braid_amp_center)
-	} else {
-		f64::from(layout.braid_amp)
-	};
 	let zag_w = width * visual::ZAG_STRAND_WIDTH_SCALE;
 	let teeth = visual::zag_teeth(arc);
 	let spacing = visual::zag_lane_spacing(stripe_off);
-	let inner = visual::zag_lane_inner(paint.body, stripe_off, braid_amp);
+	let knot_r_lane = if visual::arc_touches_center(arc, center) {
+		f64::from(layout.knot_r_center)
+	} else {
+		f64::from(layout.knot_r)
+	};
+	let inner = visual::zag_lane_inner(paint.body, stripe_off, knot_r_lane);
 	for (i, zag) in paint.zags_from.iter().enumerate() {
 		let Some(color) = *zag else {
 			continue;
@@ -775,34 +803,37 @@ fn spawn_stripe_strand(
 	}
 }
 
-fn spawn_braid_strand(
+fn spawn_knot_half(
 	commands: &mut Commands,
 	meshes: &mut Assets<Mesh>,
 	materials: &mut Assets<ColorMaterial>,
 	pts: &[[f64; 2]],
-	phase: &[f64],
-	strand_a: bool,
-	width: f32,
-	color: Color,
+	colors: [Option<crate::game::TileColor>; visual::MAX_KNOT_COLORS],
+	stripe_off: f64,
+	arc_width: f64,
 ) {
-	if pts.len() < 2 {
+	let n = visual::packed_color_count(colors);
+	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let mut start = 0usize;
-	for i in 1..pts.len() {
-		let front_a = phase[i].cos() >= 0.0;
-		let this_front = if strand_a { front_a } else { !front_a };
-		let prev_front_a = phase[i - 1].cos() >= 0.0;
-		let prev_front = if strand_a { prev_front_a } else { !prev_front_a };
-		if this_front != prev_front || i + 1 == pts.len() {
-			let end = i;
-			if end > start {
-				let slice = &pts[start..=end];
-				let z = if prev_front { visual::Z_ARC_OVER } else { visual::Z_ARC };
-				spawn_stroke(commands, meshes, materials, slice, width, color, z);
-			}
-			start = i.saturating_sub(1);
-		}
+	let offsets = visual::highway_offsets(n, stripe_off);
+	let strand_w = visual::highway_strand_width(n, arc_width) as f32;
+	let mut k = 0usize;
+	for color in colors {
+		let Some(c) = color else {
+			continue;
+		};
+		let line = visual::offset_polyline(pts, offsets[k]);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&line,
+			strand_w,
+			rgb(visual::tile_rgb(c)),
+			visual::Z_ARC,
+		);
+		k += 1;
 	}
 }
 

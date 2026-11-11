@@ -34,26 +34,38 @@ pub const ARC_SAME_COLOR_WIDTH_SCALE: f32 = 1.45;
 pub const STRIPE_STRAND_WIDTH_SCALE: f32 = 0.70;
 pub const STRIPE_OFFSET_UNITS: f32 = 0.022;
 pub const STRIPE_OFFSET_CENTER_UNITS: f32 = 0.014;
-pub const BRAID_STRAND_WIDTH_SCALE: f32 = 0.78;
-pub const BRAID_AMP_UNITS: f32 = 0.030;
-pub const BRAID_AMP_CENTER_UNITS: f32 = 0.016;
+/// Compact trefoil glyph at a conflict-arc midpoint. Sized to read as a
+/// tangled loop at board scale, not a spawn-sized dot.
+pub const KNOT_RADIUS_UNITS: f32 = 0.085;
+pub const KNOT_RADIUS_CENTER_UNITS: f32 = 0.055;
+pub const KNOT_RADIUS_MIN_PX: f32 = 11.0;
+pub const KNOT_RADIUS_CENTER_MIN_PX: f32 = 8.0;
+pub const KNOT_STRAND_WIDTH_SCALE: f32 = 1.05;
+pub const KNOT_OUTLINE_WIDTH_SCALE: f32 = 1.75;
+pub const KNOT_SAMPLES: usize = 64;
+/// Neutral rope so unmatched stripe colors stay the story.
+pub const KNOT_RGB: [f32; 3] = [0.93, 0.90, 0.80];
+pub const KNOT_OUTLINE_RGB: [f32; 3] = [0.16, 0.14, 0.12];
 /// Spellcheck-underline zag: low amplitude, long wavelength, thin stroke.
 pub const ZAG_AMP_UNITS: f32 = 0.008;
 pub const ZAG_AMP_CENTER_UNITS: f32 = 0.006;
-pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.22;
+/// 1.5× the previous 0.22 scale; still finer than a highway strand (0.70).
+pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.33;
 /// Parallel zag-lane spacing as a fraction of the highway stripe offset.
-/// Wider than the stroke so lines stay individually countable.
-pub const ZAG_LANE_SPACING_SCALE: f64 = 1.05;
+/// Scaled with the thicker stroke so air between lines stays countable.
+pub const ZAG_LANE_SPACING_SCALE: f64 = 1.55;
 /// One overlay line per zag stroke on a single tile (weight.max(n_rings) ≤ 3).
 pub const MAX_TILE_ZAGS: usize = 3;
+/// Packed unmatched **normal** colors on one half of a conflict knot.
+pub const MAX_KNOT_COLORS: usize = 3;
 pub const ARC_SAMPLES: usize = 96;
 /// Tile-ring layout in 22px-tile units; scaled by `radius / PREV_TILE_RADIUS_PX`.
 pub const TILE_RING_INSET: f32 = 1.7;
-pub const TILE_RING_GAP: f32 = 3.0;
+pub const TILE_RING_GAP: f32 = 3.3;
 pub const TILE_ZAG_AMP: f32 = 0.80;
-/// Tile zag stroke in 22px-tile units; thinner than the normal ring so
-/// concentric zags keep air inside the rim.
-pub const TILE_ZAG_STROKE: f32 = 0.60;
+/// Tile zag stroke in 22px-tile units; 1.5× the previous 0.60, still thinner
+/// than a normal ring so concentric zags keep air inside the rim.
+pub const TILE_ZAG_STROKE: f32 = 0.90;
 pub const TILE_ZAG_TEETH: u32 = 16;
 pub const TILE_ZAG_SAMPLES: u32 = 96;
 
@@ -107,10 +119,11 @@ pub enum ArcBody {
 		color: TileColor,
 		thick: bool,
 	},
-	/// Twisted two-color braid. Two-ended true conflict only (no shared color).
-	Braid {
-		a: TileColor,
-		b: TileColor,
+	/// Midpoint knot joining unmatched **normal** colors. Two-ended true
+	/// conflict only (both ends have a normal ring, and they share none).
+	Knot {
+		from: [Option<TileColor>; MAX_KNOT_COLORS],
+		to: [Option<TileColor>; MAX_KNOT_COLORS],
 	},
 	/// Parallel highway stripes: one-ended undecided edges, or two-ended
 	/// edges that share more than one normal color. Zag overlays sit outside.
@@ -142,8 +155,15 @@ impl ArcPaint {
 		}
 	}
 
-	pub fn braid(a: TileColor, b: TileColor) -> Self {
-		Self { body: ArcBody::Braid { a, b }, zags_from: Self::no_zags(), zags_to: Self::no_zags() }
+	pub fn knot(
+		from: [Option<TileColor>; MAX_KNOT_COLORS],
+		to: [Option<TileColor>; MAX_KNOT_COLORS],
+	) -> Self {
+		Self {
+			body: ArcBody::Knot { from, to },
+			zags_from: Self::no_zags(),
+			zags_to: Self::no_zags(),
+		}
 	}
 
 	pub fn stripes(a: TileColor, b: TileColor, zag_a: bool, zag_b: bool) -> Self {
@@ -206,13 +226,53 @@ pub fn tile_zag_strokes(tile: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
 	)
 }
 
+/// Unique **normal** ring colors on `tile`, packed densely. Zags are omitted:
+/// they already draw as side squiggles, so conflict-knot stripes only show
+/// the unmatched highway options.
+pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_KNOT_COLORS] {
+	let mut out = [None; MAX_KNOT_COLORS];
+	let mut n = 0usize;
+	for k in 0..tile.ring_strokes() {
+		if tile.stroke_is_zag(k) {
+			continue;
+		}
+		let c = tile.stroke_color(k);
+		if !out.contains(&Some(c)) && n < MAX_KNOT_COLORS {
+			out[n] = Some(c);
+			n += 1;
+		}
+	}
+	out
+}
+
+pub fn packed_color_count(colors: [Option<TileColor>; MAX_KNOT_COLORS]) -> usize {
+	colors.iter().filter(|c| c.is_some()).count()
+}
+
+/// Lane offsets for 1 / 2 / 3 parallel highway stripes on a knot half.
+pub fn highway_offsets(n: usize, stripe_off: f64) -> [f64; MAX_KNOT_COLORS] {
+	match n {
+		0 | 1 => [0.0, 0.0, 0.0],
+		2 => [stripe_off, -stripe_off, 0.0],
+		_ => [stripe_off, 0.0, -stripe_off],
+	}
+}
+
+pub fn highway_strand_width(n: usize, arc_width: f64) -> f64 {
+	if n <= 1 {
+		arc_width
+	} else {
+		arc_width * f64::from(STRIPE_STRAND_WIDTH_SCALE)
+	}
+}
+
 fn two_ended_body(a: Tile, b: Tile) -> ArcBody {
 	let shared = shared_normal_colors(a, b);
 	match (shared[0], shared[1]) {
 		(Some(color), None) => ArcBody::Solid { color, thick: true },
 		(Some(c1), Some(c2)) => ArcBody::Stripes { a: c1, b: c2, zag_a: false, zag_b: false },
 		(None, _) if a.normal_mask() != 0 && b.normal_mask() != 0 => {
-			ArcBody::Braid { a: a.primary(), b: b.primary() }
+			ArcBody::Knot { from: unique_normals(a), to: unique_normals(b) }
 		}
 		// No shared normal and not a true normal-vs-normal conflict: empty
 		// middle (zag-only contact, or a non-matching zag). Zags still draw.
@@ -342,8 +402,8 @@ pub struct ViewLayout {
 	pub arc_width: f32,
 	pub stripe_off: f32,
 	pub stripe_off_center: f32,
-	pub braid_amp: f32,
-	pub braid_amp_center: f32,
+	pub knot_r: f32,
+	pub knot_r_center: f32,
 	pub zag_amp: f32,
 	pub zag_amp_center: f32,
 }
@@ -387,8 +447,8 @@ impl ViewLayout {
 		let arc_width = (ARC_WIDTH_UNITS * scale).max(ARC_WIDTH_MIN_PX);
 		let stripe_off = (STRIPE_OFFSET_UNITS * scale).max(2.2);
 		let stripe_off_center = (STRIPE_OFFSET_CENTER_UNITS * scale).max(1.6);
-		let braid_amp = (BRAID_AMP_UNITS * scale).max(2.0);
-		let braid_amp_center = (BRAID_AMP_CENTER_UNITS * scale).max(1.4);
+		let knot_r = (KNOT_RADIUS_UNITS * scale).max(KNOT_RADIUS_MIN_PX);
+		let knot_r_center = (KNOT_RADIUS_CENTER_UNITS * scale).max(KNOT_RADIUS_CENTER_MIN_PX);
 		let zag_amp = (ZAG_AMP_UNITS * scale).max(0.85);
 		let zag_amp_center = (ZAG_AMP_CENTER_UNITS * scale).max(0.7);
 
@@ -408,8 +468,8 @@ impl ViewLayout {
 			arc_width,
 			stripe_off,
 			stripe_off_center,
-			braid_amp,
-			braid_amp_center,
+			knot_r,
+			knot_r_center,
 			zag_amp,
 			zag_amp_center,
 		}
@@ -481,29 +541,98 @@ pub fn parallel_strands(centerline: &[[f64; 2]], offset: f64) -> (Vec<[f64; 2]>,
 	(offset_polyline(centerline, offset), offset_polyline(centerline, -offset))
 }
 
-#[derive(Clone, Debug)]
-pub struct Braid {
-	pub a: Vec<[f64; 2]>,
-	pub b: Vec<[f64; 2]>,
-	pub phase: Vec<f64>,
+#[derive(Clone, Copy, Debug)]
+pub struct KnotFrame {
+	pub index: usize,
+	pub mid: [f64; 2],
+	pub tangent: [f64; 2],
+	pub normal: [f64; 2],
 }
 
-pub fn braid_strands(centerline: &[[f64; 2]], amplitude: f64, turns: f64) -> Braid {
-	let n = centerline.len().max(2);
-	let mut a = Vec::with_capacity(n);
-	let mut b = Vec::with_capacity(n);
-	let mut phase = Vec::with_capacity(n);
-	for i in 0..n {
-		let t = if n == 1 { 0.0 } else { i as f64 / (n - 1) as f64 };
-		let ph = 2.0 * PI * turns * t;
-		let (nx, ny) = polyline_normal(centerline, i);
-		let off = amplitude * ph.sin();
-		let p = centerline[i];
-		a.push([p[0] + nx * off, p[1] + ny * off]);
-		b.push([p[0] - nx * off, p[1] - ny * off]);
-		phase.push(ph);
+pub fn midpoint_frame(pts: &[[f64; 2]]) -> KnotFrame {
+	let index = pts.len() / 2;
+	let mid = pts.get(index).copied().unwrap_or([0.0, 0.0]);
+	let (nx, ny) = if pts.is_empty() { (0.0, 1.0) } else { polyline_normal(pts, index) };
+	KnotFrame { index, mid, tangent: [ny, -nx], normal: [nx, ny] }
+}
+
+/// Compact trefoil projection: a tangled loop readable at board scale.
+pub fn knot_polyline(
+	mid: [f64; 2],
+	tangent: [f64; 2],
+	normal: [f64; 2],
+	radius: f64,
+) -> Vec<[f64; 2]> {
+	let mut tan = tangent;
+	let tlen = (tan[0] * tan[0] + tan[1] * tan[1]).sqrt();
+	if tlen > 1e-12 {
+		tan[0] /= tlen;
+		tan[1] /= tlen;
+	} else {
+		tan = [1.0, 0.0];
 	}
-	Braid { a, b, phase }
+	let mut nor = normal;
+	let nlen = (nor[0] * nor[0] + nor[1] * nor[1]).sqrt();
+	if nlen > 1e-12 {
+		nor[0] /= nlen;
+		nor[1] /= nlen;
+	} else {
+		nor = [-tan[1], tan[0]];
+	}
+	let s = radius / 3.05;
+	let n = KNOT_SAMPLES.max(16);
+	let mut pts = Vec::with_capacity(n + 1);
+	for i in 0..=n {
+		let t = 2.0 * PI * i as f64 / n as f64;
+		let u = t.sin() + 2.0 * (2.0 * t).sin();
+		let v = t.cos() - 2.0 * (2.0 * t).cos();
+		pts.push([mid[0] + s * (tan[0] * u + nor[0] * v), mid[1] + s * (tan[1] * u + nor[1] * v)]);
+	}
+	pts
+}
+
+fn polyline_dist(a: [f64; 2], b: [f64; 2]) -> f64 {
+	let dx = a[0] - b[0];
+	let dy = a[1] - b[1];
+	(dx * dx + dy * dy).sqrt()
+}
+
+fn polyline_lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
+	[a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+/// Drop the last `clearance` of path length so stripes stop at the knot.
+pub fn shorten_polyline_end(pts: &[[f64; 2]], clearance: f64) -> Vec<[f64; 2]> {
+	if pts.len() < 2 || clearance <= 0.0 {
+		return pts.to_vec();
+	}
+	let mut acc = 0.0;
+	let mut i = pts.len() - 1;
+	while i > 0 {
+		let d = polyline_dist(pts[i], pts[i - 1]);
+		if acc + d >= clearance {
+			let t = ((clearance - acc) / d.max(1e-12)).clamp(0.0, 1.0);
+			let p = polyline_lerp(pts[i], pts[i - 1], t);
+			let mut out = pts[..i].to_vec();
+			out.push(p);
+			return out;
+		}
+		acc += d;
+		i -= 1;
+	}
+	vec![pts[0]]
+}
+
+pub fn shorten_polyline_start(pts: &[[f64; 2]], clearance: f64) -> Vec<[f64; 2]> {
+	let mut rev = pts.to_vec();
+	rev.reverse();
+	let mut out = shorten_polyline_end(&rev, clearance);
+	out.reverse();
+	out
+}
+
+pub fn knot_clearance(knot_r: f64) -> f64 {
+	knot_r * 0.85
 }
 
 /// Tight zigzag that traces `centerline`, optionally shifted alongside it.
@@ -571,23 +700,19 @@ pub fn zag_teeth(arc: &ArcEdge) -> f64 {
 	(arc_length(arc) / 0.12).clamp(7.0, 16.0)
 }
 
-pub fn braid_turns(arc: &ArcEdge) -> f64 {
-	(arc_length(arc) / 0.42).clamp(1.2, 3.6)
-}
-
 pub fn zag_lane_spacing(stripe_off: f64) -> f64 {
 	stripe_off * ZAG_LANE_SPACING_SCALE
 }
 
 /// Distance from the arc path to the first zag lane. Lane 0 is skipped so a
 /// Hidden body keeps a visible middle gap (3 | gap | 3), and a match/highway/
-/// braid keeps the connection line in the center.
-pub fn zag_lane_inner(body: ArcBody, stripe_off: f64, braid_amp: f64) -> f64 {
+/// knot keeps the connection line in the center. `knot_r` pushes zags outside
+/// a conflict knot so they don't run through the glyph.
+pub fn zag_lane_inner(body: ArcBody, stripe_off: f64, knot_r: f64) -> f64 {
 	let spacing = zag_lane_spacing(stripe_off);
 	match body {
-		ArcBody::Stripes { .. } => stripe_off + spacing,
-		ArcBody::Braid { .. } => braid_amp + spacing,
-		ArcBody::Solid { .. } => stripe_off + spacing,
+		ArcBody::Knot { .. } => knot_r.max(stripe_off) + spacing,
+		ArcBody::Stripes { .. } | ArcBody::Solid { .. } => stripe_off + spacing,
 		ArcBody::Hidden | ArcBody::Neutral => spacing,
 	}
 }
@@ -716,11 +841,11 @@ pub fn format_log_line(log: &str, last_removals: &str) -> String {
 
 /// Constructed mid-game fixture used by screenshots. Tiles are placed directly
 /// (no `apply`), so overwhelm does not clear the position. Covers gray, one-
-/// color, same-color, two-ended multi-shared highways, conflict braids,
+/// color, same-color, two-ended multi-shared highways, conflict knots,
 /// one-ended highway stripes (including a zag strand), single and double zag
 /// tiles, a match with a zag on one side, a match with zags on both sides,
 /// a zag-on-zag edge with an empty middle lane, a non-matching zag that
-/// still draws on its side (no braid), and a match with a non-hitting zag.
+/// still draws on its side (no knot), and a match with a non-hitting zag.
 pub fn demo_midgame() -> Game {
 	let mut game = Game::empty(RuleSet::default());
 	let board = game.board().clone();
@@ -769,16 +894,9 @@ pub fn demo_midgame() -> Game {
 		game.place_tile(b, u);
 	}
 	if let Some((a, b)) = empty_neighbor_pair(&game) {
-		// Single zag beside a normal match: blue solid in the middle, orange zag
-		// on A's side. B holds orange as a normal so the zag fires, but that
-		// orange is not a shared *normal* (A's orange is a zag).
-		let t = game.alloc_ring_kinds(
-			Player::One,
-			&[(TileColor::Blue, false), (TileColor::Orange, true)],
-			2,
-			1,
-		);
-		let u = game.alloc_rings(Player::Two, &[TileColor::Blue, TileColor::Orange], 2, 1);
+		// Dedicated multi-color conflict knot: A blue+green vs B orange+teal.
+		let t = game.alloc_rings(Player::One, &[TileColor::Blue, TileColor::Green], 2, 1);
+		let u = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Teal], 2, 1);
 		game.place_tile(a, t);
 		game.place_tile(b, u);
 	}
@@ -800,10 +918,28 @@ pub fn demo_midgame() -> Game {
 	}
 
 	if let Some(&n) = inner.first() {
-		place(&mut game, n, Player::Two, TileColor::Green, 3, 1);
+		if game.tile_at(n).is_none() {
+			// Green vs center orange is a knot; the pink zag sits on this side.
+			let tile = game.alloc_ring_kinds(
+				Player::Two,
+				&[(TileColor::Green, false), (TileColor::LavenderPink, true)],
+				3,
+				1,
+			);
+			game.place_tile(n, tile);
+		}
 	}
 	if let Some(&n) = inner.get(1) {
-		place(&mut game, n, Player::Two, TileColor::Orange, 2, 2);
+		if game.tile_at(n).is_none() {
+			// Orange match with the center, plus a blue zag beside it.
+			let tile = game.alloc_ring_kinds(
+				Player::Two,
+				&[(TileColor::Orange, false), (TileColor::Blue, true)],
+				2,
+				2,
+			);
+			game.place_tile(n, tile);
+		}
 	}
 	if let Some(&n) = inner.get(2) {
 		place(&mut game, n, Player::One, TileColor::Blue, 2, 2);
@@ -947,6 +1083,41 @@ pub fn demo_midgame() -> Game {
 	game
 }
 
+/// Two neighboring tiles only, for close-up screenshots of a single edge.
+pub fn demo_pair(
+	a_kinds: &[(TileColor, bool)],
+	a_weight: u8,
+	b_kinds: &[(TileColor, bool)],
+	b_weight: u8,
+) -> Game {
+	let mut game = Game::empty(RuleSet::default());
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let t = game.alloc_ring_kinds(Player::One, a_kinds, a_weight, 1);
+		let u = game.alloc_ring_kinds(Player::Two, b_kinds, b_weight, 1);
+		game.place_tile(a, t);
+		game.place_tile(b, u);
+	}
+	game
+}
+
+/// One occupied node with concentric zag rings, for stroke-weight close-ups.
+pub fn demo_zag_tile() -> Game {
+	let mut game = Game::empty(RuleSet::default());
+	let board = game.board().clone();
+	let center = board.center();
+	let id = (0..board.node_count() as NodeId).find(|&n| n != center && !board.is_spawn(n));
+	if let Some(id) = id {
+		let tile = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, true), (TileColor::Orange, true), (TileColor::Green, true)],
+			3,
+			1,
+		);
+		game.place_tile(id, tile);
+	}
+	game
+}
+
 fn place(game: &mut Game, node: NodeId, owner: Player, color: TileColor, weight: u8, dots: u8) {
 	if game.tile_at(node).is_some() {
 		return;
@@ -1018,13 +1189,13 @@ mod tests {
 		assert_eq!(d.zag_teeth, 16, "zag rings should double the underline frequency");
 		assert!(d.zag_stroke * 2.0 < d.stroke, "zag rings should be noticeably finer than normals");
 		assert!(
-			d.zag_stroke * 2.0 + 2.0 * d.zag_amp < d.gap,
-			"thinner zag stroke should leave air in the rim (stroke={} gap={})",
+			d.gap - d.zag_stroke > d.zag_stroke,
+			"air between concentric zags should stay wider than the stroke (stroke={} gap={})",
 			d.zag_stroke,
 			d.gap
 		);
 		assert!(
-			TILE_RING_GAP <= 3.2 && TILE_RING_INSET <= 2.0,
+			TILE_RING_GAP <= 3.6 && TILE_RING_INSET <= 2.0,
 			"rings should hug the rim (gap={}, inset={})",
 			TILE_RING_GAP,
 			TILE_RING_INSET
@@ -1132,8 +1303,12 @@ mod tests {
 			"parallel zags must show empty space (width={zag_w} spacing={spacing})"
 		);
 		assert!(
-			ZAG_STRAND_WIDTH_SCALE < 0.30,
-			"arc zag stroke should be finer than a highway strand"
+			(ZAG_STRAND_WIDTH_SCALE - 0.33).abs() < 1e-6,
+			"arc zag stroke should be 1.5× the previous 0.22 scale"
+		);
+		assert!(
+			ZAG_STRAND_WIDTH_SCALE < STRIPE_STRAND_WIDTH_SCALE,
+			"arc zag stroke should stay finer than a highway strand"
 		);
 		let span = 6.0 * spacing;
 		assert!(
@@ -1198,7 +1373,10 @@ mod tests {
 		assert_eq!(arc_paint(Some(orange), Some(orange)), ArcPaint::solid(TileColor::Orange, true));
 		assert_eq!(
 			arc_paint(Some(orange), Some(green)),
-			ArcPaint::braid(TileColor::Orange, TileColor::Green)
+			ArcPaint::knot(
+				[Some(TileColor::Orange), None, None],
+				[Some(TileColor::Green), None, None]
+			)
 		);
 		let duo = Tile::with_rings(3, Player::One, &[TileColor::Green, TileColor::Teal], 1, 1);
 		assert_eq!(arc_paint(Some(green), Some(duo)), ArcPaint::solid(TileColor::Green, true));
@@ -1266,7 +1444,7 @@ mod tests {
 		assert_eq!(paint.zag_to_count(), 0);
 		let blue_only = Tile::mono(12, Player::Two, TileColor::Blue, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(blue_only));
-		assert_eq!(paint.body, ArcBody::Hidden, "non-matching zag is not a conflict braid");
+		assert_eq!(paint.body, ArcBody::Hidden, "non-matching zag is not a conflict knot");
 		assert_eq!(paint.zags_from[0], Some(TileColor::Orange), "zag still draws on its side");
 		assert_eq!(paint.zag_to_count(), 0);
 		let mixed_vs_blue = Tile::with_ring_kinds(
@@ -1283,10 +1461,42 @@ mod tests {
 		let green = Tile::mono(14, Player::Two, TileColor::Green, 1, 1);
 		let paint = arc_paint(Some(mixed_vs_blue), Some(green));
 		assert!(
-			matches!(paint.body, ArcBody::Braid { .. }),
+			matches!(paint.body, ArcBody::Knot { .. }),
 			"blue vs green is still a real conflict"
 		);
 		assert_eq!(paint.zags_from[0], Some(TileColor::Orange));
+		let bg = Tile::with_rings(15, Player::One, &[TileColor::Blue, TileColor::Green], 2, 1);
+		let ot = Tile::with_rings(16, Player::Two, &[TileColor::Orange, TileColor::Teal], 2, 1);
+		let paint = arc_paint(Some(bg), Some(ot));
+		assert_eq!(
+			paint.body,
+			ArcBody::Knot {
+				from: [Some(TileColor::Blue), Some(TileColor::Green), None],
+				to: [Some(TileColor::Orange), Some(TileColor::Teal), None],
+			},
+			"knot halves list unmatched normals only"
+		);
+		assert_eq!(paint.zag_count(), 0);
+		let mixed_knot = Tile::with_ring_kinds(
+			17,
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		let paint = arc_paint(Some(mixed_knot), Some(green));
+		match paint.body {
+			ArcBody::Knot { from, to } => {
+				assert_eq!(from, [Some(TileColor::Blue), None, None]);
+				assert_eq!(to, [Some(TileColor::Green), None, None]);
+			}
+			other => panic!("expected knot, got {other:?}"),
+		}
+		assert_eq!(
+			paint.zags_from[0],
+			Some(TileColor::Orange),
+			"zag stays on its side of the knot"
+		);
 	}
 
 	#[test]
@@ -1296,7 +1506,9 @@ mod tests {
 		let mut gray = 0;
 		let mut one = 0;
 		let mut same = 0;
-		let mut braid = 0;
+		let mut knot = 0;
+		let mut multi_color_knot = 0;
+		let mut knot_with_zag = 0;
 		let mut stripes = 0;
 		let mut two_ended_stripes = 0;
 		let mut stripe_with_zag = 0;
@@ -1371,15 +1583,23 @@ mod tests {
 				ArcBody::Neutral => gray += 1,
 				ArcBody::Solid { thick: false, .. } => one += 1,
 				ArcBody::Solid { thick: true, .. } => same += 1,
-				ArcBody::Braid { .. } => {
-					braid += 1;
-					assert!(from.is_some() && to.is_some(), "braid is two-ended only");
+				ArcBody::Knot { from: cols_a, to: cols_b } => {
+					knot += 1;
+					assert!(from.is_some() && to.is_some(), "knot is two-ended only");
 					if let (Some(a), Some(b)) = (from, to) {
 						assert!(
 							shared_normal_colors(a, b)[0].is_none()
 								&& a.normal_mask() != 0 && b.normal_mask() != 0,
-							"braid is for true color conflicts only"
+							"knot is for true color conflicts only"
 						);
+						assert_eq!(cols_a, unique_normals(a));
+						assert_eq!(cols_b, unique_normals(b));
+						if packed_color_count(cols_a) >= 2 && packed_color_count(cols_b) >= 2 {
+							multi_color_knot += 1;
+						}
+						if paint.zag_count() > 0 {
+							knot_with_zag += 1;
+						}
 					}
 				}
 				ArcBody::Stripes { zag_a, zag_b, .. } => {
@@ -1399,7 +1619,9 @@ mod tests {
 		assert!(gray > 0, "need empty gray arcs");
 		assert!(one > 0, "need one-ended colored arcs");
 		assert!(same > 0, "need same-color solid arcs");
-		assert!(braid > 0, "need two-ended conflicting braids");
+		assert!(knot > 0, "need two-ended conflicting knots");
+		assert!(multi_color_knot > 0, "need a multi-color vs multi-color knot");
+		assert!(knot_with_zag > 0, "need a conflict knot with zags on the sides");
 		assert!(stripes > 0, "need highway-stripe arcs");
 		assert!(two_ended_stripes > 0, "need a two-ended multi-shared-color highway");
 		assert!(
@@ -1412,7 +1634,7 @@ mod tests {
 		assert!(zag_both_sides > 0, "need a match with zags on both sides");
 		assert!(hidden > 0, "need a decided zag-only arc (no match line)");
 		assert!(zag_on_zag > 0, "need a zag-on-zag edge with no match stroke");
-		assert!(non_matching_zag > 0, "need a non-matching zag edge that is not a braid");
+		assert!(non_matching_zag > 0, "need a non-matching zag edge that is not a knot");
 		assert!(single_zag_tiles > 0, "need a single-zag tile");
 		assert!(double_zag_tiles > 0, "need a double-zag tile");
 		assert_eq!(game.bench(Player::One).len(), 5);
@@ -1464,12 +1686,24 @@ mod tests {
 	}
 
 	#[test]
-	fn braid_has_two_offset_strands() {
-		let pts = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]];
-		let braid = braid_strands(&pts, 0.5, 1.0);
-		assert_eq!(braid.a.len(), 4);
-		assert!(braid.a[1][1].abs() > 0.2);
-		assert!((braid.a[1][1] + braid.b[1][1]).abs() < 1e-9);
+	fn knot_glyph_is_a_compact_closed_loop() {
+		let pts = knot_polyline([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], 1.0);
+		assert!(pts.len() > 16);
+		assert!((pts[0][0] - pts[pts.len() - 1][0]).abs() < 1e-9);
+		assert!((pts[0][1] - pts[pts.len() - 1][1]).abs() < 1e-9);
+		let max_r = pts.iter().map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt()).fold(0.0, f64::max);
+		assert!(max_r < 1.15, "knot escaped radius: {max_r}");
+		let frame = midpoint_frame(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]);
+		assert_eq!(frame.index, 2);
+		assert!((frame.mid[0] - 2.0).abs() < 1e-9);
+		let half = shorten_polyline_end(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]], 0.5);
+		assert!((half[half.len() - 1][0] - 2.5).abs() < 1e-9);
+		let layout = ViewLayout::from_window(1280.0, 800.0);
+		assert!(
+			layout.knot_r >= KNOT_RADIUS_MIN_PX,
+			"knot must stay readable at board scale (r={})",
+			layout.knot_r
+		);
 	}
 
 	#[test]

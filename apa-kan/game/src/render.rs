@@ -33,6 +33,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	let board = game.board();
 	let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
 	let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
+	let mut knots: Vec<(visual::KnotFrame, f64, f64)> = Vec::new();
 	for arc in board.arcs() {
 		let samples = arc.sample(visual::ARC_SAMPLES);
 		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
@@ -55,32 +56,21 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				};
 				back.push((pts.clone(), rgb_of(visual::tile_rgb(color)), w));
 			}
-			ArcBody::Braid { a, b } => {
-				let amp = if visual::arc_touches_center(arc, board.center()) {
-					f64::from(layout.braid_amp_center)
+			ArcBody::Knot { from, to } => {
+				let knot_r = if visual::arc_touches_center(arc, board.center()) {
+					f64::from(layout.knot_r_center)
 				} else {
-					f64::from(layout.braid_amp)
+					f64::from(layout.knot_r)
 				};
-				let braid = visual::braid_strands(&pts, amp, visual::braid_turns(arc));
-				let strand_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
-				split_braid(
-					&braid.a,
-					&braid.phase,
-					true,
-					rgb_of(visual::tile_rgb(a)),
-					strand_w,
-					&mut back,
-					&mut front,
-				);
-				split_braid(
-					&braid.b,
-					&braid.phase,
-					false,
-					rgb_of(visual::tile_rgb(b)),
-					strand_w,
-					&mut back,
-					&mut front,
-				);
+				let frame = visual::midpoint_frame(&pts);
+				let clearance = visual::knot_clearance(knot_r);
+				if frame.index < pts.len() {
+					let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
+					let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
+					push_knot_half(&from_pts, from, stripe_off, width, &mut back);
+					push_knot_half(&to_pts, to, stripe_off, width, &mut back);
+				}
+				knots.push((frame, knot_r, width * f64::from(visual::KNOT_STRAND_WIDTH_SCALE)));
 			}
 			ArcBody::Stripes { a, b, zag_a, zag_b } => {
 				let strand_w = width * f64::from(visual::STRIPE_STRAND_WIDTH_SCALE);
@@ -123,15 +113,15 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		} else {
 			f64::from(layout.zag_amp)
 		};
-		let braid_amp = if visual::arc_touches_center(arc, board.center()) {
-			f64::from(layout.braid_amp_center)
-		} else {
-			f64::from(layout.braid_amp)
-		};
 		let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
 		let teeth = visual::zag_teeth(arc);
 		let spacing = visual::zag_lane_spacing(stripe_off);
-		let inner = visual::zag_lane_inner(paint.body, stripe_off, braid_amp);
+		let knot_r = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.knot_r_center)
+		} else {
+			f64::from(layout.knot_r)
+		};
+		let inner = visual::zag_lane_inner(paint.body, stripe_off, knot_r);
 		for (i, zag) in paint.zags_from.iter().enumerate() {
 			let Some(color) = *zag else {
 				continue;
@@ -151,6 +141,17 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	}
 	for (pts, color, width) in back.into_iter().chain(front) {
 		stroke_polyline(img, &pts, color, width);
+	}
+	for (frame, knot_r, strand_w) in knots {
+		fill_circle(img, tup(frame.mid), knot_r * 0.28, rgb_of(visual::BG_RGB));
+		let glyph = visual::knot_polyline(frame.mid, frame.tangent, frame.normal, knot_r);
+		stroke_polyline(
+			img,
+			&glyph,
+			rgb_of(visual::KNOT_OUTLINE_RGB),
+			strand_w * f64::from(visual::KNOT_OUTLINE_WIDTH_SCALE),
+		);
+		stroke_polyline(img, &glyph, rgb_of(visual::KNOT_RGB), strand_w);
 	}
 }
 
@@ -174,36 +175,30 @@ fn push_stripe(
 	}
 }
 
-fn split_braid(
+fn push_knot_half(
 	pts: &[[f64; 2]],
-	phase: &[f64],
-	strand_a: bool,
-	color: Rgba<u8>,
-	width: f64,
+	colors: [Option<crate::game::TileColor>; visual::MAX_KNOT_COLORS],
+	stripe_off: f64,
+	arc_width: f64,
 	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
-	front: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
 ) {
-	if pts.len() < 2 {
+	let n = visual::packed_color_count(colors);
+	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let mut start = 0usize;
-	for i in 1..pts.len() {
-		let front_a = phase[i].cos() >= 0.0;
-		let this_front = if strand_a { front_a } else { !front_a };
-		let prev_front_a = phase[i - 1].cos() >= 0.0;
-		let prev_front = if strand_a { prev_front_a } else { !prev_front_a };
-		if this_front != prev_front || i + 1 == pts.len() {
-			let end = i;
-			if end > start {
-				let slice = pts[start..=end].to_vec();
-				if prev_front {
-					front.push((slice, color, width));
-				} else {
-					back.push((slice, color, width));
-				}
-			}
-			start = i.saturating_sub(1);
-		}
+	let offsets = visual::highway_offsets(n, stripe_off);
+	let strand_w = visual::highway_strand_width(n, arc_width);
+	let mut k = 0usize;
+	for color in colors {
+		let Some(c) = color else {
+			continue;
+		};
+		back.push((
+			visual::offset_polyline(pts, offsets[k]),
+			rgb_of(visual::tile_rgb(c)),
+			strand_w,
+		));
+		k += 1;
 	}
 }
 
@@ -496,5 +491,133 @@ mod tests {
 			assert!(bytes.len() > 100);
 			assert_eq!(&bytes[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
 		}
+	}
+
+	#[test]
+	fn dump_knot_and_zag_artifacts() {
+		let dir = std::path::Path::new("/opt/cursor/artifacts");
+		if !dir.is_dir() {
+			return;
+		}
+		use crate::game::TileColor;
+		use crate::visual::{demo_midgame, demo_pair, demo_zag_tile};
+		let board = demo_midgame();
+		write_png_sized(
+			&board,
+			dir.join("zag_board_1280x800.png"),
+			"knot + thicker zags",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, false), (TileColor::Green, false)],
+				2,
+				&[(TileColor::Orange, false), (TileColor::Teal, false)],
+				2,
+			),
+			dir.join("knot_blue_green_vs_orange_teal.png"),
+			"A blue+green vs B orange+teal",
+			36.0,
+		);
+		write_cropped(
+			&demo_pair(&[(TileColor::Blue, false)], 2, &[(TileColor::Orange, false)], 2),
+			dir.join("knot_blue_vs_orange.png"),
+			"blue vs orange knot",
+			36.0,
+		);
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, false), (TileColor::Orange, true)],
+				2,
+				&[(TileColor::Green, false), (TileColor::LavenderPink, true)],
+				2,
+			),
+			dir.join("knot_with_zags.png"),
+			"knot with zags on the sides",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)],
+				3,
+				&[(TileColor::Orange, true), (TileColor::Orange, true), (TileColor::Orange, true)],
+				3,
+			),
+			dir.join("zag_thickness_arc.png"),
+			"thicker directional zags",
+			48.0,
+		);
+		write_cropped(
+			&demo_zag_tile(),
+			dir.join("zag_thickness_tile.png"),
+			"thicker tile zags",
+			28.0,
+		);
+	}
+
+	fn write_cropped(game: &Game, path: impl AsRef<std::path::Path>, caption: &str, pad: f32) {
+		let w = 1280u32;
+		let h = 800u32;
+		let tmp = std::env::temp_dir().join("apa-kan-crop-src.png");
+		write_png_sized(game, &tmp, caption, w, h).unwrap();
+		let img = image::open(&tmp).unwrap().to_rgba8();
+		let layout = crate::visual::ViewLayout::from_window(w as f32, h as f32);
+		let (x, y, cw, ch) = occupied_crop(game, &layout, pad, w, h);
+		image::imageops::crop_imm(&img, x, y, cw, ch)
+			.to_image()
+			.save(path.as_ref())
+			.unwrap();
+	}
+
+	fn occupied_crop(
+		game: &Game,
+		layout: &crate::visual::ViewLayout,
+		pad: f32,
+		width: u32,
+		height: u32,
+	) -> (u32, u32, u32, u32) {
+		let board = game.board();
+		let mut minx = f32::MAX;
+		let mut miny = f32::MAX;
+		let mut maxx = f32::MIN;
+		let mut maxy = f32::MIN;
+		let bump = |x: f32,
+		            y: f32,
+		            r: f32,
+		            minx: &mut f32,
+		            miny: &mut f32,
+		            maxx: &mut f32,
+		            maxy: &mut f32| {
+			*minx = minx.min(x - r);
+			*miny = miny.min(y - r);
+			*maxx = maxx.max(x + r);
+			*maxy = maxy.max(y + r);
+		};
+		for id in 0..board.node_count() as u8 {
+			if game.tile_at(id).is_none() {
+				continue;
+			}
+			let p = layout.board_to_image(board.position(id));
+			bump(p[0], p[1], layout.tile_radius + pad, &mut minx, &mut miny, &mut maxx, &mut maxy);
+		}
+		for arc in board.arcs() {
+			if game.tile_at(arc.from).is_none() || game.tile_at(arc.to).is_none() {
+				continue;
+			}
+			for p in arc.sample(24) {
+				let q = layout.board_to_image(p);
+				bump(q[0], q[1], pad, &mut minx, &mut miny, &mut maxx, &mut maxy);
+			}
+		}
+		if !minx.is_finite() {
+			return (0, 0, width, height);
+		}
+		let x = minx.max(0.0).floor() as u32;
+		let y = miny.max(0.0).floor() as u32;
+		let x2 = maxx.min(width as f32).ceil() as u32;
+		let y2 = maxy.min(height as f32).ceil() as u32;
+		(x, y, x2.saturating_sub(x).max(1), y2.saturating_sub(y).max(1))
 	}
 }
