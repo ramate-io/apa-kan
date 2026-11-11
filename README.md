@@ -33,6 +33,8 @@ Usage: apa-kan [OPTIONS]
   --width <px>                               Window width (default: 1280)
   --height <px>                              Window height (default: 900)
   --screenshot <path>                        Capture a mid-game board PNG and exit
+  --scenario <name|path>                     Opening deck (default|same|complementary|...)
+  --list-scenarios                           Print builtin deck scenarios
   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)
   --center-hold-win <on|off>                 Center-hold win (default: off)
   --center-hold-n <1..64>                    Turns to hold center (default: 5)
@@ -55,6 +57,8 @@ A plain `cargo run -p apa-kan` uses the new defaults (control-win 5 of 9 at t=1,
 
 Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`.
 
+Deck scenarios (see [`apa-kan/game/scenarios/`](apa-kan/game/scenarios/)): `--scenario same` is the default mirrored 27-kind deal; `--scenario complementary` gives P1 green+orange and P2 blue+orange (18 tiles each, same weight/dot order); `--scenario complementary-swapped` flips the exclusive colors.
+
 Watch minimax vs MCTS in the GUI (1 s/move):
 
 ```bash
@@ -72,6 +76,8 @@ Search head-to-head (branching factor, stalling, minimax/MCTS/greedy):
 
 ```bash
 cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- --games 6 --think-ms 1000
+cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- \
+  --scenario complementary --games 12 --think-ms 1000 --no-depth-probe
 ```
 
 Results: [`apa-kan/game/benchmark_results/search_h2h.txt`](apa-kan/game/benchmark_results/search_h2h.txt). One full minimax vs MCTS move list: [`apa-kan/game/benchmark_results/minimax_vs_mcts_game.txt`](apa-kan/game/benchmark_results/minimax_vs_mcts_game.txt). Stall-prevention logs: [`apa-kan/game/benchmark_results/`](apa-kan/game/benchmark_results/). Defaults + center-hold (N=5) + color-restricted hops at 1000 ms/move, `lt` vs `le`: [`defaults_center_hold_color_hops_lt.txt`](apa-kan/game/benchmark_results/defaults_center_hold_color_hops_lt.txt), [`defaults_center_hold_color_hops_le.txt`](apa-kan/game/benchmark_results/defaults_center_hold_color_hops_le.txt). After scoring hold terminals from the mover: [`defaults_center_hold_color_hops.txt`](apa-kan/game/benchmark_results/defaults_center_hold_color_hops.txt), plus petal-majority N=1 [`defaults_plus_petal_majority_n1.txt`](apa-kan/game/benchmark_results/defaults_plus_petal_majority_n1.txt), petal-majority N=3 instead of center-hold [`petal_majority_n3_no_center_hold.txt`](apa-kan/game/benchmark_results/petal_majority_n3_no_center_hold.txt), and new vs legacy [`minimax_new_vs_legacy.txt`](apa-kan/game/benchmark_results/minimax_new_vs_legacy.txt). Control-win (center-hold off) at t=1 [`control_win_t1.txt`](apa-kan/game/benchmark_results/control_win_t1.txt), t=3 [`control_win_t3.txt`](apa-kan/game/benchmark_results/control_win_t3.txt), t=1 + insufficient-tiles strict [`control_win_t1_strict.txt`](apa-kan/game/benchmark_results/control_win_t1_strict.txt), t=1 + no-recapture [`control_win_t1_no_recapture.txt`](apa-kan/game/benchmark_results/control_win_t1_no_recapture.txt). Same three with `--starting-bench 7`: [`control_win_t1_bench7.txt`](apa-kan/game/benchmark_results/control_win_t1_bench7.txt) (now the default package: control-win t=1, center-hold off, bench 7, insufficient-tiles off), [`control_win_t1_bench7_strict.txt`](apa-kan/game/benchmark_results/control_win_t1_bench7_strict.txt), [`control_win_t1_bench7_no_recapture.txt`](apa-kan/game/benchmark_results/control_win_t1_bench7_no_recapture.txt). The earlier 20 ms round-robin is in [`apa-kan/game/benchmark_results/round_robin.txt`](apa-kan/game/benchmark_results/round_robin.txt).

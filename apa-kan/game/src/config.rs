@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::ai::Actor;
 use crate::game::{HopWeightCmp, InsufficientTilesLoss, PathConstraint, RuleSet, SamePieceTwice};
+use crate::scenario::Scenario;
 
 #[derive(Clone, Debug)]
 pub struct GameConfig {
@@ -19,6 +20,7 @@ pub struct GameConfig {
 	pub width: u32,
 	pub height: u32,
 	pub rules: RuleSet,
+	pub scenario: Option<Scenario>,
 }
 
 impl Default for GameConfig {
@@ -33,6 +35,7 @@ impl Default for GameConfig {
 			width: 1280,
 			height: 900,
 			rules: RuleSet::default(),
+			scenario: None,
 		}
 	}
 }
@@ -88,6 +91,13 @@ impl GameConfig {
 				}
 				"--screenshot" => {
 					cfg.screenshot = Some(PathBuf::from(require_value("--screenshot", it.next())?));
+				}
+				"--scenario" => {
+					cfg.scenario = Some(Scenario::load(&require_value("--scenario", it.next())?)?);
+				}
+				"--list-scenarios" => {
+					print!("{}", Scenario::list_text());
+					process::exit(0);
 				}
 				"--width" => {
 					cfg.width = parse_u32("--width", &require_value("--width", it.next())?)?;
@@ -253,6 +263,8 @@ pub fn usage() -> &'static str {
 	   --width <px>                               Window width (default: 1280)\n\
 	   --height <px>                              Window height (default: 900)\n\
 	   --screenshot <path>                        Capture a mid-game board PNG and exit\n\
+	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
+	   --list-scenarios                           Print builtin deck scenarios\n\
 	   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)\n\
 	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
@@ -402,5 +414,15 @@ mod tests {
 		let cfg = GameConfig::parse(["--width", "1920", "--height", "1080"]).unwrap();
 		assert_eq!(cfg.width, 1920);
 		assert_eq!(cfg.height, 1080);
+	}
+
+	#[test]
+	fn parses_scenario() {
+		let cfg = GameConfig::parse(["--scenario", "complementary"]).unwrap();
+		let s = cfg.scenario.expect("scenario");
+		assert_eq!(s.name, "complementary");
+		assert!(s.complementary.is_some());
+		let err = GameConfig::parse(["--scenario", "nope"]).unwrap_err();
+		assert!(err.contains("unknown scenario"), "{err}");
 	}
 }

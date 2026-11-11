@@ -1,0 +1,8 @@
+# Color-swapped complementary: P1 gets blue exclusive, P2 gets green exclusive.
+# Same structure as complementary.toml so seat can be separated from color.
+name = "complementary-swapped"
+description = "P1 blue+orange, P2 green+orange; mirrored weight/dot order."
+shuffle = true
+exclusive_p1 = "blue"
+exclusive_p2 = "green"
+shared = "orange"

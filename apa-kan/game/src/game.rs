@@ -61,6 +61,15 @@ impl TileColor {
 			TileColor::Orange => "orange",
 		}
 	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"green" | "g" => Ok(Self::Green),
+			"blue" | "b" => Ok(Self::Blue),
+			"orange" | "o" => Ok(Self::Orange),
+			other => Err(format!("unknown color '{other}' (green|blue|orange)")),
+		}
+	}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -432,6 +441,67 @@ pub struct Game {
 impl Game {
 	pub fn new(rules: RuleSet, seed: u64) -> Self {
 		Self::new_on(Arc::new(Board::rosette_8()), rules, seed)
+	}
+
+	pub fn start(
+		rules: RuleSet,
+		seed: u64,
+		scenario: Option<&crate::scenario::Scenario>,
+	) -> Result<Self, String> {
+		match scenario {
+			Some(s) => Self::from_scenario(rules, seed, s),
+			None => Ok(Self::new(rules, seed)),
+		}
+	}
+
+	/// Opening deal from a named or file-backed [`crate::scenario::Scenario`].
+	pub fn from_scenario(
+		rules: RuleSet,
+		seed: u64,
+		scenario: &crate::scenario::Scenario,
+	) -> Result<Self, String> {
+		let board = Arc::new(Board::rosette_8());
+		let n = board.node_count();
+		let (bags, benches) = crate::scenario::materialize(scenario, seed)?;
+		let mut next_tile_id = 1u32;
+		let to_tiles = |owner: Player, kinds: Vec<(TileColor, u8, u8)>, next_id: &mut u32| {
+			kinds
+				.into_iter()
+				.map(|(color, weight, dots)| {
+					let id = *next_id;
+					*next_id += 1;
+					Tile { id, owner, color, weight, dots }
+				})
+				.collect::<Vec<_>>()
+		};
+		let p1_bag = to_tiles(Player::One, bags[0].clone(), &mut next_tile_id);
+		let p2_bag = to_tiles(Player::Two, bags[1].clone(), &mut next_tile_id);
+		let p1_bench = to_tiles(Player::One, benches[0].clone(), &mut next_tile_id);
+		let p2_bench = to_tiles(Player::Two, benches[1].clone(), &mut next_tile_id);
+		let dealt = !p1_bench.is_empty() || !p2_bench.is_empty();
+		let mut game = Self {
+			board,
+			rules,
+			tiles: vec![None; n],
+			benches: [p1_bench, p2_bench],
+			bags: [p1_bag, p2_bag],
+			current: Player::One,
+			status: GameStatus::InProgress,
+			turn_count: 0,
+			actions_this_turn: 0,
+			consecutive_passes: 0,
+			next_tile_id,
+			seed,
+			last_moved: [None, None],
+			moved_this_turn: None,
+			center_hold: [0, 0],
+			petal_majority: [0, 0],
+			control_hold: [0, 0],
+		};
+		if !dealt {
+			game.deal_opening();
+		}
+		Ok(game)
 	}
 
 	pub fn new_on(board: Arc<Board>, rules: RuleSet, seed: u64) -> Self {

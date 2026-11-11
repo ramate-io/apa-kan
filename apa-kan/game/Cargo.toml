@@ -32,6 +32,8 @@ path = "src/bin/bench.rs"
 bevy = { workspace = true, optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [package.metadata.android]
 package = "io.ramate.apa_kan"
