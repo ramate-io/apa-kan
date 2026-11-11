@@ -652,6 +652,7 @@ fn spawn_arc(
 					from,
 					stripe_off,
 					f64::from(width),
+					1.0,
 				);
 				spawn_hitch_half(
 					commands,
@@ -661,6 +662,7 @@ fn spawn_arc(
 					to,
 					stripe_off,
 					f64::from(width),
+					-1.0,
 				);
 			}
 		}
@@ -787,13 +789,14 @@ fn spawn_hitch_half(
 	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
 	stripe_off: f64,
 	arc_width: f64,
+	outside: f64,
 ) {
 	let n = visual::packed_color_count(colors);
 	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let offsets = visual::highway_offsets(n, stripe_off);
-	let strand_w = visual::highway_strand_width(n, arc_width) as f32;
+	let offsets = visual::diamond_bundle_offsets(n, stripe_off, outside);
+	let strand_w = visual::diamond_strand_width(arc_width) as f32;
 	let mut k = 0usize;
 	for color in colors {
 		let Some(c) = color else {

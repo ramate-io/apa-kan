@@ -85,6 +85,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 						from,
 						stripe_off,
 						width,
+						1.0,
 						&mut back,
 					);
 					push_hitch_half(
@@ -92,6 +93,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 						to,
 						stripe_off,
 						width,
+						-1.0,
 						&mut back,
 					);
 				}
@@ -193,14 +195,15 @@ fn push_hitch_half(
 	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
 	stripe_off: f64,
 	arc_width: f64,
+	outside: f64,
 	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
 ) {
 	let n = visual::packed_color_count(colors);
 	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let offsets = visual::highway_offsets(n, stripe_off);
-	let strand_w = visual::highway_strand_width(n, arc_width);
+	let offsets = visual::diamond_bundle_offsets(n, stripe_off, outside);
+	let strand_w = visual::diamond_strand_width(arc_width);
 	let mut k = 0usize;
 	for color in colors {
 		let Some(c) = color else {

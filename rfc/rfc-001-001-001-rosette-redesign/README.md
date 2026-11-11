@@ -101,7 +101,7 @@ Two-ended edges (both nodes occupied) draw **only realized effects**:
 
 - Confirmed zag mismatch → draw **only** the hitting zag(s). No match line, highway stripes, or conflict diamond on that edge. A zag that does not hit the neighbor is not drawn on that edge.
 - Shared normal(s) and no zag hit → single thick match line, or highway stripes if more than one shared normal.
-- Both tiles have normals, share none, and no zag hit → compact **diamond** at the midpoint: each tile's unmatched colors wrap one pair of edges and meet at the top and bottom vertices. Unmatched-color highway halves feed the diamond.
+- Both tiles have normals, share none, and no zag hit → one elongated **diamond** at the midpoint (edge slope matches a zag tooth). Each tile's unmatched-color highway wraps one pair of edges as a bundle; the halves meet at the along-arc vertices. A multi-color edge still draws a single diamond.
 - Nothing realized (for example a non-hitting zag against a tile that has no shared normal and is not a normal-vs-normal conflict) → grey base arc.
 
 One-ended edges (the tile has no neighbor on that arc) still draw all of that tile's **potential** effects: normal colors as a highway and every zag, so it is clear what would be in play if another tile landed there.
