@@ -52,7 +52,7 @@ fn usage() -> &'static str {
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
 	   --hop-weight-cmp, --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
-	   --insufficient-tiles-loss,\n\
+	   --insufficient-tiles-loss, --starting-bench,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
@@ -210,7 +210,7 @@ fn run(cfg: BenchConfig) {
 		rules.turn_limit
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} path_constraint={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} path_constraint={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -223,6 +223,7 @@ fn run(cfg: BenchConfig) {
 		rules.control_n,
 		rules.control_hold_turns,
 		rules.insufficient_tiles_loss.name(),
+		rules.starting_bench_size,
 		rules.path_constraint.name()
 	));
 	lines.push(

@@ -215,6 +215,13 @@ where
 			rules.insufficient_tiles_loss =
 				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
 		}
+		"--starting-bench" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > 27 {
+				return Err("invalid --starting-bench (expected 1..27, bag has 27 kinds)".into());
+			}
+			rules.starting_bench_size = n as u8;
+		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
 		}
@@ -260,6 +267,7 @@ pub fn usage() -> &'static str {
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
+	   --starting-bench <1..27>                   Opening deal from the 27-kind bag (default: 5)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -377,7 +385,16 @@ mod tests {
 		assert_eq!(cfg.rules.control_n, 5);
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
+		assert_eq!(cfg.rules.starting_bench_size, 5);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
+	}
+
+	#[test]
+	fn parses_starting_bench() {
+		let cfg = GameConfig::parse(["--starting-bench", "7"]).unwrap();
+		assert_eq!(cfg.rules.starting_bench_size, 7);
+		let err = GameConfig::parse(["--starting-bench", "28"]).unwrap_err();
+		assert!(err.contains("starting-bench"));
 	}
 
 	#[test]

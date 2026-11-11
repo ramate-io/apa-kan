@@ -47,7 +47,7 @@ Default:
 
 - Each player has a **bag** of the 27 unique `(color × weight × dots)` kinds, shuffled with a seed.
 - **`identical_bags` (default true):** both players get the same shuffle (new tile ids / owners), for fairness.
-- Opening **deal of `starting_bench_size` (default 5)** from bag onto the bench.
+- Opening **deal of `starting_bench_size` (default 5)** from bag onto the bench. CLI: `--starting-bench <1..27>`. Default stays 5. The bag is still the 27 unique kinds; a deal of 7 leaves **20** in the bag instead of 22, so two fewer capture-draws are available over the game. Draw rules are unchanged: one bag tile per opponent tile removed on a MOVE; empty bag skips the draw. Insufficient-tiles still counts `board + bench` only, so starting at 7 begins further above the 5-tile floor.
 - **ADD** places one concrete bench tile onto an empty spawn (not an abstract “any kind” picker).
 - On a **MOVE**, each **opponent** tile removed draws one more tile from the mover’s bag onto their bench. ADD captures do not draw. Empty bag → the draw is skipped.
 - Remaining bag tiles do **not** keep a player alive.
@@ -218,10 +218,11 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --petal-majority-win on|off --petal-majority-n N
         --control-win on|off --control-n K --control-hold-turns T
         --insufficient-tiles-loss off|strict|no-recapture
+        --starting-bench N
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` on (N=5), `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `petal_majority_win` off, `control_win` off, `insufficient_tiles_loss` off, `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` on (N=5), `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `petal_majority_win` off, `control_win` off, `insufficient_tiles_loss` off, `starting_bench_size` 5, `path_constraint` no-edge-revisit.
 
 Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, petal-majority, control, and insufficient-tiles terminals are wins/losses in search.
 

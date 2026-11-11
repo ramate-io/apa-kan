@@ -8,7 +8,7 @@ See [rfc/rfc-001-001-001-rosette-redesign](rfc/rfc-001-001-001-rosette-redesign/
 
 - **Board:** 25 nodes (center + three 8-node rings) with circular-arc edges. Eight yellow **spawn** nodes; no two are adjacent.
 - **Tiles:** owner is a light (P1) or dark (P2) fill; **green / blue / orange** rings show color; 1–3 rings = weight; 1–3 dots = MOVE length.
-- **Bench / bag:** each player is dealt 5 tiles from a shuffled 27-kind bag (identical bags by default). ADD places a bench tile on an empty spawn. Opponent tiles removed on a MOVE draw from the bag onto the bench.
+- **Bench / bag:** each player is dealt 5 tiles from a shuffled 27-kind bag (identical bags by default; `--starting-bench N` deals N, still from 27). ADD places a bench tile on an empty spawn. Opponent tiles removed on a MOVE draw from the bag onto the bench.
 - **Overwhelm (by color):** `matches = weight + same-color neighbors`; `mismatches = different-color neighbors`; removed if `mismatches >= matches`, simultaneously after each action.
 - **MOVE:** exactly `d` steps; default path rule is **no edge revisit** (nodes may be revisited via a different arc). A hop across a straight occupied run costs 1. Default `color_restricted_hops` allows hopping only same-color tiles whose weight is `<=` the mover (`le`; `lt` is stricter). With color hops off, hopped weights must be `>=` the mover (any color).
 - **Stall-prevention (defaults):** no legal ADD/MOVE loses immediately; you may not MOVE the same tile on two consecutive turns once your bench is empty (unless the MOVE captures); occupy the center for 5 consecutive own turns to win; turn-limit 200 remains a draw. Optional `--petal-majority-win` wins by occupying 5 of 8 inner-ring (petal) nodes. Optional `--control-win` wins by occupying 5 of the 9-node control set (center + inner ring). Optional `--insufficient-tiles-loss` is a can't-reach-control loss.
@@ -46,6 +46,7 @@ Usage: apa-kan [OPTIONS]
   --control-hold-turns <1..64>               Turns to hold control (default: 1)
   --insufficient-tiles-loss <off|strict|no-recapture>
                                              Can't-reach-control loss (default: off)
+  --starting-bench <1..27>                   Opening deal from the 27-kind bag (default: 5)
   --path-constraint <no-node-revisit|no-edge-revisit|both>
   -h, --help
 ```

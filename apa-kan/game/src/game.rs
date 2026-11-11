@@ -273,6 +273,8 @@ impl GameStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
 	/// Starting tiles dealt from each bag onto the bench. Default 5.
+	/// The bag is still 27 unique kinds; a larger deal leaves fewer capture
+	/// draws (7 leaves 20 in the bag vs 22 at 5). Empty bag skips the draw.
 	pub starting_bench_size: u8,
 	/// Both players receive the same shuffled 27-tile bag. Default true.
 	pub identical_bags: bool,
@@ -1403,6 +1405,18 @@ mod tests {
 		assert_eq!(kinds(&a, Player::One), kinds(&a, Player::Two));
 		assert!(a.bench(Player::One).iter().all(|t| t.owner == Player::One));
 		assert!(a.bench(Player::Two).iter().all(|t| t.owner == Player::Two));
+	}
+
+	#[test]
+	fn opening_deal_respects_starting_bench_size() {
+		let mut rules = RuleSet::default();
+		rules.starting_bench_size = 7;
+		let game = Game::new(rules, 1);
+		assert_eq!(game.bench(Player::One).len(), 7);
+		assert_eq!(game.bench(Player::Two).len(), 7);
+		assert_eq!(game.bag_len(Player::One), 20);
+		assert_eq!(game.bag_len(Player::Two), 20);
+		assert_eq!(game.legal_adds().len(), 7 * 8);
 	}
 
 	#[test]
