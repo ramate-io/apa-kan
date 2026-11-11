@@ -47,7 +47,7 @@ Default:
 
 - Each player has a **bag** of the 27 unique `(color × weight × dots)` kinds, shuffled with a seed.
 - **`identical_bags` (default true):** both players get the same shuffle (new tile ids / owners), for fairness.
-- Opening **deal of `starting_bench_size` (default 5)** from bag onto the bench.
+- Opening **deal of `starting_bench_size` (default 7)** from bag onto the bench. CLI: `--starting-bench <1..27>`. The bag is still the 27 unique kinds; a deal of 7 leaves **20** in the bag instead of 22 at 5, so two fewer capture-draws are available over the game. Draw rules are unchanged: one bag tile per opponent tile removed on a MOVE; empty bag skips the draw. Insufficient-tiles still counts `board + bench` only, so starting at 7 begins further above the 5-tile floor.
 - **ADD** places one concrete bench tile onto an empty spawn (not an abstract “any kind” picker).
 - On a **MOVE**, each **opponent** tile removed draws one more tile from the mover’s bag onto their bench. ADD captures do not draw. Empty bag → the draw is skipped.
 - Remaining bag tiles do **not** keep a player alive.
@@ -84,7 +84,7 @@ One action per turn by default (`actions_per_turn`, default 1):
   - `NoEdgeRevisit` — a path may not traverse the same undirected circle-arc twice. Nodes may be revisited via a **different** arc (the two inner↔center petals are distinct arcs).
   - `Both` — node uniqueness and edge uniqueness.
 - **Empty step:** walk along one circle-arc to the next node if it is empty. Cost 1.
-- **Hop (default, `color_restricted_hops` off):** if the next node along a chosen circle and direction is occupied, consider the maximal consecutive occupied run along that same circle in that direction. You may spend **1 step** to skip the whole run and land on the first empty node beyond it, iff every hopped tile has `weight >= mover.weight` (`hop_requires_ge_weight`, default true). Owner does not matter. If any hopped tile is lighter, or the run wraps without an empty landing, the hop is illegal. Hopped nodes are marked visited; hopped arcs are marked used.
+- **Hop (default, `color_restricted_hops` on):** if the next node along a chosen circle and direction is occupied, consider the maximal consecutive occupied run along that same circle in that direction. You may spend **1 step** to skip the whole run and land on the first empty node beyond it, iff every hopped tile is the **mover’s color** and its weight compares to the mover with `hop_weight_cmp` (default `le`: occupant `<=` mover). Owner does not matter. Other colors cannot be hopped. Hopped nodes are marked visited; hopped arcs are marked used. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`.
 
 Hops are circle-straight: they do not branch with the graph. Multi-arcs between the center and an inner node are distinct as circle-arcs (rendering the inner petals) but lead to the same neighbor for an empty step.
 
@@ -92,14 +92,16 @@ Hops are circle-straight: they do not branch with the graph. Multi-arcs between 
 
 - **Win (elimination):** the opponent has **no tiles on the board and an empty bench**. A remaining bag does not save them. If both players are eliminated in the same resolution, the game is a **draw**.
 - **Win (locked-out):** if `no_moves_loses` is on (default) and the player to move has no legal ADD and no legal MOVE, they **lose immediately**. Detected at the start of their turn (after the previous player’s turn switch) and if they would otherwise pass.
-- **Win (center hold):** if `center_hold_win` is on and a player occupies the center at the end of `center_hold_n` consecutive **own** turns, they win.
+- **Win (center hold):** if `center_hold_win` is on (default **off**) and a player occupies the center at the end of `center_hold_n` consecutive **own** turns (default 5), they win.
+- **Win (control):** if `control_win` is on (default) and a player occupies at least `control_n` of the 9-node control set (center + inner ring; default 5 of 9) at the end of `control_hold_turns` consecutive **own** turns (default 1), they win.
+- **Win (petal majority):** if `petal_majority_win` is on (default **off**) and a player occupies a majority of the inner-ring nodes (the 8 unique neighbors of the center — one attachment per petal) at the end of `petal_majority_n` consecutive **own** turns (default 1), they win.
 - **Draw:** `turn_limit` completed player-turns (default **200**). A **double pass** draw exists only when `no_moves_loses` is off.
 
 `turn_count` increments when a player’s action allotment ends (or they pass / have nothing left).
 
 ### Stall-prevention options
 
-Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut` and `CenterHold` terminals are scored as wins/losses (`±WIN`) in search.
+Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut`, `CenterHold`, `PetalMajority`, `Control`, and `InsufficientTiles` terminals are scored as wins/losses (`±WIN`) in search from the **mover's** perspective (hold-style wins leave the winner to move; lockouts switch to the loser).
 
 #### 1. `no_moves_loses` (default **on**)
 
@@ -111,7 +113,7 @@ If the player to move has no legal action — no ADD from their bench onto an em
 - The legacy **double-pass draw is disabled** while this is on (a pass never occurs). Turn-limit draws remain as a safety net.
 - Running out of extra actions mid-turn after already taking a legal action (`actions_per_turn > 1`) still just ends the turn; lockout applies only when it is that player’s turn to act and they have nothing.
 
-#### 2. `center_hold_win` (experimental, default **off**, N = 5)
+#### 2. `center_hold_win` (default **off**, N = 5)
 
 CLI: `--center-hold-win <on|off>` `--center-hold-n <1..64>`
 
@@ -134,7 +136,7 @@ A player may not MOVE the same tile (by tile id) on two consecutive **own** turn
 
 **Capture exception:** a repeat MOVE **is** legal if that MOVE causes at least one opponent tile to be removed under simultaneous overwhelm (previewed before the action). Own-tile suicides do not count. ADD does not set the “last moved” tile; only a MOVE does.
 
-#### 4. `color_restricted_hops` (experimental, default **off**)
+#### 4. `color_restricted_hops` (default **on**)
 
 CLI: `--color-restricted-hops <on|off>` `--hop-weight-cmp <lt|le>`
 
@@ -143,13 +145,48 @@ CLI: `--color-restricted-hops <on|off>` `--hop-weight-cmp <lt|le>`
 1. the **mover’s color** (either owner), and
 2. whose weight compares to the mover’s weight with `hop_weight_cmp`.
 
-Default comparison is **`Lt`** (occupant weight **strictly less than** the mover). `Le` is provided so the designer can confirm equal-weight same-color hops. Owner still does not matter. Other colors cannot be hopped at all.
+Default comparison is **`Le`** (occupant weight **less than or equal to** the mover). `Lt` is the stricter option (occupant **strictly less than** the mover). Owner still does not matter. Other colors cannot be hopped at all.
 
 When this option is **off**, the legacy rule applies: hopped tiles may be any color/owner, and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`. The color-restricted regime **overrides** `hop_requires_ge_weight`.
 
-This is the opposite inequality of the default hop (default: hop equal-or-heavier of any color; color-restricted: hop lighter of your color only). Confirm `lt` vs `le` against the intended reading.
+This is the opposite inequality of the legacy hop (`color_restricted_hops` off: hop equal-or-heavier of any color; on: hop equal-or-lighter of your color only, or strictly lighter with `lt`).
 
-#### 5. `no_repeated_edge` / `path_constraint` (default **NoEdgeRevisit**)
+#### 5. `petal_majority_win` (experimental, default **off**, N = 1)
+
+CLI: `--petal-majority-win <on|off>` `--petal-majority-n <1..64>`
+
+A **petal** here is one of the eight generating circles of the rosette. Each petal attaches to the center at exactly one unique inner-ring node (`Board::inner_ring()`, the 8 neighbors of the origin). Holding a **majority of petals** means occupying **more than half** of those nodes (5 of 8). Outer tips and spawn nodes are not counted.
+
+- At the end of player P’s turn: if P occupies at least `need = inner_ring.len()/2 + 1` inner-ring nodes, P’s counter increments; if it reaches `petal_majority_n`, P wins (`EndReason::PetalMajority`). Otherwise P’s counter resets to 0.
+- Default N = 1 (win at the end of the turn you first have 5 inner-ring tiles). N = 3 is the longer-hold setting used in benches.
+- Only one player can have a majority at a time (5+5 > 8). If center-hold and petal-majority would fire on the same turn, **center-hold is checked first**.
+- The HUD shows petal counts and hold progress while this option is on.
+
+#### 6. `control_win` (default **on**, k = 5, t = 1)
+
+CLI: `--control-win <on|off>` `--control-n <1..9>` `--control-hold-turns <1..64>`
+
+The **control set** is the center (node 0) plus the 8 inner-ring nodes (`Board::inner_ring()`), 9 nodes total. A player wins by occupying at least `control_n` of these 9 (default 5) for `control_hold_turns` consecutive **own** turns (default 1 = end of the turn you first have 5).
+
+- Grabbing the center alone is 1 of 9 and is **not** a win. This is meant as a center-hold replacement so a center rush is not a race to victory.
+- At the end of player P’s turn: if P occupies at least `control_n` control-set nodes, P’s counter increments; if it reaches `control_hold_turns`, P wins (`EndReason::Control`). Otherwise P’s counter resets to 0. The opponent’s counter resets when they drop below `control_n`.
+- Check order at end of turn: center-hold, then petal-majority, then control, then insufficient-tiles, then turn-limit, then lockout of the incoming player.
+- The HUD shows `ctl P1 a/k h/t P2 b/k i/t` while this option is on.
+- Chosen default package (from [`control_win_t1_bench7.txt`](../../apa-kan/game/benchmark_results/control_win_t1_bench7.txt)): control-win **on** (5 of 9, t=1), center-hold **off**, starting bench 7, insufficient-tiles **off**, petal-majority **off**. Restore the previous package with `--center-hold-win on --control-win off --starting-bench 5`.
+- Total game clocks (a draw condition) are a planned follow-up; they are not implemented here.
+
+#### 7. `insufficient_tiles_loss` (experimental, default **off**) — "can't reach control"
+
+CLI: `--insufficient-tiles-loss <off|strict|no-recapture>`
+
+A player **loses** (`EndReason::InsufficientTiles`) when they can no longer occupy 5 control-set nodes: `board tiles + bench < control_n` (default 5). Bag tiles are not in play until drawn, and bag draws happen **only** on a MOVE that captures an opponent tile.
+
+Checked at the **turn boundary** (end of `finish_turn`) for **both** players, after hold wins. If both are insufficient at once, the game is a **draw** (`EndReason::InsufficientTiles`).
+
+- **`strict`**: lose as soon as `board + bench < 5`, ignoring the bag and ignoring whether a capture is available.
+- **`no-recapture`**: lose when `board + bench < 5` **and** they cannot gain a tile. "Cannot gain" means the bag is empty, `capture_draw_on_move` is off, **or they have no path-legal MOVE that would remove an opponent tile in the current position** (previewed simultaneous overwhelm; same check as the capture exception, via `has_capturing_move`). The check does not require that player to be to-move, so both sides can be evaluated at the same turn boundary. A capturing MOVE with a non-empty bag saves them even if `board + bench < 5`. This is stricter than bag-empty-only: tiles left in the bag do not help if no capturing MOVE exists right now. Future captures on a later turn are not searched.
+
+#### 8. `no_repeated_edge` / `path_constraint` (default **NoEdgeRevisit**)
 
 CLI: `--path-constraint <no-node-revisit|no-edge-revisit|both>` and `--no-repeated-edge <on|off>` (alias: `off` → `NoNodeRevisit`; `on` keeps `NoEdgeRevisit` or upgrades `NoNodeRevisit` to `Both`).
 
@@ -180,12 +217,16 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --center-hold-win on|off --center-hold-n N
         --no-same-piece-twice off|always|when-bench-empty
         --color-restricted-hops on|off --hop-weight-cmp lt|le
+        --petal-majority-win on|off --petal-majority-n N
+        --control-win on|off --control-n K --control-hold-turns T
+        --insufficient-tiles-loss off|strict|no-recapture
+        --starting-bench N
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` off, `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7, `path_constraint` no-edge-revisit.
 
-Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility heuristic; MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out and center-hold terminals are wins/losses in search.
+Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, petal-majority, control, and insufficient-tiles terminals are wins/losses in search.
 
 Headless round-robin: `apa-kan-bench` (same rule flags; `--bots greedy,minimax,mcts`).
 
@@ -210,5 +251,5 @@ Headless round-robin: `apa-kan-bench` (same rule flags; `--bots greedy,minimax,m
 
 ## Open questions
 
-- Confirm `hop_weight_cmp` (`lt` vs `le`) for color-restricted hops against the intended reading of “if the weight in your color is less than, you can traverse.” Implementation default is strict `<`.
+- Color-restricted hop weight: default is `le` (occupant `<=` mover). `lt` remains available as the stricter reading of “if the weight in your color is less than, you can traverse.”
 - Whether `WhenBenchEmpty` should look at bench emptiness at the start of the turn or at MOVE time (implemented: at MOVE time).

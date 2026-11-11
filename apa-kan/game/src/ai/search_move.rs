@@ -115,6 +115,20 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 	match mv {
 		SearchMove::Move { from, to } => {
 			let mut s = 50;
+			let center = game.board().center();
+			if to == center {
+				s += 900;
+			} else if game.board().inner_ring().contains(&to) {
+				s += 220;
+			}
+			if from == center {
+				// Vacating our own center is almost never right under hold-to-win.
+				s -= if game.rules().center_hold_win || game.rules().control_win {
+					1_200
+				} else {
+					40
+				};
+			}
 			if let Some(tile) = game.tile_at(from) {
 				for &nb in game.board().neighbors(to) {
 					if let Some(other) = game.tile_at(nb) {

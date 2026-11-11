@@ -1,0 +1,13 @@
+# minimax vs mcts full game  seed=50001 think_ms=1000 P1=minimax P2=mcts
+  1. P1 (light) ADD bench[2] to spawn 2   [depth=5 iters=0]
+  2. P2 (dark) ADD bench[3] to spawn 8   [depth=0 iters=1271]
+  3. P1 (light) MOVE 2 -> 0   [depth=5 iters=0]
+  4. P2 (dark) ADD bench[3] to spawn 14   [depth=0 iters=2116]
+  5. P1 (light) ADD bench[2] to spawn 2   [depth=4 iters=0]
+  6. P2 (dark) MOVE 8 -> 6   [depth=0 iters=2034]
+  7. P1 (light) MOVE 2 -> 1   [depth=5 iters=0]
+  8. P2 (dark) ADD bench[2] to spawn 2   [depth=0 iters=2679]
+  9. P1 (light) ADD bench[0] to spawn 5   [depth=5 iters=0]
+ 10. P2 (dark) MOVE 14 -> 16   [depth=0 iters=7390]
+ 11. P1 (light) MOVE 5 -> 3   [depth=6 iters=0]
+# result=Won { winner: One, reason: CenterHold } turns=11

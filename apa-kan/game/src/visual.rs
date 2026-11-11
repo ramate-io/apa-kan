@@ -56,7 +56,8 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 /// showed up as tofu boxes between HUD items.
 pub const HUD_SEP: &str = " | ";
 
-pub const HELP_TEXT: &str = "Click a spawn then a bench tile to ADD, or click your tile to MOVE.";
+pub const HELP_TEXT: &str =
+	"Click a spawn then a bench tile to ADD, or click your tile to MOVE. Win: 5 of 9 (center+inner).";
 
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];
@@ -314,17 +315,43 @@ pub fn format_header(bot1: &str, bot2: &str, turn: &str) -> String {
 pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 	match game.status() {
 		GameStatus::InProgress => {
-			let hold = if game.rules().center_hold_win {
-				format!(
-					"{HUD_SEP}center hold P1 {}/{} P2 {}/{}",
+			let mut extra = String::new();
+			if game.rules().center_hold_win {
+				extra.push_str(&format!(
+					"{HUD_SEP}hold P1 {}/{} P2 {}/{}",
 					game.center_hold(Player::One),
 					game.rules().center_hold_n,
 					game.center_hold(Player::Two),
 					game.rules().center_hold_n
-				)
-			} else {
-				String::new()
-			};
+				));
+			}
+			if game.rules().petal_majority_win {
+				extra.push_str(&format!(
+					"{HUD_SEP}petals P1 {}/{} ({}/{}) P2 {}/{} ({}/{})",
+					game.petal_count(Player::One),
+					game.petal_majority_need(),
+					game.petal_majority(Player::One),
+					game.rules().petal_majority_n,
+					game.petal_count(Player::Two),
+					game.petal_majority_need(),
+					game.petal_majority(Player::Two),
+					game.rules().petal_majority_n
+				));
+			}
+			if game.rules().control_win {
+				extra.push_str(&format!(
+					"{HUD_SEP}ctl P1 {}/{} {}/{} P2 {}/{} {}/{}",
+					game.control_count(Player::One),
+					game.control_need(),
+					game.control_hold(Player::One),
+					game.rules().control_hold_turns,
+					game.control_count(Player::Two),
+					game.control_need(),
+					game.control_hold(Player::Two),
+					game.rules().control_hold_turns
+				));
+			}
+			let hold = extra;
 			format!(
 				"Turn {}{HUD_SEP}{} ({}) to play{HUD_SEP}P1 light {}/{}{HUD_SEP}P2 dark {}/{}{hold}",
 				game.turn_count() + 1,
@@ -517,6 +544,13 @@ mod tests {
 				"{w}x{h}: P1 bench overlaps help text"
 			);
 			assert!(layout.tile_radius > 8.0, "{w}x{h}: tiles too small ({})", layout.tile_radius);
+			let n = 7usize;
+			let half =
+				layout.bench_spacing * n.saturating_sub(1) as f32 / 2.0 + layout.bench_tile_radius;
+			assert!(
+				half + slack <= w / 2.0 - 8.0,
+				"{w}x{h}: 7-tile bench overflows width (half={half})"
+			);
 		}
 	}
 
@@ -576,9 +610,26 @@ mod tests {
 		assert!(is_hud_safe(&turn), "{turn}");
 		assert!(is_hud_safe(&log), "{log}");
 		assert!(is_hud_safe(HELP_TEXT), "{HELP_TEXT}");
+		assert!(HELP_TEXT.contains("5 of 9"));
 		assert!(!header.contains('·'));
 		assert!(!turn.contains('·'));
-		assert!(turn.len() < 80, "turn line should fit a 1024px window: {turn}");
+		assert!(turn.len() < 110, "turn line should fit a 1024px window: {turn}");
+		assert!(turn.contains("ctl"), "control-win HUD should show on default rules: {turn}");
+	}
+
+	#[test]
+	fn opening_hud_uses_control_win_and_seven_tile_bench() {
+		let game = Game::new(RuleSet::default(), 1);
+		assert!(game.rules().control_win);
+		assert!(!game.rules().center_hold_win);
+		assert_eq!(game.bench(Player::One).len(), 7);
+		assert_eq!(game.bag_len(Player::One), 20);
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("ctl P1 0/5 0/1 P2 0/5 0/1"), "{turn}");
+		assert!(turn.contains("P1 light 7/20"), "{turn}");
+		assert!(turn.contains("P2 dark 7/20"), "{turn}");
+		assert!(!turn.contains("hold P1"), "{turn}");
+		assert!(turn.len() < 110, "turn line should fit a 1024px window: {turn}");
 	}
 
 	#[test]

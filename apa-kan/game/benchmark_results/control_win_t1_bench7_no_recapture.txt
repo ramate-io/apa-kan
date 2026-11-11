@@ -1,0 +1,42 @@
+# apa-kan search benchmark
+# think_ms=1000 games_per_pairing_per_seat=6 seed_base=1 turn_limit=200
+
+# branching factor (legal actions per position, from greedy/random games)
+# sample_games=12  (greedy vs random, random vs greedy, greedy vs greedy)
+# kind     n_positions  avg    max
+ADD       245          25.65  56
+MOVE      227          22.37  59
+ALL       252          45.08  75
+
+# minimax iterative-deepening depth probe (opening position)
+# think_ms=1000 completed_depth=4 nodes=96448
+# think_ms=3000 completed_depth=5 nodes=701888
+
+# bench 7, control-win t=1, center-hold off, insufficient-tiles-loss no-recapture
+# think_ms=1000 games_per_pairing_per_seat=6 seed_base=1 turn_limit=200
+# rules: no_moves_loses=on center_hold_win=off center_hold_n=5 no_same_piece_twice=when-bench-empty color_restricted_hops=on hop_weight_cmp=le petal_majority_win=off petal_majority_n=1 control_win=on control_n=5 control_hold_turns=1 insufficient_tiles_loss=no-recapture starting_bench=7 path_constraint=no-edge-revisit
+# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.
+# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).
+# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters
+greedy          vs greedy           P1  6-0-0  19.67  0  0  0  0  1  5  0  0  0  1.00  0.00  0.0
+greedy          vs minimax          P1  1-0-5  19.17  0  0  0  0  2  4  0  0  0  1.00  3.91  0.0
+greedy          vs mcts             P1  0-0-6  20.67  0  0  0  0  1  5  0  0  0  1.00  0.00  1447.5
+minimax         vs greedy           P1  6-0-0  22.33  0  0  0  0  4  2  0  0  0  1.00  3.84  0.0
+minimax         vs minimax          P1  1-0-5  32.83  0  0  0  0  3  3  0  0  0  1.00  4.34  0.0
+minimax         vs mcts             P1  3-0-3  62.50  0  0  0  0  4  2  0  0  0  1.33  4.58  2643.6
+mcts            vs greedy           P1  6-0-0  19.00  0  0  0  0  0  6  0  0  0  1.00  0.00  1695.9
+mcts            vs minimax          P1  4-0-2  42.67  0  0  0  0  4  2  0  0  0  1.00  4.70  1979.4
+mcts            vs mcts             P1  2-1-3  78.67  0  0  0  0  4  1  1  0  0  1.00  0.00  2160.9
+# seat_totals  P1 29-1-24  P2 24-1-29  games=54
+# end_reasons  elim=0 locked_out=0 center_hold=0 petal_maj=0 control=23 insuff=30 turn_limit=1 double_pass=0
+
+# stalling (rules unchanged; no threefold draw)
+# games=54  visible_pos_seen_>=2=2  visible_pos_seen_>=3=0  occupancy_seen_>=3=0
+# games_that_both_hit_turn_limit_and_had_a_visible_repeat_>=3 (lower bound via pairing mins) ~ 0
+# Visible hash covers occupancy, tile kind, owner, benches, side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).
+# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.
+
+# MCTS bag determinization: remaining bag tiles are a known multiset; each MCTS iteration shuffles both bags (samples a permutation) so capture draws are chance events. Minimax uses the live bag order of the position.
+# Minimax: iterative deepening alpha-beta, Zobrist TT, TT/capture/killer/history ordering, quiescence on capture sequences.
+# game_record=apa-kan/game/benchmark_results/control_t1_bench7_no_recapture_mm_vs_mcts.txt
+# elapsed_sec=469.7
