@@ -28,7 +28,7 @@ struct TTEntry {
 	score: i32,
 	depth: u8,
 	flag: u8,
-	kind: u8,
+	kind: u16,
 	a: u8,
 	b: u8,
 }
@@ -57,7 +57,7 @@ impl TranspositionTable {
 		if cur.hash == hash && cur.depth > depth {
 			return;
 		}
-		let (kind, a, b) = best.map(SearchMove::pack).unwrap_or((254, 0, 0));
+		let (kind, a, b) = best.map(SearchMove::pack).unwrap_or((u16::MAX - 1, 0, 0));
 		self.entries[slot] = TTEntry { hash, score, depth, flag: flag as u8, kind, a, b };
 	}
 }

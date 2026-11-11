@@ -28,7 +28,8 @@ shared = "orange"
 [p1]
 colors = ["green", "orange"]   # all 9 kinds of each color
 # [[p1.tiles]]
-# color = "green"              # or colors = ["green", "teal"] for two normal rings
+# color = "green"              # or colors = ["green", "teal"] for two rings
+# zags = ["teal"]              # which of those rings are zags (or zag = true for all)
 # weight = 3                   # omit weight/dots to expand all 9 kinds of that color
 # dots = 1
 # count = 1

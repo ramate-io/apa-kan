@@ -239,6 +239,17 @@ where
 			}
 			rules.max_rings = n as u8;
 		}
+		"--zag-chance" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n > 7 {
+				return Err("invalid --zag-chance (expected 0..7, k/7)".into());
+			}
+			rules.zag_numer = n as u8;
+		}
+		"--zags" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.zag_numer = if on { crate::game::ZAG_NUMER_DEFAULT } else { 0 };
+		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
 		}
@@ -287,7 +298,9 @@ pub fn usage() -> &'static str {
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-bench <1..27>                   Opening deal from the 27-tile bag (default: 7)\n\
-	   --max-rings <1..3>                         Distinct normal rings per tile (default: 3)\n\
+	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
+	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
+	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -407,6 +420,7 @@ mod tests {
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.max_rings, 3);
+		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 	}
 
@@ -416,6 +430,18 @@ mod tests {
 		assert_eq!(cfg.rules.max_rings, 1);
 		let err = GameConfig::parse(["--max-rings", "4"]).unwrap_err();
 		assert!(err.contains("max-rings"));
+	}
+
+	#[test]
+	fn parses_zag_flags() {
+		let off = GameConfig::parse(["--zags", "off"]).unwrap();
+		assert_eq!(off.rules.zag_numer, 0);
+		let chance = GameConfig::parse(["--zag-chance", "0"]).unwrap();
+		assert_eq!(chance.rules.zag_numer, 0);
+		let on = GameConfig::parse(["--zags", "on"]).unwrap();
+		assert_eq!(on.rules.zag_numer, 1);
+		let err = GameConfig::parse(["--zag-chance", "8"]).unwrap_err();
+		assert!(err.contains("zag-chance"));
 	}
 
 	#[test]

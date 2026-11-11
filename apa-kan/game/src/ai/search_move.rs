@@ -5,7 +5,7 @@ use crate::game::{Action, Game, KIND_COUNT};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchMove {
-	/// `kind` is [`crate::game::Tile::kind_index`] (color-mask × weight × dots).
+	/// `kind` is [`crate::game::Tile::kind_index`] (color-state × weight × dots).
 	Add {
 		kind: u16,
 		node: NodeId,
@@ -47,25 +47,25 @@ impl SearchMove {
 		}
 	}
 
-	/// Packed TT key: mask 0 = MOVE, 255 = PASS, 1..=63 = ADD color-mask.
-	pub fn pack(self) -> (u8, u8, u8) {
+	/// Packed TT key: 0 = MOVE, u16::MAX = PASS, 1..=COLOR_STATES = ADD color-state.
+	pub fn pack(self) -> (u16, u8, u8) {
 		match self {
 			SearchMove::Add { kind, node } => {
-				let mask = (kind / 9) as u8;
+				let state = kind / 9 + 1;
 				let wd = (kind % 9) as u8;
-				(mask, node, wd)
+				(state, node, wd)
 			}
 			SearchMove::Move { from, to } => (0, from, to),
-			SearchMove::Pass => (255, 0, 0),
+			SearchMove::Pass => (u16::MAX, 0, 0),
 		}
 	}
 
-	pub fn unpack(kind: u8, a: u8, b: u8) -> Option<Self> {
+	pub fn unpack(kind: u16, a: u8, b: u8) -> Option<Self> {
 		match kind {
-			255 => Some(SearchMove::Pass),
+			u16::MAX => Some(SearchMove::Pass),
 			0 => Some(SearchMove::Move { from: a, to: b }),
-			mask if (1..64).contains(&mask) && b < 9 => {
-				Some(SearchMove::Add { kind: u16::from(mask) * 9 + u16::from(b), node: a })
+			state if (1..=crate::game::COLOR_STATES as u16).contains(&state) && b < 9 => {
+				Some(SearchMove::Add { kind: (state - 1) * 9 + u16::from(b), node: a })
 			}
 			_ => None,
 		}
@@ -149,8 +149,10 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 						if other.owner != tile.owner {
 							s += 35;
 						}
-						if other.shares_color(tile) {
+						if other.shares_normal(tile) {
 							s += 8;
+						} else if other.zag_hits_on(tile) > 0 || tile.zag_hits_on(other) > 0 {
+							s += 18;
 						} else {
 							s += 12;
 						}
@@ -161,14 +163,23 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 		}
 		SearchMove::Add { kind, node } => {
 			let mut s = 12;
-			let mask = (kind / 9) as u8;
+			let (normal, zag) = crate::game::color_state_masks((kind / 9) as usize);
+			let add_all = normal | zag;
 			for &nb in game.board().neighbors(node) {
 				if let Some(other) = game.tile_at(nb) {
 					if other.owner == game.current_player() {
 						s += 10;
 					}
-					if other.color_mask() & mask != 0 {
+					if other.normal_mask() & normal != 0 {
 						s += 16;
+					} else if other.color_mask() & zag != 0
+						|| other
+							.ring_colors()
+							.iter()
+							.enumerate()
+							.any(|(i, c)| other.zag[i] && add_all & c.bit() != 0)
+					{
+						s += 18;
 					} else {
 						s += 6;
 					}
@@ -209,6 +220,9 @@ mod tests {
 		let add = SearchMove::Add { kind: 9 + 4, node: 3 };
 		let (k, a, b) = add.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(add));
+		let zag_add = SearchMove::Add { kind: 20 * 9 + 2, node: 5 };
+		let packed = zag_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(zag_add));
 		let mv = SearchMove::Move { from: 2, to: 7 };
 		let (k, a, b) = mv.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));

@@ -34,6 +34,10 @@ pub const ARC_SAME_COLOR_WIDTH_SCALE: f32 = 1.45;
 pub const BRAID_STRAND_WIDTH_SCALE: f32 = 0.78;
 pub const BRAID_AMP_UNITS: f32 = 0.030;
 pub const BRAID_AMP_CENTER_UNITS: f32 = 0.016;
+pub const ZAG_AMP_UNITS: f32 = 0.028;
+pub const ZAG_AMP_CENTER_UNITS: f32 = 0.016;
+pub const ZAG_TEETH: f64 = 7.0;
+pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.72;
 
 pub const Z_ARC: f32 = 0.0;
 pub const Z_ARC_OVER: f32 = 0.08;
@@ -70,26 +74,75 @@ pub const HIGHLIGHT_RGB: [f32; 3] = [0.95, 0.85, 0.25];
 pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ArcPaint {
+pub struct ArcPaint {
+	pub body: ArcBody,
+	pub zags: [Option<TileColor>; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArcBody {
 	Neutral,
 	Solid { color: TileColor, thick: bool },
 	Braid { a: TileColor, b: TileColor },
 }
 
-pub fn shared_ring_color(a: Tile, b: Tile) -> Option<TileColor> {
-	a.ring_colors().iter().copied().find(|&c| b.has_color(c))
+impl ArcPaint {
+	pub fn neutral() -> Self {
+		Self { body: ArcBody::Neutral, zags: [None; 2] }
+	}
+
+	pub fn solid(color: TileColor, thick: bool) -> Self {
+		Self { body: ArcBody::Solid { color, thick }, zags: [None; 2] }
+	}
+
+	pub fn braid(a: TileColor, b: TileColor) -> Self {
+		Self { body: ArcBody::Braid { a, b }, zags: [None; 2] }
+	}
+}
+
+pub fn shared_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
+	let mut out = [None; 2];
+	let mut n = 0usize;
+	for (i, &c) in a.ring_colors().iter().enumerate() {
+		if a.zag[i] || !b.has_normal(c) {
+			continue;
+		}
+		if !out.contains(&Some(c)) && n < 2 {
+			out[n] = Some(c);
+			n += 1;
+		}
+	}
+	out
+}
+
+/// Zag colors that actually fire on this edge (either tile's zag vs the other).
+pub fn firing_zags(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
+	let mut out = [None; 2];
+	let mut n = 0usize;
+	for (src, dst) in [(a, b), (b, a)] {
+		for (i, &c) in src.ring_colors().iter().enumerate() {
+			if src.zag[i] && dst.has_color(c) && !out.contains(&Some(c)) && n < 2 {
+				out[n] = Some(c);
+				n += 1;
+			}
+		}
+	}
+	out
 }
 
 pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
 	match (from, to) {
-		(None, None) => ArcPaint::Neutral,
-		(Some(t), None) | (None, Some(t)) => ArcPaint::Solid { color: t.primary(), thick: false },
+		(None, None) => ArcPaint::neutral(),
+		(Some(t), None) | (None, Some(t)) => ArcPaint::solid(t.primary(), false),
 		(Some(a), Some(b)) => {
-			if let Some(color) = shared_ring_color(a, b) {
-				ArcPaint::Solid { color, thick: true }
-			} else {
-				ArcPaint::Braid { a: a.primary(), b: b.primary() }
-			}
+			let shared = shared_normal_colors(a, b);
+			let zags = firing_zags(a, b);
+			let body = match (shared[0], shared[1]) {
+				(Some(color), None) => ArcBody::Solid { color, thick: true },
+				(Some(c1), Some(c2)) => ArcBody::Braid { a: c1, b: c2 },
+				(None, _) => ArcBody::Braid { a: a.primary(), b: b.primary() },
+			};
+			ArcPaint { body, zags }
 		}
 	}
 }
@@ -138,6 +191,8 @@ pub struct ViewLayout {
 	pub arc_width: f32,
 	pub braid_amp: f32,
 	pub braid_amp_center: f32,
+	pub zag_amp: f32,
+	pub zag_amp_center: f32,
 }
 
 impl ViewLayout {
@@ -171,6 +226,8 @@ impl ViewLayout {
 		let arc_width = (ARC_WIDTH_UNITS * scale).max(ARC_WIDTH_MIN_PX);
 		let braid_amp = (BRAID_AMP_UNITS * scale).max(2.0);
 		let braid_amp_center = (BRAID_AMP_CENTER_UNITS * scale).max(1.4);
+		let zag_amp = (ZAG_AMP_UNITS * scale).max(2.2);
+		let zag_amp_center = (ZAG_AMP_CENTER_UNITS * scale).max(1.6);
 
 		Self {
 			width,
@@ -188,6 +245,8 @@ impl ViewLayout {
 			arc_width,
 			braid_amp,
 			braid_amp_center,
+			zag_amp,
+			zag_amp_center,
 		}
 	}
 
@@ -265,6 +324,47 @@ pub fn braid_strands(centerline: &[[f64; 2]], amplitude: f64, turns: f64) -> Bra
 		phase.push(ph);
 	}
 	Braid { a, b, phase }
+}
+
+pub fn zigzag_polyline(centerline: &[[f64; 2]], amplitude: f64, teeth: f64) -> Vec<[f64; 2]> {
+	let n = centerline.len().max(2);
+	let mut out = Vec::with_capacity(n);
+	for i in 0..centerline.len() {
+		let t = if centerline.len() == 1 { 0.0 } else { i as f64 / (centerline.len() - 1) as f64 };
+		let wave = triangle_wave(t * teeth);
+		let (nx, ny) = polyline_normal(centerline, i);
+		let p = centerline[i];
+		out.push([p[0] + nx * amplitude * wave, p[1] + ny * amplitude * wave]);
+	}
+	out
+}
+
+pub fn zigzag_circle(
+	center: [f64; 2],
+	radius: f64,
+	amplitude: f64,
+	teeth: u32,
+	samples: u32,
+) -> Vec<[f64; 2]> {
+	let n = samples.max(8);
+	let mut pts = Vec::with_capacity(n as usize + 1);
+	for i in 0..=n {
+		let t = f64::from(i) / f64::from(n);
+		let ang = t * 2.0 * PI;
+		let wave = triangle_wave(t * f64::from(teeth));
+		let rr = radius + amplitude * wave;
+		pts.push([center[0] + rr * ang.cos(), center[1] + rr * ang.sin()]);
+	}
+	pts
+}
+
+fn triangle_wave(t: f64) -> f64 {
+	let phase = t.rem_euclid(1.0);
+	if phase < 0.5 {
+		4.0 * phase - 1.0
+	} else {
+		3.0 - 4.0 * phase
+	}
 }
 
 pub fn braid_turns(arc: &ArcEdge) -> f64 {
@@ -420,6 +520,35 @@ pub fn demo_midgame() -> Game {
 
 	place(&mut game, center, Player::One, TileColor::Orange, 2, 2);
 
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let t = game.alloc_rings(Player::One, &[TileColor::Green, TileColor::Blue], 2, 1);
+		let u = game.alloc_rings(Player::Two, &[TileColor::Green, TileColor::Blue], 2, 1);
+		game.place_tile(a, t);
+		game.place_tile(b, u);
+	}
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let t = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 2, 1);
+		let u = game.alloc_rings(Player::Two, &[TileColor::Orange], 2, 1);
+		game.place_tile(a, t);
+		game.place_tile(b, u);
+	}
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let t = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		let u = game.alloc_ring_kinds(
+			Player::Two,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		game.place_tile(a, t);
+		game.place_tile(b, u);
+	}
+
 	if let Some(&n) = inner.first() {
 		place(&mut game, n, Player::Two, TileColor::Green, 3, 1);
 	}
@@ -465,9 +594,11 @@ pub fn demo_midgame() -> Game {
 		place(&mut game, n, Player::Two, TileColor::Orange, 2, 3);
 	}
 	if let Some(&n) = outer.get(7) {
-		let tile =
-			game.alloc_rings(Player::One, &[TileColor::Green, TileColor::LavenderPink], 2, 1);
-		game.place_tile(n, tile);
+		if game.tile_at(n).is_none() {
+			let tile =
+				game.alloc_rings(Player::One, &[TileColor::Green, TileColor::LavenderPink], 2, 1);
+			game.place_tile(n, tile);
+		}
 	}
 
 	let p1_bench = vec![
@@ -501,8 +632,27 @@ pub fn demo_midgame() -> Game {
 }
 
 fn place(game: &mut Game, node: NodeId, owner: Player, color: TileColor, weight: u8, dots: u8) {
+	if game.tile_at(node).is_some() {
+		return;
+	}
 	let tile = game.alloc_tile(owner, color, weight, dots);
 	game.place_tile(node, tile);
+}
+
+fn empty_neighbor_pair(game: &Game) -> Option<(NodeId, NodeId)> {
+	let board = game.board();
+	let center = board.center();
+	for id in 0..board.node_count() as NodeId {
+		if game.tile_at(id).is_some() || board.is_spawn(id) || id == center {
+			continue;
+		}
+		for &nb in board.neighbors(id) {
+			if game.tile_at(nb).is_none() && !board.is_spawn(nb) && nb != center {
+				return Some((id, nb));
+			}
+		}
+	}
+	None
 }
 
 fn angle_of(p: [f64; 2]) -> f64 {
@@ -575,24 +725,28 @@ mod tests {
 	fn arc_paint_covers_gray_one_two_and_same() {
 		let orange = Tile::mono(1, Player::One, TileColor::Orange, 1, 1);
 		let green = Tile::mono(2, Player::One, TileColor::Green, 1, 1);
-		assert_eq!(arc_paint(None, None), ArcPaint::Neutral);
-		assert_eq!(
-			arc_paint(Some(orange), None),
-			ArcPaint::Solid { color: TileColor::Orange, thick: false }
-		);
-		assert_eq!(
-			arc_paint(Some(orange), Some(orange)),
-			ArcPaint::Solid { color: TileColor::Orange, thick: true }
-		);
+		assert_eq!(arc_paint(None, None), ArcPaint::neutral());
+		assert_eq!(arc_paint(Some(orange), None), ArcPaint::solid(TileColor::Orange, false));
+		assert_eq!(arc_paint(Some(orange), Some(orange)), ArcPaint::solid(TileColor::Orange, true));
 		assert_eq!(
 			arc_paint(Some(orange), Some(green)),
-			ArcPaint::Braid { a: TileColor::Orange, b: TileColor::Green }
+			ArcPaint::braid(TileColor::Orange, TileColor::Green)
 		);
 		let duo = Tile::with_rings(3, Player::One, &[TileColor::Green, TileColor::Teal], 1, 1);
-		assert_eq!(
-			arc_paint(Some(green), Some(duo)),
-			ArcPaint::Solid { color: TileColor::Green, thick: true }
+		assert_eq!(arc_paint(Some(green), Some(duo)), ArcPaint::solid(TileColor::Green, true));
+		let gb = Tile::with_rings(4, Player::One, &[TileColor::Green, TileColor::Blue], 1, 1);
+		let paint = arc_paint(Some(gb), Some(gb));
+		assert_eq!(paint.body, ArcBody::Braid { a: TileColor::Green, b: TileColor::Blue });
+		let zag = Tile::with_ring_kinds(
+			5,
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			1,
+			1,
 		);
+		let paint = arc_paint(Some(zag), Some(zag));
+		assert_eq!(paint.body, ArcBody::Solid { color: TileColor::Blue, thick: true });
+		assert_eq!(paint.zags[0], Some(TileColor::Orange));
 	}
 
 	#[test]
@@ -603,18 +757,33 @@ mod tests {
 		let mut one = 0;
 		let mut same = 0;
 		let mut braid = 0;
+		let mut zag_arcs = 0;
+		let mut two_match = 0;
 		for arc in game.board().arcs() {
-			match arc_paint(game.tile_at(arc.from), game.tile_at(arc.to)) {
-				ArcPaint::Neutral => gray += 1,
-				ArcPaint::Solid { thick: false, .. } => one += 1,
-				ArcPaint::Solid { thick: true, .. } => same += 1,
-				ArcPaint::Braid { .. } => braid += 1,
+			let paint = arc_paint(game.tile_at(arc.from), game.tile_at(arc.to));
+			if paint.zags[0].is_some() {
+				zag_arcs += 1;
+			}
+			match paint.body {
+				ArcBody::Neutral => gray += 1,
+				ArcBody::Solid { thick: false, .. } => one += 1,
+				ArcBody::Solid { thick: true, .. } => same += 1,
+				ArcBody::Braid { .. } => {
+					braid += 1;
+					if let (Some(a), Some(b)) = (game.tile_at(arc.from), game.tile_at(arc.to)) {
+						if shared_normal_colors(a, b)[1].is_some() {
+							two_match += 1;
+						}
+					}
+				}
 			}
 		}
 		assert!(gray > 0, "need empty gray arcs");
 		assert!(one > 0, "need one-ended colored arcs");
 		assert!(same > 0, "need same-color solid arcs");
 		assert!(braid > 0, "need two-color braided arcs");
+		assert!(two_match > 0, "need an undecided two-shared-color arc");
+		assert!(zag_arcs > 0, "need a firing zag overlay on an arc");
 		assert_eq!(game.bench(Player::One).len(), 5);
 		assert_eq!(game.bench(Player::Two).len(), 5);
 	}
@@ -660,5 +829,16 @@ mod tests {
 		assert_eq!(braid.a.len(), 4);
 		assert!(braid.a[1][1].abs() > 0.2);
 		assert!((braid.a[1][1] + braid.b[1][1]).abs() < 1e-9);
+	}
+
+	#[test]
+	fn zigzag_polyline_leaves_the_centerline() {
+		let pts = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]];
+		let zig = zigzag_polyline(&pts, 0.4, 2.0);
+		assert_eq!(zig.len(), pts.len());
+		assert!(zig.iter().any(|p| p[1].abs() > 0.1));
+		let ring = zigzag_circle([0.0, 0.0], 10.0, 1.5, 8, 32);
+		assert!(ring.len() > 8);
+		assert!((ring[0][0] - ring[ring.len() - 1][0]).abs() < 1e-9);
 	}
 }

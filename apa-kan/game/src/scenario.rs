@@ -15,6 +15,7 @@ use crate::game::{Tile, TileColor, MAX_COLOR_RINGS};
 pub struct KindCount {
 	pub rings: [TileColor; 3],
 	pub n_rings: u8,
+	pub zag: [bool; 3],
 	pub weight: u8,
 	pub dots: u8,
 	pub count: u8,
@@ -22,7 +23,7 @@ pub struct KindCount {
 
 impl KindCount {
 	pub fn mono(color: TileColor, weight: u8, dots: u8, count: u8) -> Self {
-		Self { rings: [color; 3], n_rings: 1, weight, dots, count }
+		Self { rings: [color; 3], n_rings: 1, zag: [false; 3], weight, dots, count }
 	}
 
 	pub fn ring_colors(&self) -> &[TileColor] {
@@ -30,7 +31,7 @@ impl KindCount {
 	}
 
 	pub fn tag(self) -> String {
-		kind_tag(self.ring_colors(), self.weight, self.dots)
+		kind_tag(self.ring_colors(), &self.zag, self.weight, self.dots)
 	}
 }
 
@@ -39,6 +40,7 @@ impl KindCount {
 pub struct TileSpec {
 	pub rings: [TileColor; 3],
 	pub n_rings: u8,
+	pub zag: [bool; 3],
 	pub weight: u8,
 	pub dots: u8,
 }
@@ -51,15 +53,24 @@ impl TileSpec {
 	pub fn primary(self) -> TileColor {
 		self.rings[0]
 	}
+
+	pub fn parts(&self) -> Vec<(TileColor, bool)> {
+		self.ring_colors().iter().enumerate().map(|(i, &c)| (c, self.zag[i])).collect()
+	}
 }
 
-pub fn kind_tag(colors: &[TileColor], weight: u8, dots: u8) -> String {
-	let rings = colors.iter().map(|c| c.tag()).collect::<Vec<_>>().join("+");
+pub fn kind_tag(colors: &[TileColor], zag: &[bool; 3], weight: u8, dots: u8) -> String {
+	let rings = colors
+		.iter()
+		.enumerate()
+		.map(|(i, c)| if zag[i] { format!("{}z", c.tag()) } else { c.tag().to_string() })
+		.collect::<Vec<_>>()
+		.join("+");
 	format!("{rings}{weight}-{dots}")
 }
 
 pub fn tile_tag(tile: Tile) -> String {
-	kind_tag(tile.ring_colors(), tile.weight, tile.dots)
+	kind_tag(tile.ring_colors(), &tile.zag, tile.weight, tile.dots)
 }
 
 /// Sum of weights, dots, and distinct colors — a simple deck-strength view.
@@ -293,6 +304,12 @@ struct FileTile {
 	dots: Option<u8>,
 	#[serde(default)]
 	count: Option<u8>,
+	/// Colors among this tile's rings that are zags.
+	#[serde(default)]
+	zags: Option<Vec<String>>,
+	/// If true, every ring on this tile is a zag.
+	#[serde(default)]
+	zag: Option<bool>,
 }
 
 pub fn parse_toml(text: &str) -> Result<Scenario, String> {
@@ -376,8 +393,8 @@ fn deck_from_file(d: &FileDeck) -> Result<DeckSpec, String> {
 				if t.weight.is_none() || t.dots.is_none() {
 					return Err("scenario bench entries need color(s), weight, and dots".into());
 				}
-				let rings = parse_file_rings(t)?;
-				out.push(spec_from_rings(&rings, t.weight.unwrap_or(1), t.dots.unwrap_or(1)));
+				let (rings, zag) = parse_file_rings(t)?;
+				out.push(spec_from_rings(&rings, zag, t.weight.unwrap_or(1), t.dots.unwrap_or(1)));
 			}
 			Some(out)
 		}
@@ -385,7 +402,7 @@ fn deck_from_file(d: &FileDeck) -> Result<DeckSpec, String> {
 	Ok(DeckSpec { kinds, bench })
 }
 
-fn parse_file_rings(t: &FileTile) -> Result<Vec<TileColor>, String> {
+fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [bool; 3]), String> {
 	let mut out = Vec::new();
 	if let Some(colors) = &t.colors {
 		for c in colors {
@@ -407,20 +424,40 @@ fn parse_file_rings(t: &FileTile) -> Result<Vec<TileColor>, String> {
 	if out.len() > MAX_COLOR_RINGS as usize {
 		return Err("at most 3 ring colors per tile".into());
 	}
-	Ok(out)
+	let mut zag = [false; 3];
+	if t.zag.unwrap_or(false) {
+		for z in zag.iter_mut().take(out.len()) {
+			*z = true;
+		}
+	}
+	if let Some(names) = &t.zags {
+		for name in names {
+			let c = TileColor::parse(name)?;
+			match out.iter().position(|&x| x == c) {
+				Some(i) => zag[i] = true,
+				None => {
+					return Err(format!(
+						"zag color '{}' is not one of this tile's rings",
+						c.name()
+					));
+				}
+			}
+		}
+	}
+	Ok((out, zag))
 }
 
-fn spec_from_rings(colors: &[TileColor], weight: u8, dots: u8) -> TileSpec {
+fn spec_from_rings(colors: &[TileColor], zag: [bool; 3], weight: u8, dots: u8) -> TileSpec {
 	let first = colors[0];
 	let mut rings = [first; 3];
 	for (i, &c) in colors.iter().take(3).enumerate() {
 		rings[i] = c;
 	}
-	TileSpec { rings, n_rings: colors.len().min(3) as u8, weight, dots }
+	TileSpec { rings, n_rings: colors.len().min(3) as u8, zag, weight, dots }
 }
 
 fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
-	let colors = parse_file_rings(t)?;
+	let (colors, zag) = parse_file_rings(t)?;
 	let count = t.count.unwrap_or(1);
 	if count == 0 {
 		return Err("tile count must be >= 1".into());
@@ -429,8 +466,10 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 		let mut k = KindCount::mono(colors[0], weight, dots, count);
 		for (i, &c) in colors.iter().take(3).enumerate() {
 			k.rings[i] = c;
+			k.zag[i] = zag[i];
 		}
 		k.n_rings = colors.len().min(3) as u8;
+		k.zag = zag;
 		k
 	};
 	match (t.weight, t.dots) {
@@ -487,7 +526,7 @@ pub fn materialize(
 				.iter()
 				.map(|&(role, w, d)| {
 					let color = if role == 0 { excl } else { c.shared };
-					spec_from_rings(&[color], w, d)
+					spec_from_rings(&[color], [false; 3], w, d)
 				})
 				.collect()
 		};
@@ -525,6 +564,7 @@ fn expand_kinds(kinds: &[KindCount]) -> Vec<TileSpec> {
 			out.push(TileSpec {
 				rings: k.rings,
 				n_rings: k.n_rings,
+				zag: k.zag,
 				weight: k.weight,
 				dots: k.dots,
 			});
@@ -543,7 +583,10 @@ fn take_fixed_bench(
 	let mut bench = Vec::new();
 	for &k in want {
 		let pos = bag.iter().position(|&x| x == k).ok_or_else(|| {
-			format!("fixed bench {} is not in the bag", kind_tag(k.ring_colors(), k.weight, k.dots))
+			format!(
+				"fixed bench {} is not in the bag",
+				kind_tag(k.ring_colors(), &k.zag, k.weight, k.dots)
+			)
 		})?;
 		bench.push(bag.remove(pos));
 	}
@@ -671,6 +714,28 @@ count = 2
 		assert!(t.has_color(TileColor::Green));
 		assert!(t.has_color(TileColor::Teal));
 		assert_eq!(game.bench(Player::Two)[0].color_mask(), t.color_mask());
+	}
+
+	#[test]
+	fn custom_toml_zag_ring() {
+		let toml = r#"
+name = "zag"
+shuffle = false
+mirror = true
+[[p1.tiles]]
+colors = ["blue", "orange"]
+zags = ["orange"]
+weight = 1
+dots = 1
+count = 1
+"#;
+		let s = parse_toml(toml).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		let t = game.bench(Player::One)[0];
+		assert!(t.has_normal(TileColor::Blue));
+		assert!(t.ring_is_zag(1));
+		assert!(!t.has_normal(TileColor::Orange));
+		assert!(t.has_color(TileColor::Orange));
 	}
 
 	#[test]

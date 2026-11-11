@@ -5,7 +5,7 @@ use std::path::Path;
 use image::{Rgba, RgbaImage};
 
 use crate::game::{Game, Player, Tile};
-use crate::visual::{self, ArcPaint, ViewLayout};
+use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn write_png(game: &Game, path: impl AsRef<Path>, caption: &str) -> Result<(), String> {
 	write_png_sized(game, path, caption, 1280, 960)
@@ -37,19 +37,20 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		let samples = arc.sample(40);
 		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
 		let width = f64::from(layout.arc_width);
-		match visual::arc_paint(game.tile_at(arc.from), game.tile_at(arc.to)) {
-			ArcPaint::Neutral => {
-				back.push((pts, rgb_of(visual::NEUTRAL_ARC_RGB), width));
+		let paint = visual::arc_paint(game.tile_at(arc.from), game.tile_at(arc.to));
+		match paint.body {
+			ArcBody::Neutral => {
+				back.push((pts.clone(), rgb_of(visual::NEUTRAL_ARC_RGB), width));
 			}
-			ArcPaint::Solid { color, thick } => {
+			ArcBody::Solid { color, thick } => {
 				let w = if thick {
 					width * f64::from(visual::ARC_SAME_COLOR_WIDTH_SCALE)
 				} else {
 					width
 				};
-				back.push((pts, rgb_of(visual::tile_rgb(color)), w));
+				back.push((pts.clone(), rgb_of(visual::tile_rgb(color)), w));
 			}
-			ArcPaint::Braid { a, b } => {
+			ArcBody::Braid { a, b } => {
 				let amp = if visual::arc_touches_center(arc, board.center()) {
 					f64::from(layout.braid_amp_center)
 				} else {
@@ -76,6 +77,21 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 					&mut front,
 				);
 			}
+		}
+		let zag_amp = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.zag_amp_center)
+		} else {
+			f64::from(layout.zag_amp)
+		};
+		let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
+		for (i, zag) in paint.zags.iter().enumerate() {
+			let Some(color) = *zag else {
+				continue;
+			};
+			let teeth = visual::ZAG_TEETH + f64::from(i as u32);
+			let zig =
+				visual::zigzag_polyline(&pts, zag_amp * (1.0 + 0.35 * f64::from(i as u32)), teeth);
+			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
 		}
 	}
 	for (pts, color, width) in back.into_iter().chain(front) {
@@ -187,7 +203,13 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 		if rr > 4.0 * scale {
 			let idx = (k as usize).min(ring_colors.len().saturating_sub(1));
 			let color = ring_colors.get(idx).copied().unwrap_or(tile.primary());
-			stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), (2.2 * scale).max(1.6));
+			let width = (2.2 * scale).max(1.6);
+			if tile.ring_is_zag(idx) {
+				let zig = visual::zigzag_circle([c.0, c.1], rr, (2.4 * scale).max(1.4), 12, 48);
+				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
+			} else {
+				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
+			}
 		}
 	}
 	let dots = tile.dots.min(3);

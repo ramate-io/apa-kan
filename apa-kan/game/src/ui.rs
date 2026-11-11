@@ -12,7 +12,7 @@ use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
 use crate::game::{Action, Game, Player, Tile};
-use crate::visual::{self, ArcPaint, ViewLayout};
+use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
 	let screenshot = cfg.screenshot.clone();
@@ -601,8 +601,9 @@ fn spawn_arc(
 		})
 		.collect();
 	let width = layout.arc_width;
-	match visual::arc_paint(from, to) {
-		ArcPaint::Neutral => {
+	let paint = visual::arc_paint(from, to);
+	match paint.body {
+		ArcBody::Neutral => {
 			spawn_stroke(
 				commands,
 				meshes,
@@ -613,7 +614,7 @@ fn spawn_arc(
 				visual::Z_ARC,
 			);
 		}
-		ArcPaint::Solid { color, thick } => {
+		ArcBody::Solid { color, thick } => {
 			let w = if thick { width * visual::ARC_SAME_COLOR_WIDTH_SCALE } else { width };
 			spawn_stroke(
 				commands,
@@ -625,7 +626,7 @@ fn spawn_arc(
 				visual::Z_ARC,
 			);
 		}
-		ArcPaint::Braid { a, b } => {
+		ArcBody::Braid { a, b } => {
 			let amp = if visual::arc_touches_center(arc, center) {
 				f64::from(layout.braid_amp_center)
 			} else {
@@ -655,6 +656,29 @@ fn spawn_arc(
 				rgb(visual::tile_rgb(b)),
 			);
 		}
+	}
+	let zag_amp = if visual::arc_touches_center(arc, center) {
+		f64::from(layout.zag_amp_center)
+	} else {
+		f64::from(layout.zag_amp)
+	};
+	let zag_w = width * visual::ZAG_STRAND_WIDTH_SCALE;
+	for (i, zag) in paint.zags.iter().enumerate() {
+		let Some(color) = *zag else {
+			continue;
+		};
+		let teeth = visual::ZAG_TEETH + f64::from(i as u32);
+		let zig =
+			visual::zigzag_polyline(&pts, zag_amp * (1.0 + 0.35 * f64::from(i as u32)), teeth);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&zig,
+			zag_w,
+			rgb(visual::tile_rgb(color)),
+			visual::Z_ARC_OVER + 0.02 * i as f32,
+		);
 	}
 }
 
@@ -794,16 +818,36 @@ fn spawn_tile_at(
 		if r > 6.0 * scale {
 			let idx = (k as usize).min(ring_colors.len().saturating_sub(1));
 			let color = ring_colors.get(idx).copied().unwrap_or(tile.primary());
-			spawn_ring(
-				commands,
-				meshes,
-				materials,
-				pos,
-				(r - ring_half).max(1.0),
-				r,
-				rgb(visual::tile_rgb(color)),
-				visual::Z_TILE_RING + f32::from(k) * 0.02,
-			);
+			let z = visual::Z_TILE_RING + f32::from(k) * 0.02;
+			if tile.ring_is_zag(idx) {
+				let zig = visual::zigzag_circle(
+					[f64::from(pos.x), f64::from(pos.y)],
+					f64::from(r - ring_half * 0.5),
+					f64::from((2.4 * scale).max(1.6)),
+					12,
+					48,
+				);
+				spawn_stroke(
+					commands,
+					meshes,
+					materials,
+					&zig,
+					(2.4 * scale).max(1.8),
+					rgb(visual::tile_rgb(color)),
+					z,
+				);
+			} else {
+				spawn_ring(
+					commands,
+					meshes,
+					materials,
+					pos,
+					(r - ring_half).max(1.0),
+					r,
+					rgb(visual::tile_rgb(color)),
+					z,
+				);
+			}
 		}
 	}
 	let dots = tile.dots.min(3);
