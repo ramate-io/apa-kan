@@ -13,10 +13,8 @@ use crate::game::{Game, GameStatus, Player, RuleSet, Tile, TileColor};
 pub const PREV_TILE_RADIUS_PX: f32 = 22.0;
 pub const PREV_SCALE: f32 = 210.0;
 
-/// 1.5× the previous doubled radius (`2 * 22 / 210`). Closest inner-ring
-/// nodes are ~0.5858 apart, so adjacent discs sit close; layout still
-/// scales the whole board to the window so chrome and mobile benches fit.
-pub const TILE_SIZE_SCALE: f32 = 1.5;
+/// 0.9× the b431fec 1.5× radius, i.e. 1.35× the doubled radius (`2 * 22 / 210`).
+pub const TILE_SIZE_SCALE: f32 = 1.35;
 pub const TILE_RADIUS_UNITS: f32 = (PREV_TILE_RADIUS_PX / PREV_SCALE) * 2.0 * TILE_SIZE_SCALE;
 
 /// Empty-node radius in board units; not doubled, so tiles stay the focus.
@@ -35,18 +33,20 @@ pub const ARC_SAME_COLOR_WIDTH_SCALE: f32 = 1.45;
 pub const STRIPE_STRAND_WIDTH_SCALE: f32 = 0.70;
 pub const STRIPE_OFFSET_UNITS: f32 = 0.022;
 pub const STRIPE_OFFSET_CENTER_UNITS: f32 = 0.014;
-/// Tight zigzag amplitude, in board units. Small enough to stitch along the
-/// arc, large enough to read as a zag rather than a wobbly match line.
-pub const ZAG_AMP_UNITS: f32 = 0.016;
-pub const ZAG_AMP_CENTER_UNITS: f32 = 0.011;
-pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.78;
+pub const BRAID_STRAND_WIDTH_SCALE: f32 = 0.78;
+pub const BRAID_AMP_UNITS: f32 = 0.030;
+pub const BRAID_AMP_CENTER_UNITS: f32 = 0.016;
+/// Spellcheck-underline zag: low amplitude, long wavelength, thin stroke.
+pub const ZAG_AMP_UNITS: f32 = 0.008;
+pub const ZAG_AMP_CENTER_UNITS: f32 = 0.006;
+pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.42;
 pub const ARC_SAMPLES: usize = 96;
 /// Tile-ring layout in 22px-tile units; scaled by `radius / PREV_TILE_RADIUS_PX`.
 pub const TILE_RING_INSET: f32 = 3.2;
-pub const TILE_RING_GAP: f32 = 5.8;
-pub const TILE_ZAG_AMP: f32 = 1.55;
-pub const TILE_ZAG_TEETH: u32 = 28;
-pub const TILE_ZAG_SAMPLES: u32 = 96;
+pub const TILE_RING_GAP: f32 = 5.2;
+pub const TILE_ZAG_AMP: f32 = 0.80;
+pub const TILE_ZAG_TEETH: u32 = 8;
+pub const TILE_ZAG_SAMPLES: u32 = 64;
 
 pub const Z_ARC: f32 = 0.0;
 pub const Z_ARC_OVER: f32 = 0.08;
@@ -95,10 +95,18 @@ pub enum ArcBody {
 		color: TileColor,
 		thick: bool,
 	},
-	/// Two parallel strokes, one per candidate color (highway stripes).
+	/// Twisted two-color braid. Two-ended conflict only.
+	Braid {
+		a: TileColor,
+		b: TileColor,
+	},
+	/// Parallel highway stripes. One-ended (undecided) edges only.
+	/// A `zag_*` strand is drawn as a fine squiggle instead of a solid line.
 	Stripes {
 		a: TileColor,
 		b: TileColor,
+		zag_a: bool,
+		zag_b: bool,
 	},
 	/// A firing zag is the only stroke on this arc. The match line is
 	/// omitted visually; scoring is unchanged (pending a rules call).
@@ -114,8 +122,12 @@ impl ArcPaint {
 		Self { body: ArcBody::Solid { color, thick }, zags: [None; 2] }
 	}
 
-	pub fn stripes(a: TileColor, b: TileColor) -> Self {
-		Self { body: ArcBody::Stripes { a, b }, zags: [None; 2] }
+	pub fn braid(a: TileColor, b: TileColor) -> Self {
+		Self { body: ArcBody::Braid { a, b }, zags: [None; 2] }
+	}
+
+	pub fn stripes(a: TileColor, b: TileColor, zag_a: bool, zag_b: bool) -> Self {
+		Self { body: ArcBody::Stripes { a, b, zag_a, zag_b }, zags: [None; 2] }
 	}
 
 	pub fn zag_only(zags: [Option<TileColor>; 2]) -> Self {
@@ -156,7 +168,7 @@ pub fn firing_zags(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
 	match (from, to) {
 		(None, None) => ArcPaint::neutral(),
-		(Some(t), None) | (None, Some(t)) => ArcPaint::solid(t.primary(), false),
+		(Some(t), None) | (None, Some(t)) => one_ended(t),
 		(Some(a), Some(b)) => {
 			let zags = firing_zags(a, b);
 			if zags[0].is_some() {
@@ -165,11 +177,28 @@ pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
 			let shared = shared_normal_colors(a, b);
 			let body = match (shared[0], shared[1]) {
 				(Some(color), None) => ArcBody::Solid { color, thick: true },
-				(Some(c1), Some(c2)) => ArcBody::Stripes { a: c1, b: c2 },
-				(None, _) => ArcBody::Stripes { a: a.primary(), b: b.primary() },
+				(Some(c1), Some(c2)) => ArcBody::Braid { a: c1, b: c2 },
+				(None, _) => ArcBody::Braid { a: a.primary(), b: b.primary() },
 			};
 			ArcPaint { body, zags: [None; 2] }
 		}
+	}
+}
+
+/// One-ended edges are undecided: highway stripes of the occupying tile's
+/// candidate colors. Zag candidates are squiggle strands, not a braid.
+fn one_ended(tile: Tile) -> ArcPaint {
+	let mut parts: Vec<(TileColor, bool)> = Vec::new();
+	for (i, &c) in tile.ring_colors().iter().enumerate() {
+		if !parts.iter().any(|(x, _)| *x == c) {
+			parts.push((c, tile.ring_is_zag(i)));
+		}
+	}
+	match parts.as_slice() {
+		[] => ArcPaint::neutral(),
+		[(c, false)] => ArcPaint::solid(*c, false),
+		[(c, true)] => ArcPaint::zag_only([Some(*c), None]),
+		[(a, za), (b, zb), ..] => ArcPaint::stripes(*a, *b, *za, *zb),
 	}
 }
 
@@ -182,6 +211,7 @@ pub struct TileRingDraw {
 	pub gap: f32,
 	pub stroke: f32,
 	pub zag_amp: f32,
+	pub zag_stroke: f32,
 	pub zag_teeth: u32,
 	pub zag_samples: u32,
 	pub dot_r: f32,
@@ -196,7 +226,8 @@ impl TileRingDraw {
 			inset: TILE_RING_INSET * scale,
 			gap: TILE_RING_GAP * scale,
 			stroke: (2.2 * scale).max(1.6),
-			zag_amp: (TILE_ZAG_AMP * scale).max(0.65),
+			zag_amp: (TILE_ZAG_AMP * scale).max(0.6),
+			zag_stroke: (1.1 * scale).max(0.9),
 			zag_teeth: TILE_ZAG_TEETH,
 			zag_samples: TILE_ZAG_SAMPLES,
 			dot_r: (2.6 * scale).max(1.8),
@@ -253,6 +284,8 @@ pub struct ViewLayout {
 	pub arc_width: f32,
 	pub stripe_off: f32,
 	pub stripe_off_center: f32,
+	pub braid_amp: f32,
+	pub braid_amp_center: f32,
 	pub zag_amp: f32,
 	pub zag_amp_center: f32,
 }
@@ -296,8 +329,10 @@ impl ViewLayout {
 		let arc_width = (ARC_WIDTH_UNITS * scale).max(ARC_WIDTH_MIN_PX);
 		let stripe_off = (STRIPE_OFFSET_UNITS * scale).max(2.2);
 		let stripe_off_center = (STRIPE_OFFSET_CENTER_UNITS * scale).max(1.6);
-		let zag_amp = (ZAG_AMP_UNITS * scale).max(1.4);
-		let zag_amp_center = (ZAG_AMP_CENTER_UNITS * scale).max(1.1);
+		let braid_amp = (BRAID_AMP_UNITS * scale).max(2.0);
+		let braid_amp_center = (BRAID_AMP_CENTER_UNITS * scale).max(1.4);
+		let zag_amp = (ZAG_AMP_UNITS * scale).max(0.85);
+		let zag_amp_center = (ZAG_AMP_CENTER_UNITS * scale).max(0.7);
 
 		Self {
 			width,
@@ -315,6 +350,8 @@ impl ViewLayout {
 			arc_width,
 			stripe_off,
 			stripe_off_center,
+			braid_amp,
+			braid_amp_center,
 			zag_amp,
 			zag_amp_center,
 		}
@@ -386,6 +423,31 @@ pub fn parallel_strands(centerline: &[[f64; 2]], offset: f64) -> (Vec<[f64; 2]>,
 	(offset_polyline(centerline, offset), offset_polyline(centerline, -offset))
 }
 
+#[derive(Clone, Debug)]
+pub struct Braid {
+	pub a: Vec<[f64; 2]>,
+	pub b: Vec<[f64; 2]>,
+	pub phase: Vec<f64>,
+}
+
+pub fn braid_strands(centerline: &[[f64; 2]], amplitude: f64, turns: f64) -> Braid {
+	let n = centerline.len().max(2);
+	let mut a = Vec::with_capacity(n);
+	let mut b = Vec::with_capacity(n);
+	let mut phase = Vec::with_capacity(n);
+	for i in 0..n {
+		let t = if n == 1 { 0.0 } else { i as f64 / (n - 1) as f64 };
+		let ph = 2.0 * PI * turns * t;
+		let (nx, ny) = polyline_normal(centerline, i);
+		let off = amplitude * ph.sin();
+		let p = centerline[i];
+		a.push([p[0] + nx * off, p[1] + ny * off]);
+		b.push([p[0] - nx * off, p[1] - ny * off]);
+		phase.push(ph);
+	}
+	Braid { a, b, phase }
+}
+
 /// Tight zigzag that traces `centerline`, optionally shifted alongside it.
 pub fn zigzag_alongside(
 	centerline: &[[f64; 2]],
@@ -446,9 +508,13 @@ pub fn arc_length(arc: &ArcEdge) -> f64 {
 	arc.radius * sweep
 }
 
-/// High-frequency teeth so the zag stitches along the arc instead of waving.
+/// Long-wavelength teeth: a faint underline along the arc, not a sawtooth.
 pub fn zag_teeth(arc: &ArcEdge) -> f64 {
-	(arc_length(arc) / 0.07).clamp(14.0, 36.0)
+	(arc_length(arc) / 0.24).clamp(3.5, 8.0)
+}
+
+pub fn braid_turns(arc: &ArcEdge) -> f64 {
+	(arc_length(arc) / 0.42).clamp(1.2, 3.6)
 }
 
 pub fn zag_side_offset(index: usize, n_zags: usize, stripe_off: f64) -> f64 {
@@ -580,8 +646,8 @@ pub fn format_log_line(log: &str, last_removals: &str) -> String {
 
 /// Constructed mid-game fixture used by screenshots. Tiles are placed directly
 /// (no `apply`), so overwhelm does not clear the position. Covers gray, one-
-/// color, same-color, two-color (highway stripe) arcs, single and double zag
-/// tiles, and a decided zag-only arc, plus a tile on the center.
+/// color, same-color, two-ended braids, one-ended highway stripes (including a
+/// zag strand), single and double zag tiles, and a decided zag-only arc.
 pub fn demo_midgame() -> Game {
 	let mut game = Game::empty(RuleSet::default());
 	let board = game.board().clone();
@@ -696,12 +762,15 @@ pub fn demo_midgame() -> Game {
 	if let Some(&n) = outer.get(5) {
 		place(&mut game, n, Player::Two, TileColor::Orange, 2, 3);
 	}
-	if let Some(&n) = outer.get(7) {
-		if game.tile_at(n).is_none() {
-			let tile =
-				game.alloc_rings(Player::One, &[TileColor::Green, TileColor::LavenderPink], 2, 1);
-			game.place_tile(n, tile);
-		}
+	if let Some(n) = outer.iter().copied().find(|&id| game.tile_at(id).is_none()) {
+		// One-ended highway with a zag strand (undecided: only this end occupied).
+		let tile = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Green, false), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		game.place_tile(n, tile);
 	}
 
 	let p1_bench = vec![
@@ -779,10 +848,10 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn tiles_are_one_and_a_half_times_previous() {
+	fn tiles_are_scaled_from_the_doubled_radius() {
 		let prev = (PREV_TILE_RADIUS_PX / PREV_SCALE) * 2.0;
 		assert!((TILE_RADIUS_UNITS - prev * TILE_SIZE_SCALE).abs() < 1e-6);
-		assert!((TILE_SIZE_SCALE - 1.5).abs() < 1e-6);
+		assert!((TILE_SIZE_SCALE - 1.35).abs() < 1e-6);
 	}
 
 	#[test]
@@ -792,25 +861,27 @@ mod tests {
 		// Adjacent inner-ring nodes are the tightest pair (~0.5858).
 		assert!((min_d - 0.5858).abs() < 0.01, "closest node spacing changed: {min_d}");
 		let diameter = f64::from(TILE_RADIUS_UNITS) * 2.0;
-		// 1.5× previous sits close on this pair; discs may kiss but must not
-		// swallow the nodes (overlap well under a radius).
-		assert!(
-			diameter < min_d + f64::from(TILE_RADIUS_UNITS) * 0.25,
-			"1.5x tile diameter {diameter} swallows closest nodes at {min_d}"
-		);
+		assert!(diameter < min_d, "tile diameter {diameter} collides at min spacing {min_d}");
+		let gap = min_d - diameter;
+		assert!(gap > 0.02, "expected a readable gap, got {gap} (min_d={min_d})");
 	}
 
 	#[test]
 	fn tile_zag_rings_keep_concentric_gap() {
 		let d = TileRingDraw::for_radius(33.0);
 		assert!(
-			2.0 * d.zag_amp + d.stroke < d.gap,
+			2.0 * d.zag_amp + d.zag_stroke < d.gap,
 			"zag amp {} + stroke {} must fit in ring gap {}",
 			d.zag_amp,
-			d.stroke,
+			d.zag_stroke,
 			d.gap
 		);
-		assert!(d.zag_teeth >= 24);
+		assert!(
+			d.zag_teeth <= 10,
+			"zag teeth should be a long-wavelength squiggle, got {}",
+			d.zag_teeth
+		);
+		assert!(d.zag_stroke < d.stroke);
 	}
 
 	#[test]
@@ -866,13 +937,17 @@ mod tests {
 		assert_eq!(arc_paint(Some(orange), Some(orange)), ArcPaint::solid(TileColor::Orange, true));
 		assert_eq!(
 			arc_paint(Some(orange), Some(green)),
-			ArcPaint::stripes(TileColor::Orange, TileColor::Green)
+			ArcPaint::braid(TileColor::Orange, TileColor::Green)
 		);
 		let duo = Tile::with_rings(3, Player::One, &[TileColor::Green, TileColor::Teal], 1, 1);
 		assert_eq!(arc_paint(Some(green), Some(duo)), ArcPaint::solid(TileColor::Green, true));
 		let gb = Tile::with_rings(4, Player::One, &[TileColor::Green, TileColor::Blue], 1, 1);
 		let paint = arc_paint(Some(gb), Some(gb));
-		assert_eq!(paint.body, ArcBody::Stripes { a: TileColor::Green, b: TileColor::Blue });
+		assert_eq!(paint.body, ArcBody::Braid { a: TileColor::Green, b: TileColor::Blue });
+		assert_eq!(
+			arc_paint(Some(gb), None),
+			ArcPaint::stripes(TileColor::Green, TileColor::Blue, false, false)
+		);
 		let zag = Tile::with_ring_kinds(
 			5,
 			Player::One,
@@ -888,6 +963,19 @@ mod tests {
 		let paint = arc_paint(Some(orange_zag), Some(orange_normal));
 		assert_eq!(paint.body, ArcBody::Hidden);
 		assert_eq!(paint.zags[0], Some(TileColor::Orange));
+		let mixed = Tile::with_ring_kinds(
+			8,
+			Player::One,
+			&[(TileColor::Green, false), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		assert_eq!(
+			arc_paint(Some(mixed), None),
+			ArcPaint::stripes(TileColor::Green, TileColor::Orange, false, true)
+		);
+		assert_eq!(arc_paint(Some(orange_zag), None).body, ArcBody::Hidden);
+		assert_eq!(arc_paint(Some(orange_zag), None).zags[0], Some(TileColor::Orange));
 	}
 
 	#[test]
@@ -897,10 +985,11 @@ mod tests {
 		let mut gray = 0;
 		let mut one = 0;
 		let mut same = 0;
+		let mut braid = 0;
 		let mut stripes = 0;
+		let mut stripe_with_zag = 0;
 		let mut hidden = 0;
 		let mut zag_arcs = 0;
-		let mut two_match = 0;
 		let mut double_zag_tiles = 0;
 		let mut single_zag_tiles = 0;
 		for id in 0..game.board().node_count() as NodeId {
@@ -915,7 +1004,9 @@ mod tests {
 			}
 		}
 		for arc in game.board().arcs() {
-			let paint = arc_paint(game.tile_at(arc.from), game.tile_at(arc.to));
+			let from = game.tile_at(arc.from);
+			let to = game.tile_at(arc.to);
+			let paint = arc_paint(from, to);
 			if paint.zags[0].is_some() {
 				zag_arcs += 1;
 			}
@@ -923,12 +1014,18 @@ mod tests {
 				ArcBody::Neutral => gray += 1,
 				ArcBody::Solid { thick: false, .. } => one += 1,
 				ArcBody::Solid { thick: true, .. } => same += 1,
-				ArcBody::Stripes { .. } => {
+				ArcBody::Braid { .. } => {
+					braid += 1;
+					assert!(from.is_some() && to.is_some(), "braid is two-ended only");
+				}
+				ArcBody::Stripes { zag_a, zag_b, .. } => {
 					stripes += 1;
-					if let (Some(a), Some(b)) = (game.tile_at(arc.from), game.tile_at(arc.to)) {
-						if shared_normal_colors(a, b)[1].is_some() {
-							two_match += 1;
-						}
+					assert!(
+						from.is_some() ^ to.is_some(),
+						"highway stripes are one-ended (undecided) only"
+					);
+					if zag_a || zag_b {
+						stripe_with_zag += 1;
 					}
 				}
 				ArcBody::Hidden => hidden += 1,
@@ -937,8 +1034,9 @@ mod tests {
 		assert!(gray > 0, "need empty gray arcs");
 		assert!(one > 0, "need one-ended colored arcs");
 		assert!(same > 0, "need same-color solid arcs");
-		assert!(stripes > 0, "need two-color highway-stripe arcs");
-		assert!(two_match > 0, "need an undecided two-shared-color arc");
+		assert!(braid > 0, "need two-ended conflicting braids");
+		assert!(stripes > 0, "need one-ended highway-stripe arcs");
+		assert!(stripe_with_zag > 0, "need an undecided highway with a zag strand");
 		assert!(zag_arcs > 0, "need a firing zag on an arc");
 		assert!(hidden > 0, "need a decided zag-only arc (no match line)");
 		assert!(single_zag_tiles > 0, "need a single-zag tile");
@@ -992,18 +1090,27 @@ mod tests {
 	}
 
 	#[test]
+	fn braid_has_two_offset_strands() {
+		let pts = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]];
+		let braid = braid_strands(&pts, 0.5, 1.0);
+		assert_eq!(braid.a.len(), 4);
+		assert!(braid.a[1][1].abs() > 0.2);
+		assert!((braid.a[1][1] + braid.b[1][1]).abs() < 1e-9);
+	}
+
+	#[test]
 	fn zigzag_alongside_stays_tight_to_the_path() {
 		let pts: Vec<[f64; 2]> = (0..80).map(|i| [i as f64 * 0.05, 0.0]).collect();
 		let amp = 0.04;
-		let zig = zigzag_alongside(&pts, 0.0, amp, 20.0);
+		let zig = zigzag_alongside(&pts, 0.0, amp, 4.0);
 		assert_eq!(zig.len(), pts.len());
 		let max_dev = zig.iter().map(|p| p[1].abs()).fold(0.0, f64::max);
 		assert!(max_dev <= amp + 1e-9, "zag departed from the path: {max_dev} > {amp}");
 		assert!(zig.iter().any(|p| p[1].abs() > amp * 0.5));
-		let side = zigzag_alongside(&pts, 0.2, amp, 20.0);
+		let side = zigzag_alongside(&pts, 0.2, amp, 4.0);
 		let mean_y: f64 = side.iter().map(|p| p[1]).sum::<f64>() / side.len() as f64;
 		assert!(mean_y > 0.1, "alongside zag should sit beside the path, got mean {mean_y}");
-		let ring = zigzag_circle([0.0, 0.0], 10.0, 0.4, 28, 96);
+		let ring = zigzag_circle([0.0, 0.0], 10.0, 0.4, 8, 64);
 		assert!(ring.len() > 8);
 		assert!((ring[0][0] - ring[ring.len() - 1][0]).abs() < 1e-9);
 		let rs: Vec<f64> = ring.iter().map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt()).collect();

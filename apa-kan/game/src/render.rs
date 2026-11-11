@@ -55,11 +55,66 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				};
 				back.push((pts.clone(), rgb_of(visual::tile_rgb(color)), w));
 			}
-			ArcBody::Stripes { a, b } => {
-				let (sa, sb) = visual::parallel_strands(&pts, stripe_off);
+			ArcBody::Braid { a, b } => {
+				let amp = if visual::arc_touches_center(arc, board.center()) {
+					f64::from(layout.braid_amp_center)
+				} else {
+					f64::from(layout.braid_amp)
+				};
+				let braid = visual::braid_strands(&pts, amp, visual::braid_turns(arc));
+				let strand_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
+				split_braid(
+					&braid.a,
+					&braid.phase,
+					true,
+					rgb_of(visual::tile_rgb(a)),
+					strand_w,
+					&mut back,
+					&mut front,
+				);
+				split_braid(
+					&braid.b,
+					&braid.phase,
+					false,
+					rgb_of(visual::tile_rgb(b)),
+					strand_w,
+					&mut back,
+					&mut front,
+				);
+			}
+			ArcBody::Stripes { a, b, zag_a, zag_b } => {
 				let strand_w = width * f64::from(visual::STRIPE_STRAND_WIDTH_SCALE);
-				back.push((sa, rgb_of(visual::tile_rgb(a)), strand_w));
-				back.push((sb, rgb_of(visual::tile_rgb(b)), strand_w));
+				let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
+				let zag_amp = if visual::arc_touches_center(arc, board.center()) {
+					f64::from(layout.zag_amp_center)
+				} else {
+					f64::from(layout.zag_amp)
+				};
+				let teeth = visual::zag_teeth(arc);
+				push_stripe(
+					&pts,
+					stripe_off,
+					zag_a,
+					rgb_of(visual::tile_rgb(a)),
+					strand_w,
+					zag_w,
+					zag_amp,
+					teeth,
+					&mut back,
+					&mut front,
+				);
+				push_stripe(
+					&pts,
+					-stripe_off,
+					zag_b,
+					rgb_of(visual::tile_rgb(b)),
+					strand_w,
+					zag_w,
+					zag_amp,
+					teeth,
+					&mut back,
+					&mut front,
+				);
 			}
 			ArcBody::Hidden => {}
 		}
@@ -82,6 +137,59 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	}
 	for (pts, color, width) in back.into_iter().chain(front) {
 		stroke_polyline(img, &pts, color, width);
+	}
+}
+
+fn push_stripe(
+	centerline: &[[f64; 2]],
+	offset: f64,
+	is_zag: bool,
+	color: Rgba<u8>,
+	strand_w: f64,
+	zag_w: f64,
+	zag_amp: f64,
+	teeth: f64,
+	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+	front: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+) {
+	if is_zag {
+		let zig = visual::zigzag_alongside(centerline, offset, zag_amp, teeth);
+		front.push((zig, color, zag_w));
+	} else {
+		back.push((visual::offset_polyline(centerline, offset), color, strand_w));
+	}
+}
+
+fn split_braid(
+	pts: &[[f64; 2]],
+	phase: &[f64],
+	strand_a: bool,
+	color: Rgba<u8>,
+	width: f64,
+	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+	front: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+) {
+	if pts.len() < 2 {
+		return;
+	}
+	let mut start = 0usize;
+	for i in 1..pts.len() {
+		let front_a = phase[i].cos() >= 0.0;
+		let this_front = if strand_a { front_a } else { !front_a };
+		let prev_front_a = phase[i - 1].cos() >= 0.0;
+		let prev_front = if strand_a { prev_front_a } else { !prev_front_a };
+		if this_front != prev_front || i + 1 == pts.len() {
+			let end = i;
+			if end > start {
+				let slice = pts[start..=end].to_vec();
+				if prev_front {
+					front.push((slice, color, width));
+				} else {
+					back.push((slice, color, width));
+				}
+			}
+			start = i.saturating_sub(1);
+		}
 	}
 }
 
@@ -155,7 +263,8 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 		if rr > 4.0 * f64::from(draw.scale) {
 			let idx = (k as usize).min(ring_colors.len().saturating_sub(1));
 			let color = ring_colors.get(idx).copied().unwrap_or(tile.primary());
-			let width = f64::from(draw.stroke);
+			let width =
+				f64::from(if tile.ring_is_zag(idx) { draw.zag_stroke } else { draw.stroke });
 			if tile.ring_is_zag(idx) {
 				let zig = visual::zigzag_circle(
 					[c.0, c.1],

@@ -631,26 +631,60 @@ fn spawn_arc(
 				visual::Z_ARC,
 			);
 		}
-		ArcBody::Stripes { a, b } => {
-			let (sa, sb) = visual::parallel_strands(&pts, stripe_off);
-			let strand_w = width * visual::STRIPE_STRAND_WIDTH_SCALE;
-			spawn_stroke(
+		ArcBody::Braid { a, b } => {
+			let amp = if visual::arc_touches_center(arc, center) {
+				f64::from(layout.braid_amp_center)
+			} else {
+				f64::from(layout.braid_amp)
+			};
+			let braid = visual::braid_strands(&pts, amp, visual::braid_turns(arc));
+			let strand_w = width * visual::BRAID_STRAND_WIDTH_SCALE;
+			spawn_braid_strand(
 				commands,
 				meshes,
 				materials,
-				&sa,
+				&braid.a,
+				&braid.phase,
+				true,
 				strand_w,
 				rgb(visual::tile_rgb(a)),
-				visual::Z_ARC,
 			);
-			spawn_stroke(
+			spawn_braid_strand(
 				commands,
 				meshes,
 				materials,
-				&sb,
+				&braid.b,
+				&braid.phase,
+				false,
 				strand_w,
 				rgb(visual::tile_rgb(b)),
-				visual::Z_ARC,
+			);
+		}
+		ArcBody::Stripes { a, b, zag_a, zag_b } => {
+			let strand_w = width * visual::STRIPE_STRAND_WIDTH_SCALE;
+			let zag_w = width * visual::ZAG_STRAND_WIDTH_SCALE;
+			let zag_amp = if visual::arc_touches_center(arc, center) {
+				f64::from(layout.zag_amp_center)
+			} else {
+				f64::from(layout.zag_amp)
+			};
+			let teeth = visual::zag_teeth(arc);
+			spawn_stripe_strand(
+				commands, meshes, materials, &pts, stripe_off, zag_a, a, strand_w, zag_w, zag_amp,
+				teeth,
+			);
+			spawn_stripe_strand(
+				commands,
+				meshes,
+				materials,
+				&pts,
+				-stripe_off,
+				zag_b,
+				b,
+				strand_w,
+				zag_w,
+				zag_amp,
+				teeth,
 			);
 		}
 		ArcBody::Hidden => {}
@@ -678,6 +712,75 @@ fn spawn_arc(
 			rgb(visual::tile_rgb(color)),
 			visual::Z_ARC_OVER + 0.02 * i as f32,
 		);
+	}
+}
+
+fn spawn_stripe_strand(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	centerline: &[[f64; 2]],
+	offset: f64,
+	is_zag: bool,
+	color: crate::game::TileColor,
+	strand_w: f32,
+	zag_w: f32,
+	zag_amp: f64,
+	teeth: f64,
+) {
+	if is_zag {
+		let zig = visual::zigzag_alongside(centerline, offset, zag_amp, teeth);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&zig,
+			zag_w,
+			rgb(visual::tile_rgb(color)),
+			visual::Z_ARC_OVER,
+		);
+	} else {
+		let pts = visual::offset_polyline(centerline, offset);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&pts,
+			strand_w,
+			rgb(visual::tile_rgb(color)),
+			visual::Z_ARC,
+		);
+	}
+}
+
+fn spawn_braid_strand(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f64; 2]],
+	phase: &[f64],
+	strand_a: bool,
+	width: f32,
+	color: Color,
+) {
+	if pts.len() < 2 {
+		return;
+	}
+	let mut start = 0usize;
+	for i in 1..pts.len() {
+		let front_a = phase[i].cos() >= 0.0;
+		let this_front = if strand_a { front_a } else { !front_a };
+		let prev_front_a = phase[i - 1].cos() >= 0.0;
+		let prev_front = if strand_a { prev_front_a } else { !prev_front_a };
+		if this_front != prev_front || i + 1 == pts.len() {
+			let end = i;
+			if end > start {
+				let slice = &pts[start..=end];
+				let z = if prev_front { visual::Z_ARC_OVER } else { visual::Z_ARC };
+				spawn_stroke(commands, meshes, materials, slice, width, color, z);
+			}
+			start = i.saturating_sub(1);
+		}
 	}
 }
 
@@ -799,7 +902,7 @@ fn spawn_tile_at(
 					meshes,
 					materials,
 					&zig,
-					draw.stroke.max(1.8),
+					draw.zag_stroke.max(1.0),
 					rgb(visual::tile_rgb(color)),
 					z,
 				);
