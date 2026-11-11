@@ -62,6 +62,7 @@ Evaluated **board-wide, simultaneously**, after every action.
 - A neighbor **matches** if the two tiles share a **normal** ring color. Zags never produce a match.
 - Mismatches a neighbor U imposes on T = the number of U's **zag** rings whose color T has (normal or zag), counted per zag ring. T's own zags do not add to T's mismatch count — they only supply the color that triggers U's zag. If that zag-hit count is 0 and the tiles share no normal color, the ordinary +1 mismatch (or neighbor weight if `mismatch_uses_neighbor_weight`).
 - Example: blue normal + orange zag vs the same → 1 blue match and 1 mismatch (not 2). Two orange zags on U vs T carrying orange → 2 mismatches.
+- A tile with both a normal ring and a zag can still mismatch on the **normal**. Blue-normal vs orange-normal + green-zag is a mismatch on the normals (blue vs orange); the green zag does not hit blue. Green-zag vs orange-normal + two green normals is a mismatch on the zag.
 - `matches = own weight + (number of matching adjacent tiles, either owner)`
 - Removed iff `mismatches >= matches`
 - A one-ring zag is inert in isolation. On contact with a tile that carries that color it never matches, so a weight-1 zag is captured under the ordinary rule; a heavier color-carrier takes the zag hit and may survive.
@@ -87,10 +88,21 @@ One action per turn by default (`actions_per_turn`, default 1):
   - `NoNodeRevisit` — a path may not revisit a node, including nodes hopped over (legacy).
   - `NoEdgeRevisit` — a path may not traverse the same undirected circle-arc twice. Nodes may be revisited via a **different** arc (the two inner↔center petals are distinct arcs).
   - `Both` — node uniqueness and edge uniqueness.
-- **Empty step:** walk along one circle-arc to the next node if it is empty. Cost 1.
-- **Hop (default, `color_restricted_hops` on):** if the next node along a chosen circle and direction is occupied, consider the maximal consecutive occupied run along that same circle in that direction. You may spend **1 step** to skip the whole run and land on the first empty node beyond it, iff every hopped tile **shares a normal ring color** with the mover and its weight compares to the mover with `hop_weight_cmp` (default `le`: occupant `<=` mover). Owner does not matter. Zag colors do not enable hops (a zag is a mismatch signal, not a match color). Tiles with no shared normal color cannot be hopped. Hopped nodes are marked visited; hopped arcs are marked used. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`.
+- **Empty step:** walk along any unused adjacency (a generating-circle arc) to a neighboring empty node. Cost 1. Inner↔center still has two distinct arcs.
+- **Hop (default, `color_restricted_hops` on):** if a neighboring node is occupied, flood any adjacency through the connected chain of **hoppable** occupied tiles — each must **share a normal ring color** with the mover and compare with `hop_weight_cmp` (default `le`: occupant `<=` mover). The path may change direction at any node, **including the center**. Spend **1 step** to land on any empty node adjacent to that chain. Owner does not matter. Zag colors do not enable hops. Hopped nodes are marked visited; hopped arcs are marked used (`NoEdgeRevisit` still applies). You cannot land on an occupied node. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`.
 
-Hops are circle-straight: they do not branch with the graph. Multi-arcs between the center and an inner node are distinct as circle-arcs (rendering the inner petals) but lead to the same neighbor for an empty step.
+A hop over a chain is still one step of the exact-`d` MOVE. Empty walks and hops both follow unique neighbor adjacency; the two inner↔center petal arcs remain distinct unused-edge choices.
+
+### Edge rendering (realized state)
+
+Two-ended edges (both nodes occupied) draw **only realized effects**:
+
+- Confirmed zag mismatch → draw **only** the hitting zag(s). No match line, highway stripes, or hitch on that edge. A zag that does not hit the neighbor is not drawn on that edge.
+- Shared normal(s) and no zag hit → single thick match line, or highway stripes if more than one shared normal.
+- Both tiles have normals, share none, and no zag hit → compact **hitch** at the midpoint, drawn in each side's unmatched colors (not cream). Unmatched-color highway halves feed the hitch.
+- Nothing realized (for example a non-hitting zag against a tile that has no shared normal and is not a normal-vs-normal conflict) → grey base arc.
+
+One-ended edges (the tile has no neighbor on that arc) still draw all of that tile's **potential** effects: normal colors as a highway and every zag, so it is clear what would be in play if another tile landed there.
 
 ### Win and draw
 
@@ -144,9 +156,9 @@ A player may not MOVE the same tile (by tile id) on two consecutive **own** turn
 
 CLI: `--color-restricted-hops <on|off>` `--hop-weight-cmp <lt|le>`
 
-**Interpretation** of the designer note *“If the weight in your color is less than, you can traverse.”* When this option is **on**, a hop may only cross a run of tiles that are:
+**Interpretation** of the designer note *“If the weight in your color is less than, you can traverse.”* When this option is **on**, a hop may only cross a connected chain of tiles that are:
 
-1. the **mover’s color** (either owner), and
+1. sharing a **normal** ring color with the mover (either owner), and
 2. whose weight compares to the mover’s weight with `hop_weight_cmp`.
 
 Default comparison is **`Le`** (occupant weight **less than or equal to** the mover). `Lt` is the stricter option (occupant **strictly less than** the mover). Owner still does not matter. Other colors cannot be hopped at all.

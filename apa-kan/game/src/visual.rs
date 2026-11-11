@@ -34,18 +34,16 @@ pub const ARC_SAME_COLOR_WIDTH_SCALE: f32 = 1.45;
 pub const STRIPE_STRAND_WIDTH_SCALE: f32 = 0.70;
 pub const STRIPE_OFFSET_UNITS: f32 = 0.022;
 pub const STRIPE_OFFSET_CENTER_UNITS: f32 = 0.014;
-/// Compact trefoil glyph at a conflict-arc midpoint. Sized to read as a
-/// tangled loop at board scale, not a spawn-sized dot.
-pub const KNOT_RADIUS_UNITS: f32 = 0.085;
-pub const KNOT_RADIUS_CENTER_UNITS: f32 = 0.055;
-pub const KNOT_RADIUS_MIN_PX: f32 = 11.0;
-pub const KNOT_RADIUS_CENTER_MIN_PX: f32 = 8.0;
-pub const KNOT_STRAND_WIDTH_SCALE: f32 = 1.05;
-pub const KNOT_OUTLINE_WIDTH_SCALE: f32 = 1.75;
-pub const KNOT_SAMPLES: usize = 64;
-/// Neutral rope so unmatched stripe colors stay the story.
-pub const KNOT_RGB: [f32; 3] = [0.93, 0.90, 0.80];
-pub const KNOT_OUTLINE_RGB: [f32; 3] = [0.16, 0.14, 0.12];
+/// Compact clove/half-hitch at a conflict-arc midpoint. Two overlapping
+/// wraps, smaller than the old trefoil knot, still readable at board scale.
+pub const HITCH_RADIUS_UNITS: f32 = 0.052;
+pub const HITCH_RADIUS_CENTER_UNITS: f32 = 0.040;
+pub const HITCH_RADIUS_MIN_PX: f32 = 8.5;
+pub const HITCH_RADIUS_CENTER_MIN_PX: f32 = 6.5;
+pub const HITCH_STRAND_WIDTH_SCALE: f32 = 1.10;
+pub const HITCH_OUTLINE_WIDTH_SCALE: f32 = 1.80;
+pub const HITCH_SAMPLES: usize = 48;
+pub const HITCH_OUTLINE_RGB: [f32; 3] = [0.16, 0.14, 0.12];
 /// Spellcheck-underline zag: low amplitude, long wavelength, thin stroke.
 pub const ZAG_AMP_UNITS: f32 = 0.008;
 pub const ZAG_AMP_CENTER_UNITS: f32 = 0.006;
@@ -56,8 +54,8 @@ pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.33;
 pub const ZAG_LANE_SPACING_SCALE: f64 = 1.55;
 /// One overlay line per zag stroke on a single tile (weight.max(n_rings) ≤ 3).
 pub const MAX_TILE_ZAGS: usize = 3;
-/// Packed unmatched **normal** colors on one half of a conflict knot.
-pub const MAX_KNOT_COLORS: usize = 3;
+/// Packed unmatched **normal** colors on one loop of a conflict hitch.
+pub const MAX_HITCH_COLORS: usize = 3;
 pub const ARC_SAMPLES: usize = 96;
 /// Tile-ring layout in 22px-tile units; scaled by `radius / PREV_TILE_RADIUS_PX`.
 pub const TILE_RING_INSET: f32 = 1.7;
@@ -119,11 +117,13 @@ pub enum ArcBody {
 		color: TileColor,
 		thick: bool,
 	},
-	/// Midpoint knot joining unmatched **normal** colors. Two-ended true
-	/// conflict only (both ends have a normal ring, and they share none).
-	Knot {
-		from: [Option<TileColor>; MAX_KNOT_COLORS],
-		to: [Option<TileColor>; MAX_KNOT_COLORS],
+	/// Midpoint hitch joining unmatched **normal** colors. Two-ended true
+	/// conflict only (both ends have a normal ring, they share none, and no
+	/// zag mismatch is realized on this edge). Each loop is drawn in that
+	/// side's unmatched colors.
+	Hitch {
+		from: [Option<TileColor>; MAX_HITCH_COLORS],
+		to: [Option<TileColor>; MAX_HITCH_COLORS],
 	},
 	/// Parallel highway stripes: one-ended undecided edges, or two-ended
 	/// edges that share more than one normal color. Zag overlays sit outside.
@@ -133,8 +133,8 @@ pub enum ArcBody {
 		zag_a: bool,
 		zag_b: bool,
 	},
-	/// No connection line in the middle. Used when both ends are occupied
-	/// but they share no **normal** color (zag-only contact, or empty).
+	/// No connection line in the middle. Used when a confirmed zag mismatch
+	/// occupies a two-ended edge (the zag is the only realized effect).
 	Hidden,
 }
 
@@ -155,12 +155,12 @@ impl ArcPaint {
 		}
 	}
 
-	pub fn knot(
-		from: [Option<TileColor>; MAX_KNOT_COLORS],
-		to: [Option<TileColor>; MAX_KNOT_COLORS],
+	pub fn hitch(
+		from: [Option<TileColor>; MAX_HITCH_COLORS],
+		to: [Option<TileColor>; MAX_HITCH_COLORS],
 	) -> Self {
 		Self {
-			body: ArcBody::Knot { from, to },
+			body: ArcBody::Hitch { from, to },
 			zags_from: Self::no_zags(),
 			zags_to: Self::no_zags(),
 		}
@@ -216,8 +216,8 @@ fn pack_zags(colors: impl IntoIterator<Item = TileColor>) -> [Option<TileColor>;
 }
 
 /// Zag strokes on a single tile, one color per drawn zag ring.
-/// Drawn even when the neighbor does not hold that color (scoring treats
-/// those zags as empty; the squiggle is still shown on this tile's side).
+/// One-ended edges draw every zag (potential). Two-ended edges use
+/// [`hitting_zag_strokes`] so only a realized mismatch is inked.
 pub fn tile_zag_strokes(tile: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
 	pack_zags(
 		(0..tile.ring_strokes())
@@ -226,18 +226,27 @@ pub fn tile_zag_strokes(tile: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
 	)
 }
 
+/// Zag strokes on `tile` that actually mismatch `other` (other holds the color).
+pub fn hitting_zag_strokes(tile: Tile, other: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
+	pack_zags(
+		(0..tile.ring_strokes())
+			.filter(|&k| tile.stroke_is_zag(k) && other.has_color(tile.stroke_color(k)))
+			.map(|k| tile.stroke_color(k)),
+	)
+}
+
 /// Unique **normal** ring colors on `tile`, packed densely. Zags are omitted:
-/// they already draw as side squiggles, so conflict-knot stripes only show
+/// they already draw as side squiggles, so conflict-hitch stripes only show
 /// the unmatched highway options.
-pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_KNOT_COLORS] {
-	let mut out = [None; MAX_KNOT_COLORS];
+pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_HITCH_COLORS] {
+	let mut out = [None; MAX_HITCH_COLORS];
 	let mut n = 0usize;
 	for k in 0..tile.ring_strokes() {
 		if tile.stroke_is_zag(k) {
 			continue;
 		}
 		let c = tile.stroke_color(k);
-		if !out.contains(&Some(c)) && n < MAX_KNOT_COLORS {
+		if !out.contains(&Some(c)) && n < MAX_HITCH_COLORS {
 			out[n] = Some(c);
 			n += 1;
 		}
@@ -245,12 +254,12 @@ pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_KNOT_COLORS] {
 	out
 }
 
-pub fn packed_color_count(colors: [Option<TileColor>; MAX_KNOT_COLORS]) -> usize {
+pub fn packed_color_count(colors: [Option<TileColor>; MAX_HITCH_COLORS]) -> usize {
 	colors.iter().filter(|c| c.is_some()).count()
 }
 
-/// Lane offsets for 1 / 2 / 3 parallel highway stripes on a knot half.
-pub fn highway_offsets(n: usize, stripe_off: f64) -> [f64; MAX_KNOT_COLORS] {
+/// Lane offsets for 1 / 2 / 3 parallel highway stripes on a hitch half.
+pub fn highway_offsets(n: usize, stripe_off: f64) -> [f64; MAX_HITCH_COLORS] {
 	match n {
 		0 | 1 => [0.0, 0.0, 0.0],
 		2 => [stripe_off, -stripe_off, 0.0],
@@ -266,18 +275,23 @@ pub fn highway_strand_width(n: usize, arc_width: f64) -> f64 {
 	}
 }
 
-fn two_ended_body(a: Tile, b: Tile) -> ArcBody {
+fn two_ended(a: Tile, b: Tile) -> ArcPaint {
+	let zags_from = hitting_zag_strokes(a, b);
+	let zags_to = hitting_zag_strokes(b, a);
+	if zags_from.iter().any(Option::is_some) || zags_to.iter().any(Option::is_some) {
+		// Confirmed zag mismatch: draw only the hitting zags.
+		return ArcPaint { body: ArcBody::Hidden, zags_from, zags_to };
+	}
 	let shared = shared_normal_colors(a, b);
-	match (shared[0], shared[1]) {
+	let body = match (shared[0], shared[1]) {
 		(Some(color), None) => ArcBody::Solid { color, thick: true },
 		(Some(c1), Some(c2)) => ArcBody::Stripes { a: c1, b: c2, zag_a: false, zag_b: false },
 		(None, _) if a.normal_mask() != 0 && b.normal_mask() != 0 => {
-			ArcBody::Knot { from: unique_normals(a), to: unique_normals(b) }
+			ArcBody::Hitch { from: unique_normals(a), to: unique_normals(b) }
 		}
-		// No shared normal and not a true normal-vs-normal conflict: empty
-		// middle (zag-only contact, or a non-matching zag). Zags still draw.
-		(None, _) => ArcBody::Hidden,
-	}
+		(None, _) => ArcBody::Neutral,
+	};
+	ArcPaint { body, zags_from: ArcPaint::no_zags(), zags_to: ArcPaint::no_zags() }
 }
 
 pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
@@ -285,11 +299,7 @@ pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
 		(None, None) => ArcPaint::neutral(),
 		(Some(t), None) => one_ended(t, true),
 		(None, Some(t)) => one_ended(t, false),
-		(Some(a), Some(b)) => ArcPaint {
-			body: two_ended_body(a, b),
-			zags_from: tile_zag_strokes(a),
-			zags_to: tile_zag_strokes(b),
-		},
+		(Some(a), Some(b)) => two_ended(a, b),
 	}
 }
 
@@ -402,8 +412,8 @@ pub struct ViewLayout {
 	pub arc_width: f32,
 	pub stripe_off: f32,
 	pub stripe_off_center: f32,
-	pub knot_r: f32,
-	pub knot_r_center: f32,
+	pub hitch_r: f32,
+	pub hitch_r_center: f32,
 	pub zag_amp: f32,
 	pub zag_amp_center: f32,
 }
@@ -447,8 +457,8 @@ impl ViewLayout {
 		let arc_width = (ARC_WIDTH_UNITS * scale).max(ARC_WIDTH_MIN_PX);
 		let stripe_off = (STRIPE_OFFSET_UNITS * scale).max(2.2);
 		let stripe_off_center = (STRIPE_OFFSET_CENTER_UNITS * scale).max(1.6);
-		let knot_r = (KNOT_RADIUS_UNITS * scale).max(KNOT_RADIUS_MIN_PX);
-		let knot_r_center = (KNOT_RADIUS_CENTER_UNITS * scale).max(KNOT_RADIUS_CENTER_MIN_PX);
+		let hitch_r = (HITCH_RADIUS_UNITS * scale).max(HITCH_RADIUS_MIN_PX);
+		let hitch_r_center = (HITCH_RADIUS_CENTER_UNITS * scale).max(HITCH_RADIUS_CENTER_MIN_PX);
 		let zag_amp = (ZAG_AMP_UNITS * scale).max(0.85);
 		let zag_amp_center = (ZAG_AMP_CENTER_UNITS * scale).max(0.7);
 
@@ -468,8 +478,8 @@ impl ViewLayout {
 			arc_width,
 			stripe_off,
 			stripe_off_center,
-			knot_r,
-			knot_r_center,
+			hitch_r,
+			hitch_r_center,
 			zag_amp,
 			zag_amp_center,
 		}
@@ -542,53 +552,67 @@ pub fn parallel_strands(centerline: &[[f64; 2]], offset: f64) -> (Vec<[f64; 2]>,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct KnotFrame {
+pub struct HitchFrame {
 	pub index: usize,
 	pub mid: [f64; 2],
 	pub tangent: [f64; 2],
 	pub normal: [f64; 2],
 }
 
-pub fn midpoint_frame(pts: &[[f64; 2]]) -> KnotFrame {
+pub fn midpoint_frame(pts: &[[f64; 2]]) -> HitchFrame {
 	let index = pts.len() / 2;
 	let mid = pts.get(index).copied().unwrap_or([0.0, 0.0]);
 	let (nx, ny) = if pts.is_empty() { (0.0, 1.0) } else { polyline_normal(pts, index) };
-	KnotFrame { index, mid, tangent: [ny, -nx], normal: [nx, ny] }
+	HitchFrame { index, mid, tangent: [ny, -nx], normal: [nx, ny] }
 }
 
-/// Compact trefoil projection: a tangled loop readable at board scale.
-pub fn knot_polyline(
+fn unit2(v: [f64; 2], fallback: [f64; 2]) -> [f64; 2] {
+	let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
+	if len > 1e-12 {
+		[v[0] / len, v[1] / len]
+	} else {
+		fallback
+	}
+}
+
+/// One elliptical wrap of a clove/half hitch, offset along the arc tangent.
+/// `along` is −1 toward the `from` end and +1 toward `to`. `scale` shrinks
+/// concentric wraps when a side carries more than one unmatched color.
+pub fn hitch_loop_polyline(
 	mid: [f64; 2],
 	tangent: [f64; 2],
 	normal: [f64; 2],
 	radius: f64,
+	along: f64,
+	scale: f64,
 ) -> Vec<[f64; 2]> {
-	let mut tan = tangent;
-	let tlen = (tan[0] * tan[0] + tan[1] * tan[1]).sqrt();
-	if tlen > 1e-12 {
-		tan[0] /= tlen;
-		tan[1] /= tlen;
-	} else {
-		tan = [1.0, 0.0];
-	}
-	let mut nor = normal;
-	let nlen = (nor[0] * nor[0] + nor[1] * nor[1]).sqrt();
-	if nlen > 1e-12 {
-		nor[0] /= nlen;
-		nor[1] /= nlen;
-	} else {
-		nor = [-tan[1], tan[0]];
-	}
-	let s = radius / 3.05;
-	let n = KNOT_SAMPLES.max(16);
+	let tan = unit2(tangent, [1.0, 0.0]);
+	let nor = unit2(normal, [-tan[1], tan[0]]);
+	let r = radius * scale.max(0.35);
+	// Offset across the arc (normal), not along it, so the two wraps sit
+	// beside the join like a hitch around the rope instead of hiding in
+	// the highway halves.
+	let c = [mid[0] + nor[0] * radius * 0.42 * along, mid[1] + nor[1] * radius * 0.42 * along];
+	let rx = r * 0.72;
+	let ry = r * 0.58;
+	let n = HITCH_SAMPLES.max(16);
 	let mut pts = Vec::with_capacity(n + 1);
 	for i in 0..=n {
 		let t = 2.0 * PI * i as f64 / n as f64;
-		let u = t.sin() + 2.0 * (2.0 * t).sin();
-		let v = t.cos() - 2.0 * (2.0 * t).cos();
-		pts.push([mid[0] + s * (tan[0] * u + nor[0] * v), mid[1] + s * (tan[1] * u + nor[1] * v)]);
+		let u = rx * t.cos();
+		let v = ry * t.sin();
+		pts.push([c[0] + tan[0] * u + nor[0] * v, c[1] + tan[1] * u + nor[1] * v]);
 	}
 	pts
+}
+
+pub fn hitch_loop_scales(n_colors: usize) -> &'static [f64] {
+	match n_colors {
+		0 => &[],
+		1 => &[1.0],
+		2 => &[1.0, 0.66],
+		_ => &[1.0, 0.78, 0.56],
+	}
 }
 
 fn polyline_dist(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -601,7 +625,7 @@ fn polyline_lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
 	[a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 }
 
-/// Drop the last `clearance` of path length so stripes stop at the knot.
+/// Drop the last `clearance` of path length so stripes stop at the hitch.
 pub fn shorten_polyline_end(pts: &[[f64; 2]], clearance: f64) -> Vec<[f64; 2]> {
 	if pts.len() < 2 || clearance <= 0.0 {
 		return pts.to_vec();
@@ -631,8 +655,8 @@ pub fn shorten_polyline_start(pts: &[[f64; 2]], clearance: f64) -> Vec<[f64; 2]>
 	out
 }
 
-pub fn knot_clearance(knot_r: f64) -> f64 {
-	knot_r * 0.85
+pub fn hitch_clearance(hitch_r: f64) -> f64 {
+	hitch_r * 0.95
 }
 
 /// Tight zigzag that traces `centerline`, optionally shifted alongside it.
@@ -706,12 +730,12 @@ pub fn zag_lane_spacing(stripe_off: f64) -> f64 {
 
 /// Distance from the arc path to the first zag lane. Lane 0 is skipped so a
 /// Hidden body keeps a visible middle gap (3 | gap | 3), and a match/highway/
-/// knot keeps the connection line in the center. `knot_r` pushes zags outside
-/// a conflict knot so they don't run through the glyph.
-pub fn zag_lane_inner(body: ArcBody, stripe_off: f64, knot_r: f64) -> f64 {
+/// hitch keeps the connection line in the center. `hitch_r` pushes zags outside
+/// a conflict hitch so they don't run through the glyph.
+pub fn zag_lane_inner(body: ArcBody, stripe_off: f64, hitch_r: f64) -> f64 {
 	let spacing = zag_lane_spacing(stripe_off);
 	match body {
-		ArcBody::Knot { .. } => knot_r.max(stripe_off) + spacing,
+		ArcBody::Hitch { .. } => hitch_r.max(stripe_off) + spacing,
 		ArcBody::Stripes { .. } | ArcBody::Solid { .. } => stripe_off + spacing,
 		ArcBody::Hidden | ArcBody::Neutral => spacing,
 	}
@@ -841,11 +865,10 @@ pub fn format_log_line(log: &str, last_removals: &str) -> String {
 
 /// Constructed mid-game fixture used by screenshots. Tiles are placed directly
 /// (no `apply`), so overwhelm does not clear the position. Covers gray, one-
-/// color, same-color, two-ended multi-shared highways, conflict knots,
+/// color, same-color, two-ended multi-shared highways, conflict hitches,
 /// one-ended highway stripes (including a zag strand), single and double zag
-/// tiles, a match with a zag on one side, a match with zags on both sides,
-/// a zag-on-zag edge with an empty middle lane, a non-matching zag that
-/// still draws on its side (no knot), and a match with a non-hitting zag.
+/// tiles, a two-ended zag-only mismatch, a zag-on-zag edge, a grey no-effect
+/// edge (non-hitting zag), and one-ended potential zags.
 pub fn demo_midgame() -> Game {
 	let mut game = Game::empty(RuleSet::default());
 	let board = game.board().clone();
@@ -894,7 +917,7 @@ pub fn demo_midgame() -> Game {
 		game.place_tile(b, u);
 	}
 	if let Some((a, b)) = empty_neighbor_pair(&game) {
-		// Dedicated multi-color conflict knot: A blue+green vs B orange+teal.
+		// Dedicated multi-color conflict hitch: A blue+green vs B orange+teal.
 		let t = game.alloc_rings(Player::One, &[TileColor::Blue, TileColor::Green], 2, 1);
 		let u = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Teal], 2, 1);
 		game.place_tile(a, t);
@@ -919,7 +942,7 @@ pub fn demo_midgame() -> Game {
 
 	if let Some(&n) = inner.first() {
 		if game.tile_at(n).is_none() {
-			// Green vs center orange is a knot; the pink zag sits on this side.
+			// Green vs center orange is a hitch; the pink zag does not hit.
 			let tile = game.alloc_ring_kinds(
 				Player::Two,
 				&[(TileColor::Green, false), (TileColor::LavenderPink, true)],
@@ -1116,6 +1139,115 @@ pub fn demo_zag_tile() -> Game {
 		game.place_tile(id, tile);
 	}
 	game
+}
+
+fn ring_nodes(board: &Board, inner_band: bool) -> Vec<NodeId> {
+	let center = board.center();
+	let r = board.construction_radius();
+	let mut nodes: Vec<NodeId> = (0..board.node_count() as NodeId)
+		.filter(|&id| {
+			if id == center || board.is_spawn(id) {
+				return false;
+			}
+			let inner = board.radius_of(id) < 1.1 * r;
+			if inner_band {
+				inner
+			} else {
+				!inner
+			}
+		})
+		.collect();
+	nodes.sort_by(|&a, &b| angle_of(board.position(a)).total_cmp(&angle_of(board.position(b))));
+	nodes
+}
+
+fn closest_angle(board: &Board, nodes: &[NodeId], target: f64) -> Option<NodeId> {
+	nodes.iter().copied().min_by(|&a, &b| {
+		angle_dist(angle_of(board.position(a)), target)
+			.total_cmp(&angle_dist(angle_of(board.position(b)), target))
+	})
+}
+
+fn angle_dist(a: f64, b: f64) -> f64 {
+	let mut d = (a - b).abs();
+	if d > PI {
+		d = 2.0 * PI - d;
+	}
+	d
+}
+
+/// Left-side orange/green/blue cluster from the board screenshot: a green zag
+/// against an orange holder, a blue-zag tile with no realized effect, and a
+/// one-ended potential-effects edge.
+pub fn demo_left_cluster() -> Game {
+	let mut game = Game::empty(RuleSet::default());
+	let board = game.board().clone();
+	let center = board.center();
+	let inner = ring_nodes(&board, true);
+	let outer = ring_nodes(&board, false);
+	let spawns = board.spawns().to_vec();
+	let west_spawn = closest_angle(&board, &spawns, PI).unwrap();
+	let west_inner = closest_angle(&board, &inner, PI).unwrap();
+	let sw_outer = closest_angle(&board, &outer, PI + PI / 4.0).unwrap();
+	let sw_inner = closest_angle(&board, &inner, PI + PI / 4.0).unwrap();
+	let south_inner = closest_angle(&board, &inner, 3.0 * PI / 2.0).unwrap();
+	let sse_inner = closest_angle(&board, &inner, 1.75 * PI).unwrap();
+	let nw_inner = closest_angle(&board, &inner, 3.0 * PI / 4.0).unwrap();
+
+	let cream_zag = game.alloc_ring_kinds(
+		Player::One,
+		&[(TileColor::Orange, false), (TileColor::Green, true)],
+		2,
+		3,
+	);
+	game.place_tile(west_spawn, cream_zag);
+	let dark_holder = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 2, 1);
+	game.place_tile(west_inner, dark_holder);
+	let blue_zags = game.alloc_ring_kinds(
+		Player::Two,
+		&[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)],
+		3,
+		3,
+	);
+	game.place_tile(sw_inner, blue_zags);
+	let cream_og = game.alloc_rings(Player::One, &[TileColor::Orange, TileColor::Green], 2, 1);
+	game.place_tile(sw_outer, cream_og);
+	let green_zag = game.alloc_ring_kinds(
+		Player::Two,
+		&[(TileColor::Green, true), (TileColor::Green, true), (TileColor::Green, true)],
+		3,
+		3,
+	);
+	game.place_tile(south_inner, green_zag);
+	place(&mut game, sse_inner, Player::One, TileColor::Orange, 2, 1);
+	place(&mut game, center, Player::One, TileColor::Blue, 2, 2);
+	place(&mut game, nw_inner, Player::Two, TileColor::Blue, 2, 2);
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let zag = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 1, 1);
+		let orange = game.alloc_rings(Player::One, &[TileColor::Orange], 1, 1);
+		game.place_tile(a, zag);
+		game.place_tile(b, orange);
+	}
+	game
+}
+
+/// d=1 hop that turns at the center: green mover on a spawn, hoppable green
+/// tiles on the inner neighbor and the center.
+pub fn demo_hop_turn() -> (Game, NodeId) {
+	let mut game = Game::empty(RuleSet::default());
+	let board = game.board().clone();
+	let center = board.center();
+	let spawn = board.spawns()[0];
+	let inner = *board
+		.neighbors(spawn)
+		.iter()
+		.find(|&&n| board.neighbors(n).contains(&center))
+		.expect("spawn neighbors an inner that touches center");
+	place(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
+	place(&mut game, inner, Player::Two, TileColor::Green, 1, 1);
+	place(&mut game, center, Player::Two, TileColor::Green, 1, 1);
+	game.set_current(Player::One);
+	(game, spawn)
 }
 
 fn place(game: &mut Game, node: NodeId, owner: Player, color: TileColor, weight: u8, dots: u8) {
@@ -1373,7 +1505,7 @@ mod tests {
 		assert_eq!(arc_paint(Some(orange), Some(orange)), ArcPaint::solid(TileColor::Orange, true));
 		assert_eq!(
 			arc_paint(Some(orange), Some(green)),
-			ArcPaint::knot(
+			ArcPaint::hitch(
 				[Some(TileColor::Orange), None, None],
 				[Some(TileColor::Green), None, None]
 			)
@@ -1403,11 +1535,7 @@ mod tests {
 			1,
 		);
 		let paint = arc_paint(Some(zag), Some(zag));
-		assert_eq!(
-			paint.body,
-			ArcBody::Solid { color: TileColor::Blue, thick: true },
-			"shared normal sits in the middle; zags fan to both sides"
-		);
+		assert_eq!(paint.body, ArcBody::Hidden, "orange zag hits both ways: draw only the zags");
 		assert_eq!(paint.zags_from[0], Some(TileColor::Orange));
 		assert_eq!(paint.zags_to[0], Some(TileColor::Orange));
 		let orange_zag = Tile::with_ring_kinds(6, Player::One, &[(TileColor::Orange, true)], 1, 1);
@@ -1439,14 +1567,13 @@ mod tests {
 		let blue_and_orange =
 			Tile::with_rings(10, Player::Two, &[TileColor::Blue, TileColor::Orange], 2, 1);
 		let paint = arc_paint(Some(match_and_zag), Some(blue_and_orange));
-		assert_eq!(paint.body, ArcBody::Solid { color: TileColor::Blue, thick: true });
+		assert_eq!(paint.body, ArcBody::Hidden, "hitting zag suppresses the blue match line");
 		assert_eq!(paint.zags_from[0], Some(TileColor::Orange));
 		assert_eq!(paint.zag_to_count(), 0);
 		let blue_only = Tile::mono(12, Player::Two, TileColor::Blue, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(blue_only));
-		assert_eq!(paint.body, ArcBody::Hidden, "non-matching zag is not a conflict knot");
-		assert_eq!(paint.zags_from[0], Some(TileColor::Orange), "zag still draws on its side");
-		assert_eq!(paint.zag_to_count(), 0);
+		assert_eq!(paint.body, ArcBody::Neutral, "non-hitting zag is a grey no-effect edge");
+		assert_eq!(paint.zag_count(), 0, "non-hitting zag is not drawn two-ended");
 		let mixed_vs_blue = Tile::with_ring_kinds(
 			13,
 			Player::One,
@@ -1456,47 +1583,68 @@ mod tests {
 		);
 		let paint = arc_paint(Some(mixed_vs_blue), Some(blue_only));
 		assert_eq!(paint.body, ArcBody::Solid { color: TileColor::Blue, thick: true });
-		assert_eq!(paint.zags_from[0], Some(TileColor::Orange), "orange zag sits beside the match");
-		assert_eq!(paint.zag_to_count(), 0);
+		assert_eq!(paint.zag_count(), 0, "non-hitting orange zag is omitted on a match");
 		let green = Tile::mono(14, Player::Two, TileColor::Green, 1, 1);
 		let paint = arc_paint(Some(mixed_vs_blue), Some(green));
 		assert!(
-			matches!(paint.body, ArcBody::Knot { .. }),
+			matches!(paint.body, ArcBody::Hitch { .. }),
 			"blue vs green is still a real conflict"
 		);
-		assert_eq!(paint.zags_from[0], Some(TileColor::Orange));
+		assert_eq!(paint.zag_count(), 0, "non-hitting zag is omitted on a hitch");
 		let bg = Tile::with_rings(15, Player::One, &[TileColor::Blue, TileColor::Green], 2, 1);
 		let ot = Tile::with_rings(16, Player::Two, &[TileColor::Orange, TileColor::Teal], 2, 1);
 		let paint = arc_paint(Some(bg), Some(ot));
 		assert_eq!(
 			paint.body,
-			ArcBody::Knot {
+			ArcBody::Hitch {
 				from: [Some(TileColor::Blue), Some(TileColor::Green), None],
 				to: [Some(TileColor::Orange), Some(TileColor::Teal), None],
 			},
-			"knot halves list unmatched normals only"
+			"hitch loops list unmatched normals only"
 		);
 		assert_eq!(paint.zag_count(), 0);
-		let mixed_knot = Tile::with_ring_kinds(
+		let mixed_hitch = Tile::with_ring_kinds(
 			17,
 			Player::One,
 			&[(TileColor::Blue, false), (TileColor::Orange, true)],
 			2,
 			1,
 		);
-		let paint = arc_paint(Some(mixed_knot), Some(green));
+		let paint = arc_paint(Some(mixed_hitch), Some(green));
 		match paint.body {
-			ArcBody::Knot { from, to } => {
+			ArcBody::Hitch { from, to } => {
 				assert_eq!(from, [Some(TileColor::Blue), None, None]);
 				assert_eq!(to, [Some(TileColor::Green), None, None]);
 			}
-			other => panic!("expected knot, got {other:?}"),
+			other => panic!("expected hitch, got {other:?}"),
 		}
-		assert_eq!(
-			paint.zags_from[0],
-			Some(TileColor::Orange),
-			"zag stays on its side of the knot"
+		assert_eq!(paint.zag_count(), 0);
+		let orange_green_zag = Tile::with_ring_kinds(
+			18,
+			Player::Two,
+			&[(TileColor::Orange, false), (TileColor::Green, true)],
+			1,
+			1,
 		);
+		let paint = arc_paint(Some(blue_only), Some(orange_green_zag));
+		assert!(
+			matches!(paint.body, ArcBody::Hitch { .. }),
+			"blue vs orange is a hitch; green zag does not hit blue"
+		);
+		assert_eq!(paint.zag_count(), 0);
+		let two_green = Tile::with_rings(
+			19,
+			Player::Two,
+			&[TileColor::Orange, TileColor::Green, TileColor::Green],
+			3,
+			1,
+		);
+		let green_zag_only =
+			Tile::with_ring_kinds(20, Player::One, &[(TileColor::Green, true)], 1, 1);
+		let paint = arc_paint(Some(green_zag_only), Some(two_green));
+		assert_eq!(paint.body, ArcBody::Hidden, "zag mismatch is the only realized ink");
+		assert_eq!(paint.zags_from[0], Some(TileColor::Green));
+		assert_eq!(paint.zag_to_count(), 0);
 	}
 
 	#[test]
@@ -1506,9 +1654,9 @@ mod tests {
 		let mut gray = 0;
 		let mut one = 0;
 		let mut same = 0;
-		let mut knot = 0;
-		let mut multi_color_knot = 0;
-		let mut knot_with_zag = 0;
+		let mut hitch = 0;
+		let mut multi_color_hitch = 0;
+		let mut hitch_with_zag = 0;
 		let mut stripes = 0;
 		let mut two_ended_stripes = 0;
 		let mut stripe_with_zag = 0;
@@ -1516,10 +1664,9 @@ mod tests {
 		let mut one_ended_triple_zag = 0;
 		let mut hidden = 0;
 		let mut zag_arcs = 0;
-		let mut zag_beside_match = 0;
-		let mut zag_both_sides = 0;
+		let mut zag_only = 0;
 		let mut zag_on_zag = 0;
-		let mut non_matching_zag = 0;
+		let mut grey_no_effect = 0;
 		let mut double_zag_tiles = 0;
 		let mut single_zag_tiles = 0;
 		for id in 0..game.board().node_count() as NodeId {
@@ -1552,6 +1699,9 @@ mod tests {
 				_ => {}
 			}
 			if let (Some(a), Some(b)) = (from, to) {
+				if paint.body == ArcBody::Hidden && paint.zag_count() > 0 {
+					zag_only += 1;
+				}
 				if paint.body == ArcBody::Hidden
 					&& a.zag_hits_on(b) > 0
 					&& b.zag_hits_on(a) > 0
@@ -1559,46 +1709,41 @@ mod tests {
 				{
 					zag_on_zag += 1;
 				}
-				if paint.body == ArcBody::Hidden
-					&& paint.zag_count() > 0
+				if paint.body == ArcBody::Neutral
+					&& paint.zag_count() == 0
+					&& (a.zag_hits_on(b) == 0 && b.zag_hits_on(a) == 0)
 					&& !a.shares_normal(b)
-					&& a.zag_hits_on(b) == 0
-					&& b.zag_hits_on(a) == 0
+					&& (a.normal_mask() == 0 || b.normal_mask() == 0)
 				{
-					non_matching_zag += 1;
+					grey_no_effect += 1;
 				}
-				if matches!(paint.body, ArcBody::Solid { .. } | ArcBody::Stripes { .. })
-					&& (paint.zag_from_count() > 0) != (paint.zag_to_count() > 0)
-				{
-					zag_beside_match += 1;
+				if matches!(paint.body, ArcBody::Hitch { .. }) {
+					assert_eq!(paint.zag_count(), 0, "hitch never shares an edge with a zag");
 				}
-				if matches!(paint.body, ArcBody::Solid { .. } | ArcBody::Stripes { .. })
-					&& paint.zag_from_count() > 0
-					&& paint.zag_to_count() > 0
-				{
-					zag_both_sides += 1;
+				if matches!(paint.body, ArcBody::Solid { .. } | ArcBody::Stripes { .. }) {
+					assert_eq!(paint.zag_count(), 0, "two-ended match has no zag ink");
 				}
 			}
 			match paint.body {
 				ArcBody::Neutral => gray += 1,
 				ArcBody::Solid { thick: false, .. } => one += 1,
 				ArcBody::Solid { thick: true, .. } => same += 1,
-				ArcBody::Knot { from: cols_a, to: cols_b } => {
-					knot += 1;
-					assert!(from.is_some() && to.is_some(), "knot is two-ended only");
+				ArcBody::Hitch { from: cols_a, to: cols_b } => {
+					hitch += 1;
+					assert!(from.is_some() && to.is_some(), "hitch is two-ended only");
 					if let (Some(a), Some(b)) = (from, to) {
 						assert!(
 							shared_normal_colors(a, b)[0].is_none()
 								&& a.normal_mask() != 0 && b.normal_mask() != 0,
-							"knot is for true color conflicts only"
+							"hitch is for true color conflicts only"
 						);
 						assert_eq!(cols_a, unique_normals(a));
 						assert_eq!(cols_b, unique_normals(b));
 						if packed_color_count(cols_a) >= 2 && packed_color_count(cols_b) >= 2 {
-							multi_color_knot += 1;
+							multi_color_hitch += 1;
 						}
 						if paint.zag_count() > 0 {
-							knot_with_zag += 1;
+							hitch_with_zag += 1;
 						}
 					}
 				}
@@ -1619,9 +1764,9 @@ mod tests {
 		assert!(gray > 0, "need empty gray arcs");
 		assert!(one > 0, "need one-ended colored arcs");
 		assert!(same > 0, "need same-color solid arcs");
-		assert!(knot > 0, "need two-ended conflicting knots");
-		assert!(multi_color_knot > 0, "need a multi-color vs multi-color knot");
-		assert!(knot_with_zag > 0, "need a conflict knot with zags on the sides");
+		assert!(hitch > 0, "need two-ended conflicting hitches");
+		assert!(multi_color_hitch > 0, "need a multi-color vs multi-color hitch");
+		assert_eq!(hitch_with_zag, 0, "a hitch is not drawn beside a zag");
 		assert!(stripes > 0, "need highway-stripe arcs");
 		assert!(two_ended_stripes > 0, "need a two-ended multi-shared-color highway");
 		assert!(
@@ -1630,15 +1775,77 @@ mod tests {
 		);
 		assert!(one_ended_triple_zag > 0, "need a one-ended triple-zag arc");
 		assert!(zag_arcs > 0, "need a firing zag on an arc");
-		assert!(zag_beside_match > 0, "need a match with a zag on one side");
-		assert!(zag_both_sides > 0, "need a match with zags on both sides");
 		assert!(hidden > 0, "need a decided zag-only arc (no match line)");
+		assert!(zag_only > 0, "need a two-ended zag-only mismatch");
 		assert!(zag_on_zag > 0, "need a zag-on-zag edge with no match stroke");
-		assert!(non_matching_zag > 0, "need a non-matching zag edge that is not a knot");
+		assert!(grey_no_effect > 0, "need a two-ended grey no-effect edge");
 		assert!(single_zag_tiles > 0, "need a single-zag tile");
 		assert!(double_zag_tiles > 0, "need a double-zag tile");
 		assert_eq!(game.bench(Player::One).len(), 5);
 		assert_eq!(game.bench(Player::Two).len(), 5);
+	}
+
+	#[test]
+	fn left_cluster_draws_zag_only_and_grey_no_effect() {
+		let game = demo_left_cluster();
+		let board = game.board();
+		let mut zag_only_orange_green = 0;
+		let mut grey_blue_zag = 0;
+		let mut hitch = 0;
+		let mut one_ended_potential = 0;
+		for arc in board.arcs() {
+			let from = game.tile_at(arc.from);
+			let to = game.tile_at(arc.to);
+			let paint = arc_paint(from, to);
+			match (from, to) {
+				(Some(a), Some(b)) => {
+					let orange_and_green_zag = |t: crate::game::Tile, other: crate::game::Tile| {
+						t.has_normal(TileColor::Orange)
+							&& other.has_normal(TileColor::Orange)
+							&& other.has_color(TileColor::Green)
+							&& t.zag_hits_on(other) > 0
+					};
+					if orange_and_green_zag(a, b) || orange_and_green_zag(b, a) {
+						assert_eq!(
+							paint.body,
+							ArcBody::Hidden,
+							"green zag vs orange holder must not draw the orange link"
+						);
+						assert!(paint.zag_count() > 0);
+						zag_only_orange_green += 1;
+					}
+					if paint.body == ArcBody::Neutral
+						&& paint.zag_count() == 0
+						&& a.zag_hits_on(b) == 0
+						&& b.zag_hits_on(a) == 0
+						&& (a.has_color(TileColor::Blue) || b.has_color(TileColor::Blue))
+					{
+						grey_blue_zag += 1;
+					}
+					if matches!(paint.body, ArcBody::Hitch { .. }) {
+						hitch += 1;
+						assert_eq!(paint.zag_count(), 0);
+					}
+				}
+				(Some(t), None) | (None, Some(t)) => {
+					if paint.zag_count() > 0 {
+						one_ended_potential += 1;
+						assert_eq!(
+							paint.zag_count(),
+							tile_zag_strokes(t).iter().filter(|c| c.is_some()).count()
+						);
+					}
+				}
+				_ => {}
+			}
+		}
+		assert!(
+			zag_only_orange_green > 0,
+			"left cluster must include the green-zag vs orange-holder edge"
+		);
+		assert!(grey_blue_zag > 0, "left cluster must include a grey no-effect blue-zag edge");
+		assert!(hitch > 0, "left cluster still has a normal-vs-normal hitch");
+		assert!(one_ended_potential > 0, "one-ended edges keep potential zags");
 	}
 
 	#[test]
@@ -1686,13 +1893,13 @@ mod tests {
 	}
 
 	#[test]
-	fn knot_glyph_is_a_compact_closed_loop() {
-		let pts = knot_polyline([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], 1.0);
+	fn hitch_glyph_is_a_compact_closed_loop() {
+		let pts = hitch_loop_polyline([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], 1.0, 1.0, 1.0);
 		assert!(pts.len() > 16);
 		assert!((pts[0][0] - pts[pts.len() - 1][0]).abs() < 1e-9);
 		assert!((pts[0][1] - pts[pts.len() - 1][1]).abs() < 1e-9);
 		let max_r = pts.iter().map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt()).fold(0.0, f64::max);
-		assert!(max_r < 1.15, "knot escaped radius: {max_r}");
+		assert!(max_r < 1.30, "hitch escaped radius: {max_r}");
 		let frame = midpoint_frame(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]);
 		assert_eq!(frame.index, 2);
 		assert!((frame.mid[0] - 2.0).abs() < 1e-9);
@@ -1700,9 +1907,14 @@ mod tests {
 		assert!((half[half.len() - 1][0] - 2.5).abs() < 1e-9);
 		let layout = ViewLayout::from_window(1280.0, 800.0);
 		assert!(
-			layout.knot_r >= KNOT_RADIUS_MIN_PX,
-			"knot must stay readable at board scale (r={})",
-			layout.knot_r
+			layout.hitch_r >= HITCH_RADIUS_MIN_PX,
+			"hitch must stay readable at board scale (r={})",
+			layout.hitch_r
+		);
+		assert!(
+			layout.hitch_r < 11.0,
+			"hitch must stay smaller than the old knot (r={})",
+			layout.hitch_r
 		);
 	}
 

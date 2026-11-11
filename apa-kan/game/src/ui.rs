@@ -631,18 +631,18 @@ fn spawn_arc(
 				visual::Z_ARC,
 			);
 		}
-		ArcBody::Knot { from, to } => {
-			let knot_r = if visual::arc_touches_center(arc, center) {
-				f64::from(layout.knot_r_center)
+		ArcBody::Hitch { from, to } => {
+			let hitch_r = if visual::arc_touches_center(arc, center) {
+				f64::from(layout.hitch_r_center)
 			} else {
-				f64::from(layout.knot_r)
+				f64::from(layout.hitch_r)
 			};
 			let frame = visual::midpoint_frame(&pts);
-			let clearance = visual::knot_clearance(knot_r);
+			let clearance = visual::hitch_clearance(hitch_r);
 			if frame.index < pts.len() {
 				let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
 				let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
-				spawn_knot_half(
+				spawn_hitch_half(
 					commands,
 					meshes,
 					materials,
@@ -651,7 +651,7 @@ fn spawn_arc(
 					stripe_off,
 					f64::from(width),
 				);
-				spawn_knot_half(
+				spawn_hitch_half(
 					commands,
 					meshes,
 					materials,
@@ -661,32 +661,16 @@ fn spawn_arc(
 					f64::from(width),
 				);
 			}
-			let disc_r = (knot_r * 0.28) as f32;
+			let disc_r = (hitch_r * 0.38) as f32;
 			commands.spawn((
 				DynamicView,
 				Mesh2d(meshes.add(Circle::new(disc_r.max(1.0)))),
 				MeshMaterial2d(materials.add(ColorMaterial::from(rgb(visual::BG_RGB)))),
 				Transform::from_xyz(frame.mid[0] as f32, frame.mid[1] as f32, visual::Z_ARC_OVER),
 			));
-			let glyph = visual::knot_polyline(frame.mid, frame.tangent, frame.normal, knot_r);
-			spawn_stroke(
-				commands,
-				meshes,
-				materials,
-				&glyph,
-				width * visual::KNOT_STRAND_WIDTH_SCALE * visual::KNOT_OUTLINE_WIDTH_SCALE,
-				rgb(visual::KNOT_OUTLINE_RGB),
-				visual::Z_ARC_OVER + 0.04,
-			);
-			spawn_stroke(
-				commands,
-				meshes,
-				materials,
-				&glyph,
-				width * visual::KNOT_STRAND_WIDTH_SCALE,
-				rgb(visual::KNOT_RGB),
-				visual::Z_ARC_OVER + 0.05,
-			);
+			let strand_w = width * visual::HITCH_STRAND_WIDTH_SCALE;
+			spawn_hitch_side(commands, meshes, materials, &frame, hitch_r, strand_w, from, -1.0);
+			spawn_hitch_side(commands, meshes, materials, &frame, hitch_r, strand_w, to, 1.0);
 		}
 		ArcBody::Stripes { a, b, zag_a, zag_b } => {
 			let strand_w = width * visual::STRIPE_STRAND_WIDTH_SCALE;
@@ -725,12 +709,12 @@ fn spawn_arc(
 	let zag_w = width * visual::ZAG_STRAND_WIDTH_SCALE;
 	let teeth = visual::zag_teeth(arc);
 	let spacing = visual::zag_lane_spacing(stripe_off);
-	let knot_r_lane = if visual::arc_touches_center(arc, center) {
-		f64::from(layout.knot_r_center)
+	let hitch_r_lane = if visual::arc_touches_center(arc, center) {
+		f64::from(layout.hitch_r_center)
 	} else {
-		f64::from(layout.knot_r)
+		f64::from(layout.hitch_r)
 	};
-	let inner = visual::zag_lane_inner(paint.body, stripe_off, knot_r_lane);
+	let inner = visual::zag_lane_inner(paint.body, stripe_off, hitch_r_lane);
 	for (i, zag) in paint.zags_from.iter().enumerate() {
 		let Some(color) = *zag else {
 			continue;
@@ -803,12 +787,12 @@ fn spawn_stripe_strand(
 	}
 }
 
-fn spawn_knot_half(
+fn spawn_hitch_half(
 	commands: &mut Commands,
 	meshes: &mut Assets<Mesh>,
 	materials: &mut Assets<ColorMaterial>,
 	pts: &[[f64; 2]],
-	colors: [Option<crate::game::TileColor>; visual::MAX_KNOT_COLORS],
+	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
 	stripe_off: f64,
 	arc_width: f64,
 ) {
@@ -832,6 +816,53 @@ fn spawn_knot_half(
 			strand_w,
 			rgb(visual::tile_rgb(c)),
 			visual::Z_ARC,
+		);
+		k += 1;
+	}
+}
+
+fn spawn_hitch_side(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	frame: &visual::HitchFrame,
+	hitch_r: f64,
+	strand_w: f32,
+	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	along: f64,
+) {
+	let n = visual::packed_color_count(colors);
+	let mut k = 0usize;
+	for color in colors {
+		let Some(c) = color else {
+			continue;
+		};
+		let scale = visual::hitch_loop_scales(n)[k];
+		let glyph = visual::hitch_loop_polyline(
+			frame.mid,
+			frame.tangent,
+			frame.normal,
+			hitch_r,
+			along,
+			scale,
+		);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&glyph,
+			strand_w * visual::HITCH_OUTLINE_WIDTH_SCALE,
+			rgb(visual::HITCH_OUTLINE_RGB),
+			visual::Z_ARC_OVER + 0.04,
+		);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&glyph,
+			strand_w,
+			rgb(visual::tile_rgb(c)),
+			visual::Z_ARC_OVER + 0.05,
 		);
 		k += 1;
 	}

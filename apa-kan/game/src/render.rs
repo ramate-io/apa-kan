@@ -18,12 +18,24 @@ pub fn write_png_sized(
 	width: u32,
 	height: u32,
 ) -> Result<(), String> {
+	write_png_view(game, path, caption, width, height, None)
+}
+
+pub fn write_png_view(
+	game: &Game,
+	path: impl AsRef<Path>,
+	caption: &str,
+	width: u32,
+	height: u32,
+	selected: Option<crate::board::NodeId>,
+) -> Result<(), String> {
 	let layout = ViewLayout::from_window(width as f32, height as f32);
 	let bg = visual::rgb8(visual::BG_RGB);
 	let mut img = RgbaImage::from_pixel(width, height, rgba(bg[0], bg[1], bg[2], 255));
 	draw_arcs(&mut img, game, &layout);
 	draw_nodes(&mut img, game, &layout);
 	draw_tiles(&mut img, game, &layout);
+	draw_marks(&mut img, game, &layout, selected);
 	draw_benches(&mut img, game, &layout);
 	draw_hud(&mut img, game, &layout, caption);
 	img.save(path.as_ref()).map_err(|e| e.to_string())
@@ -33,7 +45,13 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	let board = game.board();
 	let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
 	let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
-	let mut knots: Vec<(visual::KnotFrame, f64, f64)> = Vec::new();
+	let mut hitches: Vec<(
+		visual::HitchFrame,
+		f64,
+		f64,
+		[Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+		[Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	)> = Vec::new();
 	for arc in board.arcs() {
 		let samples = arc.sample(visual::ARC_SAMPLES);
 		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
@@ -56,21 +74,27 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				};
 				back.push((pts.clone(), rgb_of(visual::tile_rgb(color)), w));
 			}
-			ArcBody::Knot { from, to } => {
-				let knot_r = if visual::arc_touches_center(arc, board.center()) {
-					f64::from(layout.knot_r_center)
+			ArcBody::Hitch { from, to } => {
+				let hitch_r = if visual::arc_touches_center(arc, board.center()) {
+					f64::from(layout.hitch_r_center)
 				} else {
-					f64::from(layout.knot_r)
+					f64::from(layout.hitch_r)
 				};
 				let frame = visual::midpoint_frame(&pts);
-				let clearance = visual::knot_clearance(knot_r);
+				let clearance = visual::hitch_clearance(hitch_r);
 				if frame.index < pts.len() {
 					let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
 					let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
-					push_knot_half(&from_pts, from, stripe_off, width, &mut back);
-					push_knot_half(&to_pts, to, stripe_off, width, &mut back);
+					push_hitch_half(&from_pts, from, stripe_off, width, &mut back);
+					push_hitch_half(&to_pts, to, stripe_off, width, &mut back);
 				}
-				knots.push((frame, knot_r, width * f64::from(visual::KNOT_STRAND_WIDTH_SCALE)));
+				hitches.push((
+					frame,
+					hitch_r,
+					width * f64::from(visual::HITCH_STRAND_WIDTH_SCALE),
+					from,
+					to,
+				));
 			}
 			ArcBody::Stripes { a, b, zag_a, zag_b } => {
 				let strand_w = width * f64::from(visual::STRIPE_STRAND_WIDTH_SCALE);
@@ -116,12 +140,12 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
 		let teeth = visual::zag_teeth(arc);
 		let spacing = visual::zag_lane_spacing(stripe_off);
-		let knot_r = if visual::arc_touches_center(arc, board.center()) {
-			f64::from(layout.knot_r_center)
+		let hitch_r = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.hitch_r_center)
 		} else {
-			f64::from(layout.knot_r)
+			f64::from(layout.hitch_r)
 		};
-		let inner = visual::zag_lane_inner(paint.body, stripe_off, knot_r);
+		let inner = visual::zag_lane_inner(paint.body, stripe_off, hitch_r);
 		for (i, zag) in paint.zags_from.iter().enumerate() {
 			let Some(color) = *zag else {
 				continue;
@@ -142,16 +166,40 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	for (pts, color, width) in back.into_iter().chain(front) {
 		stroke_polyline(img, &pts, color, width);
 	}
-	for (frame, knot_r, strand_w) in knots {
-		fill_circle(img, tup(frame.mid), knot_r * 0.28, rgb_of(visual::BG_RGB));
-		let glyph = visual::knot_polyline(frame.mid, frame.tangent, frame.normal, knot_r);
-		stroke_polyline(
-			img,
-			&glyph,
-			rgb_of(visual::KNOT_OUTLINE_RGB),
-			strand_w * f64::from(visual::KNOT_OUTLINE_WIDTH_SCALE),
+	for (frame, hitch_r, strand_w, from, to) in hitches {
+		fill_circle(img, tup(frame.mid), hitch_r * 0.38, rgb_of(visual::BG_RGB));
+		stroke_hitch_side(img, &frame, hitch_r, strand_w, from, -1.0);
+		stroke_hitch_side(img, &frame, hitch_r, strand_w, to, 1.0);
+	}
+}
+
+fn stroke_hitch_side(
+	img: &mut RgbaImage,
+	frame: &visual::HitchFrame,
+	hitch_r: f64,
+	strand_w: f64,
+	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	along: f64,
+) {
+	let n = visual::packed_color_count(colors);
+	let outline_w = strand_w * f64::from(visual::HITCH_OUTLINE_WIDTH_SCALE);
+	let mut k = 0usize;
+	for color in colors {
+		let Some(c) = color else {
+			continue;
+		};
+		let scale = visual::hitch_loop_scales(n)[k];
+		let glyph = visual::hitch_loop_polyline(
+			frame.mid,
+			frame.tangent,
+			frame.normal,
+			hitch_r,
+			along,
+			scale,
 		);
-		stroke_polyline(img, &glyph, rgb_of(visual::KNOT_RGB), strand_w);
+		stroke_polyline(img, &glyph, rgb_of(visual::HITCH_OUTLINE_RGB), outline_w);
+		stroke_polyline(img, &glyph, rgb_of(visual::tile_rgb(c)), strand_w);
+		k += 1;
 	}
 }
 
@@ -175,9 +223,9 @@ fn push_stripe(
 	}
 }
 
-fn push_knot_half(
+fn push_hitch_half(
 	pts: &[[f64; 2]],
-	colors: [Option<crate::game::TileColor>; visual::MAX_KNOT_COLORS],
+	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
 	stripe_off: f64,
 	arc_width: f64,
 	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
@@ -232,6 +280,36 @@ fn draw_tiles(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			draw_tile(img, tup(p), f64::from(layout.tile_radius), tile);
 		}
 	}
+}
+
+fn draw_marks(
+	img: &mut RgbaImage,
+	game: &Game,
+	layout: &ViewLayout,
+	selected: Option<crate::board::NodeId>,
+) {
+	let Some(from) = selected else {
+		return;
+	};
+	let board = game.board();
+	for id in game.legal_destinations(from) {
+		let p = image_pt(layout, board.position(id));
+		stroke_circle(
+			img,
+			tup(p),
+			f64::from(layout.tile_radius + 5.0),
+			rgb_of(visual::DEST_RGB),
+			3.2,
+		);
+	}
+	let p = image_pt(layout, board.position(from));
+	stroke_circle(
+		img,
+		tup(p),
+		f64::from(layout.tile_radius + 7.0),
+		rgb_of(visual::HIGHLIGHT_RGB),
+		3.6,
+	);
 }
 
 fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
@@ -494,18 +572,20 @@ mod tests {
 	}
 
 	#[test]
-	fn dump_knot_and_zag_artifacts() {
+	fn dump_hitch_and_zag_artifacts() {
 		let dir = std::path::Path::new("/opt/cursor/artifacts");
 		if !dir.is_dir() {
 			return;
 		}
 		use crate::game::TileColor;
-		use crate::visual::{demo_midgame, demo_pair, demo_zag_tile};
+		use crate::visual::{
+			demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair, demo_zag_tile,
+		};
 		let board = demo_midgame();
 		write_png_sized(
 			&board,
 			dir.join("zag_board_1280x800.png"),
-			"knot + thicker zags",
+			"hitch + realized-state edges",
 			1280,
 			800,
 		)
@@ -517,27 +597,73 @@ mod tests {
 				&[(TileColor::Orange, false), (TileColor::Teal, false)],
 				2,
 			),
-			dir.join("knot_blue_green_vs_orange_teal.png"),
-			"A blue+green vs B orange+teal",
+			dir.join("hitch_blue_green_vs_orange_teal.png"),
+			"A blue+green vs B orange+teal hitch",
 			36.0,
 		);
 		write_cropped(
 			&demo_pair(&[(TileColor::Blue, false)], 2, &[(TileColor::Orange, false)], 2),
-			dir.join("knot_blue_vs_orange.png"),
-			"blue vs orange knot",
+			dir.join("hitch_blue_vs_orange.png"),
+			"blue vs orange hitch",
 			36.0,
 		);
 		write_cropped(
 			&demo_pair(
 				&[(TileColor::Blue, false), (TileColor::Orange, true)],
 				2,
-				&[(TileColor::Green, false), (TileColor::LavenderPink, true)],
+				&[(TileColor::Green, false)],
 				2,
 			),
-			dir.join("knot_with_zags.png"),
-			"knot with zags on the sides",
+			dir.join("hitch_blue_vs_green_nonhitting_zag.png"),
+			"hitch; orange zag omitted (does not hit)",
 			48.0,
 		);
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Orange, false), (TileColor::Green, true)],
+				2,
+				&[(TileColor::Orange, false), (TileColor::Green, false)],
+				2,
+			),
+			dir.join("zag_only_vs_orange_holder.png"),
+			"green zag vs orange holder: zag only",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, true)],
+				3,
+				&[(TileColor::Orange, false), (TileColor::Green, false)],
+				2,
+			),
+			dir.join("grey_no_effect_edge.png"),
+			"blue zag vs orange+green: grey, no effect",
+			48.0,
+		);
+		write_cropped(
+			&demo_zag_tile(),
+			dir.join("one_ended_potential_zags.png"),
+			"one-ended potential zags",
+			28.0,
+		);
+		write_png_sized(
+			&demo_left_cluster(),
+			dir.join("left_cluster_realized.png"),
+			"left cluster, realized-state edges",
+			1280,
+			800,
+		)
+		.unwrap();
+		let (hop, from) = demo_hop_turn();
+		write_png_view(
+			&hop,
+			dir.join("hop_multidir_highlights.png"),
+			"d=1 hop turns at center",
+			1280,
+			800,
+			Some(from),
+		)
+		.unwrap();
 		write_cropped(
 			&demo_pair(
 				&[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)],
@@ -603,7 +729,7 @@ mod tests {
 			bump(p[0], p[1], layout.tile_radius + pad, &mut minx, &mut miny, &mut maxx, &mut maxy);
 		}
 		for arc in board.arcs() {
-			if game.tile_at(arc.from).is_none() || game.tile_at(arc.to).is_none() {
+			if game.tile_at(arc.from).is_none() && game.tile_at(arc.to).is_none() {
 				continue;
 			}
 			for p in arc.sample(24) {

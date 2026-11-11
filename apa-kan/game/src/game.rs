@@ -1,5 +1,6 @@
 //! Game model, RuleSet, overwhelm, movement, and win detection.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use rand::rngs::StdRng;
@@ -1381,16 +1382,8 @@ impl Game {
 				}
 				continue;
 			}
-			let circles: Vec<u8> = self.board.circles_through(state.node).collect();
-			for circle in circles {
-				for ccw in [true, false] {
-					let Some(next) = self.board.next_on_circle(circle, state.node, ccw) else {
-						continue;
-					};
-					let Some(edge) = self.board.undirected_arc_index(circle, state.node, next)
-					else {
-						continue;
-					};
+			for &next in self.board.neighbors(state.node) {
+				for edge in self.board.connecting_arc_indices(state.node, next) {
 					if forbid_edge && state.visited_edges & (1u64 << edge) != 0 {
 						continue;
 					}
@@ -1404,24 +1397,26 @@ impl Game {
 							visited_nodes: state.visited_nodes | (1u32 << next),
 							visited_edges: state.visited_edges | (1u64 << edge),
 						});
-					} else if let Some((land, hopped_nodes, hopped_edges)) =
-						self.hop_along(&occupancy, circle, state.node, ccw, tile)
-					{
-						if forbid_edge && state.visited_edges & hopped_edges != 0 {
-							continue;
-						}
-						if forbid_node
-							&& (state.visited_nodes & hopped_nodes != 0
-								|| state.visited_nodes & (1u32 << land) != 0)
+					} else {
+						for (land, hopped_nodes, hopped_edges) in
+							self.hop_from(&occupancy, next, edge, tile, state.visited_edges)
 						{
-							continue;
+							if forbid_edge && state.visited_edges & hopped_edges != 0 {
+								continue;
+							}
+							if forbid_node
+								&& (state.visited_nodes & hopped_nodes != 0
+									|| state.visited_nodes & (1u32 << land) != 0)
+							{
+								continue;
+							}
+							stack.push(PathState {
+								node: land,
+								remaining: state.remaining - 1,
+								visited_nodes: state.visited_nodes | hopped_nodes | (1u32 << land),
+								visited_edges: state.visited_edges | hopped_edges,
+							});
 						}
-						stack.push(PathState {
-							node: land,
-							remaining: state.remaining - 1,
-							visited_nodes: state.visited_nodes | hopped_nodes | (1u32 << land),
-							visited_edges: state.visited_edges | hopped_edges,
-						});
 					}
 				}
 			}
@@ -1441,41 +1436,79 @@ impl Game {
 		}
 	}
 
-	fn hop_along(
+	/// Hop landings from an occupied entry `first` reached via `entry_edge`.
+	/// Floods any-adjacency through hoppable occupied tiles (shared normal,
+	/// weight ok), turning at every node including the center, and lands on
+	/// any empty neighbor of that chain. The whole hop costs one step.
+	fn hop_from(
 		&self,
 		occupancy: &[Option<Tile>],
-		circle: u8,
-		from: NodeId,
-		ccw: bool,
+		first: NodeId,
+		entry_edge: usize,
 		mover: Tile,
-	) -> Option<(NodeId, u32, u64)> {
-		let mut n = self.board.next_on_circle(circle, from, ccw)?;
-		if occupancy[n as usize].is_none() {
-			return None;
+		already_used: u64,
+	) -> Vec<(NodeId, u32, u64)> {
+		let Some(occupant) = occupancy[first as usize] else {
+			return Vec::new();
+		};
+		if !self.hop_occupant_ok(occupant, mover) {
+			return Vec::new();
 		}
-		let mut hopped_nodes = 0u32;
-		let mut hopped_edges = 0u64;
-		let mut prev = from;
-		let start = n;
-		loop {
-			let edge = self.board.undirected_arc_index(circle, prev, n)?;
-			hopped_edges |= 1u64 << edge;
-			let occupant = occupancy[n as usize]?;
-			if !self.hop_occupant_ok(occupant, mover) {
-				return None;
-			}
-			hopped_nodes |= 1u32 << n;
-			prev = n;
-			n = self.board.next_on_circle(circle, n, ccw)?;
-			if n == start || n == from {
-				return None;
-			}
-			if occupancy[n as usize].is_none() {
-				let land_edge = self.board.undirected_arc_index(circle, prev, n)?;
-				hopped_edges |= 1u64 << land_edge;
-				return Some((n, hopped_nodes, hopped_edges));
+		if already_used & (1u64 << entry_edge) != 0 {
+			return Vec::new();
+		}
+		let mut hopped_nodes = 1u32 << first;
+		let mut occ_edges = 1u64 << entry_edge;
+		let mut queue = VecDeque::from([first]);
+		while let Some(t) = queue.pop_front() {
+			for &u in self.board.neighbors(t) {
+				let Some(next_occ) = occupancy[u as usize] else {
+					continue;
+				};
+				if !self.hop_occupant_ok(next_occ, mover) {
+					continue;
+				}
+				if hopped_nodes & (1u32 << u) != 0 {
+					continue;
+				}
+				let used = already_used | occ_edges;
+				let Some(edge) =
+					self.board.connecting_arc_indices(t, u).find(|&e| used & (1u64 << e) == 0)
+				else {
+					continue;
+				};
+				hopped_nodes |= 1u32 << u;
+				occ_edges |= 1u64 << edge;
+				queue.push_back(u);
 			}
 		}
+		let mut out = Vec::new();
+		let mut t = 0u8;
+		while t < 32 {
+			if hopped_nodes & (1u32 << t) == 0 {
+				t += 1;
+				continue;
+			}
+			for &u in self.board.neighbors(t) {
+				if occupancy[u as usize].is_some() {
+					continue;
+				}
+				for edge in self.board.connecting_arc_indices(t, u) {
+					if already_used & (1u64 << edge) != 0 || occ_edges & (1u64 << edge) != 0 {
+						continue;
+					}
+					let edges = occ_edges | (1u64 << edge);
+					if !out
+						.iter()
+						.any(|&(land, nodes, ed)| land == u && nodes == hopped_nodes && ed == edges)
+					{
+						out.push((u, hopped_nodes, edges));
+					}
+				}
+			}
+			t += 1;
+		}
+		out
 	}
 
 	pub fn apply(&mut self, action: Action) -> Result<ActionOutcome, String> {
@@ -2074,6 +2107,69 @@ mod tests {
 		game.set_current(Player::One);
 		let dests = game.destinations(from);
 		assert!(dests.contains(&land), "hop the two-tile run to {land}");
+	}
+
+	#[test]
+	fn hop_turns_at_the_center_and_lands_on_any_adjacent_empty() {
+		let mut game = Game::empty(RuleSet::default());
+		let board = game.board().clone();
+		let center = board.center();
+		let spawn = board.spawns()[0];
+		let inner = *board
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| board.neighbors(n).contains(&center))
+			.expect("spawn neighbors an inner that touches center");
+		let other_inner = *board
+			.neighbors(center)
+			.iter()
+			.find(|&&n| n != inner)
+			.expect("center has another inner neighbor");
+		assert!(!board.neighbors(spawn).contains(&other_inner));
+		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
+		put(&mut game, inner, Player::Two, TileColor::Green, 1, 1);
+		put(&mut game, center, Player::Two, TileColor::Green, 1, 1);
+		game.set_current(Player::One);
+		let dests = game.destinations(spawn);
+		assert!(
+			dests.contains(&other_inner),
+			"d=1 hop must turn at center onto inner {other_inner}, got {dests:?}"
+		);
+		assert!(!dests.contains(&inner), "cannot land on an occupied hoppable tile");
+		assert!(!dests.contains(&center), "cannot land on an occupied hoppable tile");
+	}
+
+	#[test]
+	fn hop_changes_direction_at_a_non_center_node() {
+		let mut game = Game::empty(RuleSet::default());
+		let board = game.board().clone();
+		let spawn = board.spawns()[0];
+		let inner = *board
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| !board.is_spawn(n) && n != board.center())
+			.expect("spawn has an inner neighbor");
+		let side = *board
+			.neighbors(inner)
+			.iter()
+			.find(|&&n| n != spawn && n != board.center() && game.tile_at(n).is_none())
+			.expect("inner has a side neighbor");
+		let land = *board
+			.neighbors(side)
+			.iter()
+			.find(|&&n| {
+				n != inner && game.tile_at(n).is_none() && !board.neighbors(spawn).contains(&n)
+			})
+			.expect("side node has a landing that is not a spawn neighbor");
+		put(&mut game, spawn, Player::One, TileColor::Blue, 3, 1);
+		put(&mut game, inner, Player::Two, TileColor::Blue, 1, 1);
+		put(&mut game, side, Player::One, TileColor::Blue, 1, 1);
+		game.set_current(Player::One);
+		let dests = game.destinations(spawn);
+		assert!(
+			dests.contains(&land),
+			"hop chain spawn-inner-side must land on {land} off the entry circle, got {dests:?}"
+		);
 	}
 
 	#[test]
@@ -3467,6 +3563,47 @@ mod tests {
 		let green = game.alloc_rings(Player::Two, &[TileColor::Green], 1, 1);
 		assert_eq!(game.edge_score(mixed, green), (0, 1), "blue vs green is still a conflict");
 		assert_eq!(game.edge_score(green, mixed), (0, 1));
+	}
+
+	#[test]
+	fn blue_vs_orange_plus_green_zag_is_a_normal_mismatch() {
+		let mut game = Game::empty(RuleSet::default());
+		let blue = game.alloc_rings(Player::One, &[TileColor::Blue], 1, 1);
+		let orange_green_zag = game.alloc_ring_kinds(
+			Player::Two,
+			&[(TileColor::Orange, false), (TileColor::Green, true)],
+			1,
+			1,
+		);
+		assert_eq!(orange_green_zag.zag_hits_on(blue), 0, "blue does not hold green");
+		assert_eq!(blue.zag_hits_on(orange_green_zag), 0);
+		assert!(!blue.shares_normal(orange_green_zag));
+		assert_eq!(
+			game.edge_score(blue, orange_green_zag),
+			(0, 1),
+			"blue vs orange is still a normal conflict beside a non-hitting zag"
+		);
+		assert_eq!(game.edge_score(orange_green_zag, blue), (0, 1));
+	}
+
+	#[test]
+	fn green_zag_vs_orange_plus_two_greens_is_a_zag_hit() {
+		let mut game = Game::empty(RuleSet::default());
+		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Green, true)], 1, 1);
+		let holder = game.alloc_rings(
+			Player::Two,
+			&[TileColor::Orange, TileColor::Green, TileColor::Green],
+			3,
+			1,
+		);
+		assert_eq!(zag.zag_hits_on(holder), 1);
+		assert!(!zag.shares_normal(holder));
+		assert_eq!(game.edge_score(zag, holder), (0, 1), "green zag hits the green holder");
+		assert_eq!(
+			game.edge_score(holder, zag),
+			(0, 1),
+			"holder has no zag; ordinary mismatch does not stack on a zag hit"
+		);
 	}
 
 	#[test]
