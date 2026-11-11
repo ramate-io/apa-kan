@@ -261,6 +261,26 @@ impl Tile {
 		self.ring_colors().iter().enumerate().any(|(i, &c)| c == color && !self.zag[i])
 	}
 
+	/// Concentric strokes drawn for this tile: one per ring, extra weight
+	/// strokes reuse the last ring (so a weight-3 one-ring zag shows three
+	/// zag rings).
+	pub fn ring_strokes(self) -> u8 {
+		self.weight.max(self.n_rings).max(1)
+	}
+
+	fn stroke_idx(self, k: u8) -> usize {
+		let n = self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize;
+		(k as usize).min(n.saturating_sub(1))
+	}
+
+	pub fn stroke_color(self, k: u8) -> TileColor {
+		self.rings[self.stroke_idx(k)]
+	}
+
+	pub fn stroke_is_zag(self, k: u8) -> bool {
+		self.zag[self.stroke_idx(k)]
+	}
+
 	pub fn color_mask(self) -> u8 {
 		let mut m = 0u8;
 		for &c in self.ring_colors() {
@@ -284,18 +304,18 @@ impl Tile {
 		(self.color_mask() & other.color_mask()) != 0
 	}
 
-	/// Shared **normal** ring. Zags never produce a match.
+	/// Shared **normal** ring. Zags never produce a match. A color that
+	/// either tile holds only as zags does not count.
 	pub fn shares_normal(self, other: Tile) -> bool {
 		(self.normal_mask() & other.normal_mask()) != 0
 	}
 
-	/// How many of this tile's zag rings have their color on `target`
-	/// (normal or zag). Own zags do not mismatch their owner.
+	/// How many of this tile's zag **strokes** have their color on `target`
+	/// (normal or zag). Extra weight strokes of a zag last-ring count, matching
+	/// the concentric rings that are drawn. Own zags do not mismatch their owner.
 	pub fn zag_hits_on(self, target: Tile) -> i32 {
-		self.ring_colors()
-			.iter()
-			.enumerate()
-			.filter(|(i, c)| self.zag[*i] && target.has_color(**c))
+		(0..self.ring_strokes())
+			.filter(|&k| self.stroke_is_zag(k) && target.has_color(self.stroke_color(k)))
 			.count() as i32
 	}
 
@@ -1102,9 +1122,11 @@ impl Game {
 	}
 
 	/// Match/mismatch this `tile` receives from neighbor `other`.
-	/// Matches: +1 if they share a **normal** color. Mismatches: count of
-	/// `other`'s zag rings whose color `tile` has; if that is 0 and they
-	/// share no normal color, the ordinary +1 (or neighbor weight) mismatch.
+	/// Matches: +1 if they share a **normal** color. Zags never produce a
+	/// match — a color that either tile holds only as zags does not count.
+	/// Mismatches: count of `other`'s zag strokes whose color `tile` has
+	/// (normal or zag); if that is 0 and they share no normal color, the
+	/// ordinary +1 (or neighbor weight) mismatch.
 	pub fn edge_score(&self, tile: Tile, other: Tile) -> (i32, i32) {
 		let matched = tile.shares_normal(other);
 		let matches = i32::from(matched);
@@ -3316,10 +3338,69 @@ mod tests {
 		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 2, 1);
 		game.place_tile(spawn, a);
 		game.place_tile(nb, b);
+		assert_eq!(game.edge_score(a, b), (0, 2), "two zag strokes, zero matches");
 		let (m, x) = game.tile_score(spawn).unwrap();
 		assert_eq!(m, 2, "zag never matches, only own weight");
-		assert_eq!(x, 1, "neighbor's blue zag hits T's blue");
-		assert!(!game.is_overwhelmed(spawn));
+		assert_eq!(x, 2, "neighbor's two blue zag strokes hit T's blue");
+		assert!(game.is_overwhelmed(spawn), "weight 2 vs 2 zag hits is captured");
+	}
+
+	#[test]
+	fn three_blue_zags_vs_three_blue_zags_is_three_mismatches() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let rings = [(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
+		let a = game.alloc_ring_kinds(Player::One, &rings, 3, 1);
+		let b = game.alloc_ring_kinds(Player::Two, &rings, 3, 1);
+		game.place_tile(spawn, a);
+		game.place_tile(nb, b);
+		assert_eq!(game.edge_score(a, b), (0, 3));
+		assert_eq!(game.edge_score(b, a), (0, 3));
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (3, 3), "weight 3, no color match, three zag hits");
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn weight_three_one_ring_zag_counts_three_zag_strokes() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 3, 1);
+		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 3, 1);
+		game.place_tile(spawn, a);
+		game.place_tile(nb, b);
+		assert_eq!(a.ring_strokes(), 3);
+		assert_eq!(game.edge_score(a, b), (0, 3), "drawn zag rings are zag hits");
+		assert!(game.is_overwhelmed(spawn));
+	}
+
+	#[test]
+	fn one_zag_vs_one_zag_of_the_same_color_is_captured() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
+		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 1, 1);
+		game.place_tile(spawn, a);
+		game.place_tile(nb, b);
+		assert_eq!(game.edge_score(a, b), (0, 1), "zags never match");
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (1, 1));
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn zag_color_alone_never_counts_as_a_match() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert!(!a.shares_normal(b));
+		assert_eq!(game.edge_score(a, b), (0, 1), "ordinary mismatch; zag is not a match");
+		assert_eq!(game.edge_score(b, a), (0, 1), "U's zag hits T's blue");
 	}
 
 	#[test]

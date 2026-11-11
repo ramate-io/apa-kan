@@ -254,18 +254,16 @@ fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str
 
 fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(tile.owner)));
-	let ring_colors = tile.ring_colors();
 	let primary = rgb_of(visual::tile_rgb(tile.primary()));
 	let draw = visual::TileRingDraw::for_radius(r as f32);
-	let strokes = tile.weight.max(tile.n_rings);
+	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
 		let rr = f64::from(draw.ring_radius(r as f32, k));
 		if rr > 4.0 * f64::from(draw.scale) {
-			let idx = (k as usize).min(ring_colors.len().saturating_sub(1));
-			let color = ring_colors.get(idx).copied().unwrap_or(tile.primary());
+			let color = tile.stroke_color(k);
 			let width =
-				f64::from(if tile.ring_is_zag(idx) { draw.zag_stroke } else { draw.stroke });
-			if tile.ring_is_zag(idx) {
+				f64::from(if tile.stroke_is_zag(k) { draw.zag_stroke } else { draw.stroke });
+			if tile.stroke_is_zag(k) {
 				let zig = visual::zigzag_circle(
 					[c.0, c.1],
 					rr,

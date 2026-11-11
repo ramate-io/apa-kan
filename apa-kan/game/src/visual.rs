@@ -43,8 +43,8 @@ pub const ZAG_AMP_CENTER_UNITS: f32 = 0.006;
 pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.42;
 pub const ARC_SAMPLES: usize = 96;
 /// Tile-ring layout in 22px-tile units; scaled by `radius / PREV_TILE_RADIUS_PX`.
-pub const TILE_RING_INSET: f32 = 3.2;
-pub const TILE_RING_GAP: f32 = 5.2;
+pub const TILE_RING_INSET: f32 = 1.7;
+pub const TILE_RING_GAP: f32 = 3.0;
 pub const TILE_ZAG_AMP: f32 = 0.80;
 pub const TILE_ZAG_TEETH: u32 = 16;
 pub const TILE_ZAG_SAMPLES: u32 = 96;
@@ -651,7 +651,7 @@ pub fn format_log_line(log: &str, last_removals: &str) -> String {
 /// (no `apply`), so overwhelm does not clear the position. Covers gray, one-
 /// color, same-color, two-ended multi-shared highways, conflict braids,
 /// one-ended highway stripes (including a zag strand), single and double zag
-/// tiles, and a decided zag-only arc.
+/// tiles, a decided zag-only arc, and a zag-on-zag edge (no match stroke).
 pub fn demo_midgame() -> Game {
 	let mut game = Game::empty(RuleSet::default());
 	let board = game.board().clone();
@@ -675,6 +675,23 @@ pub fn demo_midgame() -> Game {
 	let spawns = board.spawns().to_vec();
 
 	place(&mut game, center, Player::One, TileColor::Orange, 2, 2);
+
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let t = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)],
+			3,
+			1,
+		);
+		let u = game.alloc_ring_kinds(
+			Player::Two,
+			&[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)],
+			3,
+			1,
+		);
+		game.place_tile(a, t);
+		game.place_tile(b, u);
+	}
 
 	if let Some((a, b)) = empty_neighbor_pair(&game) {
 		let t = game.alloc_rings(Player::One, &[TileColor::Green, TileColor::LavenderPink], 2, 1);
@@ -882,6 +899,27 @@ mod tests {
 		);
 		assert_eq!(d.zag_teeth, 16, "zag rings should double the underline frequency");
 		assert!(d.zag_stroke < d.stroke);
+		assert!(
+			TILE_RING_GAP <= 3.2 && TILE_RING_INSET <= 2.0,
+			"rings should hug the rim (gap={}, inset={})",
+			TILE_RING_GAP,
+			TILE_RING_INSET
+		);
+	}
+
+	#[test]
+	fn zag_on_zag_is_decided_zag_only_not_a_match() {
+		let rings = [(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
+		let a = Tile::with_ring_kinds(1, Player::One, &rings, 3, 1);
+		let b = Tile::with_ring_kinds(2, Player::Two, &rings, 3, 1);
+		assert!(shared_normal_colors(a, b)[0].is_none());
+		let paint = arc_paint(Some(a), Some(b));
+		assert_eq!(paint.body, ArcBody::Hidden, "zag-on-zag must not draw a match stroke");
+		assert_eq!(paint.zags[0], Some(TileColor::Blue));
+		let one = Tile::with_ring_kinds(3, Player::One, &[(TileColor::Blue, true)], 1, 1);
+		let paint = arc_paint(Some(one), Some(one));
+		assert_eq!(paint.body, ArcBody::Hidden);
+		assert_eq!(paint.zags[0], Some(TileColor::Blue));
 	}
 
 	#[test]
@@ -999,6 +1037,7 @@ mod tests {
 		let mut stripe_with_zag = 0;
 		let mut hidden = 0;
 		let mut zag_arcs = 0;
+		let mut zag_on_zag = 0;
 		let mut double_zag_tiles = 0;
 		let mut single_zag_tiles = 0;
 		for id in 0..game.board().node_count() as NodeId {
@@ -1018,6 +1057,15 @@ mod tests {
 			let paint = arc_paint(from, to);
 			if paint.zags[0].is_some() {
 				zag_arcs += 1;
+			}
+			if let (Some(a), Some(b)) = (from, to) {
+				if paint.body == ArcBody::Hidden
+					&& a.zag_hits_on(b) > 0
+					&& b.zag_hits_on(a) > 0
+					&& !a.shares_normal(b)
+				{
+					zag_on_zag += 1;
+				}
 			}
 			match paint.body {
 				ArcBody::Neutral => gray += 1,
@@ -1056,6 +1104,7 @@ mod tests {
 		assert!(stripe_with_zag > 0, "need an undecided highway with a zag strand");
 		assert!(zag_arcs > 0, "need a firing zag on an arc");
 		assert!(hidden > 0, "need a decided zag-only arc (no match line)");
+		assert!(zag_on_zag > 0, "need a zag-on-zag edge with no match stroke");
 		assert!(single_zag_tiles > 0, "need a single-zag tile");
 		assert!(double_zag_tiles > 0, "need a double-zag tile");
 		assert_eq!(game.bench(Player::One).len(), 5);

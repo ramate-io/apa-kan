@@ -871,7 +871,6 @@ fn spawn_tile_at(
 	radius: f32,
 ) {
 	let fill = rgb(visual::owner_fill_rgb(tile.owner));
-	let ring_colors = tile.ring_colors();
 	let primary = rgb(visual::tile_rgb(tile.primary()));
 	let z = visual::Z_TILE;
 	commands.spawn((
@@ -882,14 +881,13 @@ fn spawn_tile_at(
 	));
 	let draw = visual::TileRingDraw::for_radius(radius);
 	let ring_half = draw.stroke * 0.5;
-	let strokes = tile.weight.max(tile.n_rings);
+	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
 		let r = draw.ring_radius(radius, k);
 		if r > 6.0 * draw.scale {
-			let idx = (k as usize).min(ring_colors.len().saturating_sub(1));
-			let color = ring_colors.get(idx).copied().unwrap_or(tile.primary());
+			let color = tile.stroke_color(k);
 			let z = visual::Z_TILE_RING + f32::from(k) * 0.02;
-			if tile.ring_is_zag(idx) {
+			if tile.stroke_is_zag(k) {
 				let zig = visual::zigzag_circle(
 					[f64::from(pos.x), f64::from(pos.y)],
 					f64::from(r - ring_half * 0.5),
