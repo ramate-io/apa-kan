@@ -901,7 +901,7 @@ fn spawn_tile_at(
 					meshes,
 					materials,
 					&zig,
-					draw.zag_stroke.max(1.0),
+					draw.zag_stroke.max(0.45),
 					rgb(visual::tile_rgb(color)),
 					z,
 				);

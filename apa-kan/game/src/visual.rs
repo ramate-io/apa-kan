@@ -40,10 +40,10 @@ pub const BRAID_AMP_CENTER_UNITS: f32 = 0.016;
 /// Spellcheck-underline zag: low amplitude, long wavelength, thin stroke.
 pub const ZAG_AMP_UNITS: f32 = 0.008;
 pub const ZAG_AMP_CENTER_UNITS: f32 = 0.006;
-pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.42;
+pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.22;
 /// Parallel zag-lane spacing as a fraction of the highway stripe offset.
-/// Small enough that 3–6 lines stay a tight bundle, large enough to read.
-pub const ZAG_LANE_SPACING_SCALE: f64 = 0.70;
+/// Wider than the stroke so 3–6 lines stay individually countable.
+pub const ZAG_LANE_SPACING_SCALE: f64 = 1.05;
 /// One overlay line per zag stroke; two tiles × 3 strokes.
 pub const MAX_ARC_ZAGS: usize = 6;
 pub const ARC_SAMPLES: usize = 96;
@@ -51,6 +51,9 @@ pub const ARC_SAMPLES: usize = 96;
 pub const TILE_RING_INSET: f32 = 1.7;
 pub const TILE_RING_GAP: f32 = 3.0;
 pub const TILE_ZAG_AMP: f32 = 0.80;
+/// Tile zag stroke in 22px-tile units; thinner than the normal ring so
+/// concentric zags keep air inside the rim.
+pub const TILE_ZAG_STROKE: f32 = 0.60;
 pub const TILE_ZAG_TEETH: u32 = 16;
 pub const TILE_ZAG_SAMPLES: u32 = 96;
 
@@ -271,7 +274,7 @@ impl TileRingDraw {
 			gap: TILE_RING_GAP * scale,
 			stroke: (2.2 * scale).max(1.6),
 			zag_amp: (TILE_ZAG_AMP * scale).max(0.6),
-			zag_stroke: (1.1 * scale).max(0.9),
+			zag_stroke: (TILE_ZAG_STROKE * scale).max(0.5),
 			zag_teeth: TILE_ZAG_TEETH,
 			zag_samples: TILE_ZAG_SAMPLES,
 			dot_r: (2.6 * scale).max(1.8),
@@ -956,7 +959,13 @@ mod tests {
 			d.gap
 		);
 		assert_eq!(d.zag_teeth, 16, "zag rings should double the underline frequency");
-		assert!(d.zag_stroke < d.stroke);
+		assert!(d.zag_stroke * 2.0 < d.stroke, "zag rings should be noticeably finer than normals");
+		assert!(
+			d.zag_stroke * 2.0 + 2.0 * d.zag_amp < d.gap,
+			"thinner zag stroke should leave air in the rim (stroke={} gap={})",
+			d.zag_stroke,
+			d.gap
+		);
 		assert!(
 			TILE_RING_GAP <= 3.2 && TILE_RING_INSET <= 2.0,
 			"rings should hug the rim (gap={}, inset={})",
@@ -1028,11 +1037,34 @@ mod tests {
 		let b = zag_side_offset(1, 3, off, false);
 		let c = zag_side_offset(2, 3, off, false);
 		assert!((b - 0.0).abs() < 1e-9);
-		assert!((c - a).abs() > 0.5, "lanes must be distinct");
-		assert!((c - a).abs() < off * 1.8, "triple-zag bundle should stay tight, span={}", c - a);
+		assert!((c - a).abs() > off * 1.0, "lanes must leave visible air, span={}", c - a);
+		assert!((c - a).abs() < off * 2.6, "bundle should still sit on the arc, span={}", c - a);
 		assert!(zag_side_offset(0, 1, off, false).abs() < 1e-9);
 		let side = zag_side_offset(0, 1, off, true);
 		assert!(side > 0.0, "solid-body zags sit alongside the match stroke");
+	}
+
+	#[test]
+	fn parallel_zag_strokes_are_finer_than_the_lane_gap() {
+		let layout = ViewLayout::from_window(1280.0, 800.0);
+		let zag_w = f64::from(layout.arc_width) * f64::from(ZAG_STRAND_WIDTH_SCALE);
+		let spacing = f64::from(layout.stripe_off) * ZAG_LANE_SPACING_SCALE;
+		assert!(
+			spacing > zag_w * 2.5,
+			"parallel zags must show empty space (width={zag_w} spacing={spacing})"
+		);
+		assert!(
+			ZAG_STRAND_WIDTH_SCALE < 0.30,
+			"arc zag stroke should be finer than a highway strand"
+		);
+		let span6 = 5.0 * spacing;
+		assert!(
+			span6 < f64::from(layout.tile_radius),
+			"six-line bundle should still fit beside a tile (span={span6} r={})",
+			layout.tile_radius
+		);
+		assert!((TILE_ZAG_AMP - 0.80).abs() < 1e-6, "keep low tile-zag amplitude");
+		assert_eq!(TILE_ZAG_TEETH, 16, "keep 2x squiggle frequency");
 	}
 
 	#[test]
