@@ -313,10 +313,17 @@ impl Tile {
 	/// How many of this tile's zag **strokes** have their color on `target`
 	/// (normal or zag). Extra weight strokes of a zag last-ring count, matching
 	/// the concentric rings that are drawn. Own zags do not mismatch their owner.
+	/// A zag whose color `target` lacks is absent (not a hit).
 	pub fn zag_hits_on(self, target: Tile) -> i32 {
 		(0..self.ring_strokes())
 			.filter(|&k| self.stroke_is_zag(k) && target.has_color(self.stroke_color(k)))
 			.count() as i32
+	}
+
+	/// True if this tile has a real presence toward `dst`: a normal ring, or a
+	/// zag whose color `dst` holds. Non-matching zags are treated as empty.
+	pub fn present_toward(self, dst: Tile) -> bool {
+		self.normal_mask() != 0 || self.zag_hits_on(dst) > 0
 	}
 
 	pub fn kind_label(self) -> String {
@@ -1125,15 +1132,19 @@ impl Game {
 	/// Matches: +1 if they share a **normal** color. Zags never produce a
 	/// match — a color that either tile holds only as zags does not count.
 	/// Mismatches: count of `other`'s zag strokes whose color `tile` has
-	/// (normal or zag); if that is 0 and they share no normal color, the
-	/// ordinary +1 (or neighbor weight) mismatch.
+	/// (normal or zag). A zag whose color `tile` lacks is empty: no match,
+	/// no mismatch, and it does not create a conflict. Ordinary +1 (or
+	/// neighbor weight) mismatch only when both tiles are actually present
+	/// toward each other and they share no normal color.
 	pub fn edge_score(&self, tile: Tile, other: Tile) -> (i32, i32) {
 		let matched = tile.shares_normal(other);
 		let matches = i32::from(matched);
 		let zag = other.zag_hits_on(tile);
 		let mismatches = if zag > 0 {
 			zag
-		} else if !matched {
+		} else if matched {
+			0
+		} else if tile.present_toward(other) && other.present_toward(tile) {
 			if self.rules.mismatch_uses_neighbor_weight {
 				i32::from(other.weight)
 			} else {
@@ -3401,6 +3412,61 @@ mod tests {
 		assert!(!a.shares_normal(b));
 		assert_eq!(game.edge_score(a, b), (0, 1), "ordinary mismatch; zag is not a match");
 		assert_eq!(game.edge_score(b, a), (0, 1), "U's zag hits T's blue");
+	}
+
+	#[test]
+	fn non_matching_zag_is_empty_not_a_mismatch() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
+		let blue = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(zag.zag_hits_on(blue), 0, "blue does not hold orange");
+		assert_eq!(blue.zag_hits_on(zag), 0);
+		assert_eq!(game.edge_score(zag, blue), (0, 0), "non-matching zag is empty");
+		assert_eq!(game.edge_score(blue, zag), (0, 0));
+		game.place_tile(spawn, zag);
+		game.place_tile(nb, blue);
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (1, 0), "own weight only; orange zag does not mismatch blue");
+		assert!(!game.is_overwhelmed(spawn));
+		assert!(!game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn blue_normal_plus_orange_zag_vs_blue_is_one_match_zero_mismatches() {
+		let mut game = Game::empty(RuleSet::default());
+		let mixed = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			1,
+			1,
+		);
+		let blue = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(game.edge_score(mixed, blue), (1, 0));
+		assert_eq!(game.edge_score(blue, mixed), (1, 0), "orange zag does not hit blue-only");
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		game.place_tile(spawn, mixed);
+		game.place_tile(nb, blue);
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (2, 0), "weight 1 + blue match, orange zag is empty");
+		assert!(!game.is_overwhelmed(spawn));
+		assert!(!game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn non_matching_zag_does_not_hide_a_normal_conflict() {
+		let mut game = Game::empty(RuleSet::default());
+		let mixed = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			1,
+			1,
+		);
+		let green = game.alloc_rings(Player::Two, &[TileColor::Green], 1, 1);
+		assert_eq!(game.edge_score(mixed, green), (0, 1), "blue vs green is still a conflict");
+		assert_eq!(game.edge_score(green, mixed), (0, 1));
 	}
 
 	#[test]

@@ -220,8 +220,12 @@ fn two_ended_body(a: Tile, b: Tile) -> ArcBody {
 	match (shared[0], shared[1]) {
 		(Some(color), None) => ArcBody::Solid { color, thick: true },
 		(Some(c1), Some(c2)) => ArcBody::Stripes { a: c1, b: c2, zag_a: false, zag_b: false },
-		(None, _) if a.shares_color(b) => ArcBody::Hidden,
-		(None, _) => ArcBody::Braid { a: a.primary(), b: b.primary() },
+		(None, _) if a.zag_hits_on(b) > 0 || b.zag_hits_on(a) > 0 => ArcBody::Hidden,
+		(None, _) if a.present_toward(b) && b.present_toward(a) => {
+			ArcBody::Braid { a: a.primary(), b: b.primary() }
+		}
+		// Non-matching zag is empty: no match line and not a conflict braid.
+		(None, _) => ArcBody::Hidden,
 	}
 }
 
@@ -724,7 +728,8 @@ pub fn format_log_line(log: &str, last_removals: &str) -> String {
 /// color, same-color, two-ended multi-shared highways, conflict braids,
 /// one-ended highway stripes (including a zag strand), single and double zag
 /// tiles, a match with a zag on one side, a match with zags on both sides,
-/// and a zag-on-zag edge with an empty middle lane.
+/// a zag-on-zag edge with an empty middle lane, and a non-matching zag
+/// that stays empty instead of a conflict braid.
 pub fn demo_midgame() -> Game {
 	let mut game = Game::empty(RuleSet::default());
 	let board = game.board().clone();
@@ -883,6 +888,22 @@ pub fn demo_midgame() -> Game {
 			1,
 		);
 		game.place_tile(n, tile);
+	}
+
+	'place_non_matching: {
+		for id in 0..board.node_count() as NodeId {
+			let Some(t) = game.tile_at(id) else {
+				continue;
+			};
+			if !(t.has_normal(TileColor::Blue) && t.n_rings == 1 && t.zag.iter().all(|z| !*z)) {
+				continue;
+			}
+			if let Some(&nb) = board.neighbors(id).iter().find(|&&k| game.tile_at(k).is_none()) {
+				let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
+				game.place_tile(nb, zag);
+				break 'place_non_matching;
+			}
+		}
 	}
 
 	let p1_bench = vec![
@@ -1237,6 +1258,20 @@ mod tests {
 		assert_eq!(paint.body, ArcBody::Solid { color: TileColor::Blue, thick: true });
 		assert_eq!(paint.zags_from[0], Some(TileColor::Orange));
 		assert_eq!(paint.zag_to_count(), 0);
+		let blue_only = Tile::mono(12, Player::Two, TileColor::Blue, 1, 1);
+		let paint = arc_paint(Some(orange_zag), Some(blue_only));
+		assert_eq!(paint.body, ArcBody::Hidden, "non-matching zag is empty, not a conflict braid");
+		assert_eq!(paint.zag_count(), 0);
+		let mixed_vs_blue = Tile::with_ring_kinds(
+			13,
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		let paint = arc_paint(Some(mixed_vs_blue), Some(blue_only));
+		assert_eq!(paint.body, ArcBody::Solid { color: TileColor::Blue, thick: true });
+		assert_eq!(paint.zag_count(), 0, "orange zag does not fire on blue-only");
 	}
 
 	#[test]
@@ -1257,6 +1292,7 @@ mod tests {
 		let mut zag_beside_match = 0;
 		let mut zag_both_sides = 0;
 		let mut zag_on_zag = 0;
+		let mut non_matching_zag = 0;
 		let mut double_zag_tiles = 0;
 		let mut single_zag_tiles = 0;
 		for id in 0..game.board().node_count() as NodeId {
@@ -1295,6 +1331,13 @@ mod tests {
 					&& !a.shares_normal(b)
 				{
 					zag_on_zag += 1;
+				}
+				if paint.body == ArcBody::Hidden
+					&& paint.zag_count() == 0
+					&& !a.shares_normal(b)
+					&& (a.zag.iter().any(|z| *z) || b.zag.iter().any(|z| *z))
+				{
+					non_matching_zag += 1;
 				}
 				if matches!(paint.body, ArcBody::Solid { .. } | ArcBody::Stripes { .. })
 					&& (paint.zag_from_count() > 0) != (paint.zag_to_count() > 0)
@@ -1352,6 +1395,7 @@ mod tests {
 		assert!(zag_both_sides > 0, "need a match with zags on both sides");
 		assert!(hidden > 0, "need a decided zag-only arc (no match line)");
 		assert!(zag_on_zag > 0, "need a zag-on-zag edge with no match stroke");
+		assert!(non_matching_zag > 0, "need a non-matching zag edge that is not a braid");
 		assert!(single_zag_tiles > 0, "need a single-zag tile");
 		assert!(double_zag_tiles > 0, "need a double-zag tile");
 		assert_eq!(game.bench(Player::One).len(), 5);

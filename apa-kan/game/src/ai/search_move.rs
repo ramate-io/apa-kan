@@ -153,7 +153,7 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 							s += 8;
 						} else if other.zag_hits_on(tile) > 0 || tile.zag_hits_on(other) > 0 {
 							s += 18;
-						} else {
+						} else if tile.present_toward(other) && other.present_toward(tile) {
 							s += 12;
 						}
 					}
@@ -180,7 +180,7 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 							.any(|(i, c)| other.zag[i] && add_all & c.bit() != 0)
 					{
 						s += 18;
-					} else {
+					} else if normal != 0 && other.normal_mask() != 0 {
 						s += 6;
 					}
 				}
