@@ -1029,11 +1029,7 @@ mod tests {
 		let c = zag_side_offset(2, 3, off, false);
 		assert!((b - 0.0).abs() < 1e-9);
 		assert!((c - a).abs() > 0.5, "lanes must be distinct");
-		assert!(
-			(c - a).abs() < off * 1.8,
-			"triple-zag bundle should stay tight, span={}",
-			c - a
-		);
+		assert!((c - a).abs() < off * 1.8, "triple-zag bundle should stay tight, span={}", c - a);
 		assert!(zag_side_offset(0, 1, off, false).abs() < 1e-9);
 		let side = zag_side_offset(0, 1, off, true);
 		assert!(side > 0.0, "solid-body zags sit alongside the match stroke");
