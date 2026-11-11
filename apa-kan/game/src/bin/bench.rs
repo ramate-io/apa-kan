@@ -56,10 +56,10 @@ fn usage() -> &'static str {
 	   --list-scenarios     Print builtin deck scenarios\n\
 	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
-	   --hop-weight-cmp, --petal-majority-win, --petal-majority-n,\n\
+	   --hop-weight-cmp, --counted-pass-through, --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-bench, --max-rings,\n\
-	   --path-constraint, --no-repeated-edge, --turn-limit\n\
+	   --zag-chance, --zags, --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
 
@@ -180,6 +180,7 @@ struct SeatStats {
 	depth_n: u32,
 	iter_sum: f64,
 	iter_n: u32,
+	captures: u32,
 }
 
 fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
@@ -227,13 +228,14 @@ fn run(cfg: BenchConfig) {
 		rules.turn_limit
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} max_rings={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} max_rings={} zag_numer={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
 		rules.no_same_piece_twice.name(),
 		on_off(rules.color_restricted_hops),
 		rules.hop_weight_cmp.name(),
+		on_off(rules.counted_pass_through),
 		on_off(rules.petal_majority_win),
 		rules.petal_majority_n,
 		on_off(rules.control_win),
@@ -242,6 +244,7 @@ fn run(cfg: BenchConfig) {
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
 		rules.max_rings,
+		rules.zag_numer,
 		rules.path_constraint.name(),
 		cfg.scenario.as_ref().map(|s| s.name.as_str()).unwrap_or("default")
 	));
@@ -253,7 +256,7 @@ fn run(cfg: BenchConfig) {
 		"# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).".into(),
 	);
 	lines.push(
-		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters".into(),
+		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures".into(),
 	);
 
 	let record_holder: Mutex<Option<GameRecord>> = Mutex::new(None);
@@ -314,6 +317,7 @@ fn run(cfg: BenchConfig) {
 	let mut end_insuff = 0u32;
 	let mut end_limit = 0u32;
 	let mut end_pass = 0u32;
+	let mut captures = 0u32;
 	for (_, stats, line) in &pairing_results {
 		println!("{line}");
 		lines.push(line.clone());
@@ -328,6 +332,7 @@ fn run(cfg: BenchConfig) {
 		end_insuff += stats.insuff;
 		end_limit += stats.turn_limit;
 		end_pass += stats.double_pass;
+		captures += stats.captures;
 		stall_games += cfg.games;
 		stall_rep2 += stats.games_repeat_ge2;
 		stall_rep3 += stats.games_repeat_ge3;
@@ -345,6 +350,10 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!(
 		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} turn_limit={end_limit} double_pass={end_pass}"
 	));
+	let games_n = p1_w + p1_d + p1_l;
+	let avg_cap = if games_n == 0 { 0.0 } else { f64::from(captures) / f64::from(games_n) };
+	lines.push(format!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}"));
+	println!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}");
 	println!(
 		"# seat_totals  P1 {p1_w}-{p1_d}-{p1_l}  P2 {p1_l}-{p1_d}-{p1_w}  games={}",
 		p1_w + p1_d + p1_l
@@ -466,6 +475,7 @@ fn run_pairing(
 		}
 		stats.sum_max_repeat += result.max_repeat;
 		stats.sum_max_occ_repeat += result.max_occ_repeat;
+		stats.captures += result.captures;
 		match result.status {
 			GameStatus::Won { winner, reason } => {
 				if winner == Player::One {
@@ -508,8 +518,9 @@ fn run_pairing(
 	let avg_depth =
 		if stats.depth_n == 0 { 0.0 } else { stats.depth_sum / f64::from(stats.depth_n) };
 	let avg_iters = if stats.iter_n == 0 { 0.0 } else { stats.iter_sum / f64::from(stats.iter_n) };
+	let avg_cap = f64::from(stats.captures) / f64::from(n);
 	let line = format!(
-		"{:<15} vs {:<15}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}",
+		"{:<15} vs {:<15}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}",
 		p1.name(),
 		p2.name(),
 		stats.wins,
@@ -527,7 +538,8 @@ fn run_pairing(
 		stats.games_repeat_ge3,
 		avg_rep,
 		avg_depth,
-		avg_iters
+		avg_iters,
+		avg_cap
 	);
 	(stats, line)
 }
@@ -606,6 +618,7 @@ struct PlayResult {
 	depth_n: u32,
 	iter_sum: f64,
 	iter_n: u32,
+	captures: u32,
 	record: Option<GameRecord>,
 	deck: DeckRow,
 }
@@ -663,6 +676,7 @@ fn play_game(
 	let mut iter_sum = 0.0;
 	let mut iter_n = 0u32;
 	let mut record_lines = Vec::new();
+	let mut captures = 0u32;
 	let mut guard = 0u32;
 
 	loop {
@@ -702,6 +716,9 @@ fn play_game(
 		}
 		match game.apply(action) {
 			Ok(outcome) => {
+				captures +=
+					outcome.removals.iter().filter(|r| r.tile.owner != outcome.player).count()
+						as u32;
 				if keep_record {
 					record_lines.push(format!(
 						"{:>3}. {}   [depth={} iters={}]",
@@ -766,6 +783,7 @@ fn play_game(
 		depth_n,
 		iter_sum,
 		iter_n,
+		captures,
 		record,
 		deck: DeckRow {
 			pairing: String::new(),
@@ -834,14 +852,25 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let n = 20_000u32;
 	let mut ring_n = [0u32; 4];
 	let mut color_n = [0u32; 6];
+	let mut zag_rings = 0u32;
+	let mut rings = 0u32;
 	for _ in 0..n {
-		let t = sample_tile(Player::One, rules.max_rings, &mut next_id, &mut rng);
+		let t = sample_tile(Player::One, rules.max_rings, rules.zag_numer, &mut next_id, &mut rng);
 		tally_tiles(std::iter::once(&t), &mut ring_n, &mut color_n);
+		let k = t.n_rings.clamp(1, 3) as usize;
+		zag_rings += t.zag.iter().take(k).filter(|z| **z).count() as u32;
+		rings += k as u32;
 	}
 	lines.push(format!(
-		"# ring_process  sample={n} max_rings={}  n1={} n2={} n3={}",
-		rules.max_rings, ring_n[1], ring_n[2], ring_n[3]
+		"# ring_process  sample={n} max_rings={} zag_numer={}  n1={} n2={} n3={}",
+		rules.max_rings, rules.zag_numer, ring_n[1], ring_n[2], ring_n[3]
 	));
+	if rings > 0 {
+		lines.push(format!(
+			"# ring_process_zags  rings={rings} zags={zag_rings} rate={:.4}",
+			f64::from(zag_rings) / f64::from(rings)
+		));
+	}
 	let names = TileColor::ALL.map(|c| c.name());
 	let mut bits = Vec::new();
 	for (i, name) in names.iter().enumerate() {

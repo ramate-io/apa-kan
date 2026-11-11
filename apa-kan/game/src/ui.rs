@@ -12,7 +12,7 @@ use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
 use crate::game::{Action, Game, Player, Tile};
-use crate::visual::{self, ArcPaint, ViewLayout};
+use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
 	let screenshot = cfg.screenshot.clone();
@@ -592,7 +592,7 @@ fn spawn_arc(
 	to: Option<Tile>,
 	center: NodeId,
 ) {
-	let samples = arc.sample(40);
+	let samples = arc.sample(visual::ARC_SAMPLES);
 	let pts: Vec<[f64; 2]> = samples
 		.iter()
 		.map(|p| {
@@ -601,8 +601,14 @@ fn spawn_arc(
 		})
 		.collect();
 	let width = layout.arc_width;
-	match visual::arc_paint(from, to) {
-		ArcPaint::Neutral => {
+	let paint = visual::arc_paint(from, to);
+	let stripe_off = if visual::arc_touches_center(arc, center) {
+		f64::from(layout.stripe_off_center)
+	} else {
+		f64::from(layout.stripe_off)
+	};
+	match paint.body {
+		ArcBody::Neutral => {
 			spawn_stroke(
 				commands,
 				meshes,
@@ -613,7 +619,7 @@ fn spawn_arc(
 				visual::Z_ARC,
 			);
 		}
-		ArcPaint::Solid { color, thick } => {
+		ArcBody::Solid { color, thick } => {
 			let w = if thick { width * visual::ARC_SAME_COLOR_WIDTH_SCALE } else { width };
 			spawn_stroke(
 				commands,
@@ -625,67 +631,240 @@ fn spawn_arc(
 				visual::Z_ARC,
 			);
 		}
-		ArcPaint::Braid { a, b } => {
-			let amp = if visual::arc_touches_center(arc, center) {
-				f64::from(layout.braid_amp_center)
+		ArcBody::Hitch { from, to } => {
+			let hitch_r = if visual::arc_touches_center(arc, center) {
+				f64::from(layout.hitch_r_center)
 			} else {
-				f64::from(layout.braid_amp)
+				f64::from(layout.hitch_r)
 			};
-			let turns = visual::braid_turns(arc);
-			let braid = visual::braid_strands(&pts, amp, turns);
-			let strand_w = width * visual::BRAID_STRAND_WIDTH_SCALE;
-			spawn_braid_strand(
-				commands,
-				meshes,
-				materials,
-				&braid.a,
-				&braid.phase,
-				true,
-				strand_w,
-				rgb(visual::tile_rgb(a)),
+			let frame = visual::midpoint_frame(&pts);
+			let clearance = visual::hitch_clearance(hitch_r);
+			if frame.index < pts.len() {
+				let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
+				let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
+				spawn_hitch_half(
+					commands,
+					meshes,
+					materials,
+					&from_pts,
+					from,
+					stripe_off,
+					f64::from(width),
+				);
+				spawn_hitch_half(
+					commands,
+					meshes,
+					materials,
+					&to_pts,
+					to,
+					stripe_off,
+					f64::from(width),
+				);
+			}
+			let disc_r = (hitch_r * 0.38) as f32;
+			commands.spawn((
+				DynamicView,
+				Mesh2d(meshes.add(Circle::new(disc_r.max(1.0)))),
+				MeshMaterial2d(materials.add(ColorMaterial::from(rgb(visual::BG_RGB)))),
+				Transform::from_xyz(frame.mid[0] as f32, frame.mid[1] as f32, visual::Z_ARC_OVER),
+			));
+			let strand_w = width * visual::HITCH_STRAND_WIDTH_SCALE;
+			spawn_hitch_side(commands, meshes, materials, &frame, hitch_r, strand_w, from, -1.0);
+			spawn_hitch_side(commands, meshes, materials, &frame, hitch_r, strand_w, to, 1.0);
+		}
+		ArcBody::Stripes { a, b, zag_a, zag_b } => {
+			let strand_w = width * visual::STRIPE_STRAND_WIDTH_SCALE;
+			let zag_w = width * visual::ZAG_STRAND_WIDTH_SCALE;
+			let zag_amp = if visual::arc_touches_center(arc, center) {
+				f64::from(layout.zag_amp_center)
+			} else {
+				f64::from(layout.zag_amp)
+			};
+			let teeth = visual::zag_teeth(arc);
+			spawn_stripe_strand(
+				commands, meshes, materials, &pts, stripe_off, zag_a, a, strand_w, zag_w, zag_amp,
+				teeth,
 			);
-			spawn_braid_strand(
+			spawn_stripe_strand(
 				commands,
 				meshes,
 				materials,
-				&braid.b,
-				&braid.phase,
-				false,
+				&pts,
+				-stripe_off,
+				zag_b,
+				b,
 				strand_w,
-				rgb(visual::tile_rgb(b)),
+				zag_w,
+				zag_amp,
+				teeth,
 			);
 		}
+		ArcBody::Hidden => {}
+	}
+	let zag_amp = if visual::arc_touches_center(arc, center) {
+		f64::from(layout.zag_amp_center)
+	} else {
+		f64::from(layout.zag_amp)
+	};
+	let zag_w = width * visual::ZAG_STRAND_WIDTH_SCALE;
+	let teeth = visual::zag_teeth(arc);
+	let spacing = visual::zag_lane_spacing(stripe_off);
+	let hitch_r_lane = if visual::arc_touches_center(arc, center) {
+		f64::from(layout.hitch_r_center)
+	} else {
+		f64::from(layout.hitch_r)
+	};
+	let inner = visual::zag_lane_inner(paint.body, stripe_off, hitch_r_lane);
+	for (i, zag) in paint.zags_from.iter().enumerate() {
+		let Some(color) = *zag else {
+			continue;
+		};
+		let side = visual::zag_fan_offset(i, 1.0, inner, spacing);
+		let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&zig,
+			zag_w,
+			rgb(visual::tile_rgb(color)),
+			visual::Z_ARC_OVER + 0.02 * i as f32,
+		);
+	}
+	for (i, zag) in paint.zags_to.iter().enumerate() {
+		let Some(color) = *zag else {
+			continue;
+		};
+		let side = visual::zag_fan_offset(i, -1.0, inner, spacing);
+		let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&zig,
+			zag_w,
+			rgb(visual::tile_rgb(color)),
+			visual::Z_ARC_OVER + 0.02 * (i + visual::MAX_TILE_ZAGS) as f32,
+		);
 	}
 }
 
-fn spawn_braid_strand(
+fn spawn_stripe_strand(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	centerline: &[[f64; 2]],
+	offset: f64,
+	is_zag: bool,
+	color: crate::game::TileColor,
+	strand_w: f32,
+	zag_w: f32,
+	zag_amp: f64,
+	teeth: f64,
+) {
+	if is_zag {
+		let zig = visual::zigzag_alongside(centerline, offset, zag_amp, teeth);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&zig,
+			zag_w,
+			rgb(visual::tile_rgb(color)),
+			visual::Z_ARC_OVER,
+		);
+	} else {
+		let pts = visual::offset_polyline(centerline, offset);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&pts,
+			strand_w,
+			rgb(visual::tile_rgb(color)),
+			visual::Z_ARC,
+		);
+	}
+}
+
+fn spawn_hitch_half(
 	commands: &mut Commands,
 	meshes: &mut Assets<Mesh>,
 	materials: &mut Assets<ColorMaterial>,
 	pts: &[[f64; 2]],
-	phase: &[f64],
-	strand_a: bool,
-	width: f32,
-	color: Color,
+	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	stripe_off: f64,
+	arc_width: f64,
 ) {
-	if pts.len() < 2 {
+	let n = visual::packed_color_count(colors);
+	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let mut start = 0usize;
-	for i in 1..pts.len() {
-		let front_a = phase[i].cos() >= 0.0;
-		let this_front = if strand_a { front_a } else { !front_a };
-		let prev_front_a = phase[i - 1].cos() >= 0.0;
-		let prev_front = if strand_a { prev_front_a } else { !prev_front_a };
-		if this_front != prev_front || i + 1 == pts.len() {
-			let end = if i + 1 == pts.len() { i } else { i };
-			if end > start {
-				let slice = &pts[start..=end];
-				let z = if prev_front { visual::Z_ARC_OVER } else { visual::Z_ARC };
-				spawn_stroke(commands, meshes, materials, slice, width, color, z);
-			}
-			start = i.saturating_sub(1);
-		}
+	let offsets = visual::highway_offsets(n, stripe_off);
+	let strand_w = visual::highway_strand_width(n, arc_width) as f32;
+	let mut k = 0usize;
+	for color in colors {
+		let Some(c) = color else {
+			continue;
+		};
+		let line = visual::offset_polyline(pts, offsets[k]);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&line,
+			strand_w,
+			rgb(visual::tile_rgb(c)),
+			visual::Z_ARC,
+		);
+		k += 1;
+	}
+}
+
+fn spawn_hitch_side(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	frame: &visual::HitchFrame,
+	hitch_r: f64,
+	strand_w: f32,
+	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	along: f64,
+) {
+	let n = visual::packed_color_count(colors);
+	let mut k = 0usize;
+	for color in colors {
+		let Some(c) = color else {
+			continue;
+		};
+		let scale = visual::hitch_loop_scales(n)[k];
+		let glyph = visual::hitch_loop_polyline(
+			frame.mid,
+			frame.tangent,
+			frame.normal,
+			hitch_r,
+			along,
+			scale,
+		);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&glyph,
+			strand_w * visual::HITCH_OUTLINE_WIDTH_SCALE,
+			rgb(visual::HITCH_OUTLINE_RGB),
+			visual::Z_ARC_OVER + 0.04,
+		);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&glyph,
+			strand_w,
+			rgb(visual::tile_rgb(c)),
+			visual::Z_ARC_OVER + 0.05,
+		);
+		k += 1;
 	}
 }
 
@@ -776,7 +955,6 @@ fn spawn_tile_at(
 	radius: f32,
 ) {
 	let fill = rgb(visual::owner_fill_rgb(tile.owner));
-	let ring_colors = tile.ring_colors();
 	let primary = rgb(visual::tile_rgb(tile.primary()));
 	let z = visual::Z_TILE;
 	commands.spawn((
@@ -785,31 +963,49 @@ fn spawn_tile_at(
 		MeshMaterial2d(materials.add(ColorMaterial::from(fill))),
 		Transform::from_translation(pos.extend(z)),
 	));
-	let scale = radius / visual::PREV_TILE_RADIUS_PX;
-	let ring_gap = 3.5 * scale;
-	let ring_half = 1.6 * scale;
-	let strokes = tile.weight.max(tile.n_rings);
+	let draw = visual::TileRingDraw::for_radius(radius);
+	let ring_half = draw.stroke * 0.5;
+	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
-		let r = radius - 3.0 * scale - f32::from(k) * ring_gap;
-		if r > 6.0 * scale {
-			let idx = (k as usize).min(ring_colors.len().saturating_sub(1));
-			let color = ring_colors.get(idx).copied().unwrap_or(tile.primary());
-			spawn_ring(
-				commands,
-				meshes,
-				materials,
-				pos,
-				(r - ring_half).max(1.0),
-				r,
-				rgb(visual::tile_rgb(color)),
-				visual::Z_TILE_RING + f32::from(k) * 0.02,
-			);
+		let r = draw.ring_radius(radius, k);
+		if r > 6.0 * draw.scale {
+			let color = tile.stroke_color(k);
+			let z = visual::Z_TILE_RING + f32::from(k) * 0.02;
+			if tile.stroke_is_zag(k) {
+				let zig = visual::zigzag_circle(
+					[f64::from(pos.x), f64::from(pos.y)],
+					f64::from(r - ring_half * 0.5),
+					f64::from(draw.zag_amp),
+					draw.zag_teeth,
+					draw.zag_samples,
+				);
+				spawn_stroke(
+					commands,
+					meshes,
+					materials,
+					&zig,
+					draw.zag_stroke.max(0.45),
+					rgb(visual::tile_rgb(color)),
+					z,
+				);
+			} else {
+				spawn_ring(
+					commands,
+					meshes,
+					materials,
+					pos,
+					(r - ring_half).max(1.0),
+					r,
+					rgb(visual::tile_rgb(color)),
+					z,
+				);
+			}
 		}
 	}
 	let dots = tile.dots.min(3);
-	let spread = 7.0 * scale;
+	let spread = draw.dot_spread;
 	let start = -spread * (f32::from(dots) - 1.0) / 2.0;
-	let dot_r = (2.8 * scale).max(2.0);
+	let dot_r = draw.dot_r.max(2.0);
 	for i in 0..dots {
 		let dx = start + f32::from(i) * spread;
 		commands.spawn((
@@ -825,8 +1021,8 @@ fn spawn_tile_at(
 			meshes,
 			materials,
 			pos,
-			radius + 2.0 * scale,
-			radius + 5.0 * scale,
+			radius + 2.0 * draw.scale,
+			radius + 5.0 * draw.scale,
 			rgb(visual::HIGHLIGHT_RGB),
 			visual::Z_HIGHLIGHT,
 		);

@@ -1,5 +1,6 @@
 //! Game model, RuleSet, overwhelm, movement, and win detection.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use rand::rngs::StdRng;
@@ -69,9 +70,14 @@ pub const COLOR_WEIGHT_TOTAL: u32 = 262;
 pub const RING_SAME_WEIGHT: u32 = 7;
 pub const RING_ANY_WEIGHT: u32 = 1;
 pub const RING_EXIST_TOTAL: u32 = RING_SAME_WEIGHT + RING_ANY_WEIGHT;
+/// Each ring is independently a zag with probability `zag_numer / ZAG_DENOM`.
+pub const ZAG_DENOM: u8 = 7;
+pub const ZAG_NUMER_DEFAULT: u8 = 1;
 /// Sampled bag size (replaces the old 27 unique 3-color kinds).
 pub const BAG_SIZE: usize = 27;
 pub const MAX_COLOR_RINGS: u8 = 3;
+/// Each of 6 colors is absent (0), a normal ring (1), or a zag ring (2).
+pub const COLOR_STATES: usize = 729;
 
 impl TileColor {
 	pub const ALL: [TileColor; 6] = [
@@ -137,9 +143,24 @@ pub fn sample_color(rng: &mut impl Rng) -> TileColor {
 	TileColor::Maroon
 }
 
-/// 1–3 distinct normal-ring colors. Ring 1 is always drawn. Rings 2 and 3
+/// Independent 1/`ZAG_DENOM` zag rolls. `zag_numer == 0` skips the RNG so a
+/// `--zags off` bag matches the #17 (no-zag) deal for the same seed.
+pub fn sample_zag_flags(rng: &mut impl Rng, n_rings: u8, zag_numer: u8) -> [bool; 3] {
+	let mut zag = [false; 3];
+	if zag_numer == 0 {
+		return zag;
+	}
+	let numer = u32::from(zag_numer.min(ZAG_DENOM));
+	for flag in zag.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+		*flag = rng.gen_range(0..u32::from(ZAG_DENOM)) < numer;
+	}
+	zag
+}
+
+/// 1–3 distinct ring colors. Ring 1 is always drawn. Rings 2 and 3
 /// keep the last existing color with weight 7, or draw any color with weight 1
-/// (a redraw of an already-present color is not a new ring).
+/// (a redraw of an already-present color is not a new ring). Each ring is
+/// then independently marked zag or normal.
 pub fn sample_rings(rng: &mut impl Rng, max_rings: u8) -> ([TileColor; 3], u8) {
 	let max_rings = max_rings.clamp(1, MAX_COLOR_RINGS);
 	let r1 = sample_color(rng);
@@ -167,15 +188,18 @@ pub fn sample_rings(rng: &mut impl Rng, max_rings: u8) -> ([TileColor; 3], u8) {
 pub struct Tile {
 	pub id: u32,
 	pub owner: Player,
-	/// Distinct normal-ring colors, first [`Self::n_rings`] entries live.
+	/// Distinct-color rings in generation; tests may stack same-color zags.
+	/// First [`Self::n_rings`] entries live.
 	pub rings: [TileColor; 3],
 	pub n_rings: u8,
+	/// Parallel to [`Self::rings`]: that ring is a zag (forced mismatch).
+	pub zag: [bool; 3],
 	pub weight: u8,
 	pub dots: u8,
 }
 
-/// Kind space: color-mask (6 bits) × weight × dots. Mask 0 is unused.
-pub const KIND_COUNT: usize = 64 * 9;
+/// Kind space: color-state (3^6) × weight × dots.
+pub const KIND_COUNT: usize = COLOR_STATES * 9;
 
 impl Tile {
 	pub fn mono(id: u32, owner: Player, color: TileColor, weight: u8, dots: u8) -> Self {
@@ -183,24 +207,47 @@ impl Tile {
 	}
 
 	pub fn with_rings(id: u32, owner: Player, colors: &[TileColor], weight: u8, dots: u8) -> Self {
-		let first = colors.first().copied().unwrap_or(TileColor::Green);
-		let mut rings = [first; 3];
-		let mut n = 0u8;
-		for &c in colors.iter().take(MAX_COLOR_RINGS as usize) {
-			if rings[..n as usize].contains(&c) {
-				continue;
+		let parts: Vec<(TileColor, bool)> = {
+			let mut out = Vec::new();
+			for &c in colors.iter().take(MAX_COLOR_RINGS as usize) {
+				if !out.iter().any(|(x, _)| *x == c) {
+					out.push((c, false));
+				}
 			}
+			out
+		};
+		Self::with_ring_kinds(id, owner, &parts, weight, dots)
+	}
+
+	/// Rings in listed order, including duplicate colors (for stacked zags).
+	pub fn with_ring_kinds(
+		id: u32,
+		owner: Player,
+		parts: &[(TileColor, bool)],
+		weight: u8,
+		dots: u8,
+	) -> Self {
+		let first = parts.first().map(|p| p.0).unwrap_or(TileColor::Green);
+		let mut rings = [first; 3];
+		let mut zag = [false; 3];
+		let mut n = 0u8;
+		for &(c, is_zag) in parts.iter().take(MAX_COLOR_RINGS as usize) {
 			rings[n as usize] = c;
+			zag[n as usize] = is_zag;
 			n += 1;
 		}
 		if n == 0 {
 			n = 1;
 		}
-		Self { id, owner, rings, n_rings: n, weight, dots }
+		Self { id, owner, rings, n_rings: n, zag, weight, dots }
 	}
 
 	pub fn ring_colors(&self) -> &[TileColor] {
 		&self.rings[..self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize]
+	}
+
+	pub fn ring_is_zag(self, index: usize) -> bool {
+		index < self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize && self.zag[index]
 	}
 
 	pub fn primary(self) -> TileColor {
@@ -211,6 +258,30 @@ impl Tile {
 		self.ring_colors().contains(&color)
 	}
 
+	pub fn has_normal(self, color: TileColor) -> bool {
+		self.ring_colors().iter().enumerate().any(|(i, &c)| c == color && !self.zag[i])
+	}
+
+	/// Concentric strokes drawn for this tile: one per ring, extra weight
+	/// strokes reuse the last ring (so a weight-3 one-ring zag shows three
+	/// zag rings).
+	pub fn ring_strokes(self) -> u8 {
+		self.weight.max(self.n_rings).max(1)
+	}
+
+	fn stroke_idx(self, k: u8) -> usize {
+		let n = self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize;
+		(k as usize).min(n.saturating_sub(1))
+	}
+
+	pub fn stroke_color(self, k: u8) -> TileColor {
+		self.rings[self.stroke_idx(k)]
+	}
+
+	pub fn stroke_is_zag(self, k: u8) -> bool {
+		self.zag[self.stroke_idx(k)]
+	}
+
 	pub fn color_mask(self) -> u8 {
 		let mut m = 0u8;
 		for &c in self.ring_colors() {
@@ -219,21 +290,112 @@ impl Tile {
 		m.max(1)
 	}
 
+	pub fn normal_mask(self) -> u8 {
+		let mut m = 0u8;
+		for (i, &c) in self.ring_colors().iter().enumerate() {
+			if !self.zag[i] {
+				m |= c.bit();
+			}
+		}
+		m
+	}
+
+	/// Any ring color, normal or zag.
 	pub fn shares_color(self, other: Tile) -> bool {
 		(self.color_mask() & other.color_mask()) != 0
 	}
 
+	/// Shared **normal** ring. Zags never produce a match. A color that
+	/// either tile holds only as zags does not count.
+	pub fn shares_normal(self, other: Tile) -> bool {
+		(self.normal_mask() & other.normal_mask()) != 0
+	}
+
+	/// How many of this tile's zag **strokes** have their color on `target`
+	/// (normal or zag). Extra weight strokes of a zag last-ring count, matching
+	/// the concentric rings that are drawn. Own zags do not mismatch their owner.
+	/// A zag whose color `target` lacks is absent (not a hit).
+	pub fn zag_hits_on(self, target: Tile) -> i32 {
+		(0..self.ring_strokes())
+			.filter(|&k| self.stroke_is_zag(k) && target.has_color(self.stroke_color(k)))
+			.count() as i32
+	}
+
+	/// True if this tile has a real presence toward `dst`: a normal ring, or a
+	/// zag whose color `dst` holds. Non-matching zags are treated as empty.
+	pub fn present_toward(self, dst: Tile) -> bool {
+		self.normal_mask() != 0 || self.zag_hits_on(dst) > 0
+	}
+
 	pub fn kind_label(self) -> String {
-		let rings = self.ring_colors().iter().map(|c| c.name()).collect::<Vec<_>>().join("+");
+		let rings = self
+			.ring_colors()
+			.iter()
+			.enumerate()
+			.map(
+				|(i, c)| {
+					if self.zag[i] {
+						format!("{}-zag", c.name())
+					} else {
+						c.name().to_string()
+					}
+				},
+			)
+			.collect::<Vec<_>>()
+			.join("+");
 		format!("{rings} w{} d{}", self.weight, self.dots)
 	}
 
-	/// `color_mask * 9 + (weight-1)*3 + (dots-1)`, in `9..KIND_COUNT`.
+	/// Per color: 0 absent, 1 normal, 2 zag. Duplicate-color zags collapse to 2.
+	pub fn color_trits(self) -> [u8; 6] {
+		let mut t = [0u8; 6];
+		for (i, &c) in self.ring_colors().iter().enumerate() {
+			let idx = c as usize;
+			if idx >= 6 {
+				continue;
+			}
+			if self.zag[i] {
+				t[idx] = 2;
+			} else if t[idx] == 0 {
+				t[idx] = 1;
+			}
+		}
+		t
+	}
+
+	/// `color_state * 9 + (weight-1)*3 + (dots-1)`.
 	pub fn kind_index(self) -> usize {
 		let w = (self.weight.clamp(1, 3) - 1) as usize;
 		let d = (self.dots.clamp(1, 3) - 1) as usize;
-		(self.color_mask() as usize) * 9 + w * 3 + d
+		color_trits_state(self.color_trits()) * 9 + w * 3 + d
 	}
+}
+
+pub fn color_trits_state(trits: [u8; 6]) -> usize {
+	let mut state = 0usize;
+	let mut pow = 1usize;
+	for t in trits {
+		state += (t as usize).min(2) * pow;
+		pow *= 3;
+	}
+	state
+}
+
+/// `(normal_mask, zag_mask)` from a `kind / 9` color-state.
+pub fn color_state_masks(state: usize) -> (u8, u8) {
+	let mut s = state;
+	let mut normal = 0u8;
+	let mut zag = 0u8;
+	for i in 0..6u8 {
+		let trit = s % 3;
+		s /= 3;
+		match trit {
+			1 => normal |= 1 << i,
+			2 => zag |= 1 << i,
+			_ => {}
+		}
+	}
+	(normal, zag)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -429,9 +591,12 @@ pub struct RuleSet {
 	/// Fill the bag by sampling [`BAG_SIZE`] tiles (historical name: one-of-each
 	/// 27-kind). Default true. False leaves an empty bag.
 	pub bag_one_of_each_kind: bool,
-	/// Max distinct normal rings per tile (1–3). Default 3. `1` is the
+	/// Max distinct rings per tile (1–3). Default 3. `1` is the
 	/// single-ring baseline (still the six-color tree).
 	pub max_rings: u8,
+	/// Each ring is a zag with probability `zag_numer / 7`. Default 1 (1/7).
+	/// `0` disables zags (`--zags off` / `--zag-chance 0`).
+	pub zag_numer: u8,
 	/// On a MOVE, each removed opponent tile draws one bag tile onto the mover's bench.
 	pub capture_draw_on_move: bool,
 	/// If true, a mismatch adds the neighbor's weight instead of 1. Default false.
@@ -487,6 +652,11 @@ pub struct RuleSet {
 	/// Default [`PathConstraint::NoEdgeRevisit`] (`no_repeated_edge` on;
 	/// node revisits via a different arc are allowed).
 	pub path_constraint: PathConstraint,
+	/// If true, occupied tiles are never hopped: a path may **pass through**
+	/// (not land on) an occupant that shares a normal color with the mover
+	/// and whose ring count is `>=` the mover's. Each such node costs one
+	/// of the exact-`d` steps. Default false (graph hops remain the default).
+	pub counted_pass_through: bool,
 }
 
 impl Default for RuleSet {
@@ -496,6 +666,7 @@ impl Default for RuleSet {
 			identical_bags: true,
 			bag_one_of_each_kind: true,
 			max_rings: MAX_COLOR_RINGS,
+			zag_numer: ZAG_NUMER_DEFAULT,
 			capture_draw_on_move: true,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
@@ -516,6 +687,7 @@ impl Default for RuleSet {
 			control_hold_turns: 1,
 			insufficient_tiles_loss: InsufficientTilesLoss::Off,
 			path_constraint: PathConstraint::NoEdgeRevisit,
+			counted_pass_through: false,
 		}
 	}
 }
@@ -619,7 +791,7 @@ impl Game {
 				.map(|spec| {
 					let id = *next_id;
 					*next_id += 1;
-					Tile::with_rings(id, owner, spec.ring_colors(), spec.weight, spec.dots)
+					Tile::with_ring_kinds(id, owner, &spec.parts(), spec.weight, spec.dots)
 				})
 				.collect::<Vec<_>>()
 		};
@@ -661,6 +833,7 @@ impl Game {
 			Player::One,
 			rules.bag_one_of_each_kind,
 			rules.max_rings,
+			rules.zag_numer,
 			&mut next_tile_id,
 			&mut rng,
 		);
@@ -678,6 +851,7 @@ impl Game {
 				Player::Two,
 				rules.bag_one_of_each_kind,
 				rules.max_rings,
+				rules.zag_numer,
 				&mut next_tile_id,
 				&mut rng,
 			)
@@ -949,19 +1123,55 @@ impl Game {
 		Tile::with_rings(id, owner, colors, weight, dots)
 	}
 
+	pub fn alloc_ring_kinds(
+		&mut self,
+		owner: Player,
+		parts: &[(TileColor, bool)],
+		weight: u8,
+		dots: u8,
+	) -> Tile {
+		let id = self.next_tile_id;
+		self.next_tile_id += 1;
+		Tile::with_ring_kinds(id, owner, parts, weight, dots)
+	}
+
+	/// Match/mismatch this `tile` receives from neighbor `other`.
+	/// Matches: +1 if they share a **normal** color. Zags never produce a
+	/// match — a color that either tile holds only as zags does not count.
+	/// Mismatches: count of `other`'s zag strokes whose color `tile` has
+	/// (normal or zag). A zag whose color `tile` lacks is empty: no match,
+	/// no mismatch, and it does not create a conflict. Ordinary +1 (or
+	/// neighbor weight) mismatch only when both tiles are actually present
+	/// toward each other and they share no normal color.
+	pub fn edge_score(&self, tile: Tile, other: Tile) -> (i32, i32) {
+		let matched = tile.shares_normal(other);
+		let matches = i32::from(matched);
+		let zag = other.zag_hits_on(tile);
+		let mismatches = if zag > 0 {
+			zag
+		} else if matched {
+			0
+		} else if tile.present_toward(other) && other.present_toward(tile) {
+			if self.rules.mismatch_uses_neighbor_weight {
+				i32::from(other.weight)
+			} else {
+				1
+			}
+		} else {
+			0
+		};
+		(matches, mismatches)
+	}
+
 	pub fn tile_score(&self, node: NodeId) -> Option<(i32, i32)> {
 		let tile = self.tile_at(node)?;
 		let mut matches = i32::from(tile.weight);
 		let mut mismatches = 0i32;
 		for &nb in self.board.neighbors(node) {
 			if let Some(other) = self.tile_at(nb) {
-				if other.shares_color(tile) {
-					matches += 1;
-				} else if self.rules.mismatch_uses_neighbor_weight {
-					mismatches += i32::from(other.weight);
-				} else {
-					mismatches += 1;
-				}
+				let (m, x) = self.edge_score(tile, other);
+				matches += m;
+				mismatches += x;
 			}
 		}
 		Some((matches, mismatches))
@@ -983,13 +1193,9 @@ impl Game {
 		let mut mismatches = 0i32;
 		for &nb in self.board.neighbors(node) {
 			if let Some(other) = self.tile_at(nb) {
-				if other.shares_color(tile) {
-					matches += 1;
-				} else if self.rules.mismatch_uses_neighbor_weight {
-					mismatches += i32::from(other.weight);
-				} else {
-					mismatches += 1;
-				}
+				let (m, x) = self.edge_score(tile, other);
+				matches += m;
+				mismatches += x;
 			}
 		}
 		mismatches >= matches
@@ -1182,16 +1388,8 @@ impl Game {
 				}
 				continue;
 			}
-			let circles: Vec<u8> = self.board.circles_through(state.node).collect();
-			for circle in circles {
-				for ccw in [true, false] {
-					let Some(next) = self.board.next_on_circle(circle, state.node, ccw) else {
-						continue;
-					};
-					let Some(edge) = self.board.undirected_arc_index(circle, state.node, next)
-					else {
-						continue;
-					};
+			for &next in self.board.neighbors(state.node) {
+				for edge in self.board.connecting_arc_indices(state.node, next) {
 					if forbid_edge && state.visited_edges & (1u64 << edge) != 0 {
 						continue;
 					}
@@ -1205,24 +1403,42 @@ impl Game {
 							visited_nodes: state.visited_nodes | (1u32 << next),
 							visited_edges: state.visited_edges | (1u64 << edge),
 						});
-					} else if let Some((land, hopped_nodes, hopped_edges)) =
-						self.hop_along(&occupancy, circle, state.node, ccw, tile)
-					{
-						if forbid_edge && state.visited_edges & hopped_edges != 0 {
+					} else if self.rules.counted_pass_through {
+						let Some(occupant) = occupancy[next as usize] else {
+							continue;
+						};
+						if !self.pass_through_ok(occupant, tile) {
 							continue;
 						}
-						if forbid_node
-							&& (state.visited_nodes & hopped_nodes != 0
-								|| state.visited_nodes & (1u32 << land) != 0)
-						{
+						if forbid_node && state.visited_nodes & (1u32 << next) != 0 {
 							continue;
 						}
 						stack.push(PathState {
-							node: land,
+							node: next,
 							remaining: state.remaining - 1,
-							visited_nodes: state.visited_nodes | hopped_nodes | (1u32 << land),
-							visited_edges: state.visited_edges | hopped_edges,
+							visited_nodes: state.visited_nodes | (1u32 << next),
+							visited_edges: state.visited_edges | (1u64 << edge),
 						});
+					} else {
+						for (land, hopped_nodes, hopped_edges) in
+							self.hop_from(&occupancy, next, edge, tile, state.visited_edges)
+						{
+							if forbid_edge && state.visited_edges & hopped_edges != 0 {
+								continue;
+							}
+							if forbid_node
+								&& (state.visited_nodes & hopped_nodes != 0
+									|| state.visited_nodes & (1u32 << land) != 0)
+							{
+								continue;
+							}
+							stack.push(PathState {
+								node: land,
+								remaining: state.remaining - 1,
+								visited_nodes: state.visited_nodes | hopped_nodes | (1u32 << land),
+								visited_edges: state.visited_edges | hopped_edges,
+							});
+						}
 					}
 				}
 			}
@@ -1231,9 +1447,13 @@ impl Game {
 		found
 	}
 
+	fn pass_through_ok(&self, occupant: Tile, mover: Tile) -> bool {
+		occupant.shares_normal(mover) && occupant.n_rings >= mover.n_rings
+	}
+
 	fn hop_occupant_ok(&self, occupant: Tile, mover: Tile) -> bool {
 		if self.rules.color_restricted_hops {
-			occupant.shares_color(mover)
+			occupant.shares_normal(mover)
 				&& self.rules.hop_weight_cmp.allows(occupant.weight, mover.weight)
 		} else if self.rules.hop_requires_ge_weight {
 			occupant.weight >= mover.weight
@@ -1242,41 +1462,79 @@ impl Game {
 		}
 	}
 
-	fn hop_along(
+	/// Hop landings from an occupied entry `first` reached via `entry_edge`.
+	/// Floods any-adjacency through hoppable occupied tiles (shared normal,
+	/// weight ok), turning at every node including the center, and lands on
+	/// any empty neighbor of that chain. The whole hop costs one step.
+	fn hop_from(
 		&self,
 		occupancy: &[Option<Tile>],
-		circle: u8,
-		from: NodeId,
-		ccw: bool,
+		first: NodeId,
+		entry_edge: usize,
 		mover: Tile,
-	) -> Option<(NodeId, u32, u64)> {
-		let mut n = self.board.next_on_circle(circle, from, ccw)?;
-		if occupancy[n as usize].is_none() {
-			return None;
+		already_used: u64,
+	) -> Vec<(NodeId, u32, u64)> {
+		let Some(occupant) = occupancy[first as usize] else {
+			return Vec::new();
+		};
+		if !self.hop_occupant_ok(occupant, mover) {
+			return Vec::new();
 		}
-		let mut hopped_nodes = 0u32;
-		let mut hopped_edges = 0u64;
-		let mut prev = from;
-		let start = n;
-		loop {
-			let edge = self.board.undirected_arc_index(circle, prev, n)?;
-			hopped_edges |= 1u64 << edge;
-			let occupant = occupancy[n as usize]?;
-			if !self.hop_occupant_ok(occupant, mover) {
-				return None;
-			}
-			hopped_nodes |= 1u32 << n;
-			prev = n;
-			n = self.board.next_on_circle(circle, n, ccw)?;
-			if n == start || n == from {
-				return None;
-			}
-			if occupancy[n as usize].is_none() {
-				let land_edge = self.board.undirected_arc_index(circle, prev, n)?;
-				hopped_edges |= 1u64 << land_edge;
-				return Some((n, hopped_nodes, hopped_edges));
+		if already_used & (1u64 << entry_edge) != 0 {
+			return Vec::new();
+		}
+		let mut hopped_nodes = 1u32 << first;
+		let mut occ_edges = 1u64 << entry_edge;
+		let mut queue = VecDeque::from([first]);
+		while let Some(t) = queue.pop_front() {
+			for &u in self.board.neighbors(t) {
+				let Some(next_occ) = occupancy[u as usize] else {
+					continue;
+				};
+				if !self.hop_occupant_ok(next_occ, mover) {
+					continue;
+				}
+				if hopped_nodes & (1u32 << u) != 0 {
+					continue;
+				}
+				let used = already_used | occ_edges;
+				let Some(edge) =
+					self.board.connecting_arc_indices(t, u).find(|&e| used & (1u64 << e) == 0)
+				else {
+					continue;
+				};
+				hopped_nodes |= 1u32 << u;
+				occ_edges |= 1u64 << edge;
+				queue.push_back(u);
 			}
 		}
+		let mut out = Vec::new();
+		let mut t = 0u8;
+		while t < 32 {
+			if hopped_nodes & (1u32 << t) == 0 {
+				t += 1;
+				continue;
+			}
+			for &u in self.board.neighbors(t) {
+				if occupancy[u as usize].is_some() {
+					continue;
+				}
+				for edge in self.board.connecting_arc_indices(t, u) {
+					if already_used & (1u64 << edge) != 0 || occ_edges & (1u64 << edge) != 0 {
+						continue;
+					}
+					let edges = occ_edges | (1u64 << edge);
+					if !out
+						.iter()
+						.any(|&(land, nodes, ed)| land == u && nodes == hopped_nodes && ed == edges)
+					{
+						out.push((u, hopped_nodes, edges));
+					}
+				}
+			}
+			t += 1;
+		}
+		out
 	}
 
 	pub fn apply(&mut self, action: Action) -> Result<ActionOutcome, String> {
@@ -1525,19 +1783,27 @@ struct PathState {
 	visited_edges: u64,
 }
 
-pub fn sample_tile(owner: Player, max_rings: u8, next_id: &mut u32, rng: &mut impl Rng) -> Tile {
+pub fn sample_tile(
+	owner: Player,
+	max_rings: u8,
+	zag_numer: u8,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+) -> Tile {
 	let (rings, n_rings) = sample_rings(rng, max_rings);
+	let zag = sample_zag_flags(rng, n_rings, zag_numer);
 	let weight = rng.gen_range(1..=3);
 	let dots = rng.gen_range(1..=3);
 	let id = *next_id;
 	*next_id += 1;
-	Tile { id, owner, rings, n_rings, weight, dots }
+	Tile { id, owner, rings, n_rings, zag, weight, dots }
 }
 
 fn build_bag(
 	owner: Player,
 	fill: bool,
 	max_rings: u8,
+	zag_numer: u8,
 	next_id: &mut u32,
 	rng: &mut StdRng,
 ) -> Vec<Tile> {
@@ -1546,7 +1812,7 @@ fn build_bag(
 	}
 	let mut bag = Vec::with_capacity(BAG_SIZE);
 	for _ in 0..BAG_SIZE {
-		bag.push(sample_tile(owner, max_rings, next_id, rng));
+		bag.push(sample_tile(owner, max_rings, zag_numer, next_id, rng));
 	}
 	bag.shuffle(rng);
 	bag
@@ -1680,6 +1946,7 @@ mod tests {
 		assert_eq!(rules.control_hold_turns, 1);
 		assert_eq!(rules.starting_bench_size, 7);
 		assert_eq!(rules.max_rings, 3);
+		assert_eq!(rules.zag_numer, ZAG_NUMER_DEFAULT);
 		assert!(!rules.petal_majority_win);
 		assert_eq!(rules.insufficient_tiles_loss, InsufficientTilesLoss::Off);
 		let game = Game::new(rules, 1);
@@ -1866,6 +2133,195 @@ mod tests {
 		game.set_current(Player::One);
 		let dests = game.destinations(from);
 		assert!(dests.contains(&land), "hop the two-tile run to {land}");
+	}
+
+	#[test]
+	fn hop_turns_at_the_center_and_lands_on_any_adjacent_empty() {
+		let mut game = Game::empty(RuleSet::default());
+		let board = game.board().clone();
+		let center = board.center();
+		let spawn = board.spawns()[0];
+		let inner = *board
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| board.neighbors(n).contains(&center))
+			.expect("spawn neighbors an inner that touches center");
+		let other_inner = *board
+			.neighbors(center)
+			.iter()
+			.find(|&&n| n != inner)
+			.expect("center has another inner neighbor");
+		assert!(!board.neighbors(spawn).contains(&other_inner));
+		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
+		put(&mut game, inner, Player::Two, TileColor::Green, 1, 1);
+		put(&mut game, center, Player::Two, TileColor::Green, 1, 1);
+		game.set_current(Player::One);
+		let dests = game.destinations(spawn);
+		assert!(
+			dests.contains(&other_inner),
+			"d=1 hop must turn at center onto inner {other_inner}, got {dests:?}"
+		);
+		assert!(!dests.contains(&inner), "cannot land on an occupied hoppable tile");
+		assert!(!dests.contains(&center), "cannot land on an occupied hoppable tile");
+	}
+
+	#[test]
+	fn hop_changes_direction_at_a_non_center_node() {
+		let mut game = Game::empty(RuleSet::default());
+		let board = game.board().clone();
+		let spawn = board.spawns()[0];
+		let inner = *board
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| !board.is_spawn(n) && n != board.center())
+			.expect("spawn has an inner neighbor");
+		let side = *board
+			.neighbors(inner)
+			.iter()
+			.find(|&&n| n != spawn && n != board.center() && game.tile_at(n).is_none())
+			.expect("inner has a side neighbor");
+		let land = *board
+			.neighbors(side)
+			.iter()
+			.find(|&&n| {
+				n != inner && game.tile_at(n).is_none() && !board.neighbors(spawn).contains(&n)
+			})
+			.expect("side node has a landing that is not a spawn neighbor");
+		put(&mut game, spawn, Player::One, TileColor::Blue, 3, 1);
+		put(&mut game, inner, Player::Two, TileColor::Blue, 1, 1);
+		put(&mut game, side, Player::One, TileColor::Blue, 1, 1);
+		game.set_current(Player::One);
+		let dests = game.destinations(spawn);
+		assert!(
+			dests.contains(&land),
+			"hop chain spawn-inner-side must land on {land} off the entry circle, got {dests:?}"
+		);
+	}
+
+	fn pass_through_game() -> Game {
+		let mut rules = RuleSet::default();
+		rules.counted_pass_through = true;
+		Game::empty(rules)
+	}
+
+	#[test]
+	fn counted_pass_through_is_exact_d_not_up_to() {
+		let mut game = pass_through_game();
+		let from = game.board().spawns()[0];
+		let mut step1 = 0u8;
+		let mut step2 = 0u8;
+		let mut found = false;
+		for circle in game.board().circles_through(from) {
+			for ccw in [true, false] {
+				let a = game.board().next_on_circle(circle, from, ccw).unwrap();
+				let b = game.board().next_on_circle(circle, a, ccw).unwrap();
+				if !game.board().neighbors(from).contains(&b) {
+					step1 = a;
+					step2 = b;
+					found = true;
+					break;
+				}
+			}
+			if found {
+				break;
+			}
+		}
+		assert!(found, "spawn should have a 2-step empty walk");
+		let tile = green(&mut game, Player::One, 1, 2);
+		game.place_tile(from, tile);
+		game.set_current(Player::One);
+		let dests2 = game.destinations(from);
+		assert!(dests2.contains(&step2), "d=2 must land on {step2}, got {dests2:?}");
+		game.clear_tile(from);
+		let one = green(&mut game, Player::One, 1, 1);
+		game.place_tile(from, one);
+		let dests1 = game.destinations(from);
+		assert!(dests1.contains(&step1), "d=1 should reach {step1}");
+		assert!(!dests1.contains(&step2), "d=1 must not reach the two-step node {step2}");
+		assert_ne!(dests1, dests2, "exact-d MOVE: d=1 and d=2 destination sets differ");
+	}
+
+	#[test]
+	fn counted_pass_through_costs_one_and_cannot_land_on_occupant() {
+		let mut game = pass_through_game();
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 2);
+		put(&mut game, mid, Player::Two, TileColor::Green, 1, 1);
+		game.set_current(Player::One);
+		let dests = game.destinations(from);
+		assert!(dests.contains(&land), "d=2 pass-through to {land}, got {dests:?}");
+		assert!(!dests.contains(&mid), "cannot land on the occupied pass-through tile");
+		game.clear_tile(from);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
+		let dests1 = game.destinations(from);
+		assert!(
+			!dests1.contains(&land),
+			"d=1 cannot pass through and land beyond; pass-through costs a space"
+		);
+		assert!(!dests1.contains(&mid), "d=1 cannot land on occupied");
+	}
+
+	#[test]
+	fn counted_pass_through_two_tiles_cost_two_unlike_a_hop() {
+		let mut hop = Game::empty(RuleSet::default());
+		let mut pass = pass_through_game();
+		let b = hop.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, a, c, land) = (cycle[0], cycle[1], cycle[2], cycle[3]);
+		for game in [&mut hop, &mut pass] {
+			put(game, from, Player::One, TileColor::Blue, 2, 1);
+			put(game, a, Player::Two, TileColor::Blue, 1, 1);
+			put(game, c, Player::One, TileColor::Blue, 1, 1);
+			game.set_current(Player::One);
+		}
+		assert!(hop.destinations(from).contains(&land), "hop skips the two-tile chain in one step");
+		assert!(
+			!pass.destinations(from).contains(&land),
+			"d=1 pass-through cannot clear two occupied tiles plus a landing"
+		);
+		pass.clear_tile(from);
+		put(&mut pass, from, Player::One, TileColor::Blue, 2, 3);
+		pass.set_current(Player::One);
+		let pass_d3 = pass.destinations(from);
+		assert!(
+			pass_d3.contains(&land),
+			"d=3 pass-through reaches {land} (A + C + land), got {pass_d3:?}"
+		);
+	}
+
+	#[test]
+	fn counted_pass_through_needs_shared_normal_and_enough_rings() {
+		let mut game = pass_through_game();
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		let mover = game.alloc_rings(Player::One, &[TileColor::Green, TileColor::Blue], 2, 2);
+		game.place_tile(from, mover);
+		put(&mut game, mid, Player::Two, TileColor::Orange, 2, 1);
+		game.set_current(Player::One);
+		assert!(
+			!game.destinations(from).contains(&land),
+			"other-color occupant cannot be passed through"
+		);
+		game.clear_tile(mid);
+		let zag = game.alloc_ring_kinds(Player::Two, &[(TileColor::Green, true)], 1, 1);
+		game.place_tile(mid, zag);
+		assert!(!game.destinations(from).contains(&land), "zag green is not a pass-through color");
+		game.clear_tile(mid);
+		put(&mut game, mid, Player::Two, TileColor::Green, 1, 1);
+		assert!(
+			!game.destinations(from).contains(&land),
+			"occupant with fewer rings than the mover cannot be passed through"
+		);
+		game.clear_tile(mid);
+		let enough = game.alloc_rings(Player::Two, &[TileColor::Green, TileColor::Orange], 2, 1);
+		game.place_tile(mid, enough);
+		assert!(
+			game.destinations(from).contains(&land),
+			"shared normal and occupant.n_rings >= mover.n_rings"
+		);
 	}
 
 	#[test]
@@ -2934,6 +3390,15 @@ mod tests {
 		let dual = Tile::with_rings(0, Player::One, &[TileColor::Green, TileColor::Teal], 2, 1);
 		assert!(dual.kind_index() < KIND_COUNT);
 		assert!(seen.insert(dual.kind_index()));
+		let zag = Tile::with_ring_kinds(
+			0,
+			Player::One,
+			&[(TileColor::Green, false), (TileColor::Teal, true)],
+			2,
+			1,
+		);
+		assert!(zag.kind_index() < KIND_COUNT);
+		assert!(seen.insert(zag.kind_index()), "zag vs normal of same colors is a distinct kind");
 	}
 
 	#[test]
@@ -3021,13 +3486,13 @@ mod tests {
 			.bench(Player::One)
 			.iter()
 			.chain(game.bag(Player::One))
-			.map(|t| (t.color_mask(), t.n_rings, t.weight, t.dots))
+			.map(|t| (t.color_mask(), t.n_rings, t.zag, t.weight, t.dots))
 			.collect();
 		let p2: Vec<_> = game
 			.bench(Player::Two)
 			.iter()
 			.chain(game.bag(Player::Two))
-			.map(|t| (t.color_mask(), t.n_rings, t.weight, t.dots))
+			.map(|t| (t.color_mask(), t.n_rings, t.zag, t.weight, t.dots))
 			.collect();
 		assert_eq!(p1, p2);
 	}
@@ -3040,6 +3505,329 @@ mod tests {
 		for t in game.bench(Player::One).iter().chain(game.bag(Player::One)) {
 			assert_eq!(t.n_rings, 1);
 		}
+	}
+
+	#[test]
+	fn zag_blue_normal_orange_zag_is_one_match_one_mismatch() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let a = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			1,
+			1,
+		);
+		let b = game.alloc_ring_kinds(
+			Player::Two,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			1,
+			1,
+		);
+		game.place_tile(spawn, a);
+		game.place_tile(nb, b);
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (2, 1), "weight 1 + blue match, one orange-zag mismatch (not 2)");
+		assert!(!game.is_overwhelmed(spawn));
+		let (m2, x2) = game.tile_score(nb).unwrap();
+		assert_eq!((m2, x2), (2, 1));
+	}
+
+	#[test]
+	fn double_orange_zag_counts_two_mismatches() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let t = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, false)],
+			3,
+			1,
+		);
+		let u = game.alloc_ring_kinds(
+			Player::Two,
+			&[(TileColor::Orange, true), (TileColor::Orange, true)],
+			1,
+			1,
+		);
+		game.place_tile(spawn, t);
+		game.place_tile(nb, u);
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!(m, 3, "weight 3, orange zag never matches");
+		assert_eq!(x, 2, "two orange zags on U whose color T has");
+	}
+
+	#[test]
+	fn one_ring_zag_is_captured_on_contact_with_that_color() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
+		game.place_tile(spawn, zag);
+		assert!(!game.is_overwhelmed(spawn), "isolated zag is inert");
+		let normal = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		game.place_tile(nb, normal);
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (1, 1), "zag never matches; ordinary mismatch captures w=1");
+		assert!(game.is_overwhelmed(spawn));
+		let (om, ox) = game.tile_score(nb).unwrap();
+		assert_eq!((om, ox), (1, 1), "U has orange; T's orange zag hits U so U is also captured");
+		assert!(game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn one_ring_zag_dies_against_heavier_color_carrier() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
+		let heavy = game.alloc_rings(Player::Two, &[TileColor::Orange], 3, 1);
+		game.place_tile(spawn, zag);
+		game.place_tile(nb, heavy);
+		assert!(game.is_overwhelmed(spawn));
+		assert!(!game.is_overwhelmed(nb), "w3 carrier takes one zag hit and lives");
+	}
+
+	#[test]
+	fn zag_mismatches_zag_of_the_same_color() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 2, 1);
+		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 2, 1);
+		game.place_tile(spawn, a);
+		game.place_tile(nb, b);
+		assert_eq!(game.edge_score(a, b), (0, 2), "two zag strokes, zero matches");
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!(m, 2, "zag never matches, only own weight");
+		assert_eq!(x, 2, "neighbor's two blue zag strokes hit T's blue");
+		assert!(game.is_overwhelmed(spawn), "weight 2 vs 2 zag hits is captured");
+	}
+
+	#[test]
+	fn three_blue_zags_vs_three_blue_zags_is_three_mismatches() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let rings = [(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
+		let a = game.alloc_ring_kinds(Player::One, &rings, 3, 1);
+		let b = game.alloc_ring_kinds(Player::Two, &rings, 3, 1);
+		game.place_tile(spawn, a);
+		game.place_tile(nb, b);
+		assert_eq!(game.edge_score(a, b), (0, 3));
+		assert_eq!(game.edge_score(b, a), (0, 3));
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (3, 3), "weight 3, no color match, three zag hits");
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn weight_three_one_ring_zag_counts_three_zag_strokes() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 3, 1);
+		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 3, 1);
+		game.place_tile(spawn, a);
+		game.place_tile(nb, b);
+		assert_eq!(a.ring_strokes(), 3);
+		assert_eq!(game.edge_score(a, b), (0, 3), "drawn zag rings are zag hits");
+		assert!(game.is_overwhelmed(spawn));
+	}
+
+	#[test]
+	fn one_zag_vs_one_zag_of_the_same_color_is_captured() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
+		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 1, 1);
+		game.place_tile(spawn, a);
+		game.place_tile(nb, b);
+		assert_eq!(game.edge_score(a, b), (0, 1), "zags never match");
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (1, 1));
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn zag_color_alone_never_counts_as_a_match() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert!(!a.shares_normal(b));
+		assert_eq!(game.edge_score(a, b), (0, 1), "ordinary mismatch; zag is not a match");
+		assert_eq!(game.edge_score(b, a), (0, 1), "U's zag hits T's blue");
+	}
+
+	#[test]
+	fn non_matching_zag_is_empty_not_a_mismatch() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
+		let blue = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(zag.zag_hits_on(blue), 0, "blue does not hold orange");
+		assert_eq!(blue.zag_hits_on(zag), 0);
+		assert_eq!(game.edge_score(zag, blue), (0, 0), "non-matching zag is empty");
+		assert_eq!(game.edge_score(blue, zag), (0, 0));
+		game.place_tile(spawn, zag);
+		game.place_tile(nb, blue);
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (1, 0), "own weight only; orange zag does not mismatch blue");
+		assert!(!game.is_overwhelmed(spawn));
+		assert!(!game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn blue_normal_plus_orange_zag_vs_blue_is_one_match_zero_mismatches() {
+		let mut game = Game::empty(RuleSet::default());
+		let mixed = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			1,
+			1,
+		);
+		let blue = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(game.edge_score(mixed, blue), (1, 0));
+		assert_eq!(game.edge_score(blue, mixed), (1, 0), "orange zag does not hit blue-only");
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		game.place_tile(spawn, mixed);
+		game.place_tile(nb, blue);
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (2, 0), "weight 1 + blue match, orange zag is empty");
+		assert!(!game.is_overwhelmed(spawn));
+		assert!(!game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn non_matching_zag_does_not_hide_a_normal_conflict() {
+		let mut game = Game::empty(RuleSet::default());
+		let mixed = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			1,
+			1,
+		);
+		let green = game.alloc_rings(Player::Two, &[TileColor::Green], 1, 1);
+		assert_eq!(game.edge_score(mixed, green), (0, 1), "blue vs green is still a conflict");
+		assert_eq!(game.edge_score(green, mixed), (0, 1));
+	}
+
+	#[test]
+	fn blue_vs_orange_plus_green_zag_is_a_normal_mismatch() {
+		let mut game = Game::empty(RuleSet::default());
+		let blue = game.alloc_rings(Player::One, &[TileColor::Blue], 1, 1);
+		let orange_green_zag = game.alloc_ring_kinds(
+			Player::Two,
+			&[(TileColor::Orange, false), (TileColor::Green, true)],
+			1,
+			1,
+		);
+		assert_eq!(orange_green_zag.zag_hits_on(blue), 0, "blue does not hold green");
+		assert_eq!(blue.zag_hits_on(orange_green_zag), 0);
+		assert!(!blue.shares_normal(orange_green_zag));
+		assert_eq!(
+			game.edge_score(blue, orange_green_zag),
+			(0, 1),
+			"blue vs orange is still a normal conflict beside a non-hitting zag"
+		);
+		assert_eq!(game.edge_score(orange_green_zag, blue), (0, 1));
+	}
+
+	#[test]
+	fn green_zag_vs_orange_plus_two_greens_is_a_zag_hit() {
+		let mut game = Game::empty(RuleSet::default());
+		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Green, true)], 1, 1);
+		let holder = game.alloc_rings(
+			Player::Two,
+			&[TileColor::Orange, TileColor::Green, TileColor::Green],
+			3,
+			1,
+		);
+		assert_eq!(zag.zag_hits_on(holder), 1);
+		assert!(!zag.shares_normal(holder));
+		assert_eq!(game.edge_score(zag, holder), (0, 1), "green zag hits the green holder");
+		assert_eq!(
+			game.edge_score(holder, zag),
+			(0, 1),
+			"holder has no zag; ordinary mismatch does not stack on a zag hit"
+		);
+	}
+
+	#[test]
+	fn own_zag_does_not_mismatch_self() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		let t = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Green, false), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		let u = game.alloc_rings(Player::Two, &[TileColor::Green], 1, 1);
+		game.place_tile(spawn, t);
+		game.place_tile(nb, u);
+		let (m, x) = game.tile_score(spawn).unwrap();
+		assert_eq!((m, x), (3, 0), "green match; T's orange zag does not mismatch T");
+	}
+
+	#[test]
+	fn color_restricted_hops_ignore_zag_colors() {
+		let mut rules = RuleSet::default();
+		rules.color_restricted_hops = true;
+		rules.hop_weight_cmp = HopWeightCmp::Le;
+		let mut game = Game::empty(rules);
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, hop_over, land) = (cycle[0], cycle[1], cycle[2]);
+		let mover = game.alloc_rings(Player::One, &[TileColor::Green], 3, 1);
+		game.place_tile(from, mover);
+		let occ = game.alloc_ring_kinds(Player::Two, &[(TileColor::Green, true)], 1, 1);
+		game.place_tile(hop_over, occ);
+		game.set_current(Player::One);
+		assert!(!game.destinations(from).contains(&land), "zag green is not a hop color");
+		game.clear_tile(hop_over);
+		let occ_n = game.alloc_rings(Player::Two, &[TileColor::Green], 1, 1);
+		game.place_tile(hop_over, occ_n);
+		assert!(game.destinations(from).contains(&land), "normal green is hoppable");
+	}
+
+	#[test]
+	fn zag_generation_is_about_one_in_seven() {
+		let mut rng = StdRng::seed_from_u64(3);
+		let n = 40_000u32;
+		let mut rings = 0u32;
+		let mut zags = 0u32;
+		for _ in 0..n {
+			let (_, k) = sample_rings(&mut rng, 3);
+			let flags = sample_zag_flags(&mut rng, k, ZAG_NUMER_DEFAULT);
+			rings += u32::from(k);
+			zags += flags.iter().take(k as usize).filter(|z| **z).count() as u32;
+		}
+		let rate = f64::from(zags) / f64::from(rings);
+		assert!((0.12..0.17).contains(&rate), "zag rate={rate:.4} (expected ~0.1429 = 1/7)");
+		let mut rng = StdRng::seed_from_u64(4);
+		for _ in 0..2_000 {
+			let flags = sample_zag_flags(&mut rng, 3, 0);
+			assert_eq!(flags, [false, false, false]);
+		}
+	}
+
+	#[test]
+	fn zag_off_deal_matches_pre_zag_ring_process() {
+		let mut off = RuleSet::default();
+		off.zag_numer = 0;
+		let game = Game::new(off, 11);
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.chain(game.bag(Player::One))
+			.all(|t| t.zag == [false, false, false]));
 	}
 
 	#[test]

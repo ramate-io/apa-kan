@@ -267,6 +267,15 @@ impl Board {
 		})
 	}
 
+	/// Every generating-circle arc whose endpoints are `a` and `b` (either
+	/// direction). Inner↔center has two; most neighbor pairs have one.
+	pub fn connecting_arc_indices(&self, a: NodeId, b: NodeId) -> impl Iterator<Item = usize> + '_ {
+		self.incident_arcs[a as usize].iter().copied().filter(move |&idx| {
+			let arc = &self.arcs[idx];
+			(arc.from == a && arc.to == b) || (arc.from == b && arc.to == a)
+		})
+	}
+
 	pub fn next_on_circle(&self, circle: u8, node: NodeId, ccw: bool) -> Option<NodeId> {
 		let cycle = self.circle_cycles.get(circle as usize)?;
 		let i = cycle.iter().position(|&n| n == node)?;

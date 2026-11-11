@@ -35,7 +35,7 @@ Construction stats for the default rosette (`R = 1`, offset `67.5°` so an outer
 Each tile has:
 
 - **Owner** as a light/dark shade: P1 light, P2 dark (fill).
-- **Normal rings** (1–3 distinct colors). A ring indicates a color the tile can match (in and out). Colors: green, blue, orange (weight 81 each), lavender-pink, teal (9 each), maroon (1). Ring 1 always exists. Ring 2: weight 7 same as ring 1, weight 1 any color from the same tree (a redraw of ring 1 is not a new ring). Ring 3: same rule relative to the last existing ring. `--max-rings` caps this at 1–3 (default 3). Braid / zigzag / bead / antipodal ring types are not implemented.
+- **Rings** (1–3 distinct colors). A **normal** ring indicates a color the tile can match (in and out). A **zag** ring never matches; it is a forced mismatch the neighbor imposes if you carry that color (on any ring, normal or zag). Generation still draws distinct colors as in the six-color tree, then each ring independently becomes a zag with chance 1/7 (`zag_numer / 7`; `--zag-chance 0` / `--zags off` disables). You cannot have both a normal and a zag of the same color on a generated tile (one ring per color; stacked same-color zags exist only as test fixtures so mismatch counts can sum per ring). Braid / bead / antipodal ring types are not implemented. Colors: green, blue, orange (weight 81 each), lavender-pink, teal (9 each), maroon (1). Ring 1 always exists. Ring 2: weight 7 same as ring 1, weight 1 any color from the same tree (a redraw of ring 1 is not a new ring). Ring 3: same rule relative to the last existing ring. `--max-rings` caps this at 1–3 (default 3).
 - **Weight** `w ∈ {1,2,3}` — overwhelm match base and hop compare. Drawn as concentric strokes; extra colors take additional strokes when `n_rings > 1`.
 - **Dots** `d ∈ {1,2,3}` drawn as 1–3 dots (MOVE length).
 
@@ -59,10 +59,13 @@ Options: `starting_bench_size`, `identical_bags`, `bag_one_of_each_kind`, `captu
 
 Evaluated **board-wide, simultaneously**, after every action.
 
-- A neighbor **matches** if the two tiles share **any** ring color (each ring is another way to match); otherwise it mismatches.
+- A neighbor **matches** if the two tiles share a **normal** ring color. Zags never produce a match.
+- Mismatches a neighbor U imposes on T = the number of U's **zag** rings whose color T has (normal or zag), counted per zag ring. T's own zags do not add to T's mismatch count — they only supply the color that triggers U's zag. If that zag-hit count is 0 and the tiles share no normal color, the ordinary +1 mismatch (or neighbor weight if `mismatch_uses_neighbor_weight`).
+- Example: blue normal + orange zag vs the same → 1 blue match and 1 mismatch (not 2). Two orange zags on U vs T carrying orange → 2 mismatches.
+- A tile with both a normal ring and a zag can still mismatch on the **normal**. Blue-normal vs orange-normal + green-zag is a mismatch on the normals (blue vs orange); the green zag does not hit blue. Green-zag vs orange-normal + two green normals is a mismatch on the zag.
 - `matches = own weight + (number of matching adjacent tiles, either owner)`
-- `mismatches = number of mismatching adjacent tiles, either owner`
 - Removed iff `mismatches >= matches`
+- A one-ring zag is inert in isolation. On contact with a tile that carries that color it never matches, so a weight-1 zag is captured under the ordinary rule; a heavier color-carrier takes the zag hit and may survive.
 
 The designer example: a **double green** next to two oranges has matches 2 / mismatches 2 and is overwhelmed; a green neighbor makes matches 3, so it survives. Adjacent same-color tiles of the opponent still count as matches.
 
@@ -85,10 +88,23 @@ One action per turn by default (`actions_per_turn`, default 1):
   - `NoNodeRevisit` — a path may not revisit a node, including nodes hopped over (legacy).
   - `NoEdgeRevisit` — a path may not traverse the same undirected circle-arc twice. Nodes may be revisited via a **different** arc (the two inner↔center petals are distinct arcs).
   - `Both` — node uniqueness and edge uniqueness.
-- **Empty step:** walk along one circle-arc to the next node if it is empty. Cost 1.
-- **Hop (default, `color_restricted_hops` on):** if the next node along a chosen circle and direction is occupied, consider the maximal consecutive occupied run along that same circle in that direction. You may spend **1 step** to skip the whole run and land on the first empty node beyond it, iff every hopped tile **shares any ring color** with the mover and its weight compares to the mover with `hop_weight_cmp` (default `le`: occupant `<=` mover). Owner does not matter. Tiles with no shared ring color cannot be hopped. Hopped nodes are marked visited; hopped arcs are marked used. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`.
+- **Empty step:** walk along any unused adjacency (a generating-circle arc) to a neighboring empty node. Cost 1. Inner↔center still has two distinct arcs.
+- **Hop (default, `color_restricted_hops` on):** if a neighboring node is occupied, flood any adjacency through the connected chain of **hoppable** occupied tiles — each must **share a normal ring color** with the mover and compare with `hop_weight_cmp` (default `le`: occupant `<=` mover). The path may change direction at any node, **including the center**. Spend **1 step** to land on any empty node adjacent to that chain. Owner does not matter. Zag colors do not enable hops. Hopped nodes are marked visited; hopped arcs are marked used (`NoEdgeRevisit` still applies). You cannot land on an occupied node. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`.
 
-Hops are circle-straight: they do not branch with the graph. Multi-arcs between the center and an inner node are distinct as circle-arcs (rendering the inner petals) but lead to the same neighbor for an empty step.
+A hop over a chain is still one step of the exact-`d` MOVE. Empty walks and hops both follow unique neighbor adjacency; the two inner↔center petal arcs remain distinct unused-edge choices.
+
+- **Counted pass-through (optional, `counted_pass_through`, default off):** hops are disabled. Each step is still to an adjacent node and costs 1. An occupied tile may be **passed through** (never landed on) iff it **shares a normal ring color** with the mover and its **ring count is `>=` the mover's**. Zag colors do not enable pass-through. Passing through counts as one of the exact-`d` steps (a two-tile occupied run plus a landing needs `d=3`). `NoEdgeRevisit` still applies. Capture/overwhelm resolves after landing as usual. CLI: `--counted-pass-through on|off`.
+
+### Edge rendering (realized state)
+
+Two-ended edges (both nodes occupied) draw **only realized effects**:
+
+- Confirmed zag mismatch → draw **only** the hitting zag(s). No match line, highway stripes, or hitch on that edge. A zag that does not hit the neighbor is not drawn on that edge.
+- Shared normal(s) and no zag hit → single thick match line, or highway stripes if more than one shared normal.
+- Both tiles have normals, share none, and no zag hit → compact **hitch** at the midpoint, drawn in each side's unmatched colors (not cream). Unmatched-color highway halves feed the hitch.
+- Nothing realized (for example a non-hitting zag against a tile that has no shared normal and is not a normal-vs-normal conflict) → grey base arc.
+
+One-ended edges (the tile has no neighbor on that arc) still draw all of that tile's **potential** effects: normal colors as a highway and every zag, so it is clear what would be in play if another tile landed there.
 
 ### Win and draw
 
@@ -142,9 +158,9 @@ A player may not MOVE the same tile (by tile id) on two consecutive **own** turn
 
 CLI: `--color-restricted-hops <on|off>` `--hop-weight-cmp <lt|le>`
 
-**Interpretation** of the designer note *“If the weight in your color is less than, you can traverse.”* When this option is **on**, a hop may only cross a run of tiles that are:
+**Interpretation** of the designer note *“If the weight in your color is less than, you can traverse.”* When this option is **on**, a hop may only cross a connected chain of tiles that are:
 
-1. the **mover’s color** (either owner), and
+1. sharing a **normal** ring color with the mover (either owner), and
 2. whose weight compares to the mover’s weight with `hop_weight_cmp`.
 
 Default comparison is **`Le`** (occupant weight **less than or equal to** the mover). `Lt` is the stricter option (occupant **strictly less than** the mover). Owner still does not matter. Other colors cannot be hopped at all.
@@ -219,15 +235,16 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --center-hold-win on|off --center-hold-n N
         --no-same-piece-twice off|always|when-bench-empty
         --color-restricted-hops on|off --hop-weight-cmp lt|le
+        --counted-pass-through on|off
         --petal-majority-win on|off --petal-majority-n N
         --control-win on|off --control-n K --control-hold-turns T
         --insufficient-tiles-loss off|strict|no-recapture
-        --starting-bench N --max-rings 1..3
+        --starting-bench N --max-rings 1..3 --zag-chance 0..7 --zags on|off
         --scenario name|path --list-scenarios
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7, `max_rings` 3, `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` off, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7, `max_rings` 3, `zag_numer` 1 (1/7), `path_constraint` no-edge-revisit.
 
 Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, petal-majority, control, and insufficient-tiles terminals are wins/losses in search.
 

@@ -5,7 +5,7 @@ use std::path::Path;
 use image::{Rgba, RgbaImage};
 
 use crate::game::{Game, Player, Tile};
-use crate::visual::{self, ArcPaint, ViewLayout};
+use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn write_png(game: &Game, path: impl AsRef<Path>, caption: &str) -> Result<(), String> {
 	write_png_sized(game, path, caption, 1280, 960)
@@ -18,12 +18,24 @@ pub fn write_png_sized(
 	width: u32,
 	height: u32,
 ) -> Result<(), String> {
+	write_png_view(game, path, caption, width, height, None)
+}
+
+pub fn write_png_view(
+	game: &Game,
+	path: impl AsRef<Path>,
+	caption: &str,
+	width: u32,
+	height: u32,
+	selected: Option<crate::board::NodeId>,
+) -> Result<(), String> {
 	let layout = ViewLayout::from_window(width as f32, height as f32);
 	let bg = visual::rgb8(visual::BG_RGB);
 	let mut img = RgbaImage::from_pixel(width, height, rgba(bg[0], bg[1], bg[2], 255));
 	draw_arcs(&mut img, game, &layout);
 	draw_nodes(&mut img, game, &layout);
 	draw_tiles(&mut img, game, &layout);
+	draw_marks(&mut img, game, &layout, selected);
 	draw_benches(&mut img, game, &layout);
 	draw_hud(&mut img, game, &layout, caption);
 	img.save(path.as_ref()).map_err(|e| e.to_string())
@@ -33,86 +45,208 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	let board = game.board();
 	let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
 	let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
+	let mut hitches: Vec<(
+		visual::HitchFrame,
+		f64,
+		f64,
+		[Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+		[Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	)> = Vec::new();
 	for arc in board.arcs() {
-		let samples = arc.sample(40);
+		let samples = arc.sample(visual::ARC_SAMPLES);
 		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
 		let width = f64::from(layout.arc_width);
-		match visual::arc_paint(game.tile_at(arc.from), game.tile_at(arc.to)) {
-			ArcPaint::Neutral => {
-				back.push((pts, rgb_of(visual::NEUTRAL_ARC_RGB), width));
+		let paint = visual::arc_paint(game.tile_at(arc.from), game.tile_at(arc.to));
+		let stripe_off = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.stripe_off_center)
+		} else {
+			f64::from(layout.stripe_off)
+		};
+		match paint.body {
+			ArcBody::Neutral => {
+				back.push((pts.clone(), rgb_of(visual::NEUTRAL_ARC_RGB), width));
 			}
-			ArcPaint::Solid { color, thick } => {
+			ArcBody::Solid { color, thick } => {
 				let w = if thick {
 					width * f64::from(visual::ARC_SAME_COLOR_WIDTH_SCALE)
 				} else {
 					width
 				};
-				back.push((pts, rgb_of(visual::tile_rgb(color)), w));
+				back.push((pts.clone(), rgb_of(visual::tile_rgb(color)), w));
 			}
-			ArcPaint::Braid { a, b } => {
-				let amp = if visual::arc_touches_center(arc, board.center()) {
-					f64::from(layout.braid_amp_center)
+			ArcBody::Hitch { from, to } => {
+				let hitch_r = if visual::arc_touches_center(arc, board.center()) {
+					f64::from(layout.hitch_r_center)
 				} else {
-					f64::from(layout.braid_amp)
+					f64::from(layout.hitch_r)
 				};
-				let braid = visual::braid_strands(&pts, amp, visual::braid_turns(arc));
-				let strand_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
-				split_braid(
-					&braid.a,
-					&braid.phase,
-					true,
+				let frame = visual::midpoint_frame(&pts);
+				let clearance = visual::hitch_clearance(hitch_r);
+				if frame.index < pts.len() {
+					let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
+					let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
+					push_hitch_half(&from_pts, from, stripe_off, width, &mut back);
+					push_hitch_half(&to_pts, to, stripe_off, width, &mut back);
+				}
+				hitches.push((
+					frame,
+					hitch_r,
+					width * f64::from(visual::HITCH_STRAND_WIDTH_SCALE),
+					from,
+					to,
+				));
+			}
+			ArcBody::Stripes { a, b, zag_a, zag_b } => {
+				let strand_w = width * f64::from(visual::STRIPE_STRAND_WIDTH_SCALE);
+				let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
+				let zag_amp = if visual::arc_touches_center(arc, board.center()) {
+					f64::from(layout.zag_amp_center)
+				} else {
+					f64::from(layout.zag_amp)
+				};
+				let teeth = visual::zag_teeth(arc);
+				push_stripe(
+					&pts,
+					stripe_off,
+					zag_a,
 					rgb_of(visual::tile_rgb(a)),
 					strand_w,
+					zag_w,
+					zag_amp,
+					teeth,
 					&mut back,
 					&mut front,
 				);
-				split_braid(
-					&braid.b,
-					&braid.phase,
-					false,
+				push_stripe(
+					&pts,
+					-stripe_off,
+					zag_b,
 					rgb_of(visual::tile_rgb(b)),
 					strand_w,
+					zag_w,
+					zag_amp,
+					teeth,
 					&mut back,
 					&mut front,
 				);
 			}
+			ArcBody::Hidden => {}
+		}
+		let zag_amp = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.zag_amp_center)
+		} else {
+			f64::from(layout.zag_amp)
+		};
+		let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
+		let teeth = visual::zag_teeth(arc);
+		let spacing = visual::zag_lane_spacing(stripe_off);
+		let hitch_r = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.hitch_r_center)
+		} else {
+			f64::from(layout.hitch_r)
+		};
+		let inner = visual::zag_lane_inner(paint.body, stripe_off, hitch_r);
+		for (i, zag) in paint.zags_from.iter().enumerate() {
+			let Some(color) = *zag else {
+				continue;
+			};
+			let side = visual::zag_fan_offset(i, 1.0, inner, spacing);
+			let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
+			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
+		}
+		for (i, zag) in paint.zags_to.iter().enumerate() {
+			let Some(color) = *zag else {
+				continue;
+			};
+			let side = visual::zag_fan_offset(i, -1.0, inner, spacing);
+			let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
+			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
 		}
 	}
 	for (pts, color, width) in back.into_iter().chain(front) {
 		stroke_polyline(img, &pts, color, width);
 	}
+	for (frame, hitch_r, strand_w, from, to) in hitches {
+		fill_circle(img, tup(frame.mid), hitch_r * 0.38, rgb_of(visual::BG_RGB));
+		stroke_hitch_side(img, &frame, hitch_r, strand_w, from, -1.0);
+		stroke_hitch_side(img, &frame, hitch_r, strand_w, to, 1.0);
+	}
 }
 
-fn split_braid(
-	pts: &[[f64; 2]],
-	phase: &[f64],
-	strand_a: bool,
+fn stroke_hitch_side(
+	img: &mut RgbaImage,
+	frame: &visual::HitchFrame,
+	hitch_r: f64,
+	strand_w: f64,
+	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	along: f64,
+) {
+	let n = visual::packed_color_count(colors);
+	let outline_w = strand_w * f64::from(visual::HITCH_OUTLINE_WIDTH_SCALE);
+	let mut k = 0usize;
+	for color in colors {
+		let Some(c) = color else {
+			continue;
+		};
+		let scale = visual::hitch_loop_scales(n)[k];
+		let glyph = visual::hitch_loop_polyline(
+			frame.mid,
+			frame.tangent,
+			frame.normal,
+			hitch_r,
+			along,
+			scale,
+		);
+		stroke_polyline(img, &glyph, rgb_of(visual::HITCH_OUTLINE_RGB), outline_w);
+		stroke_polyline(img, &glyph, rgb_of(visual::tile_rgb(c)), strand_w);
+		k += 1;
+	}
+}
+
+fn push_stripe(
+	centerline: &[[f64; 2]],
+	offset: f64,
+	is_zag: bool,
 	color: Rgba<u8>,
-	width: f64,
+	strand_w: f64,
+	zag_w: f64,
+	zag_amp: f64,
+	teeth: f64,
 	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
 	front: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
 ) {
-	if pts.len() < 2 {
+	if is_zag {
+		let zig = visual::zigzag_alongside(centerline, offset, zag_amp, teeth);
+		front.push((zig, color, zag_w));
+	} else {
+		back.push((visual::offset_polyline(centerline, offset), color, strand_w));
+	}
+}
+
+fn push_hitch_half(
+	pts: &[[f64; 2]],
+	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	stripe_off: f64,
+	arc_width: f64,
+	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+) {
+	let n = visual::packed_color_count(colors);
+	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let mut start = 0usize;
-	for i in 1..pts.len() {
-		let front_a = phase[i].cos() >= 0.0;
-		let this_front = if strand_a { front_a } else { !front_a };
-		let prev_front_a = phase[i - 1].cos() >= 0.0;
-		let prev_front = if strand_a { prev_front_a } else { !prev_front_a };
-		if this_front != prev_front || i + 1 == pts.len() {
-			let end = i;
-			if end > start {
-				let slice = pts[start..=end].to_vec();
-				if prev_front {
-					front.push((slice, color, width));
-				} else {
-					back.push((slice, color, width));
-				}
-			}
-			start = i.saturating_sub(1);
-		}
+	let offsets = visual::highway_offsets(n, stripe_off);
+	let strand_w = visual::highway_strand_width(n, arc_width);
+	let mut k = 0usize;
+	for color in colors {
+		let Some(c) = color else {
+			continue;
+		};
+		back.push((
+			visual::offset_polyline(pts, offsets[k]),
+			rgb_of(visual::tile_rgb(c)),
+			strand_w,
+		));
+		k += 1;
 	}
 }
 
@@ -148,6 +282,36 @@ fn draw_tiles(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	}
 }
 
+fn draw_marks(
+	img: &mut RgbaImage,
+	game: &Game,
+	layout: &ViewLayout,
+	selected: Option<crate::board::NodeId>,
+) {
+	let Some(from) = selected else {
+		return;
+	};
+	let board = game.board();
+	for id in game.legal_destinations(from) {
+		let p = image_pt(layout, board.position(id));
+		stroke_circle(
+			img,
+			tup(p),
+			f64::from(layout.tile_radius + 5.0),
+			rgb_of(visual::DEST_RGB),
+			3.2,
+		);
+	}
+	let p = image_pt(layout, board.position(from));
+	stroke_circle(
+		img,
+		tup(p),
+		f64::from(layout.tile_radius + 7.0),
+		rgb_of(visual::HIGHLIGHT_RGB),
+		3.6,
+	);
+}
+
 fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	for player in [Player::Two, Player::One] {
 		let bench = game.bench(player);
@@ -177,23 +341,33 @@ fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str
 
 fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(tile.owner)));
-	let ring_colors = tile.ring_colors();
 	let primary = rgb_of(visual::tile_rgb(tile.primary()));
-	let scale = r / f64::from(visual::PREV_TILE_RADIUS_PX);
-	let ring_gap = 3.5 * scale;
-	let strokes = tile.weight.max(tile.n_rings);
+	let draw = visual::TileRingDraw::for_radius(r as f32);
+	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
-		let rr = r - 3.0 * scale - f64::from(k) * ring_gap;
-		if rr > 4.0 * scale {
-			let idx = (k as usize).min(ring_colors.len().saturating_sub(1));
-			let color = ring_colors.get(idx).copied().unwrap_or(tile.primary());
-			stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), (2.2 * scale).max(1.6));
+		let rr = f64::from(draw.ring_radius(r as f32, k));
+		if rr > 4.0 * f64::from(draw.scale) {
+			let color = tile.stroke_color(k);
+			let width =
+				f64::from(if tile.stroke_is_zag(k) { draw.zag_stroke } else { draw.stroke });
+			if tile.stroke_is_zag(k) {
+				let zig = visual::zigzag_circle(
+					[c.0, c.1],
+					rr,
+					f64::from(draw.zag_amp),
+					draw.zag_teeth,
+					draw.zag_samples,
+				);
+				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
+			} else {
+				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
+			}
 		}
 	}
 	let dots = tile.dots.min(3);
-	let spread = 7.0 * scale;
+	let spread = f64::from(draw.dot_spread);
 	let start = -spread * (f64::from(dots) - 1.0) / 2.0;
-	let dot_r = (2.6 * scale).max(1.8);
+	let dot_r = f64::from(draw.dot_r);
 	for i in 0..dots {
 		let dx = start + f64::from(i) * spread;
 		fill_circle(img, (c.0 + dx, c.1), dot_r, primary);
@@ -395,5 +569,181 @@ mod tests {
 			assert!(bytes.len() > 100);
 			assert_eq!(&bytes[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
 		}
+	}
+
+	#[test]
+	fn dump_hitch_and_zag_artifacts() {
+		let dir = std::path::Path::new("/opt/cursor/artifacts");
+		if !dir.is_dir() {
+			return;
+		}
+		use crate::game::TileColor;
+		use crate::visual::{
+			demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair, demo_zag_tile,
+		};
+		let board = demo_midgame();
+		write_png_sized(
+			&board,
+			dir.join("zag_board_1280x800.png"),
+			"hitch + realized-state edges",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, false), (TileColor::Green, false)],
+				2,
+				&[(TileColor::Orange, false), (TileColor::Teal, false)],
+				2,
+			),
+			dir.join("hitch_blue_green_vs_orange_teal.png"),
+			"A blue+green vs B orange+teal hitch",
+			36.0,
+		);
+		write_cropped(
+			&demo_pair(&[(TileColor::Blue, false)], 2, &[(TileColor::Orange, false)], 2),
+			dir.join("hitch_blue_vs_orange.png"),
+			"blue vs orange hitch",
+			36.0,
+		);
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, false), (TileColor::Orange, true)],
+				2,
+				&[(TileColor::Green, false)],
+				2,
+			),
+			dir.join("hitch_blue_vs_green_nonhitting_zag.png"),
+			"hitch; orange zag omitted (does not hit)",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Orange, false), (TileColor::Green, true)],
+				2,
+				&[(TileColor::Orange, false), (TileColor::Green, false)],
+				2,
+			),
+			dir.join("zag_only_vs_orange_holder.png"),
+			"green zag vs orange holder: zag only",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, true)],
+				3,
+				&[(TileColor::Orange, false), (TileColor::Green, false)],
+				2,
+			),
+			dir.join("grey_no_effect_edge.png"),
+			"blue zag vs orange+green: grey, no effect",
+			48.0,
+		);
+		write_cropped(
+			&demo_zag_tile(),
+			dir.join("one_ended_potential_zags.png"),
+			"one-ended potential zags",
+			28.0,
+		);
+		write_png_sized(
+			&demo_left_cluster(),
+			dir.join("left_cluster_realized.png"),
+			"left cluster, realized-state edges",
+			1280,
+			800,
+		)
+		.unwrap();
+		let (hop, from) = demo_hop_turn();
+		write_png_view(
+			&hop,
+			dir.join("hop_multidir_highlights.png"),
+			"d=1 hop turns at center",
+			1280,
+			800,
+			Some(from),
+		)
+		.unwrap();
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)],
+				3,
+				&[(TileColor::Orange, true), (TileColor::Orange, true), (TileColor::Orange, true)],
+				3,
+			),
+			dir.join("zag_thickness_arc.png"),
+			"thicker directional zags",
+			48.0,
+		);
+		write_cropped(
+			&demo_zag_tile(),
+			dir.join("zag_thickness_tile.png"),
+			"thicker tile zags",
+			28.0,
+		);
+	}
+
+	fn write_cropped(game: &Game, path: impl AsRef<std::path::Path>, caption: &str, pad: f32) {
+		let w = 1280u32;
+		let h = 800u32;
+		let tmp = std::env::temp_dir().join("apa-kan-crop-src.png");
+		write_png_sized(game, &tmp, caption, w, h).unwrap();
+		let img = image::open(&tmp).unwrap().to_rgba8();
+		let layout = crate::visual::ViewLayout::from_window(w as f32, h as f32);
+		let (x, y, cw, ch) = occupied_crop(game, &layout, pad, w, h);
+		image::imageops::crop_imm(&img, x, y, cw, ch)
+			.to_image()
+			.save(path.as_ref())
+			.unwrap();
+	}
+
+	fn occupied_crop(
+		game: &Game,
+		layout: &crate::visual::ViewLayout,
+		pad: f32,
+		width: u32,
+		height: u32,
+	) -> (u32, u32, u32, u32) {
+		let board = game.board();
+		let mut minx = f32::MAX;
+		let mut miny = f32::MAX;
+		let mut maxx = f32::MIN;
+		let mut maxy = f32::MIN;
+		let bump = |x: f32,
+		            y: f32,
+		            r: f32,
+		            minx: &mut f32,
+		            miny: &mut f32,
+		            maxx: &mut f32,
+		            maxy: &mut f32| {
+			*minx = minx.min(x - r);
+			*miny = miny.min(y - r);
+			*maxx = maxx.max(x + r);
+			*maxy = maxy.max(y + r);
+		};
+		for id in 0..board.node_count() as u8 {
+			if game.tile_at(id).is_none() {
+				continue;
+			}
+			let p = layout.board_to_image(board.position(id));
+			bump(p[0], p[1], layout.tile_radius + pad, &mut minx, &mut miny, &mut maxx, &mut maxy);
+		}
+		for arc in board.arcs() {
+			if game.tile_at(arc.from).is_none() && game.tile_at(arc.to).is_none() {
+				continue;
+			}
+			for p in arc.sample(24) {
+				let q = layout.board_to_image(p);
+				bump(q[0], q[1], pad, &mut minx, &mut miny, &mut maxx, &mut maxy);
+			}
+		}
+		if !minx.is_finite() {
+			return (0, 0, width, height);
+		}
+		let x = minx.max(0.0).floor() as u32;
+		let y = miny.max(0.0).floor() as u32;
+		let x2 = maxx.min(width as f32).ceil() as u32;
+		let y2 = maxy.min(height as f32).ceil() as u32;
+		(x, y, x2.saturating_sub(x).max(1), y2.saturating_sub(y).max(1))
 	}
 }
