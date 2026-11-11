@@ -29,9 +29,12 @@ name = "apa-kan-bench"
 path = "src/bin/bench.rs"
 
 [dependencies]
-bevy = { workspace = true, optional = true }
+bevy = { workspace = true, optional = true, features = ["android-native-activity"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
+
+[lints]
+workspace = true
 
 [package.metadata.android]
 package = "io.ramate.apa_kan"
@@ -39,6 +42,23 @@ label = "Apa Kan"
 icon = "@mipmap/ic_launcher"
 fullscreen = false
 orientation = "landscape"
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
 
-[lints]
-workspace = true
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 30
+
+[package.metadata.android.application]
+debuggable = false
+theme = "@android:style/Theme.NoTitleBar.Fullscreen"
+
+[package.metadata.android.application.activity]
+config_changes = "orientation|keyboardHidden|screenSize"
+launch_mode = "singleTask"
+orientation = "landscape"
+
+[package.metadata.android.signing.release]
+path = "debug.keystore"
+keystore_password = "android"
+key_alias = "androiddebugkey"
+key_password = "android"

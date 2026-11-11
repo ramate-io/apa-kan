@@ -41,11 +41,21 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libasound2-dev \
+            libudev-dev
+      
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ needs.version.outputs.rust }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p apa-kan --release --locked
+      - run: cargo build -p apa-kan --bin apa-kan --release --locked
       - run: packaging/scripts/package-linux.sh
       - run: packaging/smoke.sh "dist/ApaKan-$VERSION-linux-x64/apa-kan"
       - uses: actions/upload-artifact@v4
@@ -57,7 +67,7 @@ jobs:
 
   macos:
     needs: version
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 180
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -68,7 +78,7 @@ jobs:
         with:
           toolchain: ${{ needs.version.outputs.rust }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p apa-kan --release --locked
+      - run: cargo build -p apa-kan --bin apa-kan --release --locked
       - run: packaging/scripts/package-macos.sh
       - run: packaging/smoke.sh dist/ApaKan.app/Contents/MacOS/apa-kan
       - uses: actions/upload-artifact@v4
@@ -94,7 +104,7 @@ jobs:
           toolchain: ${{ needs.version.outputs.rust }}
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p apa-kan --release --locked --target x86_64-pc-windows-msvc
+      - run: cargo build -p apa-kan --bin apa-kan --release --locked --target x86_64-pc-windows-msvc
       - run: packaging/scripts/package-windows.sh
       - uses: actions/upload-artifact@v4
         with:

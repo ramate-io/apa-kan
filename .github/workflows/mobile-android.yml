@@ -42,12 +42,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
       
-      - name: Install Android NDK
+      - name: Install Android NDK and Platform
         run: |
-          sdkmanager --install "ndk;26.1.10909125"
+          sdkmanager --install "platforms;android-30" "ndk;26.1.10909125"
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
       
       - uses: dtolnay/rust-toolchain@master
@@ -60,8 +68,13 @@ jobs:
       - name: Install cargo-apk
         run: cargo install cargo-apk
       
+      - name: Generate debug keystore
+        run: |
+          cd apa-kan/game
+          keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+      
       - name: Build Android APK
-        run: cargo apk build -p apa-kan --release
+        run: cargo apk build -p apa-kan --lib --release
       
       - name: Package Android artifacts
         run: packaging/scripts/package-android.sh

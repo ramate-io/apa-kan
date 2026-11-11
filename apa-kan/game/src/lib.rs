@@ -50,3 +50,13 @@ pub fn run() {
 pub fn default_rules() -> RuleSet {
 	RuleSet::default()
 }
+
+#[cfg(all(feature = "desktop", target_os = "android"))]
+use bevy::prelude::bevy_main;
+
+/// Native-activity entry used by `cargo-apk` on Android.
+#[cfg(all(feature = "desktop", target_os = "android"))]
+#[bevy_main]
+pub fn main() {
+	run();
+}
