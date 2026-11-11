@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use apa_kan::ai::{self, Actor, BranchingReport, Searcher};
 use apa_kan::config::apply_rule_flag;
 use apa_kan::game::{Action, EndReason, Game, GameStatus, Player, RuleSet};
+use apa_kan::scenario::{self, DeckStrength, Scenario};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -33,6 +34,7 @@ struct BenchConfig {
 	rules: RuleSet,
 	label: String,
 	depth_probe: bool,
+	scenario: Option<Scenario>,
 }
 
 fn usage() -> &'static str {
@@ -48,6 +50,8 @@ fn usage() -> &'static str {
 	   --out <path>         Output log path\n\
 	   --record <path>      Full minimax vs mcts game record\n\
 	   --label <text>       Header label written into the log\n\
+	   --scenario <name|path> Opening deck preset or TOML file\n\
+	   --list-scenarios     Print builtin deck scenarios\n\
 	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
 	   --hop-weight-cmp, --petal-majority-win, --petal-majority-n,\n\
@@ -74,6 +78,7 @@ where
 		rules: RuleSet::default(),
 		label: "search head-to-head".into(),
 		depth_probe: true,
+		scenario: None,
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -100,6 +105,11 @@ where
 			"--out" => cfg.out = PathBuf::from(need("--out", it.next())?),
 			"--record" => cfg.record = PathBuf::from(need("--record", it.next())?),
 			"--label" => cfg.label = need("--label", it.next())?,
+			"--scenario" => cfg.scenario = Some(Scenario::load(&need("--scenario", it.next())?)?),
+			"--list-scenarios" => {
+				print!("{}", Scenario::list_text());
+				std::process::exit(0);
+			}
 			"--bots" => cfg.bots = parse_bots(&need("--bots", it.next())?)?,
 			"--depth-probe" => cfg.depth_probe = true,
 			"--no-depth-probe" => cfg.depth_probe = false,
@@ -194,10 +204,15 @@ fn run(cfg: BenchConfig) {
 	let mut lines: Vec<String> = Vec::new();
 
 	println!("measuring branching factor ({} games)...", cfg.measure_games);
-	let branching = ai::sample_branching(cfg.measure_games, cfg.seed.wrapping_add(17), rules);
+	let branching = ai::sample_branching_on(
+		cfg.measure_games,
+		cfg.seed.wrapping_add(17),
+		rules,
+		cfg.scenario.as_ref(),
+	);
 	push_branching(&mut lines, &cfg, &branching, rules.turn_limit);
 	if cfg.depth_probe {
-		probe_minimax_depths(&mut lines, rules, cfg.seed);
+		probe_minimax_depths(&mut lines, rules, cfg.seed, cfg.scenario.as_ref());
 	}
 
 	lines.push(String::new());
@@ -210,7 +225,7 @@ fn run(cfg: BenchConfig) {
 		rules.turn_limit
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} path_constraint={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -224,7 +239,8 @@ fn run(cfg: BenchConfig) {
 		rules.control_hold_turns,
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
-		rules.path_constraint.name()
+		rules.path_constraint.name(),
+		cfg.scenario.as_ref().map(|s| s.name.as_str()).unwrap_or("default")
 	));
 	lines.push(
 		"# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.".into(),
@@ -237,6 +253,7 @@ fn run(cfg: BenchConfig) {
 	);
 
 	let record_holder: Mutex<Option<GameRecord>> = Mutex::new(None);
+	let deck_holder: Mutex<Vec<DeckRow>> = Mutex::new(Vec::new());
 	let mut pairing_results: Vec<(usize, SeatStats, String)> = Vec::new();
 	let pairs = pairings(&cfg.bots);
 
@@ -247,8 +264,21 @@ fn run(cfg: BenchConfig) {
 			let games = cfg.games;
 			let seed_base = cfg.seed;
 			let rec = &record_holder;
+			let decks = &deck_holder;
+			let scenario = cfg.scenario.clone();
 			handles.push(scope.spawn(move || {
-				let (stats, line) = run_pairing(pi, p1, p2, games, think, seed_base, rules, rec);
+				let (stats, line) = run_pairing(
+					pi,
+					p1,
+					p2,
+					games,
+					think,
+					seed_base,
+					rules,
+					scenario.as_ref(),
+					rec,
+					decks,
+				);
 				(pi, stats, line)
 			}));
 		}
@@ -333,6 +363,9 @@ fn run(cfg: BenchConfig) {
 		"# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.".into(),
 	);
 
+	let deck_rows = deck_holder.lock().unwrap_or_else(|e| e.into_inner()).clone();
+	push_deck_fairness(&mut lines, &deck_rows);
+
 	lines.push(String::new());
 	lines.push("# MCTS bag determinization: remaining bag tiles are a known multiset; each MCTS iteration shuffles both bags (samples a permutation) so capture draws are chance events. Minimax uses the live bag order of the position.".into());
 	lines.push("# Minimax: iterative deepening alpha-beta, Zobrist TT, TT/capture/killer/history ordering, quiescence on capture sequences.".into());
@@ -396,7 +429,9 @@ fn run_pairing(
 	think: Duration,
 	seed_base: u64,
 	rules: RuleSet,
+	scenario: Option<&Scenario>,
 	record_holder: &Mutex<Option<GameRecord>>,
+	deck_holder: &Mutex<Vec<DeckRow>>,
 ) -> (SeatStats, String) {
 	let mut stats = SeatStats::default();
 	for g in 0..games {
@@ -404,7 +439,7 @@ fn run_pairing(
 			.wrapping_add((pi as u64).wrapping_mul(10_000))
 			.wrapping_add(u64::from(g));
 		let want_record = p1 == Actor::Minimax && p2 == Actor::Mcts && g == 0;
-		let result = play_game(rules, seed, p1, p2, think, want_record);
+		let result = play_game(rules, seed, p1, p2, think, want_record, scenario);
 		if want_record {
 			if let Ok(mut guard) = record_holder.lock() {
 				*guard = result.record.clone();
@@ -455,6 +490,12 @@ fn run_pairing(
 			if result.depth_n == 0 { 0.0 } else { result.depth_sum / f64::from(result.depth_n) },
 			if result.iter_n == 0 { 0.0 } else { result.iter_sum / f64::from(result.iter_n) }
 		);
+		if let Ok(mut guard) = deck_holder.lock() {
+			let mut row = result.deck;
+			row.pairing = format!("{} vs {}", p1.name(), p2.name());
+			row.game = g + 1;
+			guard.push(row);
+		}
 	}
 	let n = games.max(1);
 	let avg = f64::from(stats.turns) / f64::from(n);
@@ -499,11 +540,19 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 	}
 }
 
-fn probe_minimax_depths(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
+fn probe_minimax_depths(
+	lines: &mut Vec<String>,
+	rules: RuleSet,
+	seed: u64,
+	scenario: Option<&Scenario>,
+) {
 	use apa_kan::ai::Searcher;
 	lines.push(String::new());
 	lines.push("# minimax iterative-deepening depth probe (opening position)".into());
-	let game = Game::new(rules, seed);
+	let game = Game::start(rules, seed, scenario).unwrap_or_else(|e| {
+		eprintln!("{e}");
+		std::process::exit(1);
+	});
 	for ms in [1000u64, 3000] {
 		println!("minimax depth probe {ms} ms...");
 		let mut searcher = Searcher::new();
@@ -553,6 +602,22 @@ struct PlayResult {
 	iter_sum: f64,
 	iter_n: u32,
 	record: Option<GameRecord>,
+	deck: DeckRow,
+}
+
+#[derive(Clone)]
+struct DeckRow {
+	pairing: String,
+	game: u32,
+	seed: u64,
+	p1_open: DeckStrength,
+	p2_open: DeckStrength,
+	p1_bench: String,
+	p2_bench: String,
+	p1_played: DeckStrength,
+	p2_played: DeckStrength,
+	outcome: i8,
+	turns: u32,
 }
 
 fn play_game(
@@ -562,8 +627,16 @@ fn play_game(
 	p2: Actor,
 	think: Duration,
 	keep_record: bool,
+	scenario: Option<&Scenario>,
 ) -> PlayResult {
-	let mut game = Game::new(rules, seed);
+	let mut game = Game::start(rules, seed, scenario).unwrap_or_else(|e| {
+		eprintln!("{e}");
+		std::process::exit(1);
+	});
+	let p1_open = DeckStrength::of(game.bench(Player::One));
+	let p2_open = DeckStrength::of(game.bench(Player::Two));
+	let p1_bench = scenario::format_kind_list(game.bench(Player::One));
+	let p2_bench = scenario::format_kind_list(game.bench(Player::Two));
 	let mut rng = StdRng::seed_from_u64(seed ^ 0x51ed);
 	let mut s1 = Searcher::new();
 	let mut s2 = Searcher::new();
@@ -652,6 +725,24 @@ fn play_game(
 		None
 	};
 
+	let p1_played = {
+		let mut v: Vec<_> =
+			game.tiles().filter(|(_, t)| t.owner == Player::One).map(|(_, t)| t).collect();
+		v.extend_from_slice(game.bench(Player::One));
+		DeckStrength::of(&v)
+	};
+	let p2_played = {
+		let mut v: Vec<_> =
+			game.tiles().filter(|(_, t)| t.owner == Player::Two).map(|(_, t)| t).collect();
+		v.extend_from_slice(game.bench(Player::Two));
+		DeckStrength::of(&v)
+	};
+	let outcome = match game.status() {
+		GameStatus::Won { winner: Player::One, .. } => 1,
+		GameStatus::Won { winner: Player::Two, .. } => -1,
+		_ => 0,
+	};
+
 	PlayResult {
 		status: game.status(),
 		turns: game.turn_count(),
@@ -662,5 +753,163 @@ fn play_game(
 		iter_sum,
 		iter_n,
 		record,
+		deck: DeckRow {
+			pairing: String::new(),
+			game: 0,
+			seed,
+			p1_open,
+			p2_open,
+			p1_bench,
+			p2_bench,
+			p1_played,
+			p2_played,
+			outcome,
+			turns: game.turn_count(),
+		},
+	}
+}
+
+fn pearson(xs: &[f64], ys: &[f64]) -> Option<f64> {
+	if xs.len() != ys.len() || xs.len() < 3 {
+		return None;
+	}
+	let n = xs.len() as f64;
+	let mx = xs.iter().sum::<f64>() / n;
+	let my = ys.iter().sum::<f64>() / n;
+	let mut num = 0.0;
+	let mut dx = 0.0;
+	let mut dy = 0.0;
+	for (&x, &y) in xs.iter().zip(ys) {
+		let a = x - mx;
+		let b = y - my;
+		num += a * b;
+		dx += a * a;
+		dy += b * b;
+	}
+	if dx < 1e-12 || dy < 1e-12 {
+		return None;
+	}
+	Some(num / (dx.sqrt() * dy.sqrt()))
+}
+
+fn fmt_r(v: Option<f64>) -> String {
+	match v {
+		None => "n/a".into(),
+		Some(r) => format!("{r:.3}"),
+	}
+}
+
+fn push_deck_fairness(lines: &mut Vec<String>, rows: &[DeckRow]) {
+	lines.push(String::new());
+	lines.push("# deck fairness".into());
+	lines.push(format!("# games={}", rows.len()));
+	if rows.is_empty() {
+		return;
+	}
+	let equal_open = rows.iter().filter(|r| r.p1_open == r.p2_open).count();
+	lines.push(format!("# opening_strength_equal={}/{}", equal_open, rows.len()));
+	lines.push(
+		"# strength = weight_sum + dots_sum + n_colors on the opening bench (and on tiles that entered play).".into(),
+	);
+
+	let outcome: Vec<f64> = rows.iter().map(|r| f64::from(r.outcome)).collect();
+	let turns: Vec<f64> = rows.iter().map(|r| f64::from(r.turns)).collect();
+	let d_open: Vec<f64> = rows
+		.iter()
+		.map(|r| f64::from(r.p1_open.combined()) - f64::from(r.p2_open.combined()))
+		.collect();
+	let d_w: Vec<f64> = rows
+		.iter()
+		.map(|r| f64::from(r.p1_open.weight_sum) - f64::from(r.p2_open.weight_sum))
+		.collect();
+	let d_d: Vec<f64> = rows
+		.iter()
+		.map(|r| f64::from(r.p1_open.dots_sum) - f64::from(r.p2_open.dots_sum))
+		.collect();
+	let d_c: Vec<f64> = rows
+		.iter()
+		.map(|r| f64::from(r.p1_open.n_colors) - f64::from(r.p2_open.n_colors))
+		.collect();
+	let shared_w: Vec<f64> = rows.iter().map(|r| f64::from(r.p1_open.weight_sum)).collect();
+	let d_played: Vec<f64> = rows
+		.iter()
+		.map(|r| f64::from(r.p1_played.combined()) - f64::from(r.p2_played.combined()))
+		.collect();
+
+	lines.push(format!(
+		"# pearson(opening_combined_diff, outcome +1/0/-1)={}",
+		fmt_r(pearson(&d_open, &outcome))
+	));
+	lines.push(format!(
+		"# pearson(opening_weight_diff, outcome)={}",
+		fmt_r(pearson(&d_w, &outcome))
+	));
+	lines.push(format!("# pearson(opening_dots_diff, outcome)={}", fmt_r(pearson(&d_d, &outcome))));
+	lines
+		.push(format!("# pearson(opening_color_diff, outcome)={}", fmt_r(pearson(&d_c, &outcome))));
+	lines.push(format!(
+		"# pearson(p1_opening_weight, outcome)={}  (shared-deal / first-player view)",
+		fmt_r(pearson(&shared_w, &outcome))
+	));
+	lines
+		.push(format!("# pearson(p1_opening_weight, turns)={}", fmt_r(pearson(&shared_w, &turns))));
+	lines.push(format!(
+		"# pearson(played_combined_diff, outcome)={}  (board+bench at end; play-influenced)",
+		fmt_r(pearson(&d_played, &outcome))
+	));
+
+	let mut decided_open = 0u32;
+	let mut higher_open_won = 0u32;
+	let mut decided_played = 0u32;
+	let mut higher_played_won = 0u32;
+	for r in rows {
+		if r.outcome == 0 {
+			continue;
+		}
+		if r.p1_open.combined() != r.p2_open.combined() {
+			decided_open += 1;
+			let p1_higher = r.p1_open.combined() > r.p2_open.combined();
+			if (p1_higher && r.outcome > 0) || (!p1_higher && r.outcome < 0) {
+				higher_open_won += 1;
+			}
+		}
+		if r.p1_played.combined() != r.p2_played.combined() {
+			decided_played += 1;
+			let p1_higher = r.p1_played.combined() > r.p2_played.combined();
+			if (p1_higher && r.outcome > 0) || (!p1_higher && r.outcome < 0) {
+				higher_played_won += 1;
+			}
+		}
+	}
+	lines.push(format!(
+		"# higher_opening_strength_won={higher_open_won}/{decided_open} (excludes draws and equal opening strength)"
+	));
+	lines.push(format!(
+		"# higher_played_strength_won={higher_played_won}/{decided_played} (excludes draws and equal end strength)"
+	));
+
+	lines.push(
+		"# opening_deal  pairing  game  seed  p1  p2  p1_bench  p2_bench  outcome  turns".into(),
+	);
+	let mut rows_sorted = rows.to_vec();
+	rows_sorted.sort_by(|a, b| a.pairing.cmp(&b.pairing).then(a.game.cmp(&b.game)));
+	for r in rows_sorted {
+		let oc = match r.outcome {
+			1 => "P1",
+			-1 => "P2",
+			_ => "D",
+		};
+		lines.push(format!(
+			"#   {}  g{}  seed={}  p1={}  p2={}  [{}]  [{}]  {}  t{}",
+			r.pairing,
+			r.game,
+			r.seed,
+			r.p1_open.label(),
+			r.p2_open.label(),
+			r.p1_bench,
+			r.p2_bench,
+			oc,
+			r.turns
+		));
 	}
 }

@@ -51,8 +51,9 @@ Default:
 - **ADD** places one concrete bench tile onto an empty spawn (not an abstract “any kind” picker).
 - On a **MOVE**, each **opponent** tile removed draws one more tile from the mover’s bag onto their bench. ADD captures do not draw. Empty bag → the draw is skipped.
 - Remaining bag tiles do **not** keep a player alive.
+- **Scenarios** (`--scenario <name|path>`, TOML under `apa-kan/game/scenarios/`): replace the default deal with a named or file-backed deck. Builtins: `default`/`same` (mirrored 27-kind shuffle, current `identical_bags` behavior); `independent` (each player's 27-kind bag shuffled separately); `complementary` (P1 green+orange, P2 blue+orange, 18 tiles, mirrored weight/dot order); `complementary-swapped` (exclusive colors flipped). Optional per-player `colors` / `tiles` / `bench`. The app and `apa-kan-bench` share the loader.
 
-Options: `starting_bench_size`, `identical_bags`, `bag_one_of_each_kind`, `capture_draw_on_move`.
+Options: `starting_bench_size`, `identical_bags`, `bag_one_of_each_kind`, `capture_draw_on_move`, plus scenario files.
 
 ### Overwhelm (by color)
 
@@ -221,6 +222,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --control-win on|off --control-n K --control-hold-turns T
         --insufficient-tiles-loss off|strict|no-recapture
         --starting-bench N
+        --scenario name|path --list-scenarios
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
@@ -228,7 +230,7 @@ Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center
 
 Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, petal-majority, control, and insufficient-tiles terminals are wins/losses in search.
 
-Headless round-robin: `apa-kan-bench` (same rule flags; `--bots greedy,minimax,mcts`).
+Headless round-robin: `apa-kan-bench` (same rule flags and `--scenario`; `--bots greedy,minimax,mcts`). Logs include per-game opening benches and a Pearson correlation of a simple deck-strength measure (sum of weights, dots, color count) with outcome.
 
 ## Implementation
 
@@ -236,6 +238,7 @@ Headless round-robin: `apa-kan-bench` (same rule flags; `--bots greedy,minimax,m
 |---|---|
 | `board` | Geometric graph |
 | `game` | RuleSet, tiles, actions, overwhelm, win |
+| `scenario` | Named/TOML opening decks |
 | `ai` | Bots |
 | `ui` | Bevy 0.19.1 table |
 | `render` | Headless PNG |

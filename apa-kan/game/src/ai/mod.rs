@@ -300,6 +300,15 @@ impl BranchingReport {
 
 /// Average and max legal-action branching over real greedy/random games.
 pub fn sample_branching(games: u32, seed: u64, rules: RuleSet) -> BranchingReport {
+	sample_branching_on(games, seed, rules, None)
+}
+
+pub fn sample_branching_on(
+	games: u32,
+	seed: u64,
+	rules: RuleSet,
+	scenario: Option<&crate::scenario::Scenario>,
+) -> BranchingReport {
 	use rand::rngs::StdRng;
 	use rand::SeedableRng;
 
@@ -312,7 +321,9 @@ pub fn sample_branching(games: u32, seed: u64, rules: RuleSet) -> BranchingRepor
 	for n in 0..games.max(1) {
 		let (p1, p2) = pairings[n as usize % pairings.len()];
 		let seed = seed.wrapping_add(u64::from(n).wrapping_mul(997));
-		let mut game = Game::new(rules, seed);
+		let mut game = Game::start(rules, seed, scenario).unwrap_or_else(|e| {
+			panic!("scenario deal failed: {e}");
+		});
 		let mut rng = StdRng::seed_from_u64(seed ^ 0xB4A7);
 		let mut guard = 0u32;
 		while !game.status().is_over() {

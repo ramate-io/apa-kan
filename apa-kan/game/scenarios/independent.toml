@@ -1,0 +1,6 @@
+# Independent 27-kind bags: each player is shuffled separately, so opening
+# benches can differ. Contrast with `same` / the default mirrored deal.
+name = "independent"
+description = "Two independent 27-kind shuffles; opening benches can differ."
+mirror = false
+shuffle = true

@@ -5,6 +5,7 @@ pub mod board;
 pub mod config;
 pub mod game;
 pub mod render;
+pub mod scenario;
 #[cfg(feature = "desktop")]
 pub mod ui;
 pub mod visual;

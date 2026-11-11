@@ -16,8 +16,17 @@ use crate::visual::{self, ArcPaint, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
 	let screenshot = cfg.screenshot.clone();
-	let game =
-		if screenshot.is_some() { visual::demo_midgame() } else { Game::new(cfg.rules, cfg.seed) };
+	let game = if screenshot.is_some() {
+		visual::demo_midgame()
+	} else {
+		match Game::start(cfg.rules, cfg.seed, cfg.scenario.as_ref()) {
+			Ok(g) => g,
+			Err(err) => {
+				eprintln!("{err}");
+				std::process::exit(1);
+			}
+		}
+	};
 	let rng = StdRng::seed_from_u64(cfg.seed ^ 0xA5A5_A5A5);
 	let width = cfg.width;
 	let height = cfg.height;
