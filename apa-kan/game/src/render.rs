@@ -123,15 +123,28 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		} else {
 			f64::from(layout.zag_amp)
 		};
+		let braid_amp = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.braid_amp_center)
+		} else {
+			f64::from(layout.braid_amp)
+		};
 		let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
-		let n_zags = paint.zag_count();
 		let teeth = visual::zag_teeth(arc);
-		let alongside = matches!(paint.body, ArcBody::Solid { .. });
-		for (i, zag) in paint.zags.iter().enumerate() {
+		let spacing = visual::zag_lane_spacing(stripe_off);
+		let inner = visual::zag_lane_inner(paint.body, stripe_off, braid_amp);
+		for (i, zag) in paint.zags_from.iter().enumerate() {
 			let Some(color) = *zag else {
 				continue;
 			};
-			let side = visual::zag_side_offset(i, n_zags, stripe_off, alongside);
+			let side = visual::zag_fan_offset(i, 1.0, inner, spacing);
+			let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
+			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
+		}
+		for (i, zag) in paint.zags_to.iter().enumerate() {
+			let Some(color) = *zag else {
+				continue;
+			};
+			let side = visual::zag_fan_offset(i, -1.0, inner, spacing);
 			let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
 			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
 		}
