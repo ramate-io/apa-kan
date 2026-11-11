@@ -1,6 +1,6 @@
 # Deck scenarios
 
-TOML files that replace the default 27-kind deal. Used by the app and `apa-kan-bench`:
+TOML files that replace the default generative 27-tile deal. Used by the app and `apa-kan-bench`:
 
 ```bash
 cargo run -p apa-kan -- --scenario complementary
@@ -17,6 +17,7 @@ name = "example"
 description = "optional"
 shuffle = true          # shuffle bags with the game seed (default true)
 mirror = false          # copy P1's kinds+order onto P2 (new ids)
+generative = false      # sample 27 tiles from the ring process (same as Game::new)
 
 # Complementary construction (18 tiles/player: two colors × 9 kinds):
 exclusive_p1 = "green"
@@ -27,7 +28,7 @@ shared = "orange"
 [p1]
 colors = ["green", "orange"]   # all 9 kinds of each color
 # [[p1.tiles]]
-# color = "green"
+# color = "green"              # or colors = ["green", "teal"] for two normal rings
 # weight = 3                   # omit weight/dots to expand all 9 kinds of that color
 # dots = 1
 # count = 1
@@ -37,4 +38,4 @@ colors = ["green", "orange"]   # all 9 kinds of each color
 # dots = 1
 ```
 
-`default` / `same` is the current opening deal: 27 unique kinds, mirrored shuffle. `independent` shuffles each player's 27-kind bag separately. Complementary presets keep `starting_bench` at 7 (11 left in each 18-tile bag).
+`default` / `same` is the current opening deal: 27 sampled tiles (ring process), mirrored shuffle. `independent` samples each player's bag separately. Complementary presets are still 18 one-ring tiles of the three common colors and keep `starting_bench` at 7 (11 left in each bag).

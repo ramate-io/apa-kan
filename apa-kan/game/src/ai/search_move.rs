@@ -5,8 +5,15 @@ use crate::game::{Action, Game, KIND_COUNT};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchMove {
-	Add { kind: u8, node: NodeId },
-	Move { from: NodeId, to: NodeId },
+	/// `kind` is [`crate::game::Tile::kind_index`] (color-mask × weight × dots).
+	Add {
+		kind: u16,
+		node: NodeId,
+	},
+	Move {
+		from: NodeId,
+		to: NodeId,
+	},
 	Pass,
 }
 
@@ -17,7 +24,7 @@ impl SearchMove {
 				let kind = game
 					.bench(game.current_player())
 					.get(bench_index)
-					.map(|t| t.kind_index() as u8)
+					.map(|t| t.kind_index() as u16)
 					.unwrap_or(0);
 				SearchMove::Add { kind, node }
 			}
@@ -32,7 +39,7 @@ impl SearchMove {
 				let idx = game
 					.bench(game.current_player())
 					.iter()
-					.position(|t| t.kind_index() as u8 == kind)?;
+					.position(|t| t.kind_index() as u16 == kind)?;
 				Some(Action::Add { bench_index: idx, node })
 			}
 			SearchMove::Move { from, to } => Some(Action::Move { from, to }),
@@ -40,10 +47,15 @@ impl SearchMove {
 		}
 	}
 
+	/// Packed TT key: mask 0 = MOVE, 255 = PASS, 1..=63 = ADD color-mask.
 	pub fn pack(self) -> (u8, u8, u8) {
 		match self {
-			SearchMove::Add { kind, node } => (kind, node, 0),
-			SearchMove::Move { from, to } => (27, from, to),
+			SearchMove::Add { kind, node } => {
+				let mask = (kind / 9) as u8;
+				let wd = (kind % 9) as u8;
+				(mask, node, wd)
+			}
+			SearchMove::Move { from, to } => (0, from, to),
 			SearchMove::Pass => (255, 0, 0),
 		}
 	}
@@ -51,8 +63,10 @@ impl SearchMove {
 	pub fn unpack(kind: u8, a: u8, b: u8) -> Option<Self> {
 		match kind {
 			255 => Some(SearchMove::Pass),
-			27 => Some(SearchMove::Move { from: a, to: b }),
-			k if (k as usize) < KIND_COUNT => Some(SearchMove::Add { kind: k, node: a }),
+			0 => Some(SearchMove::Move { from: a, to: b }),
+			mask if (1..64).contains(&mask) && b < 9 => {
+				Some(SearchMove::Add { kind: u16::from(mask) * 9 + u16::from(b), node: a })
+			}
 			_ => None,
 		}
 	}
@@ -87,7 +101,7 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 			}
 			seen[k] = true;
 			for &node in &dests {
-				out.push(SearchMove::Add { kind: k as u8, node });
+				out.push(SearchMove::Add { kind: k as u16, node });
 			}
 		}
 	}
@@ -135,10 +149,10 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 						if other.owner != tile.owner {
 							s += 35;
 						}
-						if other.color != tile.color {
-							s += 12;
-						} else {
+						if other.shares_color(tile) {
 							s += 8;
+						} else {
+							s += 12;
 						}
 					}
 				}
@@ -147,14 +161,13 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 		}
 		SearchMove::Add { kind, node } => {
 			let mut s = 12;
-			let color_w_d = kind as usize;
-			let color = color_w_d / 9;
+			let mask = (kind / 9) as u8;
 			for &nb in game.board().neighbors(node) {
 				if let Some(other) = game.tile_at(nb) {
 					if other.owner == game.current_player() {
 						s += 10;
 					}
-					if other.color as usize == color {
+					if other.color_mask() & mask != 0 {
 						s += 16;
 					} else {
 						s += 6;
@@ -189,6 +202,16 @@ mod tests {
 		let mv = legal_search_moves(&game)[0];
 		let action = mv.to_action(&game).unwrap();
 		assert_eq!(SearchMove::from_action(&game, action), mv);
+	}
+
+	#[test]
+	fn pack_round_trip_add_and_move() {
+		let add = SearchMove::Add { kind: 9 + 4, node: 3 };
+		let (k, a, b) = add.pack();
+		assert_eq!(SearchMove::unpack(k, a, b), Some(add));
+		let mv = SearchMove::Move { from: 2, to: 7 };
+		let (k, a, b) = mv.pack();
+		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));
 	}
 
 	#[test]

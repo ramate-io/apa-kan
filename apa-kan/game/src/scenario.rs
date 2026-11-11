@@ -8,29 +8,58 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::Deserialize;
 
-use crate::game::{Tile, TileColor};
+use crate::game::{Tile, TileColor, MAX_COLOR_RINGS};
 
-/// One (color, weight, dots) kind. `count` repeats in the bag.
+/// One (rings × weight × dots) kind. `count` repeats in the bag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KindCount {
-	pub color: TileColor,
+	pub rings: [TileColor; 3],
+	pub n_rings: u8,
 	pub weight: u8,
 	pub dots: u8,
 	pub count: u8,
 }
 
 impl KindCount {
+	pub fn mono(color: TileColor, weight: u8, dots: u8, count: u8) -> Self {
+		Self { rings: [color; 3], n_rings: 1, weight, dots, count }
+	}
+
+	pub fn ring_colors(&self) -> &[TileColor] {
+		&self.rings[..self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize]
+	}
+
 	pub fn tag(self) -> String {
-		kind_tag(self.color, self.weight, self.dots)
+		kind_tag(self.ring_colors(), self.weight, self.dots)
 	}
 }
 
-pub fn kind_tag(color: TileColor, weight: u8, dots: u8) -> String {
-	format!("{}{}-{}", &color.name()[..1], weight, dots)
+/// Materialized bag/bench entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TileSpec {
+	pub rings: [TileColor; 3],
+	pub n_rings: u8,
+	pub weight: u8,
+	pub dots: u8,
+}
+
+impl TileSpec {
+	pub fn ring_colors(&self) -> &[TileColor] {
+		&self.rings[..self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize]
+	}
+
+	pub fn primary(self) -> TileColor {
+		self.rings[0]
+	}
+}
+
+pub fn kind_tag(colors: &[TileColor], weight: u8, dots: u8) -> String {
+	let rings = colors.iter().map(|c| c.tag()).collect::<Vec<_>>().join("+");
+	format!("{rings}{weight}-{dots}")
 }
 
 pub fn tile_tag(tile: Tile) -> String {
-	kind_tag(tile.color, tile.weight, tile.dots)
+	kind_tag(tile.ring_colors(), tile.weight, tile.dots)
 }
 
 /// Sum of weights, dots, and distinct colors — a simple deck-strength view.
@@ -44,14 +73,16 @@ pub struct DeckStrength {
 
 impl DeckStrength {
 	pub fn of(tiles: &[Tile]) -> Self {
-		let mut colors = [false; 3];
+		let mut colors = [false; 6];
 		let mut weight_sum = 0u32;
 		let mut dots_sum = 0u32;
 		for t in tiles {
 			weight_sum += u32::from(t.weight);
 			dots_sum += u32::from(t.dots);
-			if (t.color as usize) < 3 {
-				colors[t.color as usize] = true;
+			for &c in t.ring_colors() {
+				if (c as usize) < 6 {
+					colors[c as usize] = true;
+				}
 			}
 		}
 		Self {
@@ -77,12 +108,16 @@ pub struct DeckSpec {
 	pub kinds: Vec<KindCount>,
 	/// If set, these kinds are dealt first (removed from the bag). Remaining
 	/// bag tiles follow in listed or shuffled order.
-	pub bench: Option<Vec<(TileColor, u8, u8)>>,
+	pub bench: Option<Vec<TileSpec>>,
 }
 
 impl DeckSpec {
+	pub fn empty() -> Self {
+		Self { kinds: Vec::new(), bench: None }
+	}
+
 	pub fn one_of_each_kind() -> Self {
-		Self { kinds: all_kinds(TileColor::ALL), bench: None }
+		Self { kinds: all_kinds(TileColor::COMMON), bench: None }
 	}
 
 	pub fn from_colors(colors: &[TileColor]) -> Self {
@@ -97,6 +132,9 @@ pub struct Scenario {
 	pub shuffle: bool,
 	/// Copy P1's kind sequence onto P2 (new tile ids / owner).
 	pub mirror: bool,
+	/// Sample [`crate::game::BAG_SIZE`] tiles from the ring/color process
+	/// (same as `Game::new`) instead of expanding `p1`/`p2` kinds.
+	pub generative: bool,
 	pub p1: DeckSpec,
 	pub p2: DeckSpec,
 	/// Complementary construction: exclusive P1 / exclusive P2 / shared color.
@@ -202,7 +240,7 @@ fn all_kinds(colors: impl IntoIterator<Item = TileColor>) -> Vec<KindCount> {
 	for color in colors {
 		for weight in 1..=3 {
 			for dots in 1..=3 {
-				out.push(KindCount { color, weight, dots, count: 1 });
+				out.push(KindCount::mono(color, weight, dots, 1));
 			}
 		}
 	}
@@ -219,6 +257,8 @@ struct FileScenario {
 	shuffle: Option<bool>,
 	#[serde(default)]
 	mirror: Option<bool>,
+	#[serde(default)]
+	generative: Option<bool>,
 	#[serde(default)]
 	exclusive_p1: Option<String>,
 	#[serde(default)]
@@ -243,7 +283,10 @@ struct FileDeck {
 
 #[derive(Deserialize)]
 struct FileTile {
-	color: String,
+	#[serde(default)]
+	color: Option<String>,
+	#[serde(default)]
+	colors: Option<Vec<String>>,
 	#[serde(default)]
 	weight: Option<u8>,
 	#[serde(default)]
@@ -276,23 +319,31 @@ pub fn parse_toml(text: &str) -> Result<Scenario, String> {
 			);
 		}
 	};
-	let p1 = file
-		.p1
-		.as_ref()
-		.map(deck_from_file)
-		.transpose()?
-		.unwrap_or_else(DeckSpec::one_of_each_kind);
-	let p2 = file
-		.p2
-		.as_ref()
-		.map(deck_from_file)
-		.transpose()?
-		.unwrap_or_else(DeckSpec::one_of_each_kind);
+	let generative = file.generative.unwrap_or(false);
+	let p1 = if generative {
+		DeckSpec::empty()
+	} else {
+		file.p1
+			.as_ref()
+			.map(deck_from_file)
+			.transpose()?
+			.unwrap_or_else(DeckSpec::one_of_each_kind)
+	};
+	let p2 = if generative {
+		DeckSpec::empty()
+	} else {
+		file.p2
+			.as_ref()
+			.map(deck_from_file)
+			.transpose()?
+			.unwrap_or_else(DeckSpec::one_of_each_kind)
+	};
 	Ok(Scenario {
 		name: file.name.unwrap_or_else(|| "unnamed".into()),
 		description: file.description.unwrap_or_default(),
 		shuffle: file.shuffle.unwrap_or(true),
 		mirror: file.mirror.unwrap_or(false),
+		generative,
 		p1,
 		p2,
 		complementary,
@@ -314,7 +365,7 @@ fn deck_from_file(d: &FileDeck) -> Result<DeckSpec, String> {
 		}
 	}
 	if kinds.is_empty() {
-		kinds = all_kinds(TileColor::ALL);
+		kinds = all_kinds(TileColor::COMMON);
 	}
 	let bench = match &d.bench {
 		None => None,
@@ -323,9 +374,10 @@ fn deck_from_file(d: &FileDeck) -> Result<DeckSpec, String> {
 			let mut out = Vec::new();
 			for t in b {
 				if t.weight.is_none() || t.dots.is_none() {
-					return Err("scenario bench entries need color, weight, and dots".into());
+					return Err("scenario bench entries need color(s), weight, and dots".into());
 				}
-				out.push((TileColor::parse(&t.color)?, t.weight.unwrap_or(1), t.dots.unwrap_or(1)));
+				let rings = parse_file_rings(t)?;
+				out.push(spec_from_rings(&rings, t.weight.unwrap_or(1), t.dots.unwrap_or(1)));
 			}
 			Some(out)
 		}
@@ -333,25 +385,76 @@ fn deck_from_file(d: &FileDeck) -> Result<DeckSpec, String> {
 	Ok(DeckSpec { kinds, bench })
 }
 
+fn parse_file_rings(t: &FileTile) -> Result<Vec<TileColor>, String> {
+	let mut out = Vec::new();
+	if let Some(colors) = &t.colors {
+		for c in colors {
+			let parsed = TileColor::parse(c)?;
+			if !out.contains(&parsed) {
+				out.push(parsed);
+			}
+		}
+	}
+	if let Some(color) = &t.color {
+		let parsed = TileColor::parse(color)?;
+		if !out.contains(&parsed) {
+			out.insert(0, parsed);
+		}
+	}
+	if out.is_empty() {
+		return Err("tile entries need color or colors".into());
+	}
+	if out.len() > MAX_COLOR_RINGS as usize {
+		return Err("at most 3 ring colors per tile".into());
+	}
+	Ok(out)
+}
+
+fn spec_from_rings(colors: &[TileColor], weight: u8, dots: u8) -> TileSpec {
+	let first = colors[0];
+	let mut rings = [first; 3];
+	for (i, &c) in colors.iter().take(3).enumerate() {
+		rings[i] = c;
+	}
+	TileSpec { rings, n_rings: colors.len().min(3) as u8, weight, dots }
+}
+
 fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
-	let color = TileColor::parse(&t.color)?;
+	let colors = parse_file_rings(t)?;
 	let count = t.count.unwrap_or(1);
 	if count == 0 {
 		return Err("tile count must be >= 1".into());
 	}
+	let to_kind = |weight: u8, dots: u8| {
+		let mut k = KindCount::mono(colors[0], weight, dots, count);
+		for (i, &c) in colors.iter().take(3).enumerate() {
+			k.rings[i] = c;
+		}
+		k.n_rings = colors.len().min(3) as u8;
+		k
+	};
 	match (t.weight, t.dots) {
-		(None, None) => Ok(all_kinds(std::iter::once(color))
+		(None, None) if colors.len() == 1 => Ok(all_kinds(std::iter::once(colors[0]))
 			.into_iter()
 			.map(|mut k| {
 				k.count = count;
 				k
 			})
 			.collect()),
+		(None, None) => {
+			let mut out = Vec::new();
+			for weight in 1..=3 {
+				for dots in 1..=3 {
+					out.push(to_kind(weight, dots));
+				}
+			}
+			Ok(out)
+		}
 		(Some(weight), Some(dots)) => {
 			if !(1..=3).contains(&weight) || !(1..=3).contains(&dots) {
 				return Err("weight and dots must be 1..=3".into());
 			}
-			Ok(vec![KindCount { color, weight, dots, count }])
+			Ok(vec![to_kind(weight, dots)])
 		}
 		_ => {
 			Err("tile entries need both weight and dots, or neither (all 9 kinds of that color)"
@@ -365,7 +468,7 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 pub fn materialize(
 	scenario: &Scenario,
 	seed: u64,
-) -> Result<([Vec<(TileColor, u8, u8)>; 2], [Vec<(TileColor, u8, u8)>; 2]), String> {
+) -> Result<([Vec<TileSpec>; 2], [Vec<TileSpec>; 2]), String> {
 	let mut rng = StdRng::seed_from_u64(seed);
 	if let Some(c) = scenario.complementary {
 		let mut slots = Vec::new();
@@ -379,12 +482,12 @@ pub fn materialize(
 		if scenario.shuffle {
 			slots.shuffle(&mut rng);
 		}
-		let paint = |excl: TileColor| -> Vec<(TileColor, u8, u8)> {
+		let paint = |excl: TileColor| -> Vec<TileSpec> {
 			slots
 				.iter()
 				.map(|&(role, w, d)| {
 					let color = if role == 0 { excl } else { c.shared };
-					(color, w, d)
+					spec_from_rings(&[color], w, d)
 				})
 				.collect()
 		};
@@ -415,29 +518,33 @@ pub fn materialize(
 	Ok(([p1_bag, p2_bag], [p1_bench, p2_bench]))
 }
 
-fn expand_kinds(kinds: &[KindCount]) -> Vec<(TileColor, u8, u8)> {
+fn expand_kinds(kinds: &[KindCount]) -> Vec<TileSpec> {
 	let mut out = Vec::new();
 	for k in kinds {
 		for _ in 0..k.count.max(1) {
-			out.push((k.color, k.weight, k.dots));
+			out.push(TileSpec {
+				rings: k.rings,
+				n_rings: k.n_rings,
+				weight: k.weight,
+				dots: k.dots,
+			});
 		}
 	}
 	out
 }
 
 fn take_fixed_bench(
-	bag: &mut Vec<(TileColor, u8, u8)>,
-	want: Option<&[(TileColor, u8, u8)]>,
-) -> Result<Vec<(TileColor, u8, u8)>, String> {
+	bag: &mut Vec<TileSpec>,
+	want: Option<&[TileSpec]>,
+) -> Result<Vec<TileSpec>, String> {
 	let Some(want) = want else {
 		return Ok(Vec::new());
 	};
 	let mut bench = Vec::new();
 	for &k in want {
-		let pos = bag
-			.iter()
-			.position(|&x| x == k)
-			.ok_or_else(|| format!("fixed bench {} is not in the bag", kind_tag(k.0, k.1, k.2)))?;
+		let pos = bag.iter().position(|&x| x == k).ok_or_else(|| {
+			format!("fixed bench {} is not in the bag", kind_tag(k.ring_colors(), k.weight, k.dots))
+		})?;
 		bench.push(bag.remove(pos));
 	}
 	Ok(bench)
@@ -450,8 +557,10 @@ pub fn format_kind_list(tiles: &[Tile]) -> String {
 pub fn unique_colors(tiles: &[Tile]) -> Vec<TileColor> {
 	let mut out = Vec::new();
 	for t in tiles {
-		if !out.contains(&t.color) {
-			out.push(t.color);
+		for &c in t.ring_colors() {
+			if !out.contains(&c) {
+				out.push(c);
+			}
 		}
 	}
 	out
@@ -462,7 +571,7 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
-	use crate::game::{Game, Player, RuleSet};
+	use crate::game::{Game, Player, RuleSet, TileColor};
 
 	#[test]
 	fn builtins_parse() {
@@ -478,7 +587,10 @@ mod tests {
 			let a = Game::new(RuleSet::default(), seed);
 			let b = Game::from_scenario(RuleSet::default(), seed, &Scenario::same()).unwrap();
 			let kinds = |g: &Game, p: Player| {
-				g.bench(p).iter().map(|t| (t.color, t.weight, t.dots)).collect::<Vec<_>>()
+				g.bench(p)
+					.iter()
+					.map(|t| (t.primary(), t.weight, t.dots, t.color_mask()))
+					.collect::<Vec<_>>()
 			};
 			assert_eq!(kinds(&a, Player::One), kinds(&b, Player::One), "seed {seed}");
 			assert_eq!(kinds(&a, Player::One), kinds(&a, Player::Two));
@@ -498,7 +610,7 @@ mod tests {
 			game.bench(p)
 				.iter()
 				.chain(game.bag(p).iter().rev())
-				.map(|t| (t.weight, t.dots, t.color == TileColor::Orange))
+				.map(|t| (t.weight, t.dots, t.primary() == TileColor::Orange))
 				.collect::<Vec<_>>()
 		};
 		assert_eq!(seq(Player::One), seq(Player::Two), "weight/dot/shared-role sequence");
@@ -520,8 +632,8 @@ mod tests {
 			g.bench(p)
 				.iter()
 				.chain(g.bag(p))
-				.find(|t| t.color != TileColor::Orange)
-				.map(|t| t.color)
+				.find(|t| t.primary() != TileColor::Orange)
+				.map(|t| t.primary())
 		};
 		assert_eq!(excl(&a, Player::One), Some(TileColor::Green));
 		assert_eq!(excl(&a, Player::Two), Some(TileColor::Blue));
@@ -537,6 +649,28 @@ mod tests {
 		let from_file = Scenario::load(path.to_str().unwrap()).unwrap();
 		assert_eq!(from_file.name, "same");
 		assert!(Scenario::load("no-such-scenario").is_err());
+	}
+
+	#[test]
+	fn custom_toml_multi_ring_tile() {
+		let toml = r#"
+name = "duo"
+shuffle = false
+mirror = true
+[[p1.tiles]]
+colors = ["green", "teal"]
+weight = 2
+dots = 1
+count = 2
+"#;
+		let s = parse_toml(toml).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		assert_eq!(game.bench(Player::One).len(), 2);
+		let t = game.bench(Player::One)[0];
+		assert_eq!(t.n_rings, 2);
+		assert!(t.has_color(TileColor::Green));
+		assert!(t.has_color(TileColor::Teal));
+		assert_eq!(game.bench(Player::Two)[0].color_mask(), t.color_mask());
 	}
 
 	#[test]
@@ -590,10 +724,16 @@ dots = 3
 		for seed in 1u64..40 {
 			let game =
 				Game::from_scenario(RuleSet::default(), seed, &Scenario::independent()).unwrap();
-			let a: Vec<_> =
-				game.bench(Player::One).iter().map(|t| (t.color, t.weight, t.dots)).collect();
-			let b: Vec<_> =
-				game.bench(Player::Two).iter().map(|t| (t.color, t.weight, t.dots)).collect();
+			let a: Vec<_> = game
+				.bench(Player::One)
+				.iter()
+				.map(|t| (t.primary(), t.weight, t.dots, t.color_mask()))
+				.collect();
+			let b: Vec<_> = game
+				.bench(Player::Two)
+				.iter()
+				.map(|t| (t.primary(), t.weight, t.dots, t.color_mask()))
+				.collect();
 			if a != b {
 				differed = true;
 				break;

@@ -1,7 +1,8 @@
-# Both players get the 27 unique (color × weight × dots) kinds in the same
-# shuffled order. Only seat and play differ. This is also the current default
+# Both players get the same 27 sampled tiles (ring process + weight/dots) in
+# the same order. Only seat and play differ. This is also the current default
 # deal (`identical_bags`).
 name = "same"
-description = "Mirrored 27-kind bags; shuffle with the game seed."
+description = "Mirrored generative 27-tile bags; shuffle with the game seed."
+generative = true
 mirror = true
 shuffle = true
