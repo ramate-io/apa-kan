@@ -36,7 +36,7 @@ Each tile has:
 
 - **Owner** as a light/dark shade: P1 light, P2 dark (fill).
 - **Rings** (1–3 distinct colors). A **normal** ring indicates a color the tile can match (in and out). A **zag** ring never matches; it is a forced mismatch the neighbor imposes if you carry that color (on any ring, normal or zag). Generation still draws distinct colors as in the six-color tree, then each ring independently becomes a zag with chance 1/7 (`zag_numer / 7`; `--zag-chance 0` / `--zags off` disables). You cannot have both a normal and a zag of the same color on a generated tile (one ring per color; stacked same-color zags exist only as test fixtures so mismatch counts can sum per ring). Braid / bead / antipodal ring types are not implemented. Colors: green, blue, orange (weight 81 each), lavender-pink, teal (9 each), maroon (1). Ring 1 always exists. Ring 2: weight 7 same as ring 1, weight 1 any color from the same tree (a redraw of ring 1 is not a new ring). Ring 3: same rule relative to the last existing ring. `--max-rings` caps this at 1–3 (default 3).
-- **Weight** `w ∈ {1,2,3}` — overwhelm match base and hop compare. Drawn as concentric strokes; extra colors take additional strokes when `n_rings > 1`.
+- **Weight** `w ∈ {1,2,3}` — overwhelm match base (and hop compare when graph hops are on). Pass-through uses ring count, not weight. Drawn as concentric strokes; extra colors take additional strokes when `n_rings > 1`.
 - **Dots** `d ∈ {1,2,3}` drawn as 1–3 dots (MOVE length).
 
 Weight and dots are independent of each other and of the ring colors.
@@ -89,11 +89,10 @@ One action per turn by default (`actions_per_turn`, default 1):
   - `NoEdgeRevisit` — a path may not traverse the same undirected circle-arc twice. Nodes may be revisited via a **different** arc (the two inner↔center petals are distinct arcs).
   - `Both` — node uniqueness and edge uniqueness.
 - **Empty step:** walk along any unused adjacency (a generating-circle arc) to a neighboring empty node. Cost 1. Inner↔center still has two distinct arcs.
-- **Hop (default, `color_restricted_hops` on):** if a neighboring node is occupied, flood any adjacency through the connected chain of **hoppable** occupied tiles — each must **share a normal ring color** with the mover and compare with `hop_weight_cmp` (default `le`: occupant `<=` mover). The path may change direction at any node, **including the center**. Spend **1 step** to land on any empty node adjacent to that chain. Owner does not matter. Zag colors do not enable hops. Hopped nodes are marked visited; hopped arcs are marked used (`NoEdgeRevisit` still applies). You cannot land on an occupied node. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`.
+- **Counted pass-through (default, `counted_pass_through` on):** hops are disabled. Each step is still to an adjacent node and costs 1. An occupied tile may be **passed through** (never landed on) iff it **shares a normal ring color** with the mover and its ring count compares with `pass_through_ring_cmp`. Default **`ge`**: occupant `n_rings >=` mover. **`gt`** is strict (`>`), so a 3-ring tile can never pass through (max rings is 3). Zag colors do not enable pass-through. Passing through counts as one of the exact-`d` steps (a two-tile occupied run plus a landing needs `d=3`). `NoEdgeRevisit` still applies. Capture/overwhelm resolves after landing as usual. CLI: `--counted-pass-through on|off`, `--graph-hops on|off` (alias: hops on ⇔ pass-through off), `--pass-through-ring-cmp ge|gt`.
+- **Hop (optional, `--graph-hops on` / `counted_pass_through` off, `color_restricted_hops` on):** if a neighboring node is occupied, flood any adjacency through the connected chain of **hoppable** occupied tiles — each must **share a normal ring color** with the mover and compare with `hop_weight_cmp` (default `le`: occupant `<=` mover). The path may change direction at any node, **including the center**. Spend **1 step** to land on any empty node adjacent to that chain. Owner does not matter. Zag colors do not enable hops. Hopped nodes are marked visited; hopped arcs are marked used (`NoEdgeRevisit` still applies). You cannot land on an occupied node. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`.
 
-A hop over a chain is still one step of the exact-`d` MOVE. Empty walks and hops both follow unique neighbor adjacency; the two inner↔center petal arcs remain distinct unused-edge choices.
-
-- **Counted pass-through (optional, `counted_pass_through`, default off):** hops are disabled. Each step is still to an adjacent node and costs 1. An occupied tile may be **passed through** (never landed on) iff it **shares a normal ring color** with the mover and its **ring count is `>=` the mover's**. Zag colors do not enable pass-through. Passing through counts as one of the exact-`d` steps (a two-tile occupied run plus a landing needs `d=3`). `NoEdgeRevisit` still applies. Capture/overwhelm resolves after landing as usual. CLI: `--counted-pass-through on|off`.
+A hop over a chain is still one step of the exact-`d` MOVE. Empty walks, pass-throughs, and hops all follow unique neighbor adjacency; the two inner↔center petal arcs remain distinct unused-edge choices.
 
 ### Edge rendering (realized state)
 
@@ -154,9 +153,9 @@ A player may not MOVE the same tile (by tile id) on two consecutive **own** turn
 
 **Capture exception:** a repeat MOVE **is** legal if that MOVE causes at least one opponent tile to be removed under simultaneous overwhelm (previewed before the action). Own-tile suicides do not count. ADD does not set the “last moved” tile; only a MOVE does.
 
-#### 4. `color_restricted_hops` (default **on**)
+#### 4. `color_restricted_hops` (default **on**; hops themselves are off unless `--graph-hops`)
 
-CLI: `--color-restricted-hops <on|off>` `--hop-weight-cmp <lt|le>`
+CLI: `--color-restricted-hops <on|off>` `--hop-weight-cmp <lt|le>` `--graph-hops <on|off>`
 
 **Interpretation** of the designer note *“If the weight in your color is less than, you can traverse.”* When this option is **on**, a hop may only cross a connected chain of tiles that are:
 
@@ -235,7 +234,8 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --center-hold-win on|off --center-hold-n N
         --no-same-piece-twice off|always|when-bench-empty
         --color-restricted-hops on|off --hop-weight-cmp lt|le
-        --counted-pass-through on|off
+        --counted-pass-through on|off --graph-hops on|off
+        --pass-through-ring-cmp ge|gt
         --petal-majority-win on|off --petal-majority-n N
         --control-win on|off --control-n K --control-hold-turns T
         --insufficient-tiles-loss off|strict|no-recapture
@@ -244,7 +244,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` off, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7, `max_rings` 3, `zag_numer` 1 (1/7), `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` on, `pass_through_ring_cmp` ge, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7, `max_rings` 3, `zag_numer` 1 (1/7), `path_constraint` no-edge-revisit.
 
 Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, petal-majority, control, and insufficient-tiles terminals are wins/losses in search.
 

@@ -56,7 +56,8 @@ fn usage() -> &'static str {
 	   --list-scenarios     Print builtin deck scenarios\n\
 	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
-	   --hop-weight-cmp, --counted-pass-through, --petal-majority-win, --petal-majority-n,\n\
+	   --hop-weight-cmp, --counted-pass-through, --graph-hops, --pass-through-ring-cmp,\n\
+	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-bench, --max-rings,\n\
 	   --zag-chance, --zags, --path-constraint, --no-repeated-edge, --turn-limit\n\
@@ -228,7 +229,7 @@ fn run(cfg: BenchConfig) {
 		rules.turn_limit
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} max_rings={} zag_numer={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} max_rings={} zag_numer={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -236,6 +237,7 @@ fn run(cfg: BenchConfig) {
 		on_off(rules.color_restricted_hops),
 		rules.hop_weight_cmp.name(),
 		on_off(rules.counted_pass_through),
+		rules.pass_through_ring_cmp.name(),
 		on_off(rules.petal_majority_win),
 		rules.petal_majority_n,
 		on_off(rules.control_win),
@@ -636,6 +638,12 @@ struct DeckRow {
 	p2_played: DeckStrength,
 	ring_n: [u32; 4],
 	color_n: [u32; 6],
+	add_rings: [u32; 4],
+	move_rings: [u32; 4],
+	board_positions: u32,
+	board_tiles: u64,
+	board_rings: u64,
+	board_weight: u64,
 	outcome: i8,
 	turns: u32,
 }
@@ -678,6 +686,12 @@ fn play_game(
 	let mut record_lines = Vec::new();
 	let mut captures = 0u32;
 	let mut guard = 0u32;
+	let mut add_rings = [0u32; 4];
+	let mut move_rings = [0u32; 4];
+	let mut board_positions = 0u32;
+	let mut board_tiles = 0u64;
+	let mut board_rings = 0u64;
+	let mut board_weight = 0u64;
 
 	loop {
 		let vh = ai::visible_hash(&game);
@@ -688,6 +702,13 @@ fn play_game(
 		let oc = occupancy.entry(oh).or_insert(0);
 		*oc += 1;
 		max_occ = max_occ.max(*oc);
+
+		board_positions += 1;
+		for (_, t) in game.tiles() {
+			board_tiles += 1;
+			board_rings += u64::from(t.n_rings);
+			board_weight += u64::from(t.weight);
+		}
 
 		if game.status().is_over() {
 			break;
@@ -713,6 +734,19 @@ fn play_game(
 		if actor == Actor::Mcts {
 			iter_sum += f64::from(st.iterations);
 			iter_n += 1;
+		}
+		match action {
+			Action::Add { bench_index, .. } => {
+				if let Some(t) = game.bench(game.current_player()).get(bench_index) {
+					add_rings[t.n_rings.clamp(1, 3) as usize] += 1;
+				}
+			}
+			Action::Move { from, .. } => {
+				if let Some(t) = game.tile_at(from) {
+					move_rings[t.n_rings.clamp(1, 3) as usize] += 1;
+				}
+			}
+			Action::Pass => {}
 		}
 		match game.apply(action) {
 			Ok(outcome) => {
@@ -797,6 +831,12 @@ fn play_game(
 			p2_played,
 			ring_n,
 			color_n,
+			add_rings,
+			move_rings,
+			board_positions,
+			board_tiles,
+			board_rings,
+			board_weight,
 			outcome,
 			turns: game.turn_count(),
 		},
@@ -902,6 +942,49 @@ fn push_observed_rings(lines: &mut Vec<String>, rows: &[DeckRow]) {
 		bits.push(format!("{name}={}", color_n[i]));
 	}
 	lines.push(format!("# observed_opening_colors  {}", bits.join(" ")));
+	push_play_composition(lines, rows);
+}
+
+fn push_play_composition(lines: &mut Vec<String>, rows: &[DeckRow]) {
+	let mut add_rings = [0u32; 4];
+	let mut move_rings = [0u32; 4];
+	let mut board_positions = 0u32;
+	let mut board_tiles = 0u64;
+	let mut board_rings = 0u64;
+	let mut board_weight = 0u64;
+	for r in rows {
+		for i in 0..4 {
+			add_rings[i] += r.add_rings[i];
+			move_rings[i] += r.move_rings[i];
+		}
+		board_positions += r.board_positions;
+		board_tiles += r.board_tiles;
+		board_rings += r.board_rings;
+		board_weight += r.board_weight;
+	}
+	let adds = add_rings[1] + add_rings[2] + add_rings[3];
+	let moves = move_rings[1] + move_rings[2] + move_rings[3];
+	lines.push(format!(
+		"# add_rings  tiles={adds}  n1={} n2={} n3={}",
+		add_rings[1], add_rings[2], add_rings[3]
+	));
+	lines.push(format!(
+		"# move_rings  tiles={moves}  n1={} n2={} n3={}",
+		move_rings[1], move_rings[2], move_rings[3]
+	));
+	if board_positions > 0 && board_tiles > 0 {
+		let pos = f64::from(board_positions);
+		let tiles = board_tiles as f64;
+		lines.push(format!(
+			"# board_sample  positions={} avg_tiles={:.2} avg_rings={:.3} avg_weight={:.3}",
+			board_positions,
+			tiles / pos,
+			board_rings as f64 / tiles,
+			board_weight as f64 / tiles
+		));
+	} else {
+		lines.push("# board_sample  positions=0".into());
+	}
 }
 
 fn push_deck_fairness(lines: &mut Vec<String>, rows: &[DeckRow]) {

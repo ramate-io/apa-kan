@@ -460,6 +460,9 @@ fn refresh_view(
 	}
 	let layout = &layout.0;
 	let board = play.game.board().clone();
+	// Legal landings under the current RuleSet (counted pass-through by
+	// default; graph hops when `--graph-hops` is on). Occupied pass-through
+	// nodes are never highlighted because they are never destinations.
 	let dests: Vec<NodeId> = match play.selection {
 		Selection::Piece(n) => play.game.legal_destinations(n),
 		_ => Vec::new(),
