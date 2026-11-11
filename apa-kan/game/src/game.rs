@@ -652,6 +652,11 @@ pub struct RuleSet {
 	/// Default [`PathConstraint::NoEdgeRevisit`] (`no_repeated_edge` on;
 	/// node revisits via a different arc are allowed).
 	pub path_constraint: PathConstraint,
+	/// If true, occupied tiles are never hopped: a path may **pass through**
+	/// (not land on) an occupant that shares a normal color with the mover
+	/// and whose ring count is `>=` the mover's. Each such node costs one
+	/// of the exact-`d` steps. Default false (graph hops remain the default).
+	pub counted_pass_through: bool,
 }
 
 impl Default for RuleSet {
@@ -682,6 +687,7 @@ impl Default for RuleSet {
 			control_hold_turns: 1,
 			insufficient_tiles_loss: InsufficientTilesLoss::Off,
 			path_constraint: PathConstraint::NoEdgeRevisit,
+			counted_pass_through: false,
 		}
 	}
 }
@@ -1397,6 +1403,22 @@ impl Game {
 							visited_nodes: state.visited_nodes | (1u32 << next),
 							visited_edges: state.visited_edges | (1u64 << edge),
 						});
+					} else if self.rules.counted_pass_through {
+						let Some(occupant) = occupancy[next as usize] else {
+							continue;
+						};
+						if !self.pass_through_ok(occupant, tile) {
+							continue;
+						}
+						if forbid_node && state.visited_nodes & (1u32 << next) != 0 {
+							continue;
+						}
+						stack.push(PathState {
+							node: next,
+							remaining: state.remaining - 1,
+							visited_nodes: state.visited_nodes | (1u32 << next),
+							visited_edges: state.visited_edges | (1u64 << edge),
+						});
 					} else {
 						for (land, hopped_nodes, hopped_edges) in
 							self.hop_from(&occupancy, next, edge, tile, state.visited_edges)
@@ -1423,6 +1445,10 @@ impl Game {
 		}
 		found.sort();
 		found
+	}
+
+	fn pass_through_ok(&self, occupant: Tile, mover: Tile) -> bool {
+		occupant.shares_normal(mover) && occupant.n_rings >= mover.n_rings
 	}
 
 	fn hop_occupant_ok(&self, occupant: Tile, mover: Tile) -> bool {
@@ -2169,6 +2195,132 @@ mod tests {
 		assert!(
 			dests.contains(&land),
 			"hop chain spawn-inner-side must land on {land} off the entry circle, got {dests:?}"
+		);
+	}
+
+	fn pass_through_game() -> Game {
+		let mut rules = RuleSet::default();
+		rules.counted_pass_through = true;
+		Game::empty(rules)
+	}
+
+	#[test]
+	fn counted_pass_through_is_exact_d_not_up_to() {
+		let mut game = pass_through_game();
+		let from = game.board().spawns()[0];
+		let mut step1 = 0u8;
+		let mut step2 = 0u8;
+		let mut found = false;
+		for circle in game.board().circles_through(from) {
+			for ccw in [true, false] {
+				let a = game.board().next_on_circle(circle, from, ccw).unwrap();
+				let b = game.board().next_on_circle(circle, a, ccw).unwrap();
+				if !game.board().neighbors(from).contains(&b) {
+					step1 = a;
+					step2 = b;
+					found = true;
+					break;
+				}
+			}
+			if found {
+				break;
+			}
+		}
+		assert!(found, "spawn should have a 2-step empty walk");
+		let tile = green(&mut game, Player::One, 1, 2);
+		game.place_tile(from, tile);
+		game.set_current(Player::One);
+		let dests2 = game.destinations(from);
+		assert!(dests2.contains(&step2), "d=2 must land on {step2}, got {dests2:?}");
+		game.clear_tile(from);
+		let one = green(&mut game, Player::One, 1, 1);
+		game.place_tile(from, one);
+		let dests1 = game.destinations(from);
+		assert!(dests1.contains(&step1), "d=1 should reach {step1}");
+		assert!(!dests1.contains(&step2), "d=1 must not reach the two-step node {step2}");
+		assert_ne!(dests1, dests2, "exact-d MOVE: d=1 and d=2 destination sets differ");
+	}
+
+	#[test]
+	fn counted_pass_through_costs_one_and_cannot_land_on_occupant() {
+		let mut game = pass_through_game();
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 2);
+		put(&mut game, mid, Player::Two, TileColor::Green, 1, 1);
+		game.set_current(Player::One);
+		let dests = game.destinations(from);
+		assert!(dests.contains(&land), "d=2 pass-through to {land}, got {dests:?}");
+		assert!(!dests.contains(&mid), "cannot land on the occupied pass-through tile");
+		game.clear_tile(from);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
+		let dests1 = game.destinations(from);
+		assert!(
+			!dests1.contains(&land),
+			"d=1 cannot pass through and land beyond; pass-through costs a space"
+		);
+		assert!(!dests1.contains(&mid), "d=1 cannot land on occupied");
+	}
+
+	#[test]
+	fn counted_pass_through_two_tiles_cost_two_unlike_a_hop() {
+		let mut hop = Game::empty(RuleSet::default());
+		let mut pass = pass_through_game();
+		let b = hop.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, a, c, land) = (cycle[0], cycle[1], cycle[2], cycle[3]);
+		for game in [&mut hop, &mut pass] {
+			put(game, from, Player::One, TileColor::Blue, 2, 1);
+			put(game, a, Player::Two, TileColor::Blue, 1, 1);
+			put(game, c, Player::One, TileColor::Blue, 1, 1);
+			game.set_current(Player::One);
+		}
+		assert!(hop.destinations(from).contains(&land), "hop skips the two-tile chain in one step");
+		assert!(
+			!pass.destinations(from).contains(&land),
+			"d=1 pass-through cannot clear two occupied tiles plus a landing"
+		);
+		pass.clear_tile(from);
+		put(&mut pass, from, Player::One, TileColor::Blue, 2, 3);
+		pass.set_current(Player::One);
+		let pass_d3 = pass.destinations(from);
+		assert!(
+			pass_d3.contains(&land),
+			"d=3 pass-through reaches {land} (A + C + land), got {pass_d3:?}"
+		);
+	}
+
+	#[test]
+	fn counted_pass_through_needs_shared_normal_and_enough_rings() {
+		let mut game = pass_through_game();
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		let mover = game.alloc_rings(Player::One, &[TileColor::Green, TileColor::Blue], 2, 2);
+		game.place_tile(from, mover);
+		put(&mut game, mid, Player::Two, TileColor::Orange, 2, 1);
+		game.set_current(Player::One);
+		assert!(
+			!game.destinations(from).contains(&land),
+			"other-color occupant cannot be passed through"
+		);
+		game.clear_tile(mid);
+		let zag = game.alloc_ring_kinds(Player::Two, &[(TileColor::Green, true)], 1, 1);
+		game.place_tile(mid, zag);
+		assert!(!game.destinations(from).contains(&land), "zag green is not a pass-through color");
+		game.clear_tile(mid);
+		put(&mut game, mid, Player::Two, TileColor::Green, 1, 1);
+		assert!(
+			!game.destinations(from).contains(&land),
+			"occupant with fewer rings than the mover cannot be passed through"
+		);
+		game.clear_tile(mid);
+		let enough = game.alloc_rings(Player::Two, &[TileColor::Green, TileColor::Orange], 2, 1);
+		game.place_tile(mid, enough);
+		assert!(
+			game.destinations(from).contains(&land),
+			"shared normal and occupant.n_rings >= mover.n_rings"
 		);
 	}
 

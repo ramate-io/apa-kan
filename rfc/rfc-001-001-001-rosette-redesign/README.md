@@ -93,6 +93,8 @@ One action per turn by default (`actions_per_turn`, default 1):
 
 A hop over a chain is still one step of the exact-`d` MOVE. Empty walks and hops both follow unique neighbor adjacency; the two inner↔center petal arcs remain distinct unused-edge choices.
 
+- **Counted pass-through (optional, `counted_pass_through`, default off):** hops are disabled. Each step is still to an adjacent node and costs 1. An occupied tile may be **passed through** (never landed on) iff it **shares a normal ring color** with the mover and its **ring count is `>=` the mover's**. Zag colors do not enable pass-through. Passing through counts as one of the exact-`d` steps (a two-tile occupied run plus a landing needs `d=3`). `NoEdgeRevisit` still applies. Capture/overwhelm resolves after landing as usual. CLI: `--counted-pass-through on|off`.
+
 ### Edge rendering (realized state)
 
 Two-ended edges (both nodes occupied) draw **only realized effects**:
@@ -233,6 +235,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --center-hold-win on|off --center-hold-n N
         --no-same-piece-twice off|always|when-bench-empty
         --color-restricted-hops on|off --hop-weight-cmp lt|le
+        --counted-pass-through on|off
         --petal-majority-win on|off --petal-majority-n N
         --control-win on|off --control-n K --control-hold-turns T
         --insufficient-tiles-loss off|strict|no-recapture
@@ -241,7 +244,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7, `max_rings` 3, `zag_numer` 1 (1/7), `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` off, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7, `max_rings` 3, `zag_numer` 1 (1/7), `path_constraint` no-edge-revisit.
 
 Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, petal-majority, control, and insufficient-tiles terminals are wins/losses in search.
 

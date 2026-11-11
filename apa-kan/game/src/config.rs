@@ -191,6 +191,9 @@ where
 		"--color-restricted-hops" => {
 			rules.color_restricted_hops = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--counted-pass-through" => {
+			rules.counted_pass_through = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--hop-weight-cmp" => {
 			rules.hop_weight_cmp = HopWeightCmp::parse(&require_value(arg, it.next())?)?;
 		}
@@ -290,6 +293,7 @@ pub fn usage() -> &'static str {
 	                                              Repeat-piece rule (default: when-bench-empty)\n\
 	   --color-restricted-hops <on|off>           Hop only own color (default: on)\n\
 	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
+	   --counted-pass-through <on|off>            Pass through occupied tiles at 1/step (default: off)\n\
 	   --petal-majority-win <on|off>              Inner-ring majority win (default: off)\n\
 	   --petal-majority-n <1..64>                 Turns to hold majority (default: 1)\n\
 	   --control-win <on|off>                     Center+inner-ring control win (default: on)\n\
@@ -422,6 +426,15 @@ mod tests {
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
+		assert!(!cfg.rules.counted_pass_through);
+	}
+
+	#[test]
+	fn parses_counted_pass_through() {
+		let on = GameConfig::parse(["--counted-pass-through", "on"]).unwrap();
+		assert!(on.rules.counted_pass_through);
+		let off = GameConfig::parse(["--counted-pass-through", "off"]).unwrap();
+		assert!(!off.rules.counted_pass_through);
 	}
 
 	#[test]

@@ -56,7 +56,7 @@ fn usage() -> &'static str {
 	   --list-scenarios     Print builtin deck scenarios\n\
 	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
-	   --hop-weight-cmp, --petal-majority-win, --petal-majority-n,\n\
+	   --hop-weight-cmp, --counted-pass-through, --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-bench, --max-rings,\n\
 	   --zag-chance, --zags, --path-constraint, --no-repeated-edge, --turn-limit\n\
@@ -228,13 +228,14 @@ fn run(cfg: BenchConfig) {
 		rules.turn_limit
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} max_rings={} zag_numer={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} max_rings={} zag_numer={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
 		rules.no_same_piece_twice.name(),
 		on_off(rules.color_restricted_hops),
 		rules.hop_weight_cmp.name(),
+		on_off(rules.counted_pass_through),
 		on_off(rules.petal_majority_win),
 		rules.petal_majority_n,
 		on_off(rules.control_win),
