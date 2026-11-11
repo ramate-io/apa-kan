@@ -34,16 +34,14 @@ pub const ARC_SAME_COLOR_WIDTH_SCALE: f32 = 1.45;
 pub const STRIPE_STRAND_WIDTH_SCALE: f32 = 0.70;
 pub const STRIPE_OFFSET_UNITS: f32 = 0.022;
 pub const STRIPE_OFFSET_CENTER_UNITS: f32 = 0.014;
-/// Compact clove/half-hitch at a conflict-arc midpoint. Two overlapping
-/// wraps, smaller than the old trefoil knot, still readable at board scale.
-pub const HITCH_RADIUS_UNITS: f32 = 0.052;
-pub const HITCH_RADIUS_CENTER_UNITS: f32 = 0.040;
-pub const HITCH_RADIUS_MIN_PX: f32 = 8.5;
-pub const HITCH_RADIUS_CENTER_MIN_PX: f32 = 6.5;
-pub const HITCH_STRAND_WIDTH_SCALE: f32 = 1.10;
-pub const HITCH_OUTLINE_WIDTH_SCALE: f32 = 1.80;
-pub const HITCH_SAMPLES: usize = 48;
-pub const HITCH_OUTLINE_RGB: [f32; 3] = [0.16, 0.14, 0.12];
+/// Compact diamond at a conflict-arc midpoint. Each tile wraps one pair of
+/// edges; unmatched colors run as parallel stripes along that wrap.
+pub const HITCH_RADIUS_UNITS: f32 = 0.036;
+pub const HITCH_RADIUS_CENTER_UNITS: f32 = 0.028;
+pub const HITCH_RADIUS_MIN_PX: f32 = 6.0;
+pub const HITCH_RADIUS_CENTER_MIN_PX: f32 = 4.75;
+/// Samples along each diamond edge so parallel offsets stay even.
+pub const DIAMOND_EDGE_SAMPLES: usize = 4;
 /// Spellcheck-underline zag: low amplitude, long wavelength, thin stroke.
 pub const ZAG_AMP_UNITS: f32 = 0.008;
 pub const ZAG_AMP_CENTER_UNITS: f32 = 0.006;
@@ -54,7 +52,7 @@ pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.33;
 pub const ZAG_LANE_SPACING_SCALE: f64 = 1.55;
 /// One overlay line per zag stroke on a single tile (weight.max(n_rings) ≤ 3).
 pub const MAX_TILE_ZAGS: usize = 3;
-/// Packed unmatched **normal** colors on one loop of a conflict hitch.
+/// Packed unmatched **normal** colors on one half of a conflict diamond.
 pub const MAX_HITCH_COLORS: usize = 3;
 pub const ARC_SAMPLES: usize = 96;
 /// Tile-ring layout in 22px-tile units; scaled by `radius / PREV_TILE_RADIUS_PX`.
@@ -117,10 +115,10 @@ pub enum ArcBody {
 		color: TileColor,
 		thick: bool,
 	},
-	/// Midpoint hitch joining unmatched **normal** colors. Two-ended true
+	/// Midpoint diamond joining unmatched **normal** colors. Two-ended true
 	/// conflict only (both ends have a normal ring, they share none, and no
-	/// zag mismatch is realized on this edge). Each loop is drawn in that
-	/// side's unmatched colors.
+	/// zag mismatch is realized on this edge). Each side wraps two edges of
+	/// a small diamond in that tile's unmatched colors.
 	Hitch {
 		from: [Option<TileColor>; MAX_HITCH_COLORS],
 		to: [Option<TileColor>; MAX_HITCH_COLORS],
@@ -236,7 +234,7 @@ pub fn hitting_zag_strokes(tile: Tile, other: Tile) -> [Option<TileColor>; MAX_T
 }
 
 /// Unique **normal** ring colors on `tile`, packed densely. Zags are omitted:
-/// they already draw as side squiggles, so conflict-hitch stripes only show
+/// they already draw as side squiggles, so conflict-diamond stripes only show
 /// the unmatched highway options.
 pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_HITCH_COLORS] {
 	let mut out = [None; MAX_HITCH_COLORS];
@@ -258,7 +256,7 @@ pub fn packed_color_count(colors: [Option<TileColor>; MAX_HITCH_COLORS]) -> usiz
 	colors.iter().filter(|c| c.is_some()).count()
 }
 
-/// Lane offsets for 1 / 2 / 3 parallel highway stripes on a hitch half.
+/// Lane offsets for 1 / 2 / 3 parallel highway stripes on a diamond half.
 pub fn highway_offsets(n: usize, stripe_off: f64) -> [f64; MAX_HITCH_COLORS] {
 	match n {
 		0 | 1 => [0.0, 0.0, 0.0],
@@ -575,44 +573,78 @@ fn unit2(v: [f64; 2], fallback: [f64; 2]) -> [f64; 2] {
 	}
 }
 
-/// One elliptical wrap of a clove/half hitch, offset along the arc tangent.
-/// `along` is −1 toward the `from` end and +1 toward `to`. `scale` shrinks
-/// concentric wraps when a side carries more than one unmatched color.
-pub fn hitch_loop_polyline(
+/// Vertices of the compact conflict diamond at an arc midpoint.
+/// Diagonals sit on the arc tangent (`along_from` / `along_to`) and its normal
+/// (`left` / `right`). Tile A wraps the left pair of edges; tile B the right.
+#[derive(Clone, Copy, Debug)]
+pub struct ConflictDiamond {
+	pub along_from: [f64; 2],
+	pub along_to: [f64; 2],
+	pub left: [f64; 2],
+	pub right: [f64; 2],
+}
+
+pub fn conflict_diamond(
 	mid: [f64; 2],
 	tangent: [f64; 2],
 	normal: [f64; 2],
 	radius: f64,
-	along: f64,
-	scale: f64,
-) -> Vec<[f64; 2]> {
+) -> ConflictDiamond {
 	let tan = unit2(tangent, [1.0, 0.0]);
 	let nor = unit2(normal, [-tan[1], tan[0]]);
-	let r = radius * scale.max(0.35);
-	// Offset across the arc (normal), not along it, so the two wraps sit
-	// beside the join like a hitch around the rope instead of hiding in
-	// the highway halves.
-	let c = [mid[0] + nor[0] * radius * 0.42 * along, mid[1] + nor[1] * radius * 0.42 * along];
-	let rx = r * 0.72;
-	let ry = r * 0.58;
-	let n = HITCH_SAMPLES.max(16);
-	let mut pts = Vec::with_capacity(n + 1);
-	for i in 0..=n {
-		let t = 2.0 * PI * i as f64 / n as f64;
-		let u = rx * t.cos();
-		let v = ry * t.sin();
-		pts.push([c[0] + tan[0] * u + nor[0] * v, c[1] + tan[1] * u + nor[1] * v]);
+	let r = radius.max(0.0);
+	ConflictDiamond {
+		along_from: [mid[0] - tan[0] * r, mid[1] - tan[1] * r],
+		along_to: [mid[0] + tan[0] * r, mid[1] + tan[1] * r],
+		left: [mid[0] + nor[0] * r, mid[1] + nor[1] * r],
+		right: [mid[0] - nor[0] * r, mid[1] - nor[1] * r],
 	}
-	pts
 }
 
-pub fn hitch_loop_scales(n_colors: usize) -> &'static [f64] {
-	match n_colors {
-		0 => &[],
-		1 => &[1.0],
-		2 => &[1.0, 0.66],
-		_ => &[1.0, 0.78, 0.56],
+fn push_diamond_edge(out: &mut Vec<[f64; 2]>, a: [f64; 2], b: [f64; 2]) {
+	let n = DIAMOND_EDGE_SAMPLES.max(1);
+	for i in 1..=n {
+		let t = i as f64 / n as f64;
+		out.push(polyline_lerp(a, b, t));
 	}
+}
+
+/// From-tile highway continued around the left two edges of the diamond
+/// (`along_from` → `left` → `along_to`). `from_pts` is the shortened arc half
+/// that already ends at the from-side vertex.
+pub fn diamond_from_path(from_pts: &[[f64; 2]], diamond: &ConflictDiamond) -> Vec<[f64; 2]> {
+	let mut out = from_pts.to_vec();
+	match out.last_mut() {
+		Some(last) => *last = diamond.along_from,
+		None => out.push(diamond.along_from),
+	}
+	push_diamond_edge(&mut out, diamond.along_from, diamond.left);
+	push_diamond_edge(&mut out, diamond.left, diamond.along_to);
+	out
+}
+
+/// To-tile highway continued around the right two edges of the diamond
+/// (`along_from` → `right` → `along_to`, then the shortened to-half).
+pub fn diamond_to_path(to_pts: &[[f64; 2]], diamond: &ConflictDiamond) -> Vec<[f64; 2]> {
+	let mut out = Vec::with_capacity(to_pts.len() + 2 * DIAMOND_EDGE_SAMPLES + 1);
+	out.push(diamond.along_from);
+	push_diamond_edge(&mut out, diamond.along_from, diamond.right);
+	push_diamond_edge(&mut out, diamond.right, diamond.along_to);
+	if to_pts.is_empty() {
+		return out;
+	}
+	let mut rest = to_pts.to_vec();
+	if let Some(first) = rest.first_mut() {
+		*first = diamond.along_to;
+	}
+	if let Some(&last) = out.last() {
+		if polyline_dist(last, rest[0]) < 1e-9 {
+			out.extend(rest.into_iter().skip(1));
+			return out;
+		}
+	}
+	out.extend(rest);
+	out
 }
 
 fn polyline_dist(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -625,7 +657,7 @@ fn polyline_lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
 	[a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 }
 
-/// Drop the last `clearance` of path length so stripes stop at the hitch.
+/// Drop the last `clearance` of path length so stripes meet the diamond vertex.
 pub fn shorten_polyline_end(pts: &[[f64; 2]], clearance: f64) -> Vec<[f64; 2]> {
 	if pts.len() < 2 || clearance <= 0.0 {
 		return pts.to_vec();
@@ -656,7 +688,7 @@ pub fn shorten_polyline_start(pts: &[[f64; 2]], clearance: f64) -> Vec<[f64; 2]>
 }
 
 pub fn hitch_clearance(hitch_r: f64) -> f64 {
-	hitch_r * 0.95
+	hitch_r
 }
 
 /// Tight zigzag that traces `centerline`, optionally shifted alongside it.
@@ -730,8 +762,8 @@ pub fn zag_lane_spacing(stripe_off: f64) -> f64 {
 
 /// Distance from the arc path to the first zag lane. Lane 0 is skipped so a
 /// Hidden body keeps a visible middle gap (3 | gap | 3), and a match/highway/
-/// hitch keeps the connection line in the center. `hitch_r` pushes zags outside
-/// a conflict hitch so they don't run through the glyph.
+/// diamond keeps the connection line in the center. `hitch_r` pushes zags
+/// outside a conflict diamond so they don't run through the glyph.
 pub fn zag_lane_inner(body: ArcBody, stripe_off: f64, hitch_r: f64) -> f64 {
 	let spacing = zag_lane_spacing(stripe_off);
 	match body {
@@ -865,7 +897,7 @@ pub fn format_log_line(log: &str, last_removals: &str) -> String {
 
 /// Constructed mid-game fixture used by screenshots. Tiles are placed directly
 /// (no `apply`), so overwhelm does not clear the position. Covers gray, one-
-/// color, same-color, two-ended multi-shared highways, conflict hitches,
+/// color, same-color, two-ended multi-shared highways, conflict diamonds,
 /// one-ended highway stripes (including a zag strand), single and double zag
 /// tiles, a two-ended zag-only mismatch, a zag-on-zag edge, a grey no-effect
 /// edge (non-hitting zag), and one-ended potential zags.
@@ -917,7 +949,7 @@ pub fn demo_midgame() -> Game {
 		game.place_tile(b, u);
 	}
 	if let Some((a, b)) = empty_neighbor_pair(&game) {
-		// Dedicated multi-color conflict hitch: A blue+green vs B orange+teal.
+		// Dedicated multi-color conflict diamond: A blue+green vs B orange+teal.
 		let t = game.alloc_rings(Player::One, &[TileColor::Blue, TileColor::Green], 2, 1);
 		let u = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Teal], 2, 1);
 		game.place_tile(a, t);
@@ -942,7 +974,7 @@ pub fn demo_midgame() -> Game {
 
 	if let Some(&n) = inner.first() {
 		if game.tile_at(n).is_none() {
-			// Green vs center orange is a hitch; the pink zag does not hit.
+			// Green vs center orange is a diamond; the pink zag does not hit.
 			let tile = game.alloc_ring_kinds(
 				Player::Two,
 				&[(TileColor::Green, false), (TileColor::LavenderPink, true)],
@@ -1600,7 +1632,7 @@ mod tests {
 				from: [Some(TileColor::Blue), Some(TileColor::Green), None],
 				to: [Some(TileColor::Orange), Some(TileColor::Teal), None],
 			},
-			"hitch loops list unmatched normals only"
+			"diamond halves list unmatched normals only"
 		);
 		assert_eq!(paint.zag_count(), 0);
 		let mixed_hitch = Tile::with_ring_kinds(
@@ -1893,13 +1925,41 @@ mod tests {
 	}
 
 	#[test]
-	fn hitch_glyph_is_a_compact_closed_loop() {
-		let pts = hitch_loop_polyline([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], 1.0, 1.0, 1.0);
-		assert!(pts.len() > 16);
-		assert!((pts[0][0] - pts[pts.len() - 1][0]).abs() < 1e-9);
-		assert!((pts[0][1] - pts[pts.len() - 1][1]).abs() < 1e-9);
-		let max_r = pts.iter().map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt()).fold(0.0, f64::max);
-		assert!(max_r < 1.30, "hitch escaped radius: {max_r}");
+	fn hitch_glyph_is_a_compact_diamond() {
+		let d = conflict_diamond([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], 1.0);
+		assert!((d.along_from[0] + 1.0).abs() < 1e-9);
+		assert!((d.along_to[0] - 1.0).abs() < 1e-9);
+		assert!((d.left[1] - 1.0).abs() < 1e-9);
+		assert!((d.right[1] + 1.0).abs() < 1e-9);
+		let from = diamond_from_path(&[d.along_from], &d);
+		let to = diamond_to_path(&[d.along_to], &d);
+		let near =
+			|p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).abs() < 1e-9 && (p[1] - q[1]).abs() < 1e-9;
+		assert!(from.iter().copied().any(|p| near(p, d.left)), "from wrap misses left vertex");
+		assert!(to.iter().copied().any(|p| near(p, d.right)), "to wrap misses right vertex");
+		assert!(near(*from.last().expect("from wrap"), d.along_to), "halves must meet at along_to");
+		assert!(near(to[0], d.along_from), "halves must meet at along_from");
+		assert!(!from.iter().copied().any(|p| near(p, d.right)), "from wrap must stay on one side");
+		assert!(
+			!to.iter().copied().any(|p| near(p, d.left)),
+			"to wrap must stay on the other side"
+		);
+		let max_r = [d.along_from, d.along_to, d.left, d.right]
+			.iter()
+			.map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt())
+			.fold(0.0, f64::max);
+		assert!(max_r < 1.01, "diamond escaped radius: {max_r}");
+		let offsets = highway_offsets(2, 0.12);
+		let a = offset_polyline(&from, offsets[0]);
+		let b = offset_polyline(&from, offsets[1]);
+		assert_eq!(a.len(), b.len());
+		assert_eq!(a.len(), from.len());
+		let sep = a
+			.iter()
+			.zip(&b)
+			.map(|(p, q)| polyline_dist(*p, *q))
+			.fold(f64::INFINITY, f64::min);
+		assert!(sep > 0.2, "multi-color diamond stripes should stay parallel, sep={sep}");
 		let frame = midpoint_frame(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]);
 		assert_eq!(frame.index, 2);
 		assert!((frame.mid[0] - 2.0).abs() < 1e-9);
@@ -1908,14 +1968,10 @@ mod tests {
 		let layout = ViewLayout::from_window(1280.0, 800.0);
 		assert!(
 			layout.hitch_r >= HITCH_RADIUS_MIN_PX,
-			"hitch must stay readable at board scale (r={})",
+			"diamond must stay readable at board scale (r={})",
 			layout.hitch_r
 		);
-		assert!(
-			layout.hitch_r < 11.0,
-			"hitch must stay smaller than the old knot (r={})",
-			layout.hitch_r
-		);
+		assert!(layout.hitch_r < 8.0, "diamond must stay compact (r={})", layout.hitch_r);
 	}
 
 	#[test]

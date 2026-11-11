@@ -45,13 +45,6 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	let board = game.board();
 	let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
 	let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
-	let mut hitches: Vec<(
-		visual::HitchFrame,
-		f64,
-		f64,
-		[Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
-		[Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
-	)> = Vec::new();
 	for arc in board.arcs() {
 		let samples = arc.sample(visual::ARC_SAMPLES);
 		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
@@ -83,18 +76,25 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				let frame = visual::midpoint_frame(&pts);
 				let clearance = visual::hitch_clearance(hitch_r);
 				if frame.index < pts.len() {
+					let diamond =
+						visual::conflict_diamond(frame.mid, frame.tangent, frame.normal, hitch_r);
 					let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
 					let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
-					push_hitch_half(&from_pts, from, stripe_off, width, &mut back);
-					push_hitch_half(&to_pts, to, stripe_off, width, &mut back);
+					push_hitch_half(
+						&visual::diamond_from_path(&from_pts, &diamond),
+						from,
+						stripe_off,
+						width,
+						&mut back,
+					);
+					push_hitch_half(
+						&visual::diamond_to_path(&to_pts, &diamond),
+						to,
+						stripe_off,
+						width,
+						&mut back,
+					);
 				}
-				hitches.push((
-					frame,
-					hitch_r,
-					width * f64::from(visual::HITCH_STRAND_WIDTH_SCALE),
-					from,
-					to,
-				));
 			}
 			ArcBody::Stripes { a, b, zag_a, zag_b } => {
 				let strand_w = width * f64::from(visual::STRIPE_STRAND_WIDTH_SCALE);
@@ -165,41 +165,6 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	}
 	for (pts, color, width) in back.into_iter().chain(front) {
 		stroke_polyline(img, &pts, color, width);
-	}
-	for (frame, hitch_r, strand_w, from, to) in hitches {
-		fill_circle(img, tup(frame.mid), hitch_r * 0.38, rgb_of(visual::BG_RGB));
-		stroke_hitch_side(img, &frame, hitch_r, strand_w, from, -1.0);
-		stroke_hitch_side(img, &frame, hitch_r, strand_w, to, 1.0);
-	}
-}
-
-fn stroke_hitch_side(
-	img: &mut RgbaImage,
-	frame: &visual::HitchFrame,
-	hitch_r: f64,
-	strand_w: f64,
-	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
-	along: f64,
-) {
-	let n = visual::packed_color_count(colors);
-	let outline_w = strand_w * f64::from(visual::HITCH_OUTLINE_WIDTH_SCALE);
-	let mut k = 0usize;
-	for color in colors {
-		let Some(c) = color else {
-			continue;
-		};
-		let scale = visual::hitch_loop_scales(n)[k];
-		let glyph = visual::hitch_loop_polyline(
-			frame.mid,
-			frame.tangent,
-			frame.normal,
-			hitch_r,
-			along,
-			scale,
-		);
-		stroke_polyline(img, &glyph, rgb_of(visual::HITCH_OUTLINE_RGB), outline_w);
-		stroke_polyline(img, &glyph, rgb_of(visual::tile_rgb(c)), strand_w);
-		k += 1;
 	}
 }
 
@@ -585,7 +550,15 @@ mod tests {
 		write_png_sized(
 			&board,
 			dir.join("zag_board_1280x800.png"),
-			"hitch + realized-state edges",
+			"diamonds + realised-state edges",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_png_sized(
+			&board,
+			dir.join("diamond_board_1280x800.png"),
+			"conflict diamonds, full board",
 			1280,
 			800,
 		)
@@ -597,14 +570,14 @@ mod tests {
 				&[(TileColor::Orange, false), (TileColor::Teal, false)],
 				2,
 			),
-			dir.join("hitch_blue_green_vs_orange_teal.png"),
-			"A blue+green vs B orange+teal hitch",
+			dir.join("diamond_blue_green_vs_orange_teal.png"),
+			"A blue+green vs B orange+teal diamond",
 			36.0,
 		);
 		write_cropped(
 			&demo_pair(&[(TileColor::Blue, false)], 2, &[(TileColor::Orange, false)], 2),
-			dir.join("hitch_blue_vs_orange.png"),
-			"blue vs orange hitch",
+			dir.join("diamond_blue_vs_orange.png"),
+			"blue vs orange diamond",
 			36.0,
 		);
 		write_cropped(
@@ -614,8 +587,8 @@ mod tests {
 				&[(TileColor::Green, false)],
 				2,
 			),
-			dir.join("hitch_blue_vs_green_nonhitting_zag.png"),
-			"hitch; orange zag omitted (does not hit)",
+			dir.join("diamond_next_to_zags.png"),
+			"diamond next to a non-hitting orange zag",
 			48.0,
 		);
 		write_cropped(
