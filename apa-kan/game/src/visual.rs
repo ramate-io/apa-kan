@@ -195,18 +195,9 @@ fn pack_zags(colors: impl IntoIterator<Item = TileColor>) -> [Option<TileColor>;
 	out
 }
 
-/// Zag strokes on `src` that actually fire on `dst` (dst holds that color).
-pub fn imposed_zag_strokes(src: Tile, dst: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
-	pack_zags((0..src.ring_strokes()).filter_map(|k| {
-		if src.stroke_is_zag(k) && dst.has_color(src.stroke_color(k)) {
-			Some(src.stroke_color(k))
-		} else {
-			None
-		}
-	}))
-}
-
 /// Zag strokes on a single tile, one color per drawn zag ring.
+/// Drawn even when the neighbor does not hold that color (scoring treats
+/// those zags as empty; the squiggle is still shown on this tile's side).
 pub fn tile_zag_strokes(tile: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
 	pack_zags(
 		(0..tile.ring_strokes())
@@ -220,11 +211,11 @@ fn two_ended_body(a: Tile, b: Tile) -> ArcBody {
 	match (shared[0], shared[1]) {
 		(Some(color), None) => ArcBody::Solid { color, thick: true },
 		(Some(c1), Some(c2)) => ArcBody::Stripes { a: c1, b: c2, zag_a: false, zag_b: false },
-		(None, _) if a.zag_hits_on(b) > 0 || b.zag_hits_on(a) > 0 => ArcBody::Hidden,
-		(None, _) if a.present_toward(b) && b.present_toward(a) => {
+		(None, _) if a.normal_mask() != 0 && b.normal_mask() != 0 => {
 			ArcBody::Braid { a: a.primary(), b: b.primary() }
 		}
-		// Non-matching zag is empty: no match line and not a conflict braid.
+		// No shared normal and not a true normal-vs-normal conflict: empty
+		// middle (zag-only contact, or a non-matching zag). Zags still draw.
 		(None, _) => ArcBody::Hidden,
 	}
 }
@@ -236,8 +227,8 @@ pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
 		(None, Some(t)) => one_ended(t, false),
 		(Some(a), Some(b)) => ArcPaint {
 			body: two_ended_body(a, b),
-			zags_from: imposed_zag_strokes(a, b),
-			zags_to: imposed_zag_strokes(b, a),
+			zags_from: tile_zag_strokes(a),
+			zags_to: tile_zag_strokes(b),
 		},
 	}
 }
@@ -728,8 +719,8 @@ pub fn format_log_line(log: &str, last_removals: &str) -> String {
 /// color, same-color, two-ended multi-shared highways, conflict braids,
 /// one-ended highway stripes (including a zag strand), single and double zag
 /// tiles, a match with a zag on one side, a match with zags on both sides,
-/// a zag-on-zag edge with an empty middle lane, and a non-matching zag
-/// that stays empty instead of a conflict braid.
+/// a zag-on-zag edge with an empty middle lane, a non-matching zag that
+/// still draws on its side (no braid), and a match with a non-hitting zag.
 pub fn demo_midgame() -> Game {
 	let mut game = Game::empty(RuleSet::default());
 	let board = game.board().clone();
@@ -890,18 +881,33 @@ pub fn demo_midgame() -> Game {
 		game.place_tile(n, tile);
 	}
 
-	'place_non_matching: {
+	{
+		let is_blue_only =
+			|t: Tile| t.has_normal(TileColor::Blue) && t.n_rings == 1 && t.zag.iter().all(|z| !*z);
+		let mut extra = 0u8;
 		for id in 0..board.node_count() as NodeId {
 			let Some(t) = game.tile_at(id) else {
 				continue;
 			};
-			if !(t.has_normal(TileColor::Blue) && t.n_rings == 1 && t.zag.iter().all(|z| !*z)) {
+			if !is_blue_only(t) {
 				continue;
 			}
-			if let Some(&nb) = board.neighbors(id).iter().find(|&&k| game.tile_at(k).is_none()) {
+			let Some(&nb) = board.neighbors(id).iter().find(|&&k| game.tile_at(k).is_none()) else {
+				continue;
+			};
+			if extra == 0 {
 				let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
 				game.place_tile(nb, zag);
-				break 'place_non_matching;
+				extra = 1;
+			} else {
+				let mixed = game.alloc_ring_kinds(
+					Player::One,
+					&[(TileColor::Blue, false), (TileColor::Orange, true)],
+					2,
+					1,
+				);
+				game.place_tile(nb, mixed);
+				break;
 			}
 		}
 	}
@@ -1260,8 +1266,9 @@ mod tests {
 		assert_eq!(paint.zag_to_count(), 0);
 		let blue_only = Tile::mono(12, Player::Two, TileColor::Blue, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(blue_only));
-		assert_eq!(paint.body, ArcBody::Hidden, "non-matching zag is empty, not a conflict braid");
-		assert_eq!(paint.zag_count(), 0);
+		assert_eq!(paint.body, ArcBody::Hidden, "non-matching zag is not a conflict braid");
+		assert_eq!(paint.zags_from[0], Some(TileColor::Orange), "zag still draws on its side");
+		assert_eq!(paint.zag_to_count(), 0);
 		let mixed_vs_blue = Tile::with_ring_kinds(
 			13,
 			Player::One,
@@ -1271,7 +1278,15 @@ mod tests {
 		);
 		let paint = arc_paint(Some(mixed_vs_blue), Some(blue_only));
 		assert_eq!(paint.body, ArcBody::Solid { color: TileColor::Blue, thick: true });
-		assert_eq!(paint.zag_count(), 0, "orange zag does not fire on blue-only");
+		assert_eq!(paint.zags_from[0], Some(TileColor::Orange), "orange zag sits beside the match");
+		assert_eq!(paint.zag_to_count(), 0);
+		let green = Tile::mono(14, Player::Two, TileColor::Green, 1, 1);
+		let paint = arc_paint(Some(mixed_vs_blue), Some(green));
+		assert!(
+			matches!(paint.body, ArcBody::Braid { .. }),
+			"blue vs green is still a real conflict"
+		);
+		assert_eq!(paint.zags_from[0], Some(TileColor::Orange));
 	}
 
 	#[test]
@@ -1333,9 +1348,10 @@ mod tests {
 					zag_on_zag += 1;
 				}
 				if paint.body == ArcBody::Hidden
-					&& paint.zag_count() == 0
+					&& paint.zag_count() > 0
 					&& !a.shares_normal(b)
-					&& (a.zag.iter().any(|z| *z) || b.zag.iter().any(|z| *z))
+					&& a.zag_hits_on(b) == 0
+					&& b.zag_hits_on(a) == 0
 				{
 					non_matching_zag += 1;
 				}
@@ -1360,7 +1376,8 @@ mod tests {
 					assert!(from.is_some() && to.is_some(), "braid is two-ended only");
 					if let (Some(a), Some(b)) = (from, to) {
 						assert!(
-							shared_normal_colors(a, b)[0].is_none(),
+							shared_normal_colors(a, b)[0].is_none()
+								&& a.normal_mask() != 0 && b.normal_mask() != 0,
 							"braid is for true color conflicts only"
 						);
 					}
