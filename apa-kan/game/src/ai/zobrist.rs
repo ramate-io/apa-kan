@@ -1,5 +1,6 @@
-//! Zobrist keys for visible positions: occupancy, kind, owner, benches, side,
-//! last-moved / moved-this-turn tile ids, and hold counters (center, petal, control).
+//! Zobrist keys for visible positions: occupancy, kind, owner, benches, capture
+//! budget, side, last-moved / moved-this-turn tile ids, and hold counters
+//! (center, petal, control).
 
 use std::sync::OnceLock;
 
@@ -23,6 +24,7 @@ pub struct Zobrist {
 	control_hold: [[u64; 16]; 2],
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
+	budget: [[u64; 64]; 2],
 }
 
 impl Zobrist {
@@ -42,6 +44,7 @@ impl Zobrist {
 			control_hold: [[0; 16]; 2],
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
+			budget: [[0; 64]; 2],
 		};
 		for node in 0..MAX_NODES {
 			for owner in 0..2 {
@@ -68,6 +71,9 @@ impl Zobrist {
 				z.center_hold[player][n] = next();
 				z.petal_majority[player][n] = next();
 				z.control_hold[player][n] = next();
+			}
+			for n in 0..64 {
+				z.budget[player][n] = next();
 			}
 		}
 		z
@@ -127,6 +133,7 @@ pub fn hash(game: &Game) -> u64 {
 		h ^= z.center_hold[player.index()][game.center_hold(player).min(15) as usize];
 		h ^= z.petal_majority[player.index()][game.petal_majority(player).min(15) as usize];
 		h ^= z.control_hold[player.index()][game.control_hold(player).min(15) as usize];
+		h ^= z.budget[player.index()][game.budget(player).min(63)];
 	}
 	match game.moved_this_turn() {
 		None => h ^= z.moved_this_turn_none,

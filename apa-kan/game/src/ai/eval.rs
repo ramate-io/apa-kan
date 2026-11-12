@@ -273,12 +273,14 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 		bench_score -= 28 + 10 * i32::from(tile.weight);
 	}
 	let bag = 3 * (game.bag_len(me) as i32 - game.bag_len(opp) as i32);
+	let budget = 90 * (game.budget(me) as i32 - game.budget(opp) as i32);
 	let presence = 32 * (my_board - opp_board);
 	let mobility = 4 * (mobility_of(game, me) - mobility_of(game, opp));
 
 	let mut score = material
 		+ bench_score
-		+ bag + presence
+		+ bag + budget
+		+ presence
 		+ margin
 		+ contact
 		+ geometry
@@ -430,7 +432,7 @@ fn mobility_of(game: &Game, player: Player) -> i32 {
 			}
 		}
 	}
-	if !game.bench(player).is_empty() {
+	if game.budget(player) > 0 && !game.bench(player).is_empty() {
 		m += game.board().spawns().iter().filter(|&&s| game.tile_at(s).is_none()).count() as i32;
 	}
 	m

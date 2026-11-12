@@ -379,6 +379,57 @@ impl Tile {
 		let d = (self.dots.clamp(1, 3) - 1) as usize;
 		color_trits_state(self.color_trits()) * 9 + w * 3 + d
 	}
+
+	/// How many of this tile's live rings are zags.
+	pub fn zag_ring_count(self) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS)).filter(|&i| self.zag[i as usize]).count() as u8
+	}
+
+	/// How many of this tile's live rings are normal (non-zag).
+	pub fn normal_ring_count(self) -> u8 {
+		self.n_rings.saturating_sub(self.zag_ring_count())
+	}
+
+	/// Piece value under `weights`: `dots * w.dots + normal_rings * w.normal_ring
+	/// + zag_rings * w.zag_ring`. Used by the low-value end condition.
+	pub fn piece_value(self, weights: PieceValueWeights) -> i32 {
+		weights.dots * i32::from(self.dots)
+			+ weights.normal_ring * i32::from(self.normal_ring_count())
+			+ weights.zag_ring * i32::from(self.zag_ring_count())
+	}
+}
+
+/// Tunable weights for [`Tile::piece_value`]. Low-value resolution uses
+/// [`Self::PRIMARY`] first (every ring counts 1), then [`Self::TIEBREAK`]
+/// (zag rings count 2). Add fields here as new ring types appear.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PieceValueWeights {
+	pub dots: i32,
+	pub normal_ring: i32,
+	pub zag_ring: i32,
+}
+
+impl PieceValueWeights {
+	/// Step 1: value = dots + rings (every ring 1). Lower wins.
+	pub const PRIMARY: Self = Self { dots: 1, normal_ring: 1, zag_ring: 1 };
+	/// Step 2 on a primary tie: zag rings are worth 2. Lower wins.
+	pub const TIEBREAK: Self = Self { dots: 1, normal_ring: 1, zag_ring: 2 };
+}
+
+/// Both players must have fewer than this many board tiles for [`EndReason::LowValue`].
+pub const LOW_VALUE_BOARD_LT: u8 = 5;
+
+/// One token in the capture-budget stack. The opening deal is [`BudgetToken::Blank`]
+/// copies; captures push [`BudgetToken::Captured`]. ADD pops from the front
+/// (blanks spend first, so captured tiles stay visible as extra budget).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BudgetToken {
+	Blank,
+	Captured(Tile),
+}
+
+fn blank_budget(n: u8) -> Vec<BudgetToken> {
+	vec![BudgetToken::Blank; n as usize]
 }
 
 pub fn color_trits_state(trits: [u8; 6]) -> usize {
@@ -424,6 +475,10 @@ pub enum EndReason {
 	Control,
 	/// Could no longer occupy 5 control-set nodes (`insufficient_tiles_loss`).
 	InsufficientTiles,
+	/// Both players have zero capture budget and fewer than
+	/// [`LOW_VALUE_BOARD_LT`] board tiles. The player holding the lowest-value
+	/// piece wins; a full tie on the two-step value is a draw.
+	LowValue,
 }
 
 /// Restriction on moving the same tile on two consecutive own turns.
@@ -674,9 +729,11 @@ impl GameStatus {
 /// in `rfc/rfc-001-001-001-rosette-redesign`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
-	/// Starting tiles dealt from each bag onto the bench. Default 7.
-	/// The bag is [`BAG_SIZE`] independently sampled tiles; a deal of 7
-	/// leaves 20 capture draws. Empty bag skips the draw.
+	/// Starting tiles dealt from each bag onto the bench, and the opening
+	/// capture budget (that many blank tokens). Default 7. The bag is
+	/// [`BAG_SIZE`] independently sampled tiles; a deal of 7 leaves 20 in
+	/// the bag. ADD spends 1 budget; each capture (own or opponent) earns 1.
+	/// Empty bag skips the capture-draw.
 	pub starting_bench_size: u8,
 	/// Both players receive the same shuffled [`BAG_SIZE`]-tile bag. Default true.
 	pub identical_bags: bool,
@@ -856,6 +913,8 @@ pub struct Game {
 	petal_majority: [u8; 2],
 	/// Consecutive own turns occupying at least `control_n` control-set nodes.
 	control_hold: [u8; 2],
+	/// Capture-budget token stack. Length is remaining ADD permission.
+	budget_tokens: [Vec<BudgetToken>; 2],
 }
 
 impl Game {
@@ -922,6 +981,10 @@ impl Game {
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
 			control_hold: [0, 0],
+			budget_tokens: [
+				blank_budget(rules.starting_bench_size),
+				blank_budget(rules.starting_bench_size),
+			],
 		};
 		if !dealt {
 			game.deal_opening();
@@ -978,6 +1041,10 @@ impl Game {
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
 			control_hold: [0, 0],
+			budget_tokens: [
+				blank_budget(rules.starting_bench_size),
+				blank_budget(rules.starting_bench_size),
+			],
 		};
 		game.deal_opening();
 		game
@@ -1008,6 +1075,10 @@ impl Game {
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
 			control_hold: [0, 0],
+			budget_tokens: [
+				blank_budget(rules.starting_bench_size),
+				blank_budget(rules.starting_bench_size),
+			],
 		}
 	}
 
@@ -1140,6 +1211,20 @@ impl Game {
 
 	pub fn bench(&self, player: Player) -> &[Tile] {
 		&self.benches[player.index()]
+	}
+
+	/// Remaining ADD permission. Equal to [`Self::budget_tokens`] length.
+	pub fn budget(&self, player: Player) -> usize {
+		self.budget_tokens[player.index()].len()
+	}
+
+	/// Visual capture-budget stack: opening blanks plus captured tiles.
+	pub fn budget_tokens(&self, player: Player) -> &[BudgetToken] {
+		&self.budget_tokens[player.index()]
+	}
+
+	pub fn set_budget_tokens(&mut self, player: Player, tokens: Vec<BudgetToken>) {
+		self.budget_tokens[player.index()] = tokens;
 	}
 
 	pub fn bag_len(&self, player: Player) -> usize {
@@ -1337,6 +1422,9 @@ impl Game {
 
 	pub fn legal_adds(&self) -> Vec<Action> {
 		if self.status.is_over() {
+			return Vec::new();
+		}
+		if self.budget(self.current) == 0 {
 			return Vec::new();
 		}
 		let bench = &self.benches[self.current.index()];
@@ -1677,6 +1765,10 @@ impl Game {
 		let is_move = matches!(action, Action::Move { .. });
 		for rem in &removals {
 			self.tiles[rem.node as usize] = None;
+			// Any overwhelm removal on your turn is a capture, including
+			// your own tile (self-capture already exists via simultaneous
+			// overwhelm). Each one earns +1 budget.
+			self.earn_budget(player, rem.tile);
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
 				if self.draw_from_bag(player).is_some() {
 					draws = draws.saturating_add(1);
@@ -1731,6 +1823,9 @@ impl Game {
 		self.current = who.other();
 		if self.rules.no_moves_loses && !self.has_add_or_move() {
 			self.status = GameStatus::Won { winner: who, reason: EndReason::LockedOut };
+		}
+		if !self.status.is_over() {
+			self.check_low_value();
 		}
 	}
 
@@ -1825,7 +1920,80 @@ impl Game {
 		self.check_insufficient_tiles();
 	}
 
+	/// Both budgets are 0 and both have fewer than [`LOW_VALUE_BOARD_LT`]
+	/// board tiles. Compared after lockout: a player who cannot act still
+	/// loses by lockout even if they hold the lowest piece.
+	fn check_low_value(&mut self) {
+		if self.status.is_over() {
+			return;
+		}
+		if self.budget(Player::One) != 0 || self.budget(Player::Two) != 0 {
+			return;
+		}
+		let cap = usize::from(LOW_VALUE_BOARD_LT);
+		if self.board_count(Player::One) >= cap || self.board_count(Player::Two) >= cap {
+			return;
+		}
+		self.status =
+			match (self.lowest_piece_keys(Player::One), self.lowest_piece_keys(Player::Two)) {
+				(None, None) => GameStatus::Draw { reason: EndReason::LowValue },
+				(None, Some(_)) => {
+					GameStatus::Won { winner: Player::Two, reason: EndReason::LowValue }
+				}
+				(Some(_), None) => {
+					GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+				}
+				(Some(a), Some(b)) => {
+					if a < b {
+						GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+					} else if b < a {
+						GameStatus::Won { winner: Player::Two, reason: EndReason::LowValue }
+					} else {
+						GameStatus::Draw { reason: EndReason::LowValue }
+					}
+				}
+			};
+	}
+
+	/// `(primary, tiebreak)` of this player's lowest board piece. `None` if
+	/// they hold no board tiles. Does not fall through to the next-lowest
+	/// piece: a full two-step tie is a draw even if other pieces differ.
+	fn lowest_piece_keys(&self, player: Player) -> Option<(i32, i32)> {
+		let mut best: Option<(i32, i32)> = None;
+		for (_, tile) in self.tiles() {
+			if tile.owner != player {
+				continue;
+			}
+			let key = (
+				tile.piece_value(PieceValueWeights::PRIMARY),
+				tile.piece_value(PieceValueWeights::TIEBREAK),
+			);
+			best = Some(match best {
+				None => key,
+				Some(prev) if key < prev => key,
+				Some(prev) => prev,
+			});
+		}
+		best
+	}
+
+	fn spend_budget(&mut self, player: Player) -> Result<(), String> {
+		let tokens = &mut self.budget_tokens[player.index()];
+		if tokens.is_empty() {
+			return Err("no capture budget".into());
+		}
+		tokens.remove(0);
+		Ok(())
+	}
+
+	fn earn_budget(&mut self, player: Player, tile: Tile) {
+		self.budget_tokens[player.index()].push(BudgetToken::Captured(tile));
+	}
+
 	fn apply_add(&mut self, bench_index: usize, node: NodeId) -> Result<(), String> {
+		if self.budget(self.current) == 0 {
+			return Err("no capture budget".into());
+		}
 		if self.rules.add_only_on_spawns && !self.board.is_spawn(node) {
 			return Err("ADD is only legal on spawn nodes".into());
 		}
@@ -1838,6 +2006,7 @@ impl Game {
 		}
 		let tile = bench.remove(bench_index);
 		self.tiles[node as usize] = Some(tile);
+		self.spend_budget(self.current)?;
 		Ok(())
 	}
 
@@ -2020,6 +2189,9 @@ mod tests {
 		let b = Game::new(RuleSet::default(), 7);
 		assert_eq!(a.bench(Player::One).len(), 7);
 		assert_eq!(a.bench(Player::Two).len(), 7);
+		assert_eq!(a.budget(Player::One), 7);
+		assert_eq!(a.budget(Player::Two), 7);
+		assert!(a.budget_tokens(Player::One).iter().all(|t| matches!(t, BudgetToken::Blank)));
 		assert_eq!(a.bag_len(Player::One), 20);
 		assert_eq!(a.bag_len(Player::Two), 20);
 		let kinds = |g: &Game, p: Player| {
@@ -2041,6 +2213,8 @@ mod tests {
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), 5);
 		assert_eq!(game.bench(Player::Two).len(), 5);
+		assert_eq!(game.budget(Player::One), 5);
+		assert_eq!(game.budget(Player::Two), 5);
 		assert_eq!(game.bag_len(Player::One), 22);
 		assert_eq!(game.bag_len(Player::Two), 22);
 		assert_eq!(game.legal_adds().len(), 5 * 8);
@@ -2064,6 +2238,7 @@ mod tests {
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bench(Player::Two).len(), 7);
+		assert_eq!(game.budget(Player::One), 7);
 		assert_eq!(game.bag_len(Player::One), 20);
 		assert_eq!(game.legal_adds().len(), 7 * 8);
 	}
@@ -4204,5 +4379,244 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, snapshot(&game, Player::One));
+	}
+
+	fn zero_budget(game: &mut Game) {
+		game.set_budget_tokens(Player::One, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+	}
+
+	fn low_value_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules
+	}
+
+	#[test]
+	fn capture_budget_starts_at_seven_and_add_spends_one() {
+		let mut game = Game::new(RuleSet::default(), 3);
+		assert_eq!(game.budget(Player::One), 7);
+		assert_eq!(game.budget_tokens(Player::One).len(), 7);
+		assert!(game.budget_tokens(Player::One).iter().all(|t| matches!(t, BudgetToken::Blank)));
+		let action = game.legal_adds().into_iter().next().expect("opening ADD");
+		game.apply(action).unwrap();
+		assert_eq!(game.budget(Player::One), 6);
+		assert_eq!(game.bench(Player::One).len(), 6);
+	}
+
+	#[test]
+	fn add_is_legal_from_any_bench_index() {
+		let mut game = Game::empty(RuleSet::default());
+		stock_bench(&mut game, Player::One, 3);
+		game.set_current(Player::One);
+		let adds = game.legal_adds();
+		let mut indices: Vec<usize> = adds
+			.iter()
+			.filter_map(|a| match *a {
+				Action::Add { bench_index, .. } => Some(bench_index),
+				_ => None,
+			})
+			.collect();
+		indices.sort_unstable();
+		indices.dedup();
+		assert_eq!(indices, vec![0, 1, 2], "every bench tile is selectable");
+		assert_eq!(adds.len(), 3 * game.board().spawns().len());
+	}
+
+	#[test]
+	fn zero_budget_blocks_add_even_with_bench_tiles() {
+		let mut game = Game::empty(RuleSet::default());
+		stock_bench(&mut game, Player::One, 3);
+		game.set_budget_tokens(Player::One, Vec::new());
+		game.set_current(Player::One);
+		assert!(game.legal_adds().is_empty());
+		let spawn = game.board().spawns()[0];
+		assert!(game.apply(Action::Add { bench_index: 0, node: spawn }).is_err());
+	}
+
+	#[test]
+	fn opponent_capture_earns_budget() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		assert!(nbs.len() >= 3);
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		game.set_current(Player::One);
+		assert_eq!(game.budget(Player::One), 7);
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.tile.owner == Player::Two),
+			"opponent tile should be removed: {:?}",
+			outcome.removals
+		);
+		assert_eq!(game.budget(Player::One), 7 + outcome.removals.len());
+		assert!(matches!(game.budget_tokens(Player::One).last(), Some(BudgetToken::Captured(_))));
+	}
+
+	#[test]
+	fn self_capture_on_own_turn_earns_budget() {
+		// Overwhelm already removes own tiles. A MOVE that leaves an existing
+		// own tile overwhelmed is a self-capture; it must earn +1 without a
+		// new capture rule.
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
+		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		assert!(game.is_overwhelmed(spawn), "own tile is already overwhelmed");
+		let from = game.board().spawns()[4];
+		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		game.set_current(Player::One);
+		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
+		assert_eq!(game.budget(Player::One), 7);
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One),
+			"own overwhelmed tile must be removed: {:?}",
+			outcome.removals
+		);
+		assert_eq!(outcome.removals.len(), 1);
+		let own = outcome.removals.iter().filter(|r| r.tile.owner == Player::One).count();
+		assert_eq!(own, 1);
+		assert_eq!(game.budget(Player::One), 8);
+		assert!(game
+			.budget_tokens(Player::One)
+			.iter()
+			.any(|t| matches!(t, BudgetToken::Captured(_))));
+	}
+
+	#[test]
+	fn suicidal_add_is_self_capture_and_nets_zero_budget() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
+		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		let tile = green(&mut game, Player::One, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_current(Player::One);
+		assert_eq!(game.budget(Player::One), 7);
+		let outcome = game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(outcome.removals.len(), 1);
+		assert!(outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One));
+		// Spent 1 to ADD, earned 1 for the self-capture.
+		assert_eq!(game.budget(Player::One), 7);
+	}
+
+	#[test]
+	fn piece_value_weights_are_dots_plus_rings() {
+		let mut game = Game::empty(RuleSet::default());
+		let normal = game.alloc_rings(Player::One, &[TileColor::Green], 1, 1);
+		assert_eq!(normal.piece_value(PieceValueWeights::PRIMARY), 2);
+		assert_eq!(normal.piece_value(PieceValueWeights::TIEBREAK), 2);
+		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Green, true)], 1, 1);
+		assert_eq!(zag.piece_value(PieceValueWeights::PRIMARY), 2);
+		assert_eq!(zag.piece_value(PieceValueWeights::TIEBREAK), 3);
+		let mixed = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			2,
+			2,
+		);
+		assert_eq!(mixed.piece_value(PieceValueWeights::PRIMARY), 4);
+		assert_eq!(mixed.piece_value(PieceValueWeights::TIEBREAK), 5);
+	}
+
+	fn place_isolated_dot(game: &mut Game, spawn_idx: usize, player: Player, zag: bool, dots: u8) {
+		let spawn = game.board().spawns()[spawn_idx];
+		let tile = if zag {
+			game.alloc_ring_kinds(player, &[(TileColor::Green, true)], 1, dots)
+		} else {
+			game.alloc_tile(player, TileColor::Green, 1, dots)
+		};
+		game.place_tile(spawn, tile);
+	}
+
+	#[test]
+	fn low_value_awards_the_lower_primary_piece() {
+		let mut game = Game::empty(low_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 1);
+		place_isolated_dot(&mut game, 4, Player::Two, false, 2);
+		zero_budget(&mut game);
+		game.set_current(Player::One);
+		let from = game.board().spawns()[0];
+		let to = game.destinations(from).into_iter().next().expect("P1 can step");
+		game.apply(Action::Move { from, to }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+	}
+
+	#[test]
+	fn low_value_tiebreak_uses_zag_weighted_value() {
+		// Same primary (dots+rings = 2). Tie-break: zag ring worth 2, so a
+		// 1-dot/1-zag loses to a 1-dot/1-normal.
+		let mut game = Game::empty(low_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, true, 1);
+		place_isolated_dot(&mut game, 4, Player::Two, false, 1);
+		zero_budget(&mut game);
+		game.set_current(Player::One);
+		let from = game.board().spawns()[0];
+		let to = game.destinations(from).into_iter().next().expect("P1 can step");
+		game.apply(Action::Move { from, to }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::LowValue }
+		);
+	}
+
+	#[test]
+	fn low_value_full_tie_is_a_draw_without_next_piece() {
+		let mut game = Game::empty(low_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 1);
+		place_isolated_dot(&mut game, 4, Player::Two, false, 1);
+		// Extra high-value P1 piece must not break a lowest-piece tie.
+		let extra = game.board().spawns()[2];
+		let heavy = game.alloc_rings(
+			Player::One,
+			&[TileColor::Blue, TileColor::Orange, TileColor::Green],
+			3,
+			3,
+		);
+		game.place_tile(extra, heavy);
+		zero_budget(&mut game);
+		game.set_current(Player::One);
+		let from = game.board().spawns()[0];
+		let to = game.destinations(from).into_iter().next().expect("P1 can step");
+		game.apply(Action::Move { from, to }).unwrap();
+		assert_eq!(game.status(), GameStatus::Draw { reason: EndReason::LowValue });
+	}
+
+	#[test]
+	fn lockout_beats_low_value() {
+		let mut game = Game::empty(low_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 1);
+		// P2 is alive on the bench but cannot ADD (budget 0) and has no board
+		// tile, so they lock out after P1's turn.
+		let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
+		game.set_bench(Player::Two, vec![t]);
+		zero_budget(&mut game);
+		game.set_current(Player::One);
+		assert!(!game.is_alive(Player::Two) || game.board_count(Player::Two) == 0);
+		let from = game.board().spawns()[0];
+		let to = game.destinations(from).into_iter().next().expect("P1 can step");
+		game.apply(Action::Move { from, to }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LockedOut }
+		);
 	}
 }

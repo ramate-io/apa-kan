@@ -4,7 +4,7 @@ use std::path::Path;
 
 use image::{Rgba, RgbaImage};
 
-use crate::game::{Game, Player, Tile};
+use crate::game::{BudgetToken, Game, Player, Tile};
 use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn write_png(game: &Game, path: impl AsRef<Path>, caption: &str) -> Result<(), String> {
@@ -307,6 +307,18 @@ fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				*tile,
 			);
 		}
+		let tokens = game.budget_tokens(player);
+		let n = tokens.len();
+		for (i, token) in tokens.iter().enumerate() {
+			let p = layout.budget_stack_pos(player, i, n);
+			let q = layout.world_to_image(p);
+			let c = (f64::from(q[0]), f64::from(q[1]));
+			let r = f64::from(layout.bench_tile_radius);
+			match token {
+				BudgetToken::Blank => draw_blank_token(img, c, r, player),
+				BudgetToken::Captured(tile) => draw_tile(img, c, r, *tile),
+			}
+		}
 	}
 }
 
@@ -319,6 +331,11 @@ fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str
 	let turn = visual::format_turn_line(game, "human");
 	draw_text(img, 16, 48, &turn, mid);
 	draw_text(img, 16, (layout.height - 22.0) as u32, visual::HELP_TEXT, lo);
+}
+
+fn draw_blank_token(img: &mut RgbaImage, c: (f64, f64), r: f64, player: Player) {
+	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(player)));
+	stroke_circle(img, c, r, rgb_of(visual::BLANK_TOKEN_RIM_RGB), (r * 0.10).max(1.4));
 }
 
 fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
@@ -570,6 +587,14 @@ mod tests {
 			&board,
 			dir.join("zag_board_1280x800.png"),
 			"diamonds + realised-state edges",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_png_sized(
+			&board,
+			dir.join("capture_budget_stack_1280x800.png"),
+			"budget stack: 7 blanks + captured tiles beside each bench",
 			1280,
 			800,
 		)
