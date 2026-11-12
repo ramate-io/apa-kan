@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::game::{
 	Action, ActionOutcome, BudgetToken, EndReason, Game, GameStatus, HopWeightCmp,
-	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player, RuleSet,
-	SamePieceTwice, Tile, TileColor, ZagMismatchCount,
+	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player,
+	RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -70,15 +70,17 @@ fn end_reason_parse(s: &str) -> Result<EndReason, String> {
 	}
 }
 
-/// One ring on a logged tile: color tag (`g`/`b`/`o`/`p`/`t`/`m`) and zag flag.
+/// One ring on a logged tile: color tag (`g`/`b`/`o`/`p`/`t`/`m`) and type flags.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RingLog {
 	pub c: String,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub z: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub b: bool,
 }
 
-/// Full tile identity: ids, owner, dots, weight, rings (normal vs zag).
+/// Full tile identity: ids, owner, dots, weight, rings (normal / zag / braid).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TileLog {
 	pub id: u32,
@@ -88,6 +90,8 @@ pub struct TileLog {
 	pub n_rings: u8,
 	pub normal_rings: u8,
 	pub zag_rings: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub braid_rings: u8,
 	pub rings: Vec<RingLog>,
 }
 
@@ -97,7 +101,11 @@ impl TileLog {
 			.ring_colors()
 			.iter()
 			.enumerate()
-			.map(|(i, c)| RingLog { c: c.tag().to_string(), z: tile.zag[i] })
+			.map(|(i, c)| RingLog {
+				c: c.tag().to_string(),
+				z: tile.ring_is_zag(i),
+				b: tile.ring_is_braid(i),
+			})
 			.collect();
 		Self {
 			id: tile.id,
@@ -107,15 +115,28 @@ impl TileLog {
 			n_rings: tile.n_rings,
 			normal_rings: tile.normal_ring_count(),
 			zag_rings: tile.zag_ring_count(),
+			braid_rings: tile.braid_ring_count(),
 			rings,
 		}
 	}
 
 	pub fn to_tile(&self) -> Result<Tile, String> {
 		let owner = player_from_num(self.owner)?;
-		let parts: Result<Vec<(TileColor, bool)>, String> =
-			self.rings.iter().map(|r| Ok((TileColor::parse(&r.c)?, r.z))).collect();
-		let mut tile = Tile::with_ring_kinds(self.id, owner, &parts?, self.weight, self.dots);
+		let parts: Result<Vec<(TileColor, RingType)>, String> = self
+			.rings
+			.iter()
+			.map(|r| {
+				let typ = if r.b {
+					RingType::Braid
+				} else if r.z {
+					RingType::Zag
+				} else {
+					RingType::Normal
+				};
+				Ok((TileColor::parse(&r.c)?, typ))
+			})
+			.collect();
+		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.weight, self.dots);
 		tile.id = self.id;
 		Ok(tile)
 	}
@@ -129,7 +150,7 @@ fn tiles_to_log(tiles: &[Tile]) -> Vec<TileLog> {
 	tiles.iter().copied().map(TileLog::from_tile).collect()
 }
 
-/// Piece identity on an action: dots plus normal/zag ring counts.
+/// Piece identity on an action: dots plus normal/zag/braid ring counts.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PieceRef {
 	pub id: u32,
@@ -137,6 +158,8 @@ pub struct PieceRef {
 	pub n_rings: u8,
 	pub normal_rings: u8,
 	pub zag_rings: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub braid_rings: u8,
 }
 
 impl PieceRef {
@@ -147,6 +170,7 @@ impl PieceRef {
 			n_rings: tile.n_rings,
 			normal_rings: tile.normal_ring_count(),
 			zag_rings: tile.zag_ring_count(),
+			braid_rings: tile.braid_ring_count(),
 		}
 	}
 }
@@ -161,6 +185,8 @@ pub struct RulesLog {
 	pub bag_one_of_each_kind: bool,
 	pub max_rings: u8,
 	pub zag_numer: u8,
+	#[serde(default)]
+	pub braid_numer: u8,
 	pub capture_draw_on_move: bool,
 	pub mismatch_uses_neighbor_weight: bool,
 	pub actions_per_turn: u8,
@@ -196,6 +222,7 @@ impl RulesLog {
 			bag_one_of_each_kind: r.bag_one_of_each_kind,
 			max_rings: r.max_rings,
 			zag_numer: r.zag_numer,
+			braid_numer: r.braid_numer,
 			capture_draw_on_move: r.capture_draw_on_move,
 			mismatch_uses_neighbor_weight: r.mismatch_uses_neighbor_weight,
 			actions_per_turn: r.actions_per_turn,
@@ -231,6 +258,7 @@ impl RulesLog {
 			bag_one_of_each_kind: self.bag_one_of_each_kind,
 			max_rings: self.max_rings,
 			zag_numer: self.zag_numer,
+			braid_numer: self.braid_numer,
 			capture_draw_on_move: self.capture_draw_on_move,
 			mismatch_uses_neighbor_weight: self.mismatch_uses_neighbor_weight,
 			actions_per_turn: self.actions_per_turn,
@@ -464,6 +492,8 @@ pub struct BoardPieceLog {
 	pub n_rings: u8,
 	pub normal_rings: u8,
 	pub zag_rings: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub braid_rings: u8,
 }
 
 impl BoardPieceLog {
@@ -475,6 +505,7 @@ impl BoardPieceLog {
 			n_rings: tile.n_rings,
 			normal_rings: tile.normal_ring_count(),
 			zag_rings: tile.zag_ring_count(),
+			braid_rings: tile.braid_ring_count(),
 		}
 	}
 }
@@ -853,7 +884,10 @@ mod tests {
 					assert!(act.to.is_some());
 					assert!(act.piece.is_some());
 					let piece = act.piece.as_ref().unwrap();
-					assert_eq!(piece.n_rings, piece.normal_rings + piece.zag_rings);
+					assert_eq!(
+						piece.n_rings,
+						piece.normal_rings + piece.zag_rings + piece.braid_rings
+					);
 				}
 				"PASS" => {
 					assert!(act.from.is_none());

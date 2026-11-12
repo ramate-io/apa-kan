@@ -65,8 +65,8 @@ fn usage() -> &'static str {
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-bench, --bag-size, --self-capture-budget,\n\
-	   --max-rings, --zag-chance, --zags, --zag-mismatch, --path-constraint, --no-repeated-edge,\n\
-	   --turn-limit\n\
+	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --zag-mismatch,\n\
+	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
 
@@ -264,7 +264,7 @@ fn run(cfg: BenchConfig) {
 		rules.turn_limit
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} self_capture_budget={} max_rings={} zag_numer={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -284,6 +284,7 @@ fn run(cfg: BenchConfig) {
 		on_off(rules.self_capture_budget),
 		rules.max_rings,
 		rules.zag_numer,
+		rules.braid_numer,
 		rules.zag_mismatch.name(),
 		rules.path_constraint.name(),
 		cfg.scenario.as_ref().map(|s| s.name.as_str()).unwrap_or("default")
@@ -792,6 +793,8 @@ struct DeckRow {
 	board_tiles: u64,
 	board_rings: u64,
 	board_weight: u64,
+	braid_edge_snaps: u64,
+	braid_satisfied_snaps: u64,
 	outcome: i8,
 	turns: u32,
 }
@@ -853,6 +856,8 @@ fn play_game(
 	let mut board_tiles = 0u64;
 	let mut board_rings = 0u64;
 	let mut board_weight = 0u64;
+	let mut braid_edge_snaps = 0u64;
+	let mut braid_satisfied_snaps = 0u64;
 
 	loop {
 		let vh = ai::visible_hash(&game);
@@ -870,6 +875,9 @@ fn play_game(
 			board_rings += u64::from(t.n_rings);
 			board_weight += u64::from(t.weight);
 		}
+		let (with_braid, satisfied) = game.braid_edge_counts();
+		braid_edge_snaps += u64::from(with_braid);
+		braid_satisfied_snaps += u64::from(satisfied);
 
 		if game.status().is_over() {
 			break;
@@ -1022,6 +1030,8 @@ fn play_game(
 			board_tiles,
 			board_rings,
 			board_weight,
+			braid_edge_snaps,
+			braid_satisfied_snaps,
 			outcome,
 			turns: game.turn_count(),
 		},
@@ -1078,22 +1088,41 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut ring_n = [0u32; 4];
 	let mut color_n = [0u32; 6];
 	let mut zag_rings = 0u32;
+	let mut braid_rings = 0u32;
+	let mut braid_pieces = 0u32;
 	let mut rings = 0u32;
 	for _ in 0..n {
-		let t = sample_tile(Player::One, rules.max_rings, rules.zag_numer, &mut next_id, &mut rng);
+		let t = sample_tile(
+			Player::One,
+			rules.max_rings,
+			rules.zag_numer,
+			rules.braid_numer,
+			&mut next_id,
+			&mut rng,
+		);
 		tally_tiles(std::iter::once(&t), &mut ring_n, &mut color_n);
 		let k = t.n_rings.clamp(1, 3) as usize;
-		zag_rings += t.zag.iter().take(k).filter(|z| **z).count() as u32;
+		zag_rings += u32::from(t.zag_ring_count());
+		let b = t.braid_ring_count();
+		braid_rings += u32::from(b);
+		if b >= 2 {
+			braid_pieces += 1;
+		}
 		rings += k as u32;
 	}
 	lines.push(format!(
-		"# ring_process  sample={n} max_rings={} zag_numer={}  n1={} n2={} n3={}",
-		rules.max_rings, rules.zag_numer, ring_n[1], ring_n[2], ring_n[3]
+		"# ring_process  sample={n} max_rings={} zag_numer={} braid_numer={}  n1={} n2={} n3={}",
+		rules.max_rings, rules.zag_numer, rules.braid_numer, ring_n[1], ring_n[2], ring_n[3]
 	));
 	if rings > 0 {
 		lines.push(format!(
 			"# ring_process_zags  rings={rings} zags={zag_rings} rate={:.4}",
 			f64::from(zag_rings) / f64::from(rings)
+		));
+		lines.push(format!(
+			"# ring_process_braids  pieces={n} braided={braid_pieces} piece_rate={:.4} rings={rings} braid_rings={braid_rings} ring_rate={:.4}",
+			f64::from(braid_pieces) / f64::from(n),
+			f64::from(braid_rings) / f64::from(rings)
 		));
 	}
 	let names = TileColor::ALL.map(|c| c.name());
@@ -1137,6 +1166,8 @@ fn push_play_composition(lines: &mut Vec<String>, rows: &[DeckRow]) {
 	let mut board_tiles = 0u64;
 	let mut board_rings = 0u64;
 	let mut board_weight = 0u64;
+	let mut braid_edge_snaps = 0u64;
+	let mut braid_satisfied_snaps = 0u64;
 	for r in rows {
 		for i in 0..4 {
 			add_rings[i] += r.add_rings[i];
@@ -1146,6 +1177,8 @@ fn push_play_composition(lines: &mut Vec<String>, rows: &[DeckRow]) {
 		board_tiles += r.board_tiles;
 		board_rings += r.board_rings;
 		board_weight += r.board_weight;
+		braid_edge_snaps += r.braid_edge_snaps;
+		braid_satisfied_snaps += r.braid_satisfied_snaps;
 	}
 	let adds = add_rings[1] + add_rings[2] + add_rings[3];
 	let moves = move_rings[1] + move_rings[2] + move_rings[3];
@@ -1169,6 +1202,14 @@ fn push_play_composition(lines: &mut Vec<String>, rows: &[DeckRow]) {
 		));
 	} else {
 		lines.push("# board_sample  positions=0".into());
+	}
+	if braid_edge_snaps > 0 {
+		lines.push(format!(
+			"# braid_edges  occupied_with_braid={braid_edge_snaps} satisfied={braid_satisfied_snaps} rate={:.4}",
+			braid_satisfied_snaps as f64 / braid_edge_snaps as f64
+		));
+	} else {
+		lines.push("# braid_edges  occupied_with_braid=0 satisfied=0".into());
 	}
 }
 

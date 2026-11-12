@@ -8,7 +8,8 @@ use std::f64::consts::PI;
 
 use crate::board::{ArcEdge, Board, NodeId};
 use crate::game::{
-	BudgetToken, Game, GameStatus, Player, RuleSet, Tile, TileColor, ZagMismatchCount,
+	selected_braid, BudgetToken, Game, GameStatus, Player, RingType, RuleSet, Tile, TileColor,
+	ZagMismatchCount,
 };
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
@@ -76,6 +77,16 @@ pub const TILE_ZAG_AMP: f32 = 0.80;
 pub const TILE_ZAG_STROKE: f32 = 0.90;
 pub const TILE_ZAG_TEETH: u32 = 16;
 pub const TILE_ZAG_SAMPLES: u32 = 96;
+/// Twisted double-stroke on a braid ring. Amp stays inside the ring gap.
+pub const TILE_BRAID_AMP: f32 = 0.55;
+pub const TILE_BRAID_STROKE: f32 = 0.70;
+pub const TILE_BRAID_TURNS: f64 = 3.0;
+pub const TILE_BRAID_SAMPLES: u32 = 96;
+/// Satisfied-braid strands along an arc: sine twist, slightly wider than a zag.
+pub const BRAID_AMP_UNITS: f32 = 0.010;
+pub const BRAID_AMP_CENTER_UNITS: f32 = 0.008;
+pub const BRAID_STRAND_WIDTH_SCALE: f32 = 0.55;
+pub const BRAID_TURNS: f64 = 4.0;
 
 pub const Z_ARC: f32 = 0.0;
 pub const Z_ARC_OVER: f32 = 0.08;
@@ -175,6 +186,11 @@ pub enum ArcBody {
 	/// No connection line in the middle. Used when a confirmed zag mismatch
 	/// occupies a two-ended edge (the zag is the only realized effect).
 	Hidden,
+	/// Satisfied braid: twisted strands in the braid's slot colors. Jag
+	/// overlays may still sit on the same edge (scores sum).
+	Braid {
+		colors: [Option<TileColor>; 3],
+	},
 }
 
 impl ArcPaint {
@@ -213,6 +229,10 @@ impl ArcPaint {
 		Self::with_sides(ArcBody::Stripes { a, b, zag_a, zag_b }, Self::no_zags(), Self::no_zags())
 	}
 
+	pub fn braid(colors: [Option<TileColor>; 3]) -> Self {
+		Self::with_sides(ArcBody::Braid { colors }, Self::no_zags(), Self::no_zags())
+	}
+
 	pub fn zag_count(self) -> usize {
 		self.zag_from_count() + self.zag_to_count() + self.zag_mid_count()
 	}
@@ -234,7 +254,7 @@ pub fn shared_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 	let mut out = [None; 2];
 	let mut n = 0usize;
 	for (i, &c) in a.ring_colors().iter().enumerate() {
-		if a.zag[i] || !b.has_normal(c) {
+		if !a.ring_type[i].is_normal() || !b.has_normal(c) {
 			continue;
 		}
 		if !out.contains(&Some(c)) && n < 2 {
@@ -311,14 +331,20 @@ pub fn edge_zag_strokes(
 	}
 }
 
-/// Unique **normal** ring colors on `tile`, packed densely. Zags are omitted:
-/// they already draw as side squiggles, so conflict-diamond stripes only show
-/// the unmatched highway options.
+/// Highway colors on `tile` for a conflict diamond. Zags are omitted (they
+/// already draw as squiggles). Braid slots keep multiplicity so a failed
+/// orange+orange braid shows two orange hitch strands.
 pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_HITCH_COLORS] {
 	let mut out = [None; MAX_HITCH_COLORS];
 	let mut n = 0usize;
+	for (i, &c) in tile.ring_colors().iter().enumerate() {
+		if tile.ring_type[i].is_braid() && n < MAX_HITCH_COLORS {
+			out[n] = Some(c);
+			n += 1;
+		}
+	}
 	for k in 0..tile.ring_strokes() {
-		if tile.stroke_is_zag(k) {
+		if !tile.stroke_type(k).is_normal() {
 			continue;
 		}
 		let c = tile.stroke_color(k);
@@ -372,21 +398,33 @@ pub fn diamond_across(along_r: f64) -> f64 {
 }
 
 fn two_ended(a: Tile, b: Tile, mode: ZagMismatchCount) -> ArcPaint {
-	let any_hit = a.zag_hits_on(b) > 0 || b.zag_hits_on(a) > 0;
-	if any_hit {
-		// Confirmed zag mismatch: draw only the hitting zag(s) on the center.
+	let zag_mid = if a.zag_hits_on(b) > 0 || b.zag_hits_on(a) > 0 {
+		edge_zag_strokes(a, b, mode)
+	} else {
+		ArcPaint::no_mid()
+	};
+	if let Some((tile, _)) = selected_braid(a, b) {
+		return ArcPaint {
+			body: ArcBody::Braid { colors: tile.braid_colors() },
+			zags_from: ArcPaint::no_zags(),
+			zags_to: ArcPaint::no_zags(),
+			zags_mid: zag_mid,
+		};
+	}
+	if zag_mid[0].is_some() {
+		// Confirmed zag mismatch, no satisfied braid: draw only the zag(s).
 		return ArcPaint {
 			body: ArcBody::Hidden,
 			zags_from: ArcPaint::no_zags(),
 			zags_to: ArcPaint::no_zags(),
-			zags_mid: edge_zag_strokes(a, b, mode),
+			zags_mid: zag_mid,
 		};
 	}
 	let shared = shared_normal_colors(a, b);
 	let body = match (shared[0], shared[1]) {
 		(Some(color), None) => ArcBody::Solid { color, thick: true },
 		(Some(c1), Some(c2)) => ArcBody::Stripes { a: c1, b: c2, zag_a: false, zag_b: false },
-		(None, _) if a.normal_mask() != 0 && b.normal_mask() != 0 => {
+		(None, _) if a.present_toward(b) && b.present_toward(a) => {
 			ArcBody::Hitch { from: unique_normals(a), to: unique_normals(b) }
 		}
 		(None, _) => ArcBody::Neutral,
@@ -447,6 +485,9 @@ pub struct TileRingDraw {
 	pub zag_stroke: f32,
 	pub zag_teeth: u32,
 	pub zag_samples: u32,
+	pub braid_amp: f32,
+	pub braid_stroke: f32,
+	pub braid_samples: u32,
 	pub dot_r: f32,
 	pub dot_spread: f32,
 }
@@ -463,6 +504,9 @@ impl TileRingDraw {
 			zag_stroke: (TILE_ZAG_STROKE * scale).max(0.5),
 			zag_teeth: TILE_ZAG_TEETH,
 			zag_samples: TILE_ZAG_SAMPLES,
+			braid_amp: (TILE_BRAID_AMP * scale).max(0.4),
+			braid_stroke: (TILE_BRAID_STROKE * scale).max(0.45),
+			braid_samples: TILE_BRAID_SAMPLES,
 			dot_r: (2.6 * scale).max(1.8),
 			dot_spread: 7.0 * scale,
 		}
@@ -521,6 +565,8 @@ pub struct ViewLayout {
 	pub hitch_r_center: f32,
 	pub zag_amp: f32,
 	pub zag_amp_center: f32,
+	pub braid_amp: f32,
+	pub braid_amp_center: f32,
 }
 
 impl ViewLayout {
@@ -567,6 +613,8 @@ impl ViewLayout {
 		let hitch_r_center = (HITCH_RADIUS_CENTER_UNITS * scale).max(HITCH_RADIUS_CENTER_MIN_PX);
 		let zag_amp = (ZAG_AMP_UNITS * scale).max(0.85);
 		let zag_amp_center = (ZAG_AMP_CENTER_UNITS * scale).max(0.7);
+		let braid_amp = (BRAID_AMP_UNITS * scale).max(1.1);
+		let braid_amp_center = (BRAID_AMP_CENTER_UNITS * scale).max(0.9);
 
 		Self {
 			width,
@@ -588,6 +636,8 @@ impl ViewLayout {
 			hitch_r_center,
 			zag_amp,
 			zag_amp_center,
+			braid_amp,
+			braid_amp_center,
 		}
 	}
 
@@ -843,6 +893,58 @@ pub fn zigzag_polyline(centerline: &[[f64; 2]], amplitude: f64, teeth: f64) -> V
 	zigzag_alongside(centerline, 0.0, amplitude, teeth)
 }
 
+/// Two sine strands around a circle: the tile-ring braid mark.
+pub fn braid_circle(
+	center: [f64; 2],
+	radius: f64,
+	amplitude: f64,
+	samples: u32,
+) -> [Vec<[f64; 2]>; 2] {
+	let n = samples.max(8);
+	let mut a = Vec::with_capacity(n as usize + 1);
+	let mut b = Vec::with_capacity(n as usize + 1);
+	for i in 0..=n {
+		let t = f64::from(i) / f64::from(n);
+		let ang = t * 2.0 * PI;
+		let s = (t * TILE_BRAID_TURNS * 2.0 * PI).sin();
+		let ca = ang.cos();
+		let sa = ang.sin();
+		a.push([
+			center[0] + (radius + amplitude * s) * ca,
+			center[1] + (radius + amplitude * s) * sa,
+		]);
+		b.push([
+			center[0] + (radius - amplitude * s) * ca,
+			center[1] + (radius - amplitude * s) * sa,
+		]);
+	}
+	[a, b]
+}
+
+/// One sine strand along an arc centerline (`phase` in radians).
+pub fn braid_alongside(
+	centerline: &[[f64; 2]],
+	amplitude: f64,
+	phase: f64,
+	turns: f64,
+) -> Vec<[f64; 2]> {
+	let n = centerline.len();
+	let mut out = Vec::with_capacity(n);
+	for i in 0..n {
+		let t = if n <= 1 { 0.0 } else { i as f64 / (n - 1) as f64 };
+		let wave = (t * turns * 2.0 * PI + phase).sin();
+		let (nx, ny) = polyline_normal(centerline, i);
+		let p = centerline[i];
+		let off = amplitude * wave;
+		out.push([p[0] + nx * off, p[1] + ny * off]);
+	}
+	out
+}
+
+pub fn braid_strand_count(colors: [Option<TileColor>; 3]) -> usize {
+	colors.iter().filter(|c| c.is_some()).count()
+}
+
 pub fn zigzag_circle(
 	center: [f64; 2],
 	radius: f64,
@@ -896,7 +998,9 @@ pub fn zag_lane_inner(body: ArcBody, stripe_off: f64, hitch_r: f64) -> f64 {
 	let spacing = zag_lane_spacing(stripe_off);
 	match body {
 		ArcBody::Hitch { .. } => hitch_r.max(stripe_off) + spacing,
-		ArcBody::Stripes { .. } | ArcBody::Solid { .. } => stripe_off + spacing,
+		ArcBody::Stripes { .. } | ArcBody::Solid { .. } | ArcBody::Braid { .. } => {
+			stripe_off + spacing
+		}
 		ArcBody::Hidden | ArcBody::Neutral => spacing,
 	}
 }
@@ -1101,6 +1205,28 @@ pub fn demo_midgame() -> Game {
 		game.place_tile(b, u);
 	}
 	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let t = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			1,
+		);
+		let u = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
+		game.place_tile(a, t);
+		game.place_tile(b, u);
+	}
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let t = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+			1,
+			1,
+		);
+		let u = game.alloc_rings(Player::Two, &[TileColor::Blue, TileColor::Teal], 1, 1);
+		game.place_tile(a, t);
+		game.place_tile(b, u);
+	}
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
 		let t = game.alloc_ring_kinds(
 			Player::One,
 			&[(TileColor::Blue, false), (TileColor::Orange, true)],
@@ -1218,8 +1344,9 @@ pub fn demo_midgame() -> Game {
 	}
 
 	{
-		let is_blue_only =
-			|t: Tile| t.has_normal(TileColor::Blue) && t.n_rings == 1 && t.zag.iter().all(|z| !*z);
+		let is_blue_only = |t: Tile| {
+			t.has_normal(TileColor::Blue) && t.n_rings == 1 && t.zag().iter().all(|z| !*z)
+		};
 		let mut extra = 0u8;
 		for id in 0..board.node_count() as NodeId {
 			let Some(t) = game.tile_at(id) else {
@@ -1905,6 +2032,60 @@ mod tests {
 	}
 
 	#[test]
+	fn satisfied_braid_paints_twisted_strands() {
+		let braid = Tile::with_typed_rings(
+			1,
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			1,
+		);
+		let cover = Tile::with_rings(2, Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
+		let paint = arc_paint(Some(braid), Some(cover));
+		assert_eq!(
+			paint.body,
+			ArcBody::Braid { colors: [Some(TileColor::Orange), Some(TileColor::Green), None] }
+		);
+		assert_eq!(paint.zag_count(), 0);
+		let failed = Tile::with_rings(3, Player::Two, &[TileColor::Blue], 1, 1);
+		let hitch = arc_paint(Some(braid), Some(failed));
+		assert!(
+			matches!(hitch.body, ArcBody::Hitch { .. }),
+			"unsatisfied braid uses the highway diamond"
+		);
+		match hitch.body {
+			ArcBody::Hitch { from, .. } => {
+				assert_eq!(from, [Some(TileColor::Orange), Some(TileColor::Green), None]);
+			}
+			other => panic!("expected hitch, got {other:?}"),
+		}
+		let braid_zag = Tile::with_typed_rings(
+			4,
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Zag),
+			],
+			1,
+			1,
+		);
+		let cover3 = Tile::with_rings(
+			5,
+			Player::Two,
+			&[TileColor::Orange, TileColor::Green, TileColor::Blue],
+			1,
+			1,
+		);
+		let both = arc_paint(Some(braid_zag), Some(cover3));
+		assert!(
+			matches!(both.body, ArcBody::Braid { .. }),
+			"satisfied braid stays visible next to a jag"
+		);
+		assert_eq!(both.zag_mid_count(), 1);
+	}
+
+	#[test]
 	fn demo_midgame_has_center_and_mixed_arcs() {
 		let game = demo_midgame();
 		assert!(game.tile_at(game.board().center()).is_some(), "center must have a tile");
@@ -1920,6 +2101,7 @@ mod tests {
 		let mut one_ended_zag_highway = 0;
 		let mut one_ended_triple_zag = 0;
 		let mut hidden = 0;
+		let mut braid_arcs = 0;
 		let mut zag_arcs = 0;
 		let mut zag_only = 0;
 		let mut zag_on_zag = 0;
@@ -1997,7 +2179,8 @@ mod tests {
 					if let (Some(a), Some(b)) = (from, to) {
 						assert!(
 							shared_normal_colors(a, b)[0].is_none()
-								&& a.normal_mask() != 0 && b.normal_mask() != 0,
+								&& selected_braid(a, b).is_none()
+								&& a.present_toward(b) && b.present_toward(a),
 							"hitch is for true color conflicts only"
 						);
 						assert_eq!(cols_a, unique_normals(a));
@@ -2022,8 +2205,10 @@ mod tests {
 					}
 				}
 				ArcBody::Hidden => hidden += 1,
+				ArcBody::Braid { .. } => braid_arcs += 1,
 			}
 		}
+		assert!(braid_arcs > 0, "need a satisfied-braid arc");
 		assert!(gray > 0, "need empty gray arcs");
 		assert!(one > 0, "need one-ended colored arcs");
 		assert!(same > 0, "need same-color solid arcs");
