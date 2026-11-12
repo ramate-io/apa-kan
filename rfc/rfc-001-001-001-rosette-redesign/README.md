@@ -112,10 +112,12 @@ One-ended edges (the tile has no neighbor on that arc) still draw all of that ti
 
 - **Win (elimination):** the opponent has **no tiles on the board and an empty bench**. A remaining bag does not save them. If both players are eliminated in the same resolution, the game is a **draw**.
 - **Win (locked-out):** if `no_moves_loses` is on (default) and the player to move has no legal ADD and no legal MOVE, they **lose immediately**. Detected at the start of their turn (after the previous player’s turn switch) and if they would otherwise pass.
-- **Win (low-value):** if **both** players have **usable** capture budget 0 **and** both have fewer than 5 board tiles (`LOW_VALUE_BOARD_LT`), the game ends. Surplus tokens on an empty bench do not block this. The player holding the **lowest-value** board piece wins. Value weights live in `PieceValueWeights` (easy to extend when new ring types appear):
+- **Win (low-value):** if **both** players have **usable** capture budget 0 **and** both have fewer than 5 board tiles (`LOW_VALUE_BOARD_LT`), the game ends. Surplus tokens on an empty bench do not block this. Sort each player's on-board pieces ascending by value and compare pair `i` (P1's `i`-th lowest vs P2's `i`-th lowest), starting at `i = 0`. Value weights live in `PieceValueWeights` (easy to extend when new ring types appear):
   1. **Primary:** `dots * 1 + normal_rings * 1 + zag_rings * 1` (every ring counts 1). Lower wins.
   2. **Tie-break:** recompute with `zag_rings * 2` (`PieceValueWeights::TIEBREAK`). Lower wins. A 1-dot/1-zag loses to a 1-dot/1-normal.
-  3. Still tied: **draw**. There is **no** fall-through to the next-lowest piece.
+  3. Both passes tied: advance to pair `i + 1`.
+  4. A **missing** piece is treated as maximum value, so the player with more surviving tiles wins that pair.
+  5. **Draw** only if both players have the same piece count and every pair ties on both passes.
   Checked **after lockout** of the incoming player: someone with no legal action still loses by lockout even if they hold the lowest piece. Control / hold wins and the turn-limit are still earlier in `finish_turn`.
 - **Win (center hold):** if `center_hold_win` is on (default **off**) and a player occupies the center at the end of `center_hold_n` consecutive **own** turns (default 5), they win.
 - **Win (control):** if `control_win` is on (default) and a player occupies at least `control_n` of the 9-node control set (center + inner ring; default 5 of 9) at the end of `control_hold_turns` consecutive **own** turns (default 1), they win.
@@ -126,7 +128,7 @@ One-ended edges (the tile has no neighbor on that arc) still draw all of that ti
 
 ### Stall-prevention options
 
-Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut`, `CenterHold`, `PetalMajority`, `Control`, `InsufficientTiles`, and `LowValue` terminals are scored as wins/losses (`±WIN`) in search from the **mover's** perspective (hold-style wins leave the winner to move; lockouts switch to the loser; low-value is checked after lockout).
+Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut`, `CenterHold`, `PetalMajority`, `Control`, `InsufficientTiles`, and `LowValue` terminals are scored as wins/losses (`±WIN`) in search from the **mover's** perspective (hold-style wins leave the winner to move; lockouts switch to the loser; low-value is checked after lockout). A low-value draw (equal counts, every pair tied) scores 0.
 
 #### 1. `no_moves_loses` (default **on**)
 
@@ -256,7 +258,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
 
 Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` on, `pass_through_ring_cmp` ge, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7 (deal and capture budget), `bag_size` 27, `self_capture_budget` on, `max_rings` 3, `zag_numer` 1 (1/7), `zag_mismatch` sum, `path_constraint` no-edge-revisit.
 
-Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / usable-budget / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Eval and search read usable budget (`min(tokens, bench)`), not leftover surplus. Locked-out, center-hold, petal-majority, control, insufficient-tiles, and low-value terminals are wins/losses in search.
+Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / usable-budget / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Eval and search read usable budget (`min(tokens, bench)`), not leftover surplus. Locked-out, center-hold, petal-majority, control, insufficient-tiles, and low-value terminals are wins/losses in search (a low-value equal-count full tie is a draw scored 0). Search sees the same progressive pair check as the rules, including leftover tiles beating an empty slot.
 
 Headless round-robin: `apa-kan-bench` (same rule flags and `--scenario`; `--bots greedy,minimax,mcts`). Logs include per-game opening benches and a Pearson correlation of a simple deck-strength measure (sum of weights, dots, color count) with outcome.
 

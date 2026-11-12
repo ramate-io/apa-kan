@@ -417,6 +417,21 @@ impl PieceValueWeights {
 	pub const TIEBREAK: Self = Self { dots: 1, normal_ring: 1, zag_ring: 2 };
 }
 
+/// A missing piece in a low-value pair. Treated as maximum value so the
+/// player who still has a tile wins that pair (more surviving pieces win
+/// after every real pair ties).
+const LOW_VALUE_EMPTY: (i32, i32) = (i32::MAX, i32::MAX);
+
+/// Outcome of the progressive lowest-tile pair check used by
+/// [`EndReason::LowValue`]. Search reads the resulting [`GameStatus`].
+/// `pair` is 0-based into the sorted lists; `by_piece_count` is set when
+/// the deciding slot compared a real tile against a missing (max-value) one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LowValueResolution {
+	Draw,
+	Win { winner: Player, pair: usize, by_piece_count: bool },
+}
+
 /// Both players must have fewer than this many board tiles for [`EndReason::LowValue`].
 pub const LOW_VALUE_BOARD_LT: u8 = 5;
 
@@ -479,8 +494,10 @@ pub enum EndReason {
 	/// Could no longer occupy 5 control-set nodes (`insufficient_tiles_loss`).
 	InsufficientTiles,
 	/// Both players have zero **usable** capture budget and fewer than
-	/// [`LOW_VALUE_BOARD_LT`] board tiles. The player holding the lowest-value
-	/// piece wins; a full tie on the two-step value is a draw.
+	/// [`LOW_VALUE_BOARD_LT`] board tiles. Sorted lowest-tile pairs decide
+	/// (primary, then zag-weighted tiebreak). A missing piece is maximum
+	/// value, so more surviving tiles win; a draw only if the counts match
+	/// and every pair ties on both passes.
 	LowValue,
 }
 
@@ -1968,47 +1985,67 @@ impl Game {
 		if self.board_count(Player::One) >= cap || self.board_count(Player::Two) >= cap {
 			return;
 		}
-		self.status =
-			match (self.lowest_piece_keys(Player::One), self.lowest_piece_keys(Player::Two)) {
-				(None, None) => GameStatus::Draw { reason: EndReason::LowValue },
-				(None, Some(_)) => {
-					GameStatus::Won { winner: Player::Two, reason: EndReason::LowValue }
-				}
-				(Some(_), None) => {
-					GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
-				}
-				(Some(a), Some(b)) => {
-					if a < b {
-						GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
-					} else if b < a {
-						GameStatus::Won { winner: Player::Two, reason: EndReason::LowValue }
-					} else {
-						GameStatus::Draw { reason: EndReason::LowValue }
-					}
-				}
-			};
+		self.status = match self.low_value_resolution() {
+			LowValueResolution::Draw => GameStatus::Draw { reason: EndReason::LowValue },
+			LowValueResolution::Win { winner, .. } => {
+				GameStatus::Won { winner, reason: EndReason::LowValue }
+			}
+		};
 	}
 
-	/// `(primary, tiebreak)` of this player's lowest board piece. `None` if
-	/// they hold no board tiles. Does not fall through to the next-lowest
-	/// piece: a full two-step tie is a draw even if other pieces differ.
-	fn lowest_piece_keys(&self, player: Player) -> Option<(i32, i32)> {
-		let mut best: Option<(i32, i32)> = None;
-		for (_, tile) in self.tiles() {
-			if tile.owner != player {
-				continue;
+	#[cfg(test)]
+	pub(crate) fn evaluate_low_value_for_test(&mut self) {
+		self.check_low_value();
+	}
+
+	/// Sorted `(primary, tiebreak)` keys of `player`'s on-board pieces,
+	/// ascending. Used by the progressive lowest-tile pair check.
+	pub fn sorted_piece_keys(&self, player: Player) -> Vec<(i32, i32)> {
+		let mut keys: Vec<(i32, i32)> = self
+			.tiles()
+			.filter(|(_, tile)| tile.owner == player)
+			.map(|(_, tile)| {
+				(
+					tile.piece_value(PieceValueWeights::PRIMARY),
+					tile.piece_value(PieceValueWeights::TIEBREAK),
+				)
+			})
+			.collect();
+		keys.sort_unstable();
+		keys
+	}
+
+	/// Progressive lowest-tile pair check. Each player's pieces are sorted
+	/// by [`PieceValueWeights::PRIMARY`] then [`PieceValueWeights::TIEBREAK`].
+	/// Pair `i` compares those keys (primary pass, then zag-weighted
+	/// tiebreak). A missing piece is maximum value, so the side with more
+	/// tiles wins once every real pair has tied. Equal counts with every
+	/// pair tied on both passes is a draw.
+	pub fn low_value_resolution(&self) -> LowValueResolution {
+		let a = self.sorted_piece_keys(Player::One);
+		let b = self.sorted_piece_keys(Player::Two);
+		let n = a.len().max(b.len());
+		for i in 0..n {
+			let a_missing = i >= a.len();
+			let b_missing = i >= b.len();
+			let ka = if a_missing { LOW_VALUE_EMPTY } else { a[i] };
+			let kb = if b_missing { LOW_VALUE_EMPTY } else { b[i] };
+			if ka.0 != kb.0 {
+				return LowValueResolution::Win {
+					winner: if ka.0 < kb.0 { Player::One } else { Player::Two },
+					pair: i,
+					by_piece_count: a_missing || b_missing,
+				};
 			}
-			let key = (
-				tile.piece_value(PieceValueWeights::PRIMARY),
-				tile.piece_value(PieceValueWeights::TIEBREAK),
-			);
-			best = Some(match best {
-				None => key,
-				Some(prev) if key < prev => key,
-				Some(prev) => prev,
-			});
+			if ka.1 != kb.1 {
+				return LowValueResolution::Win {
+					winner: if ka.1 < kb.1 { Player::One } else { Player::Two },
+					pair: i,
+					by_piece_count: a_missing || b_missing,
+				};
+			}
 		}
-		best
+		LowValueResolution::Draw
 	}
 
 	fn spend_budget(&mut self, player: Player) -> Result<(), String> {
@@ -4762,13 +4799,44 @@ mod tests {
 	}
 
 	fn place_isolated_dot(game: &mut Game, spawn_idx: usize, player: Player, zag: bool, dots: u8) {
+		place_valued(game, spawn_idx, player, dots, 1, zag);
+	}
+
+	fn place_valued(
+		game: &mut Game,
+		spawn_idx: usize,
+		player: Player,
+		dots: u8,
+		n_rings: u8,
+		zag: bool,
+	) {
 		let spawn = game.board().spawns()[spawn_idx];
+		let colors = [TileColor::Green, TileColor::Blue, TileColor::Orange];
+		let n = usize::from(n_rings.max(1));
 		let tile = if zag {
-			game.alloc_ring_kinds(player, &[(TileColor::Green, true)], 1, dots)
+			let mut parts = Vec::with_capacity(n);
+			parts.push((colors[0], true));
+			for c in colors.iter().skip(1).take(n.saturating_sub(1)) {
+				parts.push((*c, false));
+			}
+			game.alloc_ring_kinds(player, &parts, n_rings.max(1), dots)
 		} else {
-			game.alloc_tile(player, TileColor::Green, 1, dots)
+			game.alloc_rings(player, &colors[..n], n_rings.max(1), dots)
 		};
 		game.place_tile(spawn, tile);
+	}
+
+	fn step_p1_spawn0(game: &mut Game) {
+		zero_budget(game);
+		game.set_current(Player::One);
+		let from = game.board().spawns()[0];
+		let to = game.destinations(from).into_iter().next().expect("P1 can step");
+		game.apply(Action::Move { from, to }).unwrap();
+	}
+
+	fn arm_low_value(game: &mut Game) {
+		zero_budget(game);
+		game.evaluate_low_value_for_test();
 	}
 
 	#[test]
@@ -4776,14 +4844,14 @@ mod tests {
 		let mut game = Game::empty(low_value_rules());
 		place_isolated_dot(&mut game, 0, Player::One, false, 1);
 		place_isolated_dot(&mut game, 4, Player::Two, false, 2);
-		zero_budget(&mut game);
-		game.set_current(Player::One);
-		let from = game.board().spawns()[0];
-		let to = game.destinations(from).into_iter().next().expect("P1 can step");
-		game.apply(Action::Move { from, to }).unwrap();
+		step_p1_spawn0(&mut game);
 		assert_eq!(
 			game.status(),
 			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+		assert_eq!(
+			game.low_value_resolution(),
+			LowValueResolution::Win { winner: Player::One, pair: 0, by_piece_count: false }
 		);
 	}
 
@@ -4794,23 +4862,73 @@ mod tests {
 		let mut game = Game::empty(low_value_rules());
 		place_isolated_dot(&mut game, 0, Player::One, true, 1);
 		place_isolated_dot(&mut game, 4, Player::Two, false, 1);
-		zero_budget(&mut game);
-		game.set_current(Player::One);
-		let from = game.board().spawns()[0];
-		let to = game.destinations(from).into_iter().next().expect("P1 can step");
-		game.apply(Action::Move { from, to }).unwrap();
+		step_p1_spawn0(&mut game);
 		assert_eq!(
 			game.status(),
 			GameStatus::Won { winner: Player::Two, reason: EndReason::LowValue }
 		);
+		assert_eq!(
+			game.low_value_resolution(),
+			LowValueResolution::Win { winner: Player::Two, pair: 0, by_piece_count: false }
+		);
 	}
 
 	#[test]
-	fn low_value_full_tie_is_a_draw_without_next_piece() {
+	fn low_value_pair1_primary_breaks_a_lowest_tie() {
+		let mut game = Game::empty(low_value_rules());
+		place_valued(&mut game, 0, Player::One, 1, 1, false);
+		place_valued(&mut game, 1, Player::One, 2, 1, false);
+		place_valued(&mut game, 4, Player::Two, 1, 1, false);
+		place_valued(&mut game, 5, Player::Two, 3, 1, false);
+		arm_low_value(&mut game);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+		assert_eq!(
+			game.low_value_resolution(),
+			LowValueResolution::Win { winner: Player::One, pair: 1, by_piece_count: false }
+		);
+	}
+
+	#[test]
+	fn low_value_pair2_primary_breaks_after_two_ties() {
+		let mut game = Game::empty(low_value_rules());
+		place_valued(&mut game, 0, Player::One, 1, 1, false);
+		place_valued(&mut game, 1, Player::One, 2, 1, false);
+		place_valued(&mut game, 2, Player::One, 3, 1, false);
+		place_valued(&mut game, 4, Player::Two, 1, 1, false);
+		place_valued(&mut game, 5, Player::Two, 2, 1, false);
+		place_valued(&mut game, 6, Player::Two, 3, 2, false);
+		arm_low_value(&mut game);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+		assert_eq!(
+			game.low_value_resolution(),
+			LowValueResolution::Win { winner: Player::One, pair: 2, by_piece_count: false }
+		);
+	}
+
+	#[test]
+	fn low_value_equal_count_full_tie_is_a_draw() {
+		let mut game = Game::empty(low_value_rules());
+		place_valued(&mut game, 0, Player::One, 1, 1, false);
+		place_valued(&mut game, 1, Player::One, 2, 1, false);
+		place_valued(&mut game, 4, Player::Two, 1, 1, false);
+		place_valued(&mut game, 5, Player::Two, 2, 1, false);
+		arm_low_value(&mut game);
+		assert_eq!(game.status(), GameStatus::Draw { reason: EndReason::LowValue });
+		assert_eq!(game.low_value_resolution(), LowValueResolution::Draw);
+	}
+
+	#[test]
+	fn low_value_unequal_count_awards_the_side_with_more_pieces() {
 		let mut game = Game::empty(low_value_rules());
 		place_isolated_dot(&mut game, 0, Player::One, false, 1);
 		place_isolated_dot(&mut game, 4, Player::Two, false, 1);
-		// Extra high-value P1 piece must not break a lowest-piece tie.
+		// Extra high-value leftover still beats an empty slot (empty = MAX).
 		let extra = game.board().spawns()[2];
 		let heavy = game.alloc_rings(
 			Player::One,
@@ -4819,12 +4937,15 @@ mod tests {
 			3,
 		);
 		game.place_tile(extra, heavy);
-		zero_budget(&mut game);
-		game.set_current(Player::One);
-		let from = game.board().spawns()[0];
-		let to = game.destinations(from).into_iter().next().expect("P1 can step");
-		game.apply(Action::Move { from, to }).unwrap();
-		assert_eq!(game.status(), GameStatus::Draw { reason: EndReason::LowValue });
+		arm_low_value(&mut game);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+		assert_eq!(
+			game.low_value_resolution(),
+			LowValueResolution::Win { winner: Player::One, pair: 1, by_piece_count: true }
+		);
 	}
 
 	#[test]
