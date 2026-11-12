@@ -729,6 +729,31 @@ fn spawn_arc(
 			);
 		}
 		ArcBody::Hidden => {}
+		ArcBody::Braid { colors } => {
+			let amp = if visual::arc_touches_center(arc, center) {
+				f64::from(layout.braid_amp_center)
+			} else {
+				f64::from(layout.braid_amp)
+			};
+			let strand_w = width * visual::BRAID_STRAND_WIDTH_SCALE;
+			let n = visual::braid_strand_count(colors).max(1) as f64;
+			for (i, color) in colors.iter().enumerate() {
+				let Some(color) = *color else {
+					continue;
+				};
+				let phase = i as f64 * (std::f64::consts::TAU / n);
+				let strand = visual::braid_alongside(&pts, amp, phase, visual::BRAID_TURNS);
+				spawn_stroke(
+					commands,
+					meshes,
+					materials,
+					&strand,
+					strand_w,
+					rgb(visual::tile_rgb(color)),
+					visual::Z_ARC + 0.01 * i as f32,
+				);
+			}
+		}
 	}
 	let zag_amp = if visual::arc_touches_center(arc, center) {
 		f64::from(layout.zag_amp_center)
@@ -1019,6 +1044,17 @@ fn spawn_tile_at(
 					paint(visual::tile_rgb(color), dim),
 					z,
 				);
+			} else if tile.stroke_is_braid(k) {
+				let [a, b] = visual::braid_circle(
+					[f64::from(pos.x), f64::from(pos.y)],
+					f64::from(r - ring_half * 0.5),
+					f64::from(draw.braid_amp),
+					draw.braid_samples,
+				);
+				let col = paint(visual::tile_rgb(color), dim);
+				let w = draw.braid_stroke.max(0.4);
+				spawn_stroke(commands, meshes, materials, &a, w, col, z);
+				spawn_stroke(commands, meshes, materials, &b, w, col, z + 0.005);
 			} else {
 				spawn_ring(
 					commands,

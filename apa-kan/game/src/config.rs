@@ -278,6 +278,17 @@ where
 			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
 			rules.zag_numer = if on { crate::game::ZAG_NUMER_DEFAULT } else { 0 };
 		}
+		"--braid-chance" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n > 7 {
+				return Err("invalid --braid-chance (expected 0..7, k/7)".into());
+			}
+			rules.braid_numer = n as u8;
+		}
+		"--braids" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.braid_numer = if on { crate::game::BRAID_NUMER_DEFAULT } else { 0 };
+		}
 		"--zag-mismatch" => {
 			rules.zag_mismatch = ZagMismatchCount::parse(&require_value(arg, it.next())?)?;
 		}
@@ -348,6 +359,8 @@ pub fn usage() -> &'static str {
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
+	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
+	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
@@ -471,6 +484,7 @@ mod tests {
 		assert!(cfg.rules.self_capture_budget);
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
+		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 		assert!(cfg.rules.counted_pass_through);
 		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
@@ -533,6 +547,20 @@ mod tests {
 		assert_eq!(on.rules.zag_numer, 1);
 		let err = GameConfig::parse(["--zag-chance", "8"]).unwrap_err();
 		assert!(err.contains("zag-chance"));
+	}
+
+	#[test]
+	fn parses_braid_flags() {
+		let off = GameConfig::parse(["--braids", "off"]).unwrap();
+		assert_eq!(off.rules.braid_numer, 0);
+		let chance = GameConfig::parse(["--braid-chance", "0"]).unwrap();
+		assert_eq!(chance.rules.braid_numer, 0);
+		let on = GameConfig::parse(["--braids", "on"]).unwrap();
+		assert_eq!(on.rules.braid_numer, 1);
+		let three = GameConfig::parse(["--braid-chance", "3"]).unwrap();
+		assert_eq!(three.rules.braid_numer, 3);
+		let err = GameConfig::parse(["--braid-chance", "8"]).unwrap_err();
+		assert!(err.contains("braid-chance"));
 	}
 
 	#[test]

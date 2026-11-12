@@ -137,6 +137,23 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				);
 			}
 			ArcBody::Hidden => {}
+			ArcBody::Braid { colors } => {
+				let amp = if visual::arc_touches_center(arc, board.center()) {
+					f64::from(layout.braid_amp_center)
+				} else {
+					f64::from(layout.braid_amp)
+				};
+				let strand_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
+				let n = visual::braid_strand_count(colors).max(1) as f64;
+				for (i, color) in colors.iter().enumerate() {
+					let Some(color) = *color else {
+						continue;
+					};
+					let phase = i as f64 * (std::f64::consts::TAU / n);
+					let strand = visual::braid_alongside(&pts, amp, phase, visual::BRAID_TURNS);
+					back.push((strand, rgb_of(visual::tile_rgb(color)), strand_w));
+				}
+			}
 		}
 		let zag_amp = if visual::arc_touches_center(arc, board.center()) {
 			f64::from(layout.zag_amp_center)
@@ -367,6 +384,17 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile, dim: bool) 
 					draw.zag_samples,
 				);
 				stroke_polyline(img, &zig, rgb_of(fade_rgb(visual::tile_rgb(color), dim)), width);
+			} else if tile.stroke_is_braid(k) {
+				let [a, b] = visual::braid_circle(
+					[c.0, c.1],
+					rr,
+					f64::from(draw.braid_amp),
+					draw.braid_samples,
+				);
+				let rgb = rgb_of(fade_rgb(visual::tile_rgb(color), dim));
+				let w = f64::from(draw.braid_stroke);
+				stroke_polyline(img, &a, rgb, w);
+				stroke_polyline(img, &b, rgb, w);
 			} else {
 				stroke_circle(img, c, rr, rgb_of(fade_rgb(visual::tile_rgb(color), dim)), width);
 			}

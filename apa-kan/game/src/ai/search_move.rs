@@ -166,24 +166,30 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 		}
 		SearchMove::Add { kind, node } => {
 			let mut s = 12;
-			let (normal, zag) = crate::game::color_state_masks((kind / 9) as usize);
-			let add_all = normal | zag;
+			let view = crate::game::decode_color_state((kind / 9) as usize);
+			let add_all = view.normal | view.zag | view.braid;
 			for &nb in game.board().neighbors(node) {
 				if let Some(other) = game.tile_at(nb) {
 					if other.owner == game.current_player() {
 						s += 10;
 					}
-					if other.normal_mask() & normal != 0 {
+					let braid_hit = view.braid_size >= 2
+						&& (0..6).all(|i| other.color_counts()[i] >= view.braid_counts[i]);
+					if braid_hit {
+						s += 14 + i32::from(view.braid_size);
+					} else if other.normal_mask() & view.normal != 0 {
 						s += 16;
-					} else if other.color_mask() & zag != 0
+					} else if other.color_mask() & view.zag != 0
 						|| other
 							.ring_colors()
 							.iter()
 							.enumerate()
-							.any(|(i, c)| other.zag[i] && add_all & c.bit() != 0)
+							.any(|(i, c)| other.ring_is_zag(i) && add_all & c.bit() != 0)
 					{
 						s += 18;
-					} else if normal != 0 && other.normal_mask() != 0 {
+					} else if (view.normal != 0 || view.braid_size >= 2)
+						&& (other.normal_mask() != 0 || other.braid_ring_count() >= 2)
+					{
 						s += 6;
 					}
 				}
@@ -226,9 +232,56 @@ mod tests {
 		let zag_add = SearchMove::Add { kind: 20 * 9 + 2, node: 5 };
 		let packed = zag_add.pack();
 		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(zag_add));
+		let braid = crate::game::Tile::with_typed_rings(
+			0,
+			crate::game::Player::One,
+			&[
+				(crate::game::TileColor::Orange, crate::game::RingType::Braid),
+				(crate::game::TileColor::Green, crate::game::RingType::Braid),
+			],
+			1,
+			1,
+		);
+		let braid_add = SearchMove::Add { kind: braid.kind_index() as u16, node: 4 };
+		let packed = braid_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(braid_add));
 		let mv = SearchMove::Move { from: 2, to: 7 };
 		let (k, a, b) = mv.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));
+	}
+
+	#[test]
+	fn cheap_order_prefers_a_fulfilled_braid_add() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let cover = game.alloc_rings(
+			crate::game::Player::Two,
+			&[crate::game::TileColor::Orange, crate::game::TileColor::Green],
+			1,
+			1,
+		);
+		game.place_tile(nbs[0], cover);
+		let braid = crate::game::Tile::with_typed_rings(
+			9,
+			crate::game::Player::One,
+			&[
+				(crate::game::TileColor::Orange, crate::game::RingType::Braid),
+				(crate::game::TileColor::Green, crate::game::RingType::Braid),
+			],
+			1,
+			1,
+		);
+		let miss = crate::game::Tile::mono(
+			10,
+			crate::game::Player::One,
+			crate::game::TileColor::Blue,
+			1,
+			1,
+		);
+		let hit = SearchMove::Add { kind: braid.kind_index() as u16, node: spawn };
+		let miss_mv = SearchMove::Add { kind: miss.kind_index() as u16, node: spawn };
+		assert!(cheap_order(&game, hit) > cheap_order(&game, miss_mv));
 	}
 
 	#[test]

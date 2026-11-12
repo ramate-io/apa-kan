@@ -73,14 +73,60 @@ pub const RING_EXIST_TOTAL: u32 = RING_SAME_WEIGHT + RING_ANY_WEIGHT;
 /// Each ring is independently a zag with probability `zag_numer / ZAG_DENOM`.
 pub const ZAG_DENOM: u8 = 7;
 pub const ZAG_NUMER_DEFAULT: u8 = 1;
+/// A piece forms a braid with probability `braid_numer / BRAID_DENOM`.
+pub const BRAID_DENOM: u8 = 7;
+pub const BRAID_NUMER_DEFAULT: u8 = 1;
 /// Maximum sampled bag size (the old 27 unique 3-color kinds). CLI `--bag-size`
 /// accepts `1..=BAG_SIZE`. The default deal is [`BAG_SIZE_DEFAULT`].
 pub const BAG_SIZE: usize = 27;
 /// Default `--bag-size` / [`RuleSet::bag_size`]. A deal of 7 leaves 4 to draw.
 pub const BAG_SIZE_DEFAULT: usize = 11;
 pub const MAX_COLOR_RINGS: u8 = 3;
-/// Each of 6 colors is absent (0), a normal ring (1), or a zag ring (2).
-pub const COLOR_STATES: usize = 729;
+/// Per live slot: empty + (6 colors × 3 types). Kind space is this cubed.
+pub const RING_TYPE_COUNT: usize = 3;
+pub const SLOT_KINDS: usize = 1 + 6 * RING_TYPE_COUNT;
+pub const COLOR_STATES: usize = SLOT_KINDS * SLOT_KINDS * SLOT_KINDS;
+
+/// Ring kind is independent of color: a slot is a normal match, a zag (jag),
+/// or part of one braid group occupying 2–3 slots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+pub enum RingType {
+	#[default]
+	Normal = 0,
+	Zag = 1,
+	Braid = 2,
+}
+
+impl RingType {
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Normal => "normal",
+			Self::Zag => "zag",
+			Self::Braid => "braid",
+		}
+	}
+
+	pub fn is_normal(self) -> bool {
+		matches!(self, Self::Normal)
+	}
+
+	pub fn is_zag(self) -> bool {
+		matches!(self, Self::Zag)
+	}
+
+	pub fn is_braid(self) -> bool {
+		matches!(self, Self::Braid)
+	}
+
+	pub fn from_zag(zag: bool) -> Self {
+		if zag {
+			Self::Zag
+		} else {
+			Self::Normal
+		}
+	}
+}
 
 impl TileColor {
 	pub const ALL: [TileColor; 6] = [
@@ -160,6 +206,62 @@ pub fn sample_zag_flags(rng: &mut impl Rng, n_rings: u8, zag_numer: u8) -> [bool
 	zag
 }
 
+/// Piece-level braid roll (`braid_numer / 7`). Size 2 occupies two slots
+/// (padding a 1-ring tile by repeating its color); size 3 takes every slot.
+/// `braid_numer == 0` skips the RNG so `--braids off` matches the pre-braid
+/// deal for the same seed.
+pub fn sample_braid(
+	rng: &mut impl Rng,
+	rings: &mut [TileColor; 3],
+	n_rings: &mut u8,
+	max_rings: u8,
+	braid_numer: u8,
+) -> [RingType; 3] {
+	let mut types = [RingType::Normal; 3];
+	if braid_numer == 0 || max_rings < 2 {
+		return types;
+	}
+	let numer = u32::from(braid_numer.min(BRAID_DENOM));
+	if rng.gen_range(0..u32::from(BRAID_DENOM)) >= numer {
+		return types;
+	}
+	let n = (*n_rings).clamp(1, MAX_COLOR_RINGS);
+	let max = max_rings.clamp(1, MAX_COLOR_RINGS);
+	let size = if n >= 3 && max >= 3 {
+		if rng.gen_range(0..2u32) == 0 {
+			3u8
+		} else {
+			2u8
+		}
+	} else {
+		2u8
+	};
+	if n < size {
+		let last = rings[(n - 1) as usize];
+		for i in n..size {
+			rings[i as usize] = last;
+		}
+		*n_rings = size;
+	}
+	for slot in types.iter_mut().take(size as usize) {
+		*slot = RingType::Braid;
+	}
+	types
+}
+
+/// Independent zag rolls on remaining **normal** slots. Braid slots stay braid.
+pub fn sample_zag_types(rng: &mut impl Rng, n_rings: u8, types: &mut [RingType; 3], zag_numer: u8) {
+	if zag_numer == 0 {
+		return;
+	}
+	let numer = u32::from(zag_numer.min(ZAG_DENOM));
+	for slot in types.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+		if *slot == RingType::Normal && rng.gen_range(0..u32::from(ZAG_DENOM)) < numer {
+			*slot = RingType::Zag;
+		}
+	}
+}
+
 /// 1–3 distinct ring colors. Ring 1 is always drawn. Rings 2 and 3
 /// keep the last existing color with weight 7, or draw any color with weight 1
 /// (a redraw of an already-present color is not a new ring). Each ring is
@@ -191,12 +293,13 @@ pub fn sample_rings(rng: &mut impl Rng, max_rings: u8) -> ([TileColor; 3], u8) {
 pub struct Tile {
 	pub id: u32,
 	pub owner: Player,
-	/// Distinct-color rings in generation; tests may stack same-color zags.
-	/// First [`Self::n_rings`] entries live.
+	/// Ring colors in slot order. Generation usually keeps colors distinct;
+	/// a braid may repeat a color (orange+orange). First [`Self::n_rings`] live.
 	pub rings: [TileColor; 3],
 	pub n_rings: u8,
-	/// Parallel to [`Self::rings`]: that ring is a zag (forced mismatch).
-	pub zag: [bool; 3],
+	/// Parallel to [`Self::rings`]: normal, zag (jag), or braid. At most one
+	/// braid group per tile, occupying 2 or 3 slots.
+	pub ring_type: [RingType; 3],
 	pub weight: u8,
 	pub dots: u8,
 }
@@ -223,6 +326,7 @@ impl Tile {
 	}
 
 	/// Rings in listed order, including duplicate colors (for stacked zags).
+	/// `true` marks a zag; braid tests should use [`Self::with_typed_rings`].
 	pub fn with_ring_kinds(
 		id: u32,
 		owner: Player,
@@ -230,27 +334,57 @@ impl Tile {
 		weight: u8,
 		dots: u8,
 	) -> Self {
+		let typed: Vec<(TileColor, RingType)> =
+			parts.iter().map(|&(c, z)| (c, RingType::from_zag(z))).collect();
+		Self::with_typed_rings(id, owner, &typed, weight, dots)
+	}
+
+	/// Rings in listed order with an explicit [`RingType`] per slot.
+	pub fn with_typed_rings(
+		id: u32,
+		owner: Player,
+		parts: &[(TileColor, RingType)],
+		weight: u8,
+		dots: u8,
+	) -> Self {
 		let first = parts.first().map(|p| p.0).unwrap_or(TileColor::Green);
 		let mut rings = [first; 3];
-		let mut zag = [false; 3];
+		let mut ring_type = [RingType::Normal; 3];
 		let mut n = 0u8;
-		for &(c, is_zag) in parts.iter().take(MAX_COLOR_RINGS as usize) {
+		for &(c, typ) in parts.iter().take(MAX_COLOR_RINGS as usize) {
 			rings[n as usize] = c;
-			zag[n as usize] = is_zag;
+			ring_type[n as usize] = typ;
 			n += 1;
 		}
 		if n == 0 {
 			n = 1;
 		}
-		Self { id, owner, rings, n_rings: n, zag, weight, dots }
+		Self { id, owner, rings, n_rings: n, ring_type, weight, dots }
 	}
 
 	pub fn ring_colors(&self) -> &[TileColor] {
 		&self.rings[..self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize]
 	}
 
+	pub fn ring_type_at(self, index: usize) -> RingType {
+		if index < self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize {
+			self.ring_type[index]
+		} else {
+			RingType::Normal
+		}
+	}
+
 	pub fn ring_is_zag(self, index: usize) -> bool {
-		index < self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize && self.zag[index]
+		self.ring_type_at(index).is_zag()
+	}
+
+	pub fn ring_is_braid(self, index: usize) -> bool {
+		self.ring_type_at(index).is_braid()
+	}
+
+	/// Zag flags in slot order, for call sites that still compare a `[bool; 3]`.
+	pub fn zag(self) -> [bool; 3] {
+		self.ring_type.map(RingType::is_zag)
 	}
 
 	pub fn primary(self) -> TileColor {
@@ -262,7 +396,10 @@ impl Tile {
 	}
 
 	pub fn has_normal(self, color: TileColor) -> bool {
-		self.ring_colors().iter().enumerate().any(|(i, &c)| c == color && !self.zag[i])
+		self.ring_colors()
+			.iter()
+			.enumerate()
+			.any(|(i, &c)| c == color && self.ring_type[i].is_normal())
 	}
 
 	/// Concentric strokes drawn for this tile: one per ring, extra weight
@@ -281,8 +418,16 @@ impl Tile {
 		self.rings[self.stroke_idx(k)]
 	}
 
+	pub fn stroke_type(self, k: u8) -> RingType {
+		self.ring_type[self.stroke_idx(k)]
+	}
+
 	pub fn stroke_is_zag(self, k: u8) -> bool {
-		self.zag[self.stroke_idx(k)]
+		self.stroke_type(k).is_zag()
+	}
+
+	pub fn stroke_is_braid(self, k: u8) -> bool {
+		self.stroke_type(k).is_braid()
 	}
 
 	pub fn color_mask(self) -> u8 {
@@ -296,20 +441,56 @@ impl Tile {
 	pub fn normal_mask(self) -> u8 {
 		let mut m = 0u8;
 		for (i, &c) in self.ring_colors().iter().enumerate() {
-			if !self.zag[i] {
+			if self.ring_type[i].is_normal() {
 				m |= c.bit();
 			}
 		}
 		m
 	}
 
-	/// Any ring color, normal or zag.
+	/// How many live rings of `color`, any type. Braid satisfaction reads this
+	/// on the neighbor.
+	pub fn color_count(self, color: TileColor) -> u8 {
+		self.ring_colors().iter().filter(|&&c| c == color).count() as u8
+	}
+
+	pub fn color_counts(self) -> [u8; 6] {
+		let mut c = [0u8; 6];
+		for &col in self.ring_colors() {
+			c[col as usize] += 1;
+		}
+		c
+	}
+
+	pub fn braid_color_counts(self) -> [u8; 6] {
+		let mut c = [0u8; 6];
+		for (i, &col) in self.ring_colors().iter().enumerate() {
+			if self.ring_type[i].is_braid() {
+				c[col as usize] += 1;
+			}
+		}
+		c
+	}
+
+	pub fn braid_colors(self) -> [Option<TileColor>; 3] {
+		let mut out = [None; 3];
+		let mut n = 0usize;
+		for (i, &col) in self.ring_colors().iter().enumerate() {
+			if self.ring_type[i].is_braid() && n < 3 {
+				out[n] = Some(col);
+				n += 1;
+			}
+		}
+		out
+	}
+
+	/// Any ring color, normal, zag, or braid.
 	pub fn shares_color(self, other: Tile) -> bool {
 		(self.color_mask() & other.color_mask()) != 0
 	}
 
-	/// Shared **normal** ring. Zags never produce a match. A color that
-	/// either tile holds only as zags does not count.
+	/// Shared **normal** ring. Zags and braids never produce a normal match.
+	/// A color that either tile holds only as zags or braids does not count.
 	pub fn shares_normal(self, other: Tile) -> bool {
 		(self.normal_mask() & other.normal_mask()) != 0
 	}
@@ -327,17 +508,35 @@ impl Tile {
 	}
 
 	/// How many of this tile's zag **strokes** have their color on `target`
-	/// (normal or zag). Extra weight strokes of a zag last-ring count, matching
-	/// the concentric rings that are drawn. Own zags do not mismatch their owner.
-	/// A zag whose color `target` lacks is absent (not a hit).
+	/// (normal, zag, or braid). Extra weight strokes of a zag last-ring count,
+	/// matching the concentric rings that are drawn. Own zags do not mismatch
+	/// their owner. A zag whose color `target` lacks is absent (not a hit).
 	pub fn zag_hits_on(self, target: Tile) -> i32 {
 		TileColor::ALL.iter().map(|&c| self.zag_hits_of_color(target, c)).sum()
 	}
 
-	/// True if this tile has a real presence toward `dst`: a normal ring, or a
-	/// zag whose color `dst` holds. Non-matching zags are treated as empty.
+	/// This tile's braid is satisfied when `other`'s facing color **counts**
+	/// (any ring types) cover every color in the braid. Size is the braid's
+	/// slot count (2 or 3), not extra weight strokes.
+	pub fn braid_fulfilled_by(self, other: Tile) -> Option<u8> {
+		let size = self.braid_ring_count();
+		if size < 2 {
+			return None;
+		}
+		let need = self.braid_color_counts();
+		let have = other.color_counts();
+		if (0..6).all(|i| have[i] >= need[i]) {
+			Some(size)
+		} else {
+			None
+		}
+	}
+
+	/// True if this tile has a real presence toward `dst`: a normal ring, a
+	/// braid (2–3 slots), or a zag whose color `dst` holds. Non-matching zags
+	/// are treated as empty.
 	pub fn present_toward(self, dst: Tile) -> bool {
-		self.normal_mask() != 0 || self.zag_hits_on(dst) > 0
+		self.normal_mask() != 0 || self.braid_ring_count() >= 2 || self.zag_hits_on(dst) > 0
 	}
 
 	pub fn kind_label(self) -> String {
@@ -345,78 +544,99 @@ impl Tile {
 			.ring_colors()
 			.iter()
 			.enumerate()
-			.map(
-				|(i, c)| {
-					if self.zag[i] {
-						format!("{}-zag", c.name())
-					} else {
-						c.name().to_string()
-					}
-				},
-			)
+			.map(|(i, c)| match self.ring_type[i] {
+				RingType::Zag => format!("{}-zag", c.name()),
+				RingType::Braid => format!("{}-braid", c.name()),
+				RingType::Normal => c.name().to_string(),
+			})
 			.collect::<Vec<_>>()
 			.join("+");
 		format!("{rings} w{} d{}", self.weight, self.dots)
 	}
 
-	/// Per color: 0 absent, 1 normal, 2 zag. Duplicate-color zags collapse to 2.
-	pub fn color_trits(self) -> [u8; 6] {
-		let mut t = [0u8; 6];
-		for (i, &c) in self.ring_colors().iter().enumerate() {
-			let idx = c as usize;
-			if idx >= 6 {
-				continue;
-			}
-			if self.zag[i] {
-				t[idx] = 2;
-			} else if t[idx] == 0 {
-				t[idx] = 1;
-			}
-		}
-		t
+	/// Slot-coded color state: empty / (color × type) per live ring.
+	pub fn color_state(self) -> usize {
+		slot_state(self.rings, self.ring_type, self.n_rings)
 	}
 
 	/// `color_state * 9 + (weight-1)*3 + (dots-1)`.
 	pub fn kind_index(self) -> usize {
 		let w = (self.weight.clamp(1, 3) - 1) as usize;
 		let d = (self.dots.clamp(1, 3) - 1) as usize;
-		color_trits_state(self.color_trits()) * 9 + w * 3 + d
+		self.color_state() * 9 + w * 3 + d
 	}
 
 	/// How many of this tile's live rings are zags.
 	pub fn zag_ring_count(self) -> u8 {
-		(0..self.n_rings.min(MAX_COLOR_RINGS)).filter(|&i| self.zag[i as usize]).count() as u8
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&i| self.ring_type[i as usize].is_zag())
+			.count() as u8
 	}
 
-	/// How many of this tile's live rings are normal (non-zag).
+	/// How many of this tile's live rings are braid slots.
+	pub fn braid_ring_count(self) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&i| self.ring_type[i as usize].is_braid())
+			.count() as u8
+	}
+
+	/// How many of this tile's live rings are normal (not zag, not braid).
 	pub fn normal_ring_count(self) -> u8 {
-		self.n_rings.saturating_sub(self.zag_ring_count())
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&i| self.ring_type[i as usize].is_normal())
+			.count() as u8
 	}
 
 	/// Piece value under `weights`: `dots * w.dots + normal_rings * w.normal_ring
-	/// + zag_rings * w.zag_ring`. Used by the low-value end condition.
+	/// + zag_rings * w.zag_ring + braid_rings * w.braid_ring`. Used by the
+	/// low-value end condition.
 	pub fn piece_value(self, weights: PieceValueWeights) -> i32 {
 		weights.dots * i32::from(self.dots)
 			+ weights.normal_ring * i32::from(self.normal_ring_count())
 			+ weights.zag_ring * i32::from(self.zag_ring_count())
+			+ weights.braid_ring * i32::from(self.braid_ring_count())
+	}
+}
+
+/// Largest fulfilled braid on the edge `a`–`b`. Equal sizes pick the
+/// lexicographically smaller braid color-count vector, then the lower tile id.
+pub fn selected_braid(a: Tile, b: Tile) -> Option<(Tile, u8)> {
+	let fa = a.braid_fulfilled_by(b);
+	let fb = b.braid_fulfilled_by(a);
+	match (fa, fb) {
+		(None, None) => None,
+		(Some(n), None) => Some((a, n)),
+		(None, Some(n)) => Some((b, n)),
+		(Some(na), Some(nb)) if na > nb => Some((a, na)),
+		(Some(na), Some(nb)) if nb > na => Some((b, nb)),
+		(Some(n), Some(_)) => {
+			let ka = a.braid_color_counts();
+			let kb = b.braid_color_counts();
+			if ka < kb || (ka == kb && a.id <= b.id) {
+				Some((a, n))
+			} else {
+				Some((b, n))
+			}
+		}
 	}
 }
 
 /// Tunable weights for [`Tile::piece_value`]. Low-value resolution uses
 /// [`Self::PRIMARY`] first (every ring counts 1), then [`Self::TIEBREAK`]
-/// (zag rings count 2). Add fields here as new ring types appear.
+/// (zag and braid rings count 2). Add fields here as new ring types appear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PieceValueWeights {
 	pub dots: i32,
 	pub normal_ring: i32,
 	pub zag_ring: i32,
+	pub braid_ring: i32,
 }
 
 impl PieceValueWeights {
 	/// Step 1: value = dots + rings (every ring 1). Lower wins.
-	pub const PRIMARY: Self = Self { dots: 1, normal_ring: 1, zag_ring: 1 };
-	/// Step 2 on a primary tie: zag rings are worth 2. Lower wins.
-	pub const TIEBREAK: Self = Self { dots: 1, normal_ring: 1, zag_ring: 2 };
+	pub const PRIMARY: Self = Self { dots: 1, normal_ring: 1, zag_ring: 1, braid_ring: 1 };
+	/// Step 2 on a primary tie: zag and braid rings are worth 2. Lower wins.
+	pub const TIEBREAK: Self = Self { dots: 1, normal_ring: 1, zag_ring: 2, braid_ring: 2 };
 }
 
 /// A missing piece in a low-value pair. Treated as maximum value so the
@@ -452,31 +672,66 @@ fn blank_budget(n: u8) -> Vec<BudgetToken> {
 	vec![BudgetToken::Blank; n as usize]
 }
 
-pub fn color_trits_state(trits: [u8; 6]) -> usize {
+pub fn slot_code(color: TileColor, typ: RingType) -> usize {
+	1 + (color as usize) * RING_TYPE_COUNT + (typ as u8 as usize)
+}
+
+pub fn slot_state(rings: [TileColor; 3], types: [RingType; 3], n_rings: u8) -> usize {
+	let n = n_rings.clamp(1, MAX_COLOR_RINGS) as usize;
 	let mut state = 0usize;
 	let mut pow = 1usize;
-	for t in trits {
-		state += (t as usize).min(2) * pow;
-		pow *= 3;
+	for i in 0..MAX_COLOR_RINGS as usize {
+		let code = if i < n { slot_code(rings[i], types[i]) } else { 0 };
+		state += code * pow;
+		pow *= SLOT_KINDS;
 	}
 	state
 }
 
-/// `(normal_mask, zag_mask)` from a `kind / 9` color-state.
-pub fn color_state_masks(state: usize) -> (u8, u8) {
-	let mut s = state;
-	let mut normal = 0u8;
-	let mut zag = 0u8;
-	for i in 0..6u8 {
-		let trit = s % 3;
-		s /= 3;
-		match trit {
-			1 => normal |= 1 << i,
-			2 => zag |= 1 << i,
-			_ => {}
+/// Decoded ADD kind color-state: masks, per-color counts, and braid size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ColorStateView {
+	pub normal: u8,
+	pub zag: u8,
+	pub braid: u8,
+	pub counts: [u8; 6],
+	pub braid_counts: [u8; 6],
+	pub braid_size: u8,
+}
+
+pub fn decode_color_state(mut state: usize) -> ColorStateView {
+	let mut view = ColorStateView::default();
+	for _ in 0..MAX_COLOR_RINGS {
+		let code = state % SLOT_KINDS;
+		state /= SLOT_KINDS;
+		if code == 0 {
+			continue;
+		}
+		let idx = code - 1;
+		let color = idx / RING_TYPE_COUNT;
+		let typ = idx % RING_TYPE_COUNT;
+		if color >= 6 {
+			continue;
+		}
+		let bit = 1u8 << color;
+		view.counts[color] += 1;
+		match typ {
+			0 => view.normal |= bit,
+			1 => view.zag |= bit,
+			_ => {
+				view.braid |= bit;
+				view.braid_counts[color] += 1;
+				view.braid_size += 1;
+			}
 		}
 	}
-	(normal, zag)
+	view
+}
+
+/// `(normal_mask, zag_mask)` from a `kind / 9` color-state.
+pub fn color_state_masks(state: usize) -> (u8, u8) {
+	let view = decode_color_state(state);
+	(view.normal, view.zag)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -497,7 +752,7 @@ pub enum EndReason {
 	InsufficientTiles,
 	/// Both players have zero **usable** capture budget and fewer than
 	/// [`LOW_VALUE_BOARD_LT`] board tiles. Sorted lowest-tile pairs decide
-	/// (primary, then zag-weighted tiebreak). A missing piece is maximum
+	/// (primary, then zag/braid-weighted tiebreak). A missing piece is maximum
 	/// value, so more surviving tiles win; a draw only if the counts match
 	/// and every pair ties on both passes.
 	LowValue,
@@ -779,6 +1034,10 @@ pub struct RuleSet {
 	/// Each ring is a zag with probability `zag_numer / 7`. Default 1 (1/7).
 	/// `0` disables zags (`--zags off` / `--zag-chance 0`).
 	pub zag_numer: u8,
+	/// A piece forms a braid with probability `braid_numer / 7`. Default 1
+	/// (1/7, same rate as zags). `0` disables braids (`--braids off` /
+	/// `--braid-chance 0`).
+	pub braid_numer: u8,
 	/// On a MOVE, each removed opponent tile draws one bag tile onto the mover's bench.
 	pub capture_draw_on_move: bool,
 	/// If true, a mismatch adds the neighbor's weight instead of 1. Default false.
@@ -861,6 +1120,7 @@ impl Default for RuleSet {
 			bag_one_of_each_kind: true,
 			max_rings: MAX_COLOR_RINGS,
 			zag_numer: ZAG_NUMER_DEFAULT,
+			braid_numer: BRAID_NUMER_DEFAULT,
 			capture_draw_on_move: true,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
@@ -990,7 +1250,7 @@ impl Game {
 				.map(|spec| {
 					let id = *next_id;
 					*next_id += 1;
-					Tile::with_ring_kinds(id, owner, &spec.parts(), spec.weight, spec.dots)
+					Tile::with_typed_rings(id, owner, &spec.parts(), spec.weight, spec.dots)
 				})
 				.collect::<Vec<_>>()
 		};
@@ -1038,6 +1298,7 @@ impl Game {
 			rules.bag_size as usize,
 			rules.max_rings,
 			rules.zag_numer,
+			rules.braid_numer,
 			&mut next_tile_id,
 			&mut rng,
 		);
@@ -1057,6 +1318,7 @@ impl Game {
 				rules.bag_size as usize,
 				rules.max_rings,
 				rules.zag_numer,
+				rules.braid_numer,
 				&mut next_tile_id,
 				&mut rng,
 			)
@@ -1374,25 +1636,41 @@ impl Game {
 		Tile::with_ring_kinds(id, owner, parts, weight, dots)
 	}
 
+	pub fn alloc_typed_rings(
+		&mut self,
+		owner: Player,
+		parts: &[(TileColor, RingType)],
+		weight: u8,
+		dots: u8,
+	) -> Tile {
+		let id = self.next_tile_id;
+		self.next_tile_id += 1;
+		Tile::with_typed_rings(id, owner, parts, weight, dots)
+	}
+
 	/// Match/mismatch this `tile` receives from neighbor `other`.
-	/// Matches: +1 if they share a **normal** color. Zags never produce a
-	/// match — a color that either tile holds only as zags does not count.
-	/// Mismatches: [`RuleSet::zag_mismatch`] count of hitting zags on this
-	/// edge. [`ZagMismatchCount::Sum`] and [`ZagMismatchCount::Max`] are
-	/// undirected (both tiles take the same number). A zag whose color the
-	/// other tile lacks is empty: no match, no mismatch, and it does not
-	/// create a conflict. Ordinary +1 (or neighbor weight) mismatch only when
-	/// the zag-hit count is 0, both tiles are actually present toward each
-	/// other, and they share no normal color. A tile can still take that
-	/// ordinary mismatch on its normal rings even if it also has zags (the
-	/// zags just have to be non-hitting on this edge).
+	///
+	/// Matches: the largest fulfilled braid on the edge (weight = braid size
+	/// 2 or 3) if any; otherwise +1 if they share a **normal** color. A
+	/// satisfied braid suppresses the normal match (one or the other). A
+	/// failed braid does not: leftover normal rings can still match.
+	/// Zags never produce a match.
+	///
+	/// Mismatches: [`RuleSet::zag_mismatch`] count of hitting zags (jags) on
+	/// this edge, **plus** a satisfied braid still counts as a match so jag
+	/// and braid scores sum. Ordinary +1 (or neighbor weight) mismatch only
+	/// when the zag-hit count is 0, there is no match (braid or normal), and
+	/// both tiles are actually present toward each other. An unsatisfied
+	/// braid is present like a normal ring, so it hitch-mismatches those
+	/// slots when nothing else scores.
 	pub fn edge_score(&self, tile: Tile, other: Tile) -> (i32, i32) {
-		let matched = tile.shares_normal(other);
-		let matches = i32::from(matched);
+		let braid_match = selected_braid(tile, other).map(|(_, n)| i32::from(n)).unwrap_or(0);
+		let matches =
+			if braid_match > 0 { braid_match } else { i32::from(tile.shares_normal(other)) };
 		let zag = self.rules.zag_mismatch.count(tile, other);
 		let mismatches = if zag > 0 {
 			zag
-		} else if matched {
+		} else if matches > 0 {
 			0
 		} else if tile.present_toward(other) && other.present_toward(tile) {
 			if self.rules.mismatch_uses_neighbor_weight {
@@ -1404,6 +1682,29 @@ impl Game {
 			0
 		};
 		(matches, mismatches)
+	}
+
+	/// Occupied-edge braid stats: `(edges with a braid, satisfied of those)`.
+	/// Each undirected edge is counted once.
+	pub fn braid_edge_counts(&self) -> (u32, u32) {
+		let mut with_braid = 0u32;
+		let mut satisfied = 0u32;
+		for arc in self.board.arcs() {
+			let Some(a) = self.tile_at(arc.from) else {
+				continue;
+			};
+			let Some(b) = self.tile_at(arc.to) else {
+				continue;
+			};
+			if a.braid_ring_count() < 2 && b.braid_ring_count() < 2 {
+				continue;
+			}
+			with_braid += 1;
+			if selected_braid(a, b).is_some() {
+				satisfied += 1;
+			}
+		}
+		(with_braid, satisfied)
 	}
 
 	pub fn tile_score(&self, node: NodeId) -> Option<(i32, i32)> {
@@ -2139,16 +2440,18 @@ pub fn sample_tile(
 	owner: Player,
 	max_rings: u8,
 	zag_numer: u8,
+	braid_numer: u8,
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
-	let (rings, n_rings) = sample_rings(rng, max_rings);
-	let zag = sample_zag_flags(rng, n_rings, zag_numer);
+	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
+	let mut ring_type = sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer);
+	sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
 	let weight = rng.gen_range(1..=3);
 	let dots = rng.gen_range(1..=3);
 	let id = *next_id;
 	*next_id += 1;
-	Tile { id, owner, rings, n_rings, zag, weight, dots }
+	Tile { id, owner, rings, n_rings, ring_type, weight, dots }
 }
 
 fn build_bag(
@@ -2157,6 +2460,7 @@ fn build_bag(
 	size: usize,
 	max_rings: u8,
 	zag_numer: u8,
+	braid_numer: u8,
 	next_id: &mut u32,
 	rng: &mut StdRng,
 ) -> Vec<Tile> {
@@ -2165,7 +2469,7 @@ fn build_bag(
 	}
 	let mut bag = Vec::with_capacity(size);
 	for _ in 0..size {
-		bag.push(sample_tile(owner, max_rings, zag_numer, next_id, rng));
+		bag.push(sample_tile(owner, max_rings, zag_numer, braid_numer, next_id, rng));
 	}
 	bag.shuffle(rng);
 	bag
@@ -2350,6 +2654,7 @@ mod tests {
 		assert!(rules.self_capture_budget);
 		assert_eq!(rules.max_rings, 3);
 		assert_eq!(rules.zag_numer, ZAG_NUMER_DEFAULT);
+		assert_eq!(rules.braid_numer, BRAID_NUMER_DEFAULT);
 		assert!(!rules.petal_majority_win);
 		assert_eq!(rules.insufficient_tiles_loss, InsufficientTilesLoss::Off);
 		assert!(rules.counted_pass_through);
@@ -4005,13 +4310,13 @@ mod tests {
 			.bench(Player::One)
 			.iter()
 			.chain(game.bag(Player::One))
-			.map(|t| (t.color_mask(), t.n_rings, t.zag, t.weight, t.dots))
+			.map(|t| (t.color_mask(), t.n_rings, t.zag(), t.weight, t.dots))
 			.collect();
 		let p2: Vec<_> = game
 			.bench(Player::Two)
 			.iter()
 			.chain(game.bag(Player::Two))
-			.map(|t| (t.color_mask(), t.n_rings, t.zag, t.weight, t.dots))
+			.map(|t| (t.color_mask(), t.n_rings, t.zag(), t.weight, t.dots))
 			.collect();
 		assert_eq!(p1, p2);
 	}
@@ -4505,7 +4810,81 @@ mod tests {
 			.bench(Player::One)
 			.iter()
 			.chain(game.bag(Player::One))
-			.all(|t| t.zag == [false, false, false]));
+			.all(|t| t.zag() == [false, false, false]));
+	}
+
+	#[test]
+	fn braid_off_deal_has_no_braid_rings() {
+		let mut off = RuleSet::default();
+		off.braid_numer = 0;
+		let game = Game::new(off, 11);
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.chain(game.bag(Player::One))
+			.all(|t| t.braid_ring_count() == 0));
+	}
+
+	#[test]
+	fn braid_generation_is_about_one_in_seven_pieces() {
+		let mut rng = StdRng::seed_from_u64(5);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut braided = 0u32;
+		let mut rings = 0u32;
+		let mut braid_rings = 0u32;
+		for _ in 0..n {
+			let t = sample_tile(Player::One, 3, 0, BRAID_NUMER_DEFAULT, &mut next_id, &mut rng);
+			let k = t.n_rings.clamp(1, 3);
+			rings += u32::from(k);
+			let b = t.braid_ring_count();
+			braid_rings += u32::from(b);
+			if b >= 2 {
+				braided += 1;
+				assert!(b == 2 || b == 3);
+				assert!(t.n_rings == b || (b == 2 && t.n_rings == 3));
+			}
+		}
+		let piece_rate = f64::from(braided) / f64::from(n);
+		assert!(
+			(0.12..0.17).contains(&piece_rate),
+			"braid piece rate={piece_rate:.4} (expected ~0.1429 = 1/7)"
+		);
+		let ring_rate = f64::from(braid_rings) / f64::from(rings);
+		assert!(ring_rate > 0.05, "braid rings should show up (rate={ring_rate:.4})");
+		let mut rng = StdRng::seed_from_u64(6);
+		let mut rings = [TileColor::Green; 3];
+		let mut n = 2u8;
+		for _ in 0..2_000 {
+			let types = sample_braid(&mut rng, &mut rings, &mut n, 3, 0);
+			assert_eq!(types, [RingType::Normal; 3]);
+		}
+	}
+
+	#[test]
+	fn braid_kind_is_distinct_from_normal_of_the_same_colors() {
+		let normal = Tile::with_rings(0, Player::One, &[TileColor::Orange, TileColor::Green], 1, 1);
+		let braid = Tile::with_typed_rings(
+			0,
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_ne!(normal.kind_index(), braid.kind_index());
+		assert!(braid.kind_index() < KIND_COUNT);
+		let same_color = Tile::with_typed_rings(
+			0,
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_ne!(same_color.kind_index(), braid.kind_index());
+		assert_ne!(
+			same_color.kind_index(),
+			Tile::mono(0, Player::One, TileColor::Orange, 1, 1).kind_index()
+		);
 	}
 
 	#[test]
@@ -4809,6 +5188,191 @@ mod tests {
 		);
 		assert_eq!(mixed.piece_value(PieceValueWeights::PRIMARY), 4);
 		assert_eq!(mixed.piece_value(PieceValueWeights::TIEBREAK), 5);
+		let braid = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_eq!(braid.piece_value(PieceValueWeights::PRIMARY), 3, "dots 1 + two braid rings");
+		assert_eq!(
+			braid.piece_value(PieceValueWeights::TIEBREAK),
+			5,
+			"braid rings are worth 2 in the zag-weighted pass"
+		);
+		let braid_plus_zag = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Zag),
+			],
+			1,
+			2,
+		);
+		assert_eq!(braid_plus_zag.piece_value(PieceValueWeights::PRIMARY), 5);
+		assert_eq!(braid_plus_zag.piece_value(PieceValueWeights::TIEBREAK), 8);
+	}
+
+	fn orange_green_braid(game: &mut Game, owner: Player) -> Tile {
+		game.alloc_typed_rings(
+			owner,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			1,
+		)
+	}
+
+	#[test]
+	fn braid_satisfied_when_neighbor_covers_color_counts() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = orange_green_braid(&mut game, Player::One);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
+		assert_eq!(game.edge_score(a, b), (2, 0), "orange+green braid vs both colors = match 2");
+		assert_eq!(game.edge_score(b, a), (2, 0), "undirected: both tiles take the braid match");
+	}
+
+	#[test]
+	fn braid_unsatisfied_is_a_normal_mismatch() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = orange_green_braid(&mut game, Player::One);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(game.edge_score(a, b), (0, 1), "failed braid vs a present neighbor is a hitch");
+		assert_eq!(game.edge_score(b, a), (0, 1));
+	}
+
+	#[test]
+	fn single_color_braid_needs_two_of_that_color() {
+		let mut game = Game::empty(RuleSet::default());
+		let braid = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+			1,
+			1,
+		);
+		let one_orange = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		assert_eq!(
+			game.edge_score(braid, one_orange),
+			(0, 1),
+			"orange+orange braid is not satisfied by a single orange"
+		);
+		let two_normal = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Orange, RingType::Normal), (TileColor::Orange, RingType::Normal)],
+			1,
+			1,
+		);
+		assert_eq!(
+			game.edge_score(braid, two_normal),
+			(2, 0),
+			"two orange normals cover an orange+orange braid"
+		);
+		let normal_and_zag = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Orange, RingType::Normal), (TileColor::Orange, RingType::Zag)],
+			1,
+			1,
+		);
+		assert_eq!(
+			game.edge_score(braid, normal_and_zag),
+			(2, 1),
+			"zag orange still counts toward the braid; the jag also mismatches"
+		);
+	}
+
+	#[test]
+	fn failed_braid_still_allows_a_leftover_normal_match() {
+		let mut game = Game::empty(RuleSet::default());
+		let mixed = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Orange, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		let orange_only = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		assert_eq!(
+			game.edge_score(mixed, orange_only),
+			(1, 0),
+			"braid fails; leftover orange normal still matches"
+		);
+		let orange_green =
+			game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
+		assert_eq!(
+			game.edge_score(mixed, orange_green),
+			(2, 0),
+			"satisfied braid suppresses the extra normal match"
+		);
+	}
+
+	#[test]
+	fn largest_fulfilled_braid_wins_the_edge() {
+		let mut game = Game::empty(RuleSet::default());
+		let size3 = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Braid),
+			],
+			1,
+			1,
+		);
+		let size2 = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		assert_eq!(
+			game.edge_score(size3, size2),
+			(3, 0),
+			"both braids fulfill; take the size-3 braid, not 2+3"
+		);
+		let a = orange_green_braid(&mut game, Player::One);
+		let b = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_eq!(game.edge_score(a, b), (2, 0), "equal braids pick one (weight 2, not 4)");
+		let picked = selected_braid(a, b).expect("both size-2 braids qualify");
+		assert_eq!(picked.1, 2);
+		assert_eq!(picked.0.id, a.id.min(b.id), "equal size: lower tile id");
+	}
+
+	#[test]
+	fn braid_and_jag_scores_sum() {
+		let mut game = Game::empty(RuleSet::default());
+		let braid_plus_zag = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Zag),
+			],
+			1,
+			1,
+		);
+		let neighbor = game.alloc_rings(
+			Player::Two,
+			&[TileColor::Orange, TileColor::Green, TileColor::Blue],
+			1,
+			1,
+		);
+		assert_eq!(
+			game.edge_score(braid_plus_zag, neighbor),
+			(2, 1),
+			"braid match 2 plus blue jag mismatch 1"
+		);
 	}
 
 	fn place_isolated_dot(game: &mut Game, spawn_idx: usize, player: Player, zag: bool, dots: u8) {
