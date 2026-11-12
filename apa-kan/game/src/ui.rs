@@ -11,7 +11,7 @@ use rand::SeedableRng;
 use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
-use crate::game::{Action, Game, Player, Tile};
+use crate::game::{Action, Game, Player, Tile, ZagMismatchCount};
 use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
@@ -478,6 +478,7 @@ fn refresh_view(
 			play.game.tile_at(arc.from),
 			play.game.tile_at(arc.to),
 			board.center(),
+			play.game.rules().zag_mismatch,
 		);
 	}
 
@@ -594,6 +595,7 @@ fn spawn_arc(
 	from: Option<Tile>,
 	to: Option<Tile>,
 	center: NodeId,
+	zag_mismatch: ZagMismatchCount,
 ) {
 	let samples = arc.sample(visual::ARC_SAMPLES);
 	let pts: Vec<[f64; 2]> = samples
@@ -604,7 +606,7 @@ fn spawn_arc(
 		})
 		.collect();
 	let width = layout.arc_width;
-	let paint = visual::arc_paint(from, to);
+	let paint = visual::arc_paint_with(from, to, zag_mismatch);
 	let stripe_off = if visual::arc_touches_center(arc, center) {
 		f64::from(layout.stripe_off_center)
 	} else {
@@ -643,37 +645,31 @@ fn spawn_arc(
 			let frame = visual::midpoint_frame(&pts);
 			let clearance = visual::hitch_clearance(hitch_r);
 			if frame.index < pts.len() {
+				let diamond =
+					visual::conflict_diamond(frame.mid, frame.tangent, frame.normal, hitch_r);
 				let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
 				let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
 				spawn_hitch_half(
 					commands,
 					meshes,
 					materials,
-					&from_pts,
+					&visual::diamond_from_path(&from_pts, &diamond),
 					from,
 					stripe_off,
 					f64::from(width),
+					1.0,
 				);
 				spawn_hitch_half(
 					commands,
 					meshes,
 					materials,
-					&to_pts,
+					&visual::diamond_to_path(&to_pts, &diamond),
 					to,
 					stripe_off,
 					f64::from(width),
+					-1.0,
 				);
 			}
-			let disc_r = (hitch_r * 0.38) as f32;
-			commands.spawn((
-				DynamicView,
-				Mesh2d(meshes.add(Circle::new(disc_r.max(1.0)))),
-				MeshMaterial2d(materials.add(ColorMaterial::from(rgb(visual::BG_RGB)))),
-				Transform::from_xyz(frame.mid[0] as f32, frame.mid[1] as f32, visual::Z_ARC_OVER),
-			));
-			let strand_w = width * visual::HITCH_STRAND_WIDTH_SCALE;
-			spawn_hitch_side(commands, meshes, materials, &frame, hitch_r, strand_w, from, -1.0);
-			spawn_hitch_side(commands, meshes, materials, &frame, hitch_r, strand_w, to, 1.0);
 		}
 		ArcBody::Stripes { a, b, zag_a, zag_b } => {
 			let strand_w = width * visual::STRIPE_STRAND_WIDTH_SCALE;
@@ -750,6 +746,23 @@ fn spawn_arc(
 			visual::Z_ARC_OVER + 0.02 * (i + visual::MAX_TILE_ZAGS) as f32,
 		);
 	}
+	let mid_n = paint.zag_mid_count();
+	let mid_off = visual::zag_center_offsets(mid_n, spacing);
+	for (i, zag) in paint.zags_mid.iter().enumerate() {
+		let Some(color) = *zag else {
+			continue;
+		};
+		let zig = visual::zigzag_alongside(&pts, mid_off[i], zag_amp, teeth);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&zig,
+			zag_w,
+			rgb(visual::tile_rgb(color)),
+			visual::Z_ARC_OVER + 0.03 * i as f32,
+		);
+	}
 }
 
 fn spawn_stripe_strand(
@@ -798,13 +811,14 @@ fn spawn_hitch_half(
 	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
 	stripe_off: f64,
 	arc_width: f64,
+	outside: f64,
 ) {
 	let n = visual::packed_color_count(colors);
 	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let offsets = visual::highway_offsets(n, stripe_off);
-	let strand_w = visual::highway_strand_width(n, arc_width) as f32;
+	let offsets = visual::diamond_bundle_offsets(n, stripe_off, outside);
+	let strand_w = visual::diamond_strand_width(arc_width) as f32;
 	let mut k = 0usize;
 	for color in colors {
 		let Some(c) = color else {
@@ -819,53 +833,6 @@ fn spawn_hitch_half(
 			strand_w,
 			rgb(visual::tile_rgb(c)),
 			visual::Z_ARC,
-		);
-		k += 1;
-	}
-}
-
-fn spawn_hitch_side(
-	commands: &mut Commands,
-	meshes: &mut Assets<Mesh>,
-	materials: &mut Assets<ColorMaterial>,
-	frame: &visual::HitchFrame,
-	hitch_r: f64,
-	strand_w: f32,
-	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
-	along: f64,
-) {
-	let n = visual::packed_color_count(colors);
-	let mut k = 0usize;
-	for color in colors {
-		let Some(c) = color else {
-			continue;
-		};
-		let scale = visual::hitch_loop_scales(n)[k];
-		let glyph = visual::hitch_loop_polyline(
-			frame.mid,
-			frame.tangent,
-			frame.normal,
-			hitch_r,
-			along,
-			scale,
-		);
-		spawn_stroke(
-			commands,
-			meshes,
-			materials,
-			&glyph,
-			strand_w * visual::HITCH_OUTLINE_WIDTH_SCALE,
-			rgb(visual::HITCH_OUTLINE_RGB),
-			visual::Z_ARC_OVER + 0.04,
-		);
-		spawn_stroke(
-			commands,
-			meshes,
-			materials,
-			&glyph,
-			strand_w,
-			rgb(visual::tile_rgb(c)),
-			visual::Z_ARC_OVER + 0.05,
 		);
 		k += 1;
 	}

@@ -45,18 +45,15 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	let board = game.board();
 	let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
 	let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
-	let mut hitches: Vec<(
-		visual::HitchFrame,
-		f64,
-		f64,
-		[Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
-		[Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
-	)> = Vec::new();
 	for arc in board.arcs() {
 		let samples = arc.sample(visual::ARC_SAMPLES);
 		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
 		let width = f64::from(layout.arc_width);
-		let paint = visual::arc_paint(game.tile_at(arc.from), game.tile_at(arc.to));
+		let paint = visual::arc_paint_with(
+			game.tile_at(arc.from),
+			game.tile_at(arc.to),
+			game.rules().zag_mismatch,
+		);
 		let stripe_off = if visual::arc_touches_center(arc, board.center()) {
 			f64::from(layout.stripe_off_center)
 		} else {
@@ -83,18 +80,27 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				let frame = visual::midpoint_frame(&pts);
 				let clearance = visual::hitch_clearance(hitch_r);
 				if frame.index < pts.len() {
+					let diamond =
+						visual::conflict_diamond(frame.mid, frame.tangent, frame.normal, hitch_r);
 					let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
 					let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
-					push_hitch_half(&from_pts, from, stripe_off, width, &mut back);
-					push_hitch_half(&to_pts, to, stripe_off, width, &mut back);
+					push_hitch_half(
+						&visual::diamond_from_path(&from_pts, &diamond),
+						from,
+						stripe_off,
+						width,
+						1.0,
+						&mut back,
+					);
+					push_hitch_half(
+						&visual::diamond_to_path(&to_pts, &diamond),
+						to,
+						stripe_off,
+						width,
+						-1.0,
+						&mut back,
+					);
 				}
-				hitches.push((
-					frame,
-					hitch_r,
-					width * f64::from(visual::HITCH_STRAND_WIDTH_SCALE),
-					from,
-					to,
-				));
 			}
 			ArcBody::Stripes { a, b, zag_a, zag_b } => {
 				let strand_w = width * f64::from(visual::STRIPE_STRAND_WIDTH_SCALE);
@@ -162,44 +168,18 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
 			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
 		}
+		let mid_n = paint.zag_mid_count();
+		let mid_off = visual::zag_center_offsets(mid_n, spacing);
+		for (i, zag) in paint.zags_mid.iter().enumerate() {
+			let Some(color) = *zag else {
+				continue;
+			};
+			let zig = visual::zigzag_alongside(&pts, mid_off[i], zag_amp, teeth);
+			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
+		}
 	}
 	for (pts, color, width) in back.into_iter().chain(front) {
 		stroke_polyline(img, &pts, color, width);
-	}
-	for (frame, hitch_r, strand_w, from, to) in hitches {
-		fill_circle(img, tup(frame.mid), hitch_r * 0.38, rgb_of(visual::BG_RGB));
-		stroke_hitch_side(img, &frame, hitch_r, strand_w, from, -1.0);
-		stroke_hitch_side(img, &frame, hitch_r, strand_w, to, 1.0);
-	}
-}
-
-fn stroke_hitch_side(
-	img: &mut RgbaImage,
-	frame: &visual::HitchFrame,
-	hitch_r: f64,
-	strand_w: f64,
-	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
-	along: f64,
-) {
-	let n = visual::packed_color_count(colors);
-	let outline_w = strand_w * f64::from(visual::HITCH_OUTLINE_WIDTH_SCALE);
-	let mut k = 0usize;
-	for color in colors {
-		let Some(c) = color else {
-			continue;
-		};
-		let scale = visual::hitch_loop_scales(n)[k];
-		let glyph = visual::hitch_loop_polyline(
-			frame.mid,
-			frame.tangent,
-			frame.normal,
-			hitch_r,
-			along,
-			scale,
-		);
-		stroke_polyline(img, &glyph, rgb_of(visual::HITCH_OUTLINE_RGB), outline_w);
-		stroke_polyline(img, &glyph, rgb_of(visual::tile_rgb(c)), strand_w);
-		k += 1;
 	}
 }
 
@@ -228,14 +208,15 @@ fn push_hitch_half(
 	colors: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
 	stripe_off: f64,
 	arc_width: f64,
+	outside: f64,
 	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
 ) {
 	let n = visual::packed_color_count(colors);
 	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let offsets = visual::highway_offsets(n, stripe_off);
-	let strand_w = visual::highway_strand_width(n, arc_width);
+	let offsets = visual::diamond_bundle_offsets(n, stripe_off, outside);
+	let strand_w = visual::diamond_strand_width(arc_width);
 	let mut k = 0usize;
 	for color in colors {
 		let Some(c) = color else {
@@ -517,6 +498,7 @@ fn glyph(c: char) -> [u8; 7] {
 		'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
 		'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
 		'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+		'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
 		'0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
 		'1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
 		'2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
@@ -578,15 +560,24 @@ mod tests {
 		if !dir.is_dir() {
 			return;
 		}
-		use crate::game::TileColor;
+		use crate::game::{RuleSet, TileColor, ZagMismatchCount};
 		use crate::visual::{
-			demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair, demo_zag_tile,
+			demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair, demo_pair_with,
+			demo_zag_tile,
 		};
 		let board = demo_midgame();
 		write_png_sized(
 			&board,
 			dir.join("zag_board_1280x800.png"),
-			"hitch + realized-state edges",
+			"diamonds + realised-state edges",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_png_sized(
+			&board,
+			dir.join("diamond_board_1280x800.png"),
+			"conflict diamonds, full board",
 			1280,
 			800,
 		)
@@ -598,14 +589,14 @@ mod tests {
 				&[(TileColor::Orange, false), (TileColor::Teal, false)],
 				2,
 			),
-			dir.join("hitch_blue_green_vs_orange_teal.png"),
-			"A blue+green vs B orange+teal hitch",
+			dir.join("diamond_blue_green_vs_orange_teal.png"),
+			"A blue+green vs B orange+teal diamond",
 			36.0,
 		);
 		write_cropped(
 			&demo_pair(&[(TileColor::Blue, false)], 2, &[(TileColor::Orange, false)], 2),
-			dir.join("hitch_blue_vs_orange.png"),
-			"blue vs orange hitch",
+			dir.join("diamond_blue_vs_orange.png"),
+			"blue vs orange diamond",
 			36.0,
 		);
 		write_cropped(
@@ -615,8 +606,8 @@ mod tests {
 				&[(TileColor::Green, false)],
 				2,
 			),
-			dir.join("hitch_blue_vs_green_nonhitting_zag.png"),
-			"hitch; orange zag omitted (does not hit)",
+			dir.join("diamond_next_to_zags.png"),
+			"diamond next to a non-hitting orange zag",
 			48.0,
 		);
 		write_cropped(
@@ -673,7 +664,7 @@ mod tests {
 				3,
 			),
 			dir.join("zag_thickness_arc.png"),
-			"thicker directional zags",
+			"thicker zag strokes",
 			48.0,
 		);
 		write_cropped(
@@ -681,6 +672,67 @@ mod tests {
 			dir.join("zag_thickness_tile.png"),
 			"thicker tile zags",
 			28.0,
+		);
+		write_png_sized(
+			&board,
+			dir.join("zag_edge_board_1280x800.png"),
+			"undirected zag mismatches on the center line",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_cropped(
+			&demo_pair(&[(TileColor::Orange, true)], 1, &[(TileColor::Orange, true)], 1),
+			dir.join("orange_zag_vs_orange_zag_sum.png"),
+			"SUM: orange zag vs orange zag = 2 center squiggles",
+			48.0,
+		);
+		let mut max = RuleSet::default();
+		max.zag_mismatch = ZagMismatchCount::Max;
+		let three_blue =
+			[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
+		write_cropped(
+			&demo_pair(&three_blue, 3, &three_blue, 3),
+			dir.join("three_blue_zags_vs_three_blue_zags_sum.png"),
+			"SUM: 3 blue zags vs 3 blue zags = 6 center squiggles",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair_with(max, &three_blue, 3, &three_blue, 3),
+			dir.join("three_blue_zags_vs_three_blue_zags_max.png"),
+			"MAX: 3 blue zags vs 3 blue zags = 3 center squiggles",
+			48.0,
+		);
+		let two_orange = [(TileColor::Orange, true), (TileColor::Orange, true)];
+		let one_orange = [(TileColor::Orange, true)];
+		write_cropped(
+			&demo_pair(&two_orange, 2, &one_orange, 1),
+			dir.join("two_orange_zags_vs_one_orange_zag_sum.png"),
+			"SUM: 2 orange zags vs 1 orange zag = 3 center squiggles",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair_with(max, &two_orange, 2, &one_orange, 1),
+			dir.join("two_orange_zags_vs_one_orange_zag_max.png"),
+			"MAX: 2 orange zags vs 1 orange zag = 2 center squiggles",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(&[(TileColor::Orange, true)], 1, &[(TileColor::Orange, false)], 1),
+			dir.join("one_sided_zag_hit_center.png"),
+			"one-sided orange zag hit on the center line",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, false), (TileColor::Orange, true)],
+				2,
+				&[(TileColor::Green, false), (TileColor::Orange, false)],
+				2,
+			),
+			dir.join("zag_and_normal_mismatch_same_edge.png"),
+			"zag + normal conflict: center zag only, no diamond",
+			48.0,
 		);
 	}
 

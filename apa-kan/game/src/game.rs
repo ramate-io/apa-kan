@@ -311,14 +311,24 @@ impl Tile {
 		(self.normal_mask() & other.normal_mask()) != 0
 	}
 
+	/// How many of this tile's zag **strokes** of `color` hit `target`
+	/// (`target` holds that color on any ring). Extra weight strokes of a zag
+	/// last-ring count, matching the concentric rings that are drawn.
+	pub fn zag_hits_of_color(self, target: Tile, color: TileColor) -> i32 {
+		if !target.has_color(color) {
+			return 0;
+		}
+		(0..self.ring_strokes())
+			.filter(|&k| self.stroke_is_zag(k) && self.stroke_color(k) == color)
+			.count() as i32
+	}
+
 	/// How many of this tile's zag **strokes** have their color on `target`
 	/// (normal or zag). Extra weight strokes of a zag last-ring count, matching
 	/// the concentric rings that are drawn. Own zags do not mismatch their owner.
 	/// A zag whose color `target` lacks is absent (not a hit).
 	pub fn zag_hits_on(self, target: Tile) -> i32 {
-		(0..self.ring_strokes())
-			.filter(|&k| self.stroke_is_zag(k) && target.has_color(self.stroke_color(k)))
-			.count() as i32
+		TileColor::ALL.iter().map(|&c| self.zag_hits_of_color(target, c)).sum()
 	}
 
 	/// True if this tile has a real presence toward `dst`: a normal ring, or a
@@ -558,6 +568,52 @@ impl PassThroughRingCmp {
 	}
 }
 
+/// How zag mismatches are counted on an occupied edge.
+///
+/// A hitting zag on either tile is an **edge** event; both tiles take the
+/// same count. Default [`Self::Sum`] adds every hitting zag stroke.
+/// [`Self::Max`] still counts up, but per color takes the larger of the two
+/// tiles' hitting zag-stroke counts of that color.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ZagMismatchCount {
+	/// Edge count = hitting zag strokes on both tiles. A orange zag vs B
+	/// orange zag = 2. Candidate default (readable: add up the hitting zags).
+	Sum,
+	/// For each color, max(A's hitting zag strokes of that color, B's).
+	/// Sum those maxima. Orange zag vs orange zag = 1; 3 blue vs 3 blue = 3;
+	/// 2 orange vs 1 orange = 2.
+	Max,
+}
+
+impl ZagMismatchCount {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().replace('_', "-").as_str() {
+			"sum" | "add" => Ok(Self::Sum),
+			"max" | "maximum" => Ok(Self::Max),
+			other => Err(format!("unknown zag-mismatch '{other}' (expected sum|max)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Sum => "sum",
+			Self::Max => "max",
+		}
+	}
+
+	/// Zag-mismatch contribution of the edge between `tile` and `other`.
+	/// Both variants are symmetric (`count(a, b) == count(b, a)`).
+	pub fn count(self, tile: Tile, other: Tile) -> i32 {
+		match self {
+			Self::Sum => tile.zag_hits_on(other) + other.zag_hits_on(tile),
+			Self::Max => TileColor::ALL
+				.iter()
+				.map(|&c| tile.zag_hits_of_color(other, c).max(other.zag_hits_of_color(tile, c)))
+				.sum(),
+		}
+	}
+}
+
 /// Lose when board tiles + bench cannot reach the control-set occupancy
 /// threshold (`control_n`, default 5). Default [`Self::Off`].
 ///
@@ -698,6 +754,11 @@ pub struct RuleSet {
 	/// Default [`PassThroughRingCmp::Ge`] (`occupant.n_rings >= mover`).
 	/// [`PassThroughRingCmp::Gt`] is strict, so 3-ring tiles never pass through.
 	pub pass_through_ring_cmp: PassThroughRingCmp,
+	/// How zag mismatches are counted. Default [`ZagMismatchCount::Sum`]:
+	/// hitting zags on either tile are an undirected edge event; both tiles
+	/// take that count. [`ZagMismatchCount::Max`] takes, per color, the
+	/// larger of the two tiles' hitting zag-stroke counts of that color.
+	pub zag_mismatch: ZagMismatchCount,
 }
 
 impl Default for RuleSet {
@@ -730,6 +791,7 @@ impl Default for RuleSet {
 			path_constraint: PathConstraint::NoEdgeRevisit,
 			counted_pass_through: true,
 			pass_through_ring_cmp: PassThroughRingCmp::Ge,
+			zag_mismatch: ZagMismatchCount::Sum,
 		}
 	}
 }
@@ -1180,15 +1242,19 @@ impl Game {
 	/// Match/mismatch this `tile` receives from neighbor `other`.
 	/// Matches: +1 if they share a **normal** color. Zags never produce a
 	/// match — a color that either tile holds only as zags does not count.
-	/// Mismatches: count of `other`'s zag strokes whose color `tile` has
-	/// (normal or zag). A zag whose color `tile` lacks is empty: no match,
-	/// no mismatch, and it does not create a conflict. Ordinary +1 (or
-	/// neighbor weight) mismatch only when both tiles are actually present
-	/// toward each other and they share no normal color.
+	/// Mismatches: [`RuleSet::zag_mismatch`] count of hitting zags on this
+	/// edge. [`ZagMismatchCount::Sum`] and [`ZagMismatchCount::Max`] are
+	/// undirected (both tiles take the same number). A zag whose color the
+	/// other tile lacks is empty: no match, no mismatch, and it does not
+	/// create a conflict. Ordinary +1 (or neighbor weight) mismatch only when
+	/// the zag-hit count is 0, both tiles are actually present toward each
+	/// other, and they share no normal color. A tile can still take that
+	/// ordinary mismatch on its normal rings even if it also has zags (the
+	/// zags just have to be non-hitting on this edge).
 	pub fn edge_score(&self, tile: Tile, other: Tile) -> (i32, i32) {
 		let matched = tile.shares_normal(other);
 		let matches = i32::from(matched);
-		let zag = other.zag_hits_on(tile);
+		let zag = self.rules.zag_mismatch.count(tile, other);
 		let mismatches = if zag > 0 {
 			zag
 		} else if matched {
@@ -1994,6 +2060,7 @@ mod tests {
 		assert_eq!(rules.insufficient_tiles_loss, InsufficientTilesLoss::Off);
 		assert!(rules.counted_pass_through);
 		assert_eq!(rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
+		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bench(Player::Two).len(), 7);
@@ -3643,8 +3710,14 @@ mod tests {
 		}
 	}
 
+	fn rules_with_zag_mismatch(mode: ZagMismatchCount) -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.zag_mismatch = mode;
+		rules
+	}
+
 	#[test]
-	fn zag_blue_normal_orange_zag_is_one_match_one_mismatch() {
+	fn zag_blue_normal_orange_zag_sums_both_hitting_zags() {
 		let mut game = Game::empty(RuleSet::default());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
@@ -3663,10 +3736,10 @@ mod tests {
 		game.place_tile(spawn, a);
 		game.place_tile(nb, b);
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, x), (2, 1), "weight 1 + blue match, one orange-zag mismatch (not 2)");
-		assert!(!game.is_overwhelmed(spawn));
+		assert_eq!((m, x), (2, 2), "weight 1 + blue match; SUM counts both orange zags");
+		assert!(game.is_overwhelmed(spawn), "SUM 2 >= matches 2");
 		let (m2, x2) = game.tile_score(nb).unwrap();
-		assert_eq!((m2, x2), (2, 1));
+		assert_eq!((m2, x2), (2, 2), "both tiles take the same edge count");
 	}
 
 	#[test]
@@ -3691,6 +3764,7 @@ mod tests {
 		let (m, x) = game.tile_score(spawn).unwrap();
 		assert_eq!(m, 3, "weight 3, orange zag never matches");
 		assert_eq!(x, 2, "two orange zags on U whose color T has");
+		assert_eq!(game.edge_score(t, u), game.edge_score(u, t), "SUM is symmetric");
 	}
 
 	#[test]
@@ -3733,15 +3807,16 @@ mod tests {
 		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 2, 1);
 		game.place_tile(spawn, a);
 		game.place_tile(nb, b);
-		assert_eq!(game.edge_score(a, b), (0, 2), "two zag strokes, zero matches");
+		assert_eq!(game.edge_score(a, b), (0, 4), "SUM: 2 strokes each side");
+		assert_eq!(game.edge_score(b, a), (0, 4));
 		let (m, x) = game.tile_score(spawn).unwrap();
 		assert_eq!(m, 2, "zag never matches, only own weight");
-		assert_eq!(x, 2, "neighbor's two blue zag strokes hit T's blue");
-		assert!(game.is_overwhelmed(spawn), "weight 2 vs 2 zag hits is captured");
+		assert_eq!(x, 4, "both tiles' two blue zag strokes hit");
+		assert!(game.is_overwhelmed(spawn), "weight 2 vs 4 zag hits is captured");
 	}
 
 	#[test]
-	fn three_blue_zags_vs_three_blue_zags_is_three_mismatches() {
+	fn three_blue_zags_vs_three_blue_zags_is_six_under_sum() {
 		let mut game = Game::empty(RuleSet::default());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
@@ -3750,10 +3825,10 @@ mod tests {
 		let b = game.alloc_ring_kinds(Player::Two, &rings, 3, 1);
 		game.place_tile(spawn, a);
 		game.place_tile(nb, b);
-		assert_eq!(game.edge_score(a, b), (0, 3));
-		assert_eq!(game.edge_score(b, a), (0, 3));
+		assert_eq!(game.edge_score(a, b), (0, 6), "SUM: 3+3 strokes");
+		assert_eq!(game.edge_score(b, a), (0, 6));
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, x), (3, 3), "weight 3, no color match, three zag hits");
+		assert_eq!((m, x), (3, 6), "weight 3, no color match, six zag hits");
 		assert!(game.is_overwhelmed(spawn));
 		assert!(game.is_overwhelmed(nb));
 	}
@@ -3768,7 +3843,7 @@ mod tests {
 		game.place_tile(spawn, a);
 		game.place_tile(nb, b);
 		assert_eq!(a.ring_strokes(), 3);
-		assert_eq!(game.edge_score(a, b), (0, 3), "drawn zag rings are zag hits");
+		assert_eq!(game.edge_score(a, b), (0, 6), "drawn zag rings on both tiles are hits");
 		assert!(game.is_overwhelmed(spawn));
 	}
 
@@ -3781,9 +3856,10 @@ mod tests {
 		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 1, 1);
 		game.place_tile(spawn, a);
 		game.place_tile(nb, b);
-		assert_eq!(game.edge_score(a, b), (0, 1), "zags never match");
+		assert_eq!(game.edge_score(a, b), (0, 2), "SUM: one hitting zag on each tile");
+		assert_eq!(game.edge_score(b, a), (0, 2));
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, x), (1, 1));
+		assert_eq!((m, x), (1, 2));
 		assert!(game.is_overwhelmed(spawn));
 		assert!(game.is_overwhelmed(nb));
 	}
@@ -3910,6 +3986,156 @@ mod tests {
 		game.place_tile(nb, u);
 		let (m, x) = game.tile_score(spawn).unwrap();
 		assert_eq!((m, x), (3, 0), "green match; T's orange zag does not mismatch T");
+	}
+
+	fn every_zag_mismatch() -> [ZagMismatchCount; 2] {
+		[ZagMismatchCount::Sum, ZagMismatchCount::Max]
+	}
+
+	#[test]
+	fn orange_zag_vs_orange_zag_is_sum_two_max_one() {
+		let a_kinds = [(TileColor::Orange, true)];
+		let b_kinds = [(TileColor::Orange, true)];
+		for (mode, want) in [(ZagMismatchCount::Sum, 2), (ZagMismatchCount::Max, 1)] {
+			let mut game = Game::empty(rules_with_zag_mismatch(mode));
+			let a = game.alloc_ring_kinds(Player::One, &a_kinds, 1, 1);
+			let b = game.alloc_ring_kinds(Player::Two, &b_kinds, 1, 1);
+			assert_eq!(game.edge_score(a, b), (0, want), "{mode:?}");
+			assert_eq!(game.edge_score(a, b), game.edge_score(b, a), "{mode:?} is symmetric");
+			let spawn = game.board().spawns()[0];
+			let nb = game.board().neighbors(spawn)[0];
+			game.place_tile(spawn, a);
+			game.place_tile(nb, b);
+			let (m, x) = game.tile_score(spawn).unwrap();
+			assert_eq!((m, x), (1, want), "{mode:?} both tiles take {want}");
+			assert_eq!(game.tile_score(nb).unwrap(), (1, want));
+			assert!(game.is_overwhelmed(spawn));
+			assert!(game.is_overwhelmed(nb));
+		}
+	}
+
+	#[test]
+	fn one_sided_zag_hit_is_one_on_both_tiles() {
+		let zag_kinds = [(TileColor::Orange, true)];
+		let holder_kinds = [(TileColor::Orange, false)];
+		for mode in every_zag_mismatch() {
+			let mut game = Game::empty(rules_with_zag_mismatch(mode));
+			let zag = game.alloc_ring_kinds(Player::One, &zag_kinds, 1, 1);
+			let holder = game.alloc_ring_kinds(Player::Two, &holder_kinds, 1, 1);
+			assert_eq!(game.edge_score(zag, holder), (0, 1), "{mode:?} zag side");
+			assert_eq!(game.edge_score(holder, zag), (0, 1), "{mode:?} holder side");
+			let spawn = game.board().spawns()[0];
+			let nb = game.board().neighbors(spawn)[0];
+			game.place_tile(spawn, zag);
+			game.place_tile(nb, holder);
+			assert_eq!(game.tile_score(spawn).unwrap(), (1, 1));
+			assert_eq!(game.tile_score(nb).unwrap(), (1, 1));
+			assert!(game.is_overwhelmed(spawn));
+			assert!(game.is_overwhelmed(nb));
+		}
+	}
+
+	#[test]
+	fn zag_and_normal_mismatch_on_the_same_edge() {
+		// Blue-normal + orange-zag vs green-normal + orange-normal: the orange
+		// zag hits, and the unmatched normals would be an ordinary conflict if
+		// the zag were absent. Zag hits replace the ordinary count (unchanged).
+		let mixed_kinds = [(TileColor::Blue, false), (TileColor::Orange, true)];
+		let other_kinds = [(TileColor::Green, false), (TileColor::Orange, false)];
+		for mode in every_zag_mismatch() {
+			let mut game = Game::empty(rules_with_zag_mismatch(mode));
+			let mixed = game.alloc_ring_kinds(Player::One, &mixed_kinds, 2, 1);
+			let other = game.alloc_ring_kinds(Player::Two, &other_kinds, 2, 1);
+			assert!(!mixed.shares_normal(other));
+			assert_eq!(mixed.zag_hits_on(other), 1);
+			assert_eq!(other.zag_hits_on(mixed), 0);
+			assert_eq!(game.edge_score(mixed, other), (0, 1), "{mode:?}");
+			assert_eq!(game.edge_score(other, mixed), (0, 1), "{mode:?} same edge count");
+			let spawn = game.board().spawns()[0];
+			let nb = game.board().neighbors(spawn)[0];
+			game.place_tile(spawn, mixed);
+			game.place_tile(nb, other);
+			assert_eq!(game.tile_score(spawn).unwrap(), (2, 1));
+			assert_eq!(game.tile_score(nb).unwrap(), (2, 1));
+			assert!(!game.is_overwhelmed(spawn), "weight 2 vs 1 zag hit survives");
+		}
+
+		// Mutual orange zags plus unmatched normals: SUM 2, MAX 1.
+		let both_zag = [(TileColor::Blue, false), (TileColor::Orange, true)];
+		let vs_zag = [(TileColor::Green, false), (TileColor::Orange, true)];
+		let mut sum = Game::empty(rules_with_zag_mismatch(ZagMismatchCount::Sum));
+		let a = sum.alloc_ring_kinds(Player::One, &both_zag, 2, 1);
+		let b = sum.alloc_ring_kinds(Player::Two, &vs_zag, 2, 1);
+		assert_eq!(sum.edge_score(a, b), (0, 2));
+		assert_eq!(sum.edge_score(b, a), (0, 2));
+		let mut max = Game::empty(rules_with_zag_mismatch(ZagMismatchCount::Max));
+		let a = max.alloc_ring_kinds(Player::One, &both_zag, 2, 1);
+		let b = max.alloc_ring_kinds(Player::Two, &vs_zag, 2, 1);
+		assert_eq!(max.edge_score(a, b), (0, 1));
+		assert_eq!(max.edge_score(b, a), (0, 1));
+	}
+
+	#[test]
+	fn non_matching_zag_stays_neutral_under_every_count() {
+		for mode in every_zag_mismatch() {
+			let mut game = Game::empty(rules_with_zag_mismatch(mode));
+			let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
+			let blue = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+			assert_eq!(game.edge_score(zag, blue), (0, 0), "{mode:?}");
+			assert_eq!(game.edge_score(blue, zag), (0, 0), "{mode:?}");
+			let spawn = game.board().spawns()[0];
+			let nb = game.board().neighbors(spawn)[0];
+			game.place_tile(spawn, zag);
+			game.place_tile(nb, blue);
+			assert_eq!(game.tile_score(spawn).unwrap(), (1, 0));
+			assert_eq!(game.tile_score(nb).unwrap(), (1, 0));
+			assert!(!game.is_overwhelmed(spawn));
+			assert!(!game.is_overwhelmed(nb));
+		}
+	}
+
+	#[test]
+	fn max_takes_per_color_max_and_sums_across_colors() {
+		let mut max = Game::empty(rules_with_zag_mismatch(ZagMismatchCount::Max));
+		let mut sum = Game::empty(rules_with_zag_mismatch(ZagMismatchCount::Sum));
+
+		let three_blue =
+			[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
+		let a = max.alloc_ring_kinds(Player::One, &three_blue, 3, 1);
+		let b = max.alloc_ring_kinds(Player::Two, &three_blue, 3, 1);
+		assert_eq!(max.edge_score(a, b), (0, 3), "3 blue zags vs 3 blue zags = 3");
+		assert_eq!(max.edge_score(b, a), (0, 3));
+		let a = sum.alloc_ring_kinds(Player::One, &three_blue, 3, 1);
+		let b = sum.alloc_ring_kinds(Player::Two, &three_blue, 3, 1);
+		assert_eq!(sum.edge_score(a, b), (0, 6));
+
+		let two_orange = [(TileColor::Orange, true), (TileColor::Orange, true)];
+		let one_orange = [(TileColor::Orange, true)];
+		let a = max.alloc_ring_kinds(Player::One, &two_orange, 2, 1);
+		let b = max.alloc_ring_kinds(Player::Two, &one_orange, 1, 1);
+		assert_eq!(max.edge_score(a, b), (0, 2), "2 orange vs 1 orange = 2");
+		assert_eq!(max.edge_score(b, a), (0, 2));
+		let a = sum.alloc_ring_kinds(Player::One, &two_orange, 2, 1);
+		let b = sum.alloc_ring_kinds(Player::Two, &one_orange, 1, 1);
+		assert_eq!(sum.edge_score(a, b), (0, 3));
+
+		// A: 2 orange zags + green (so B's green zag hits). B: orange + green zag.
+		let a_kinds =
+			[(TileColor::Orange, true), (TileColor::Orange, true), (TileColor::Green, false)];
+		let b_kinds = [(TileColor::Orange, false), (TileColor::Green, true)];
+		let a = max.alloc_ring_kinds(Player::One, &a_kinds, 3, 1);
+		let b = max.alloc_ring_kinds(Player::Two, &b_kinds, 2, 1);
+		assert_eq!(max.edge_score(a, b), (0, 3), "max(2,0) orange + max(0,1) green");
+		assert_eq!(max.edge_score(b, a), (0, 3));
+		let a = sum.alloc_ring_kinds(Player::One, &a_kinds, 3, 1);
+		let b = sum.alloc_ring_kinds(Player::Two, &b_kinds, 2, 1);
+		assert_eq!(sum.edge_score(a, b), (0, 3), "SUM also 2 orange + 1 green");
+
+		// Two orange zags vs an orange holder still counts up under MAX.
+		let a = max.alloc_ring_kinds(Player::One, &two_orange, 2, 1);
+		let holder = max.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		assert_eq!(max.edge_score(a, holder), (0, 2));
+		assert_eq!(max.edge_score(holder, a), (0, 2));
 	}
 
 	#[test]

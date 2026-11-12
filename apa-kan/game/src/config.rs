@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::ai::Actor;
 use crate::game::{
 	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
-	SamePieceTwice,
+	SamePieceTwice, ZagMismatchCount,
 };
 use crate::scenario::Scenario;
 
@@ -263,6 +263,9 @@ where
 			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
 			rules.zag_numer = if on { crate::game::ZAG_NUMER_DEFAULT } else { 0 };
 		}
+		"--zag-mismatch" => {
+			rules.zag_mismatch = ZagMismatchCount::parse(&require_value(arg, it.next())?)?;
+		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
 		}
@@ -317,6 +320,7 @@ pub fn usage() -> &'static str {
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
+	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -440,6 +444,19 @@ mod tests {
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 		assert!(cfg.rules.counted_pass_through);
 		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
+		assert_eq!(cfg.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
+	}
+
+	#[test]
+	fn parses_zag_mismatch() {
+		let sum = GameConfig::parse(["--zag-mismatch", "sum"]).unwrap();
+		assert_eq!(sum.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
+		let max = GameConfig::parse(["--zag-mismatch", "max"]).unwrap();
+		assert_eq!(max.rules.zag_mismatch, crate::game::ZagMismatchCount::Max);
+		let err = GameConfig::parse(["--zag-mismatch", "collapsed"]).unwrap_err();
+		assert!(err.contains("zag-mismatch"));
+		let err = GameConfig::parse(["--zag-mismatch", "directional"]).unwrap_err();
+		assert!(err.contains("zag-mismatch"));
 	}
 
 	#[test]

@@ -149,9 +149,10 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 						if other.owner != tile.owner {
 							s += 35;
 						}
-						if other.shares_normal(tile) {
+						let (matched, mismatches) = game.edge_score(tile, other);
+						if matched > 0 {
 							s += 8;
-						} else if other.zag_hits_on(tile) > 0 || tile.zag_hits_on(other) > 0 {
+						} else if mismatches > 0 {
 							s += 18;
 						} else if tile.present_toward(other) && other.present_toward(tile) {
 							s += 12;
