@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apa_kan::ai::{self, Actor, BranchingReport, Searcher};
-use apa_kan::config::apply_rule_flag;
+use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::game::{
 	sample_tile, Action, EndReason, Game, GameStatus, Player, RuleSet, Tile, TileColor,
 };
@@ -59,8 +59,8 @@ fn usage() -> &'static str {
 	   --hop-weight-cmp, --counted-pass-through, --graph-hops, --pass-through-ring-cmp,\n\
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
-	   --insufficient-tiles-loss, --starting-bench, --max-rings,\n\
-	   --zag-chance, --zags, --zag-mismatch, --path-constraint, --no-repeated-edge,\n\
+	   --insufficient-tiles-loss, --starting-bench, --bag-size, --self-capture-budget,\n\
+	   --max-rings, --zag-chance, --zags, --zag-mismatch, --path-constraint, --no-repeated-edge,\n\
 	   --turn-limit\n\
 	   -h, --help\n"
 }
@@ -135,6 +135,7 @@ where
 	if cfg.bots.is_empty() {
 		return Err("--bots must name at least one actor".into());
 	}
+	validate_rule_flags(&cfg.rules)?;
 	Ok(cfg)
 }
 
@@ -232,7 +233,7 @@ fn run(cfg: BenchConfig) {
 		rules.turn_limit
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} max_rings={} zag_numer={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} self_capture_budget={} max_rings={} zag_numer={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -248,6 +249,8 @@ fn run(cfg: BenchConfig) {
 		rules.control_hold_turns,
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
+		rules.bag_size,
+		on_off(rules.self_capture_budget),
 		rules.max_rings,
 		rules.zag_numer,
 		rules.zag_mismatch.name(),

@@ -2124,6 +2124,19 @@ mod tests {
 	}
 
 	#[test]
+	fn opening_hud_shows_smaller_bag_remainder() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = 11;
+		let game = Game::new(rules, 1);
+		assert_eq!(game.bench(Player::One).len(), 7);
+		assert_eq!(game.bag_len(Player::One), 4);
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("P1 light 7/4 bud 7"), "{turn}");
+		assert!(turn.contains("P2 dark 7/4 bud 7"), "{turn}");
+		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
+	}
+
+	#[test]
 	fn parallel_strands_are_constant_offset() {
 		let pts = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]];
 		let (a, b) = parallel_strands(&pts, 0.5);

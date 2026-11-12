@@ -1,6 +1,6 @@
 # Deck scenarios
 
-TOML files that replace the default generative 27-tile deal. Used by the app and `apa-kan-bench`:
+TOML files that replace the default generative deal (`RuleSet::bag_size`, default 27). Used by the app and `apa-kan-bench`:
 
 ```bash
 cargo run -p apa-kan -- --scenario complementary
@@ -17,7 +17,7 @@ name = "example"
 description = "optional"
 shuffle = true          # shuffle bags with the game seed (default true)
 mirror = false          # copy P1's kinds+order onto P2 (new ids)
-generative = false      # sample 27 tiles from the ring process (same as Game::new)
+generative = false      # sample bag_size tiles from the ring process (same as Game::new)
 
 # Complementary construction (18 tiles/player: two colors × 9 kinds):
 exclusive_p1 = "green"
@@ -39,4 +39,4 @@ colors = ["green", "orange"]   # all 9 kinds of each color
 # dots = 1
 ```
 
-`default` / `same` is the current opening deal: 27 sampled tiles (ring process), mirrored shuffle. `independent` samples each player's bag separately. Complementary presets are still 18 one-ring tiles of the three common colors and keep `starting_bench` at 7 (11 left in each bag).
+`default` / `same` is the current opening deal: `bag_size` sampled tiles (ring process, default 27), mirrored shuffle. `--bag-size` applies to generative scenarios. `independent` samples each player's bag separately. Complementary presets are still 18 one-ring tiles of the three common colors and keep `starting_bench` at 7 (11 left in each bag).

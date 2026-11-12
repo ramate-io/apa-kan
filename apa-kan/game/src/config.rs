@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::ai::Actor;
 use crate::game::{
 	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
-	SamePieceTwice, ZagMismatchCount,
+	SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -130,6 +130,7 @@ impl GameConfig {
 				}
 			}
 		}
+		validate_rule_flags(&cfg.rules)?;
 		Ok(cfg)
 	}
 
@@ -240,10 +241,24 @@ where
 		}
 		"--starting-bench" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
-			if n == 0 || n > 27 {
-				return Err("invalid --starting-bench (expected 1..27, bag has 27 tiles)".into());
+			if n == 0 || n > BAG_SIZE as u64 {
+				return Err(format!(
+					"invalid --starting-bench (expected 1..{BAG_SIZE}, at most bag size)"
+				));
 			}
 			rules.starting_bench_size = n as u8;
+		}
+		"--bag-size" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > BAG_SIZE as u64 {
+				return Err(format!(
+					"invalid --bag-size (expected 1..{BAG_SIZE}, default {BAG_SIZE})"
+				));
+			}
+			rules.bag_size = n as u8;
+		}
+		"--self-capture-budget" => {
+			rules.self_capture_budget = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
 		"--max-rings" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
@@ -283,6 +298,17 @@ where
 	Ok(true)
 }
 
+/// Cross-field RuleSet checks that cannot run inside a single flag parse.
+pub fn validate_rule_flags(rules: &RuleSet) -> Result<(), String> {
+	if rules.starting_bench_size > rules.bag_size {
+		return Err(format!(
+			"starting bench {} exceeds bag size {} (deal cannot exceed the bag)",
+			rules.starting_bench_size, rules.bag_size
+		));
+	}
+	Ok(())
+}
+
 pub fn usage() -> &'static str {
 	"Usage: apa-kan [OPTIONS]\n\
 	 \n\
@@ -317,6 +343,8 @@ pub fn usage() -> &'static str {
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-bench <1..27>                   Opening deal and capture budget (default: 7)\n\
+	   --bag-size <1..27>                         Total sampled tiles per player (default: 27)\n\
+	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
@@ -439,6 +467,8 @@ mod tests {
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
+		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE as u8);
+		assert!(cfg.rules.self_capture_budget);
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
@@ -511,6 +541,39 @@ mod tests {
 		assert_eq!(cfg.rules.starting_bench_size, 5);
 		let err = GameConfig::parse(["--starting-bench", "28"]).unwrap_err();
 		assert!(err.contains("starting-bench"));
+	}
+
+	#[test]
+	fn parses_bag_size() {
+		let cfg = GameConfig::parse(["--bag-size", "11"]).unwrap();
+		assert_eq!(cfg.rules.bag_size, 11);
+		assert_eq!(cfg.rules.starting_bench_size, 7);
+		let err = GameConfig::parse(["--bag-size", "28"]).unwrap_err();
+		assert!(err.contains("bag-size"));
+		let err = GameConfig::parse(["--bag-size", "0"]).unwrap_err();
+		assert!(err.contains("bag-size"));
+	}
+
+	#[test]
+	fn bag_size_must_cover_starting_bench() {
+		let err = GameConfig::parse(["--bag-size", "5"]).unwrap_err();
+		assert!(err.contains("starting bench"), "{err}");
+		assert!(err.contains("bag size"), "{err}");
+		let err = GameConfig::parse(["--bag-size", "11", "--starting-bench", "12"]).unwrap_err();
+		assert!(err.contains("starting bench"), "{err}");
+		let ok = GameConfig::parse(["--bag-size", "11", "--starting-bench", "7"]).unwrap();
+		assert_eq!(ok.rules.bag_size, 11);
+		assert_eq!(ok.rules.starting_bench_size, 7);
+		let dealt = GameConfig::parse(["--bag-size", "7", "--starting-bench", "7"]).unwrap();
+		assert_eq!(dealt.rules.bag_size, 7);
+	}
+
+	#[test]
+	fn parses_self_capture_budget() {
+		let on = GameConfig::parse(["--self-capture-budget", "on"]).unwrap();
+		assert!(on.rules.self_capture_budget);
+		let off = GameConfig::parse(["--self-capture-budget", "off"]).unwrap();
+		assert!(!off.rules.self_capture_budget);
 	}
 
 	#[test]
