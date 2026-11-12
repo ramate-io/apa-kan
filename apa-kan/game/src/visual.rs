@@ -2136,25 +2136,25 @@ mod tests {
 		assert!(game.rules().control_win);
 		assert!(!game.rules().center_hold_win);
 		assert_eq!(game.bench(Player::One).len(), 7);
-		assert_eq!(game.bag_len(Player::One), 20);
+		assert_eq!(game.bag_len(Player::One), 4);
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("ctl P1 0/5 0/1 P2 0/5 0/1"), "{turn}");
-		assert!(turn.contains("P1 light 7/20 bud 7"), "{turn}");
-		assert!(turn.contains("P2 dark 7/20 bud 7"), "{turn}");
+		assert!(turn.contains("P1 light 7/4 bud 7"), "{turn}");
+		assert!(turn.contains("P2 dark 7/4 bud 7"), "{turn}");
 		assert!(!turn.contains("hold P1"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
 	}
 
 	#[test]
-	fn opening_hud_shows_smaller_bag_remainder() {
+	fn opening_hud_shows_full_bag_remainder() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 11;
+		rules.bag_size = 27;
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), 7);
-		assert_eq!(game.bag_len(Player::One), 4);
+		assert_eq!(game.bag_len(Player::One), 20);
 		let turn = format_turn_line(&game, "human");
-		assert!(turn.contains("P1 light 7/4 bud 7"), "{turn}");
-		assert!(turn.contains("P2 dark 7/4 bud 7"), "{turn}");
+		assert!(turn.contains("P1 light 7/20 bud 7"), "{turn}");
+		assert!(turn.contains("P2 dark 7/20 bud 7"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
 	}
 

@@ -73,9 +73,11 @@ pub const RING_EXIST_TOTAL: u32 = RING_SAME_WEIGHT + RING_ANY_WEIGHT;
 /// Each ring is independently a zag with probability `zag_numer / ZAG_DENOM`.
 pub const ZAG_DENOM: u8 = 7;
 pub const ZAG_NUMER_DEFAULT: u8 = 1;
-/// Default sampled bag size (replaces the old 27 unique 3-color kinds).
-/// Override per game with [`RuleSet::bag_size`] / `--bag-size`.
+/// Maximum sampled bag size (the old 27 unique 3-color kinds). CLI `--bag-size`
+/// accepts `1..=BAG_SIZE`. The default deal is [`BAG_SIZE_DEFAULT`].
 pub const BAG_SIZE: usize = 27;
+/// Default `--bag-size` / [`RuleSet::bag_size`]. A deal of 7 leaves 4 to draw.
+pub const BAG_SIZE_DEFAULT: usize = 11;
 pub const MAX_COLOR_RINGS: u8 = 3;
 /// Each of 6 colors is absent (0), a normal ring (1), or a zag ring (2).
 pub const COLOR_STATES: usize = 729;
@@ -751,14 +753,15 @@ impl GameStatus {
 pub struct RuleSet {
 	/// Starting tiles dealt from each bag onto the bench, and the opening
 	/// capture-budget stack (that many blank tokens). Default 7. Must be `<=`
-	/// [`Self::bag_size`]. A deal of 7 from the default 27-tile bag leaves 20
+	/// [`Self::bag_size`]. A deal of 7 from the default 11-tile bag leaves 4
 	/// in the bag. ADD spends 1 token; each opponent capture earns 1.
 	/// Own-tile captures earn 1 iff [`Self::self_capture_budget`]. Empty bag
 	/// skips the capture-draw. Usable budget is min(tokens, bench tiles).
 	pub starting_bench_size: u8,
 	/// Total sampled tiles per player (opening deal plus remaining draws).
-	/// Default [`BAG_SIZE`] (27). CLI: `--bag-size`. The opening deal is still
-	/// [`Self::starting_bench_size`] (7), so 11 leaves 4 to draw and 13 leaves 6.
+	/// Default [`BAG_SIZE_DEFAULT`] (11). CLI: `--bag-size` (`1..=`[`BAG_SIZE`]).
+	/// The opening deal is still [`Self::starting_bench_size`] (7), so 11
+	/// leaves 4 to draw, 13 leaves 6, and 27 leaves 20.
 	pub bag_size: u8,
 	/// If true (default), capturing your own tile on your turn earns +1
 	/// budget the same as capturing an opponent tile. False still removes
@@ -852,7 +855,7 @@ impl Default for RuleSet {
 	fn default() -> Self {
 		Self {
 			starting_bench_size: 7,
-			bag_size: BAG_SIZE as u8,
+			bag_size: BAG_SIZE_DEFAULT as u8,
 			self_capture_budget: true,
 			identical_bags: true,
 			bag_one_of_each_kind: true,
@@ -2264,8 +2267,8 @@ mod tests {
 		assert_eq!(a.budget(Player::One), 7);
 		assert_eq!(a.budget(Player::Two), 7);
 		assert!(a.budget_tokens(Player::One).iter().all(|t| matches!(t, BudgetToken::Blank)));
-		assert_eq!(a.bag_len(Player::One), 20);
-		assert_eq!(a.bag_len(Player::Two), 20);
+		assert_eq!(a.bag_len(Player::One), 4);
+		assert_eq!(a.bag_len(Player::Two), 4);
 		let kinds = |g: &Game, p: Player| {
 			g.bench(p)
 				.iter()
@@ -2287,16 +2290,15 @@ mod tests {
 		assert_eq!(game.bench(Player::Two).len(), 5);
 		assert_eq!(game.budget(Player::One), 5);
 		assert_eq!(game.budget(Player::Two), 5);
-		assert_eq!(game.bag_len(Player::One), 22);
-		assert_eq!(game.bag_len(Player::Two), 22);
+		assert_eq!(game.bag_len(Player::One), 6);
+		assert_eq!(game.bag_len(Player::Two), 6);
 		assert_eq!(game.legal_adds().len(), 5 * 8);
 	}
 
 	#[test]
 	fn opening_deal_respects_bag_size_eleven() {
-		let mut rules = RuleSet::default();
-		rules.bag_size = 11;
-		let game = Game::new(rules, 1);
+		let game = Game::new(RuleSet::default(), 1);
+		assert_eq!(game.rules().bag_size, BAG_SIZE_DEFAULT as u8);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bench(Player::Two).len(), 7);
 		assert_eq!(game.budget(Player::One), 7);
@@ -2304,6 +2306,16 @@ mod tests {
 		assert_eq!(game.bag_len(Player::Two), 4);
 		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), 11);
 		assert_eq!(game.legal_adds().len(), 7 * 8);
+	}
+
+	#[test]
+	fn opening_deal_respects_bag_size_twenty_seven() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = BAG_SIZE as u8;
+		let game = Game::new(rules, 1);
+		assert_eq!(game.bench(Player::One).len(), 7);
+		assert_eq!(game.bag_len(Player::One), 20);
+		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), BAG_SIZE);
 	}
 
 	#[test]
@@ -2334,7 +2346,7 @@ mod tests {
 		assert_eq!(rules.control_n, 5);
 		assert_eq!(rules.control_hold_turns, 1);
 		assert_eq!(rules.starting_bench_size, 7);
-		assert_eq!(rules.bag_size, BAG_SIZE as u8);
+		assert_eq!(rules.bag_size, BAG_SIZE_DEFAULT as u8);
 		assert!(rules.self_capture_budget);
 		assert_eq!(rules.max_rings, 3);
 		assert_eq!(rules.zag_numer, ZAG_NUMER_DEFAULT);
@@ -2343,11 +2355,12 @@ mod tests {
 		assert!(rules.counted_pass_through);
 		assert_eq!(rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
+		assert!(rules.no_moves_loses);
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bench(Player::Two).len(), 7);
 		assert_eq!(game.budget(Player::One), 7);
-		assert_eq!(game.bag_len(Player::One), 20);
+		assert_eq!(game.bag_len(Player::One), 4);
 		assert_eq!(game.legal_adds().len(), 7 * 8);
 	}
 
@@ -3984,10 +3997,10 @@ mod tests {
 	}
 
 	#[test]
-	fn sampled_bags_are_mirrored_and_size_27() {
+	fn sampled_bags_are_mirrored_and_size_11() {
 		let game = Game::new(RuleSet::default(), 11);
-		assert_eq!(game.rules().bag_size as usize, BAG_SIZE);
-		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), BAG_SIZE);
+		assert_eq!(game.rules().bag_size as usize, BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
 		let p1: Vec<_> = game
 			.bench(Player::One)
 			.iter()
@@ -4510,11 +4523,11 @@ mod tests {
 	}
 
 	#[test]
-	fn shuffle_bags_determinizes_a_smaller_deck() {
+	fn shuffle_bags_determinizes_a_full_deck() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 11;
+		rules.bag_size = BAG_SIZE as u8;
 		let mut game = Game::new(rules, 12);
-		assert_eq!(game.bag_len(Player::One), 4);
+		assert_eq!(game.bag_len(Player::One), 20);
 		let snapshot = |g: &Game, p: Player| {
 			let mut v: Vec<_> = g.bag(p).iter().map(|t| t.kind_index()).collect();
 			v.sort_unstable();
@@ -4524,7 +4537,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, snapshot(&game, Player::One));
-		assert_eq!(game.bag_len(Player::One), 4);
+		assert_eq!(game.bag_len(Player::One), 20);
 	}
 
 	fn zero_budget(game: &mut Game) {
