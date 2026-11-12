@@ -99,7 +99,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any bench tile to ADD (costs 1 usable budget). MOVE your tile. Win: 5 of 9, or lowest piece if both usable budgets are 0 with <5 tiles.";
+	"Click a spawn then any bench tile to ADD (costs 1 usable budget). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both usable budgets are 0 with <5 tiles.";
 
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];

@@ -28,6 +28,10 @@ required-features = ["desktop"]
 name = "apa-kan-bench"
 path = "src/bin/bench.rs"
 
+[[bin]]
+name = "apa-kan-tl-diag"
+path = "src/bin/tl_diag.rs"
+
 [dependencies]
 bevy = { workspace = true, optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }

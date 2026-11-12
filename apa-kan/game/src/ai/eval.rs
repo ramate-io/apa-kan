@@ -26,8 +26,8 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 				Some(-WIN + ply)
 			}
 		}
-		// Turn-limit and other draws are 0 so a side that is ahead will not
-		// turtle into the 200-turn cap.
+		// Turn-limit and low-value (equal-count full tie) draws are 0 so a
+		// side that is ahead will not turtle into the 200-turn cap.
 		GameStatus::Draw { .. } => Some(0),
 	}
 }
@@ -602,6 +602,71 @@ mod tests {
 		let s = evaluate(&game, Player::One, 0);
 		assert!(s < -WIN / 2);
 		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+	}
+
+	#[test]
+	fn low_value_win_is_near_mate() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Won { winner: Player::One, reason: EndReason::LowValue });
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s > WIN / 2);
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+		assert_eq!(terminal_score(&game, Player::One), Some(WIN));
+	}
+
+	#[test]
+	fn low_value_draw_scores_zero() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Draw { reason: EndReason::LowValue });
+		assert_eq!(evaluate(&game, Player::One, 0), 0);
+		assert_eq!(terminal_score(&game, Player::Two), Some(0));
+	}
+
+	#[test]
+	fn low_value_pair_and_piece_count_terminals_match_status() {
+		use crate::game::TileColor;
+
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+
+		let place = |game: &mut Game, spawn_idx: usize, player: Player, dots: u8| {
+			let spawn = game.board().spawns()[spawn_idx];
+			let tile = game.alloc_tile(player, TileColor::Green, 1, dots);
+			game.place_tile(spawn, tile);
+		};
+
+		let mut pair = Game::empty(rules);
+		place(&mut pair, 0, Player::One, 1);
+		place(&mut pair, 1, Player::One, 2);
+		place(&mut pair, 4, Player::Two, 1);
+		place(&mut pair, 5, Player::Two, 3);
+		pair.set_budget_tokens(Player::One, Vec::new());
+		pair.set_budget_tokens(Player::Two, Vec::new());
+		pair.evaluate_low_value_for_test();
+		assert_eq!(
+			pair.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+		let pair_p1 = terminal_score(&pair, Player::One).unwrap();
+		assert!(pair_p1 > WIN / 2);
+		assert_eq!(terminal_score(&pair, Player::Two), Some(-pair_p1));
+
+		let mut count = Game::empty(rules);
+		place(&mut count, 0, Player::One, 1);
+		place(&mut count, 1, Player::One, 3);
+		place(&mut count, 4, Player::Two, 1);
+		count.set_budget_tokens(Player::One, Vec::new());
+		count.set_budget_tokens(Player::Two, Vec::new());
+		count.evaluate_low_value_for_test();
+		assert_eq!(
+			count.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+		let count_p1 = terminal_score(&count, Player::One).unwrap();
+		assert!(count_p1 > WIN / 2);
+		assert_eq!(terminal_score(&count, Player::Two), Some(-count_p1));
 	}
 
 	#[test]

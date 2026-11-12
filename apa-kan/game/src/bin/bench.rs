@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use apa_kan::ai::{self, Actor, BranchingReport, Searcher};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::game::{
-	sample_tile, Action, EndReason, Game, GameStatus, Player, RuleSet, Tile, TileColor,
+	sample_tile, Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet, Tile,
+	TileColor,
 };
 use apa_kan::scenario::{self, DeckStrength, Scenario};
 use rand::rngs::StdRng;
@@ -173,6 +174,11 @@ struct SeatStats {
 	control: u32,
 	insuff: u32,
 	low_value: u32,
+	low_value_wins: u32,
+	low_value_draws: u32,
+	low_value_pair0: u32,
+	low_value_later: u32,
+	low_value_piece_count: u32,
 	turn_limit: u32,
 	double_pass: u32,
 	games_repeat_ge2: u32,
@@ -325,6 +331,11 @@ fn run(cfg: BenchConfig) {
 	let mut end_control = 0u32;
 	let mut end_insuff = 0u32;
 	let mut end_low_value = 0u32;
+	let mut end_low_value_wins = 0u32;
+	let mut end_low_value_draws = 0u32;
+	let mut end_low_value_pair0 = 0u32;
+	let mut end_low_value_later = 0u32;
+	let mut end_low_value_piece_count = 0u32;
 	let mut end_limit = 0u32;
 	let mut end_pass = 0u32;
 	let mut captures = 0u32;
@@ -342,6 +353,11 @@ fn run(cfg: BenchConfig) {
 		end_control += stats.control;
 		end_insuff += stats.insuff;
 		end_low_value += stats.low_value;
+		end_low_value_wins += stats.low_value_wins;
+		end_low_value_draws += stats.low_value_draws;
+		end_low_value_pair0 += stats.low_value_pair0;
+		end_low_value_later += stats.low_value_later;
+		end_low_value_piece_count += stats.low_value_piece_count;
 		end_limit += stats.turn_limit;
 		end_pass += stats.double_pass;
 		captures += stats.captures;
@@ -361,8 +377,17 @@ fn run(cfg: BenchConfig) {
 		p1_w + p1_d + p1_l
 	));
 	lines.push(format!(
-		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} turn_limit={end_limit} double_pass={end_pass}"
+		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
 	));
+	lines.push(format!(
+		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
+	));
+	println!(
+		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
+	);
+	println!(
+		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
+	);
 	let games_n = p1_w + p1_d + p1_l;
 	let avg_cap = if games_n == 0 { 0.0 } else { f64::from(captures) / f64::from(games_n) };
 	let avg_self = if games_n == 0 { 0.0 } else { f64::from(self_captures) / f64::from(games_n) };
@@ -509,6 +534,7 @@ fn run_pairing(
 				stats.turn_limit += 1;
 			}
 		}
+		tally_low_value(&mut stats, result.low_value);
 		println!(
 			"  {} vs {} game {} -> {:?} turns={} max_rep={} depth={:.1} iters={:.0}",
 			p1.name(),
@@ -576,6 +602,23 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 	}
 }
 
+fn tally_low_value(stats: &mut SeatStats, resolution: Option<LowValueResolution>) {
+	match resolution {
+		None => {}
+		Some(LowValueResolution::Draw) => stats.low_value_draws += 1,
+		Some(LowValueResolution::Win { pair, by_piece_count, .. }) => {
+			stats.low_value_wins += 1;
+			if by_piece_count {
+				stats.low_value_piece_count += 1;
+			} else if pair == 0 {
+				stats.low_value_pair0 += 1;
+			} else {
+				stats.low_value_later += 1;
+			}
+		}
+	}
+}
+
 fn probe_minimax_depths(
 	lines: &mut Vec<String>,
 	rules: RuleSet,
@@ -630,6 +673,7 @@ impl GameRecord {
 
 struct PlayResult {
 	status: GameStatus,
+	low_value: Option<LowValueResolution>,
 	turns: u32,
 	max_repeat: u32,
 	max_occ_repeat: u32,
@@ -829,9 +873,15 @@ fn play_game(
 		GameStatus::Won { winner: Player::Two, .. } => -1,
 		_ => 0,
 	};
+	let low_value = match game.status() {
+		GameStatus::Won { reason: EndReason::LowValue, .. }
+		| GameStatus::Draw { reason: EndReason::LowValue } => Some(game.low_value_resolution()),
+		_ => None,
+	};
 
 	PlayResult {
 		status: game.status(),
+		low_value,
 		turns: game.turn_count(),
 		max_repeat,
 		max_occ_repeat: max_occ,
