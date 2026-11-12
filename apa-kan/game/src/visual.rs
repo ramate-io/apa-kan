@@ -7,7 +7,7 @@
 use std::f64::consts::PI;
 
 use crate::board::{ArcEdge, Board, NodeId};
-use crate::game::{Game, GameStatus, Player, RuleSet, Tile, TileColor};
+use crate::game::{Game, GameStatus, Player, RuleSet, Tile, TileColor, ZagMismatchCount};
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
 pub const PREV_TILE_RADIUS_PX: f32 = 22.0;
@@ -60,6 +60,8 @@ pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.33;
 pub const ZAG_LANE_SPACING_SCALE: f64 = 1.55;
 /// One overlay line per zag stroke on a single tile (weight.max(n_rings) ≤ 3).
 pub const MAX_TILE_ZAGS: usize = 3;
+/// Two-ended SUM can ink every hitting zag on both tiles (3 + 3).
+pub const MAX_EDGE_ZAGS: usize = MAX_TILE_ZAGS * 2;
 /// Packed unmatched **normal** colors on one half of a conflict diamond.
 pub const MAX_HITCH_COLORS: usize = 3;
 pub const ARC_SAMPLES: usize = 96;
@@ -111,9 +113,13 @@ pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
 pub struct ArcPaint {
 	pub body: ArcBody,
 	/// Zag strokes **from** the arc's `from` tile, fanning out on the + side.
+	/// Used for one-ended potentials and the directional (legacy) two-ended rule.
 	pub zags_from: [Option<TileColor>; MAX_TILE_ZAGS],
 	/// Zag strokes **from** the arc's `to` tile, fanning out on the − side.
 	pub zags_to: [Option<TileColor>; MAX_TILE_ZAGS],
+	/// Realized zag mismatches bundled around the arc center line (SUM /
+	/// COLLAPSED two-ended edges). One-ended edges leave this empty.
+	pub zags_mid: [Option<TileColor>; MAX_EDGE_ZAGS],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,39 +156,39 @@ impl ArcPaint {
 		[None; MAX_TILE_ZAGS]
 	}
 
+	fn no_mid() -> [Option<TileColor>; MAX_EDGE_ZAGS] {
+		[None; MAX_EDGE_ZAGS]
+	}
+
+	fn with_sides(
+		body: ArcBody,
+		zags_from: [Option<TileColor>; MAX_TILE_ZAGS],
+		zags_to: [Option<TileColor>; MAX_TILE_ZAGS],
+	) -> Self {
+		Self { body, zags_from, zags_to, zags_mid: Self::no_mid() }
+	}
+
 	pub fn neutral() -> Self {
-		Self { body: ArcBody::Neutral, zags_from: Self::no_zags(), zags_to: Self::no_zags() }
+		Self::with_sides(ArcBody::Neutral, Self::no_zags(), Self::no_zags())
 	}
 
 	pub fn solid(color: TileColor, thick: bool) -> Self {
-		Self {
-			body: ArcBody::Solid { color, thick },
-			zags_from: Self::no_zags(),
-			zags_to: Self::no_zags(),
-		}
+		Self::with_sides(ArcBody::Solid { color, thick }, Self::no_zags(), Self::no_zags())
 	}
 
 	pub fn hitch(
 		from: [Option<TileColor>; MAX_HITCH_COLORS],
 		to: [Option<TileColor>; MAX_HITCH_COLORS],
 	) -> Self {
-		Self {
-			body: ArcBody::Hitch { from, to },
-			zags_from: Self::no_zags(),
-			zags_to: Self::no_zags(),
-		}
+		Self::with_sides(ArcBody::Hitch { from, to }, Self::no_zags(), Self::no_zags())
 	}
 
 	pub fn stripes(a: TileColor, b: TileColor, zag_a: bool, zag_b: bool) -> Self {
-		Self {
-			body: ArcBody::Stripes { a, b, zag_a, zag_b },
-			zags_from: Self::no_zags(),
-			zags_to: Self::no_zags(),
-		}
+		Self::with_sides(ArcBody::Stripes { a, b, zag_a, zag_b }, Self::no_zags(), Self::no_zags())
 	}
 
 	pub fn zag_count(self) -> usize {
-		self.zag_from_count() + self.zag_to_count()
+		self.zag_from_count() + self.zag_to_count() + self.zag_mid_count()
 	}
 
 	pub fn zag_from_count(self) -> usize {
@@ -191,6 +197,10 @@ impl ArcPaint {
 
 	pub fn zag_to_count(self) -> usize {
 		self.zags_to.iter().filter(|z| z.is_some()).count()
+	}
+
+	pub fn zag_mid_count(self) -> usize {
+		self.zags_mid.iter().filter(|z| z.is_some()).count()
 	}
 }
 
@@ -235,11 +245,57 @@ pub fn tile_zag_strokes(tile: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
 
 /// Zag strokes on `tile` that actually mismatch `other` (other holds the color).
 pub fn hitting_zag_strokes(tile: Tile, other: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
-	pack_zags(
-		(0..tile.ring_strokes())
-			.filter(|&k| tile.stroke_is_zag(k) && other.has_color(tile.stroke_color(k)))
-			.map(|k| tile.stroke_color(k)),
-	)
+	pack_zags(hitting_zag_colors(tile, other))
+}
+
+fn hitting_zag_colors(tile: Tile, other: Tile) -> impl Iterator<Item = TileColor> {
+	(0..tile.ring_strokes()).filter_map(move |k| {
+		if tile.stroke_is_zag(k) && other.has_color(tile.stroke_color(k)) {
+			Some(tile.stroke_color(k))
+		} else {
+			None
+		}
+	})
+}
+
+fn pack_edge_zags(
+	colors: impl IntoIterator<Item = TileColor>,
+) -> [Option<TileColor>; MAX_EDGE_ZAGS] {
+	let mut out = [None; MAX_EDGE_ZAGS];
+	let mut n = 0usize;
+	for c in colors {
+		if n >= MAX_EDGE_ZAGS {
+			break;
+		}
+		out[n] = Some(c);
+		n += 1;
+	}
+	out
+}
+
+/// Realized zag strokes inked on the center line for an undirected edge count.
+pub fn edge_zag_strokes(
+	a: Tile,
+	b: Tile,
+	mode: ZagMismatchCount,
+) -> [Option<TileColor>; MAX_EDGE_ZAGS] {
+	match mode {
+		ZagMismatchCount::Directional => ArcPaint::no_mid(),
+		ZagMismatchCount::Sum => {
+			pack_edge_zags(hitting_zag_colors(a, b).chain(hitting_zag_colors(b, a)))
+		}
+		ZagMismatchCount::Collapsed => {
+			let mut out = [None; MAX_EDGE_ZAGS];
+			let mut n = 0usize;
+			for c in hitting_zag_colors(a, b).chain(hitting_zag_colors(b, a)) {
+				if !out.contains(&Some(c)) && n < MAX_EDGE_ZAGS {
+					out[n] = Some(c);
+					n += 1;
+				}
+			}
+			out
+		}
+	}
 }
 
 /// Unique **normal** ring colors on `tile`, packed densely. Zags are omitted:
@@ -302,12 +358,23 @@ pub fn diamond_across(along_r: f64) -> f64 {
 	along_r * DIAMOND_SLOPE
 }
 
-fn two_ended(a: Tile, b: Tile) -> ArcPaint {
-	let zags_from = hitting_zag_strokes(a, b);
-	let zags_to = hitting_zag_strokes(b, a);
-	if zags_from.iter().any(Option::is_some) || zags_to.iter().any(Option::is_some) {
-		// Confirmed zag mismatch: draw only the hitting zags.
-		return ArcPaint { body: ArcBody::Hidden, zags_from, zags_to };
+fn two_ended(a: Tile, b: Tile, mode: ZagMismatchCount) -> ArcPaint {
+	let any_hit = a.zag_hits_on(b) > 0 || b.zag_hits_on(a) > 0;
+	if any_hit {
+		// Confirmed zag mismatch: draw only the hitting zag(s).
+		if mode == ZagMismatchCount::Directional {
+			return ArcPaint::with_sides(
+				ArcBody::Hidden,
+				hitting_zag_strokes(a, b),
+				hitting_zag_strokes(b, a),
+			);
+		}
+		return ArcPaint {
+			body: ArcBody::Hidden,
+			zags_from: ArcPaint::no_zags(),
+			zags_to: ArcPaint::no_zags(),
+			zags_mid: edge_zag_strokes(a, b, mode),
+		};
 	}
 	let shared = shared_normal_colors(a, b);
 	let body = match (shared[0], shared[1]) {
@@ -318,15 +385,20 @@ fn two_ended(a: Tile, b: Tile) -> ArcPaint {
 		}
 		(None, _) => ArcBody::Neutral,
 	};
-	ArcPaint { body, zags_from: ArcPaint::no_zags(), zags_to: ArcPaint::no_zags() }
+	ArcPaint::with_sides(body, ArcPaint::no_zags(), ArcPaint::no_zags())
 }
 
+/// Paint an arc using the default SUM zag-mismatch rule.
 pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
+	arc_paint_with(from, to, ZagMismatchCount::Sum)
+}
+
+pub fn arc_paint_with(from: Option<Tile>, to: Option<Tile>, mode: ZagMismatchCount) -> ArcPaint {
 	match (from, to) {
 		(None, None) => ArcPaint::neutral(),
 		(Some(t), None) => one_ended(t, true),
 		(None, Some(t)) => one_ended(t, false),
-		(Some(a), Some(b)) => two_ended(a, b),
+		(Some(a), Some(b)) => two_ended(a, b, mode),
 	}
 }
 
@@ -351,9 +423,9 @@ fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
 		[a, b, ..] => ArcBody::Stripes { a: *a, b: *b, zag_a: false, zag_b: false },
 	};
 	if on_from {
-		ArcPaint { body, zags_from: zags, zags_to: ArcPaint::no_zags() }
+		ArcPaint::with_sides(body, zags, ArcPaint::no_zags())
 	} else {
-		ArcPaint { body, zags_from: ArcPaint::no_zags(), zags_to: zags }
+		ArcPaint::with_sides(body, ArcPaint::no_zags(), zags)
 	}
 }
 
@@ -808,6 +880,21 @@ pub fn zag_fan_offset(index: usize, sign: f64, inner: f64, spacing: f64) -> f64 
 	sign * (inner + index as f64 * spacing)
 }
 
+/// Offsets for `n` zag strokes bundled around the arc center line.
+/// One stroke sits on the path; two or more straddle it symmetrically.
+pub fn zag_center_offsets(n: usize, spacing: f64) -> [f64; MAX_EDGE_ZAGS] {
+	let mut out = [0.0; MAX_EDGE_ZAGS];
+	if n == 0 {
+		return out;
+	}
+	let count = n.min(MAX_EDGE_ZAGS);
+	let start = -((count as f64 - 1.0) * spacing) / 2.0;
+	for (i, slot) in out.iter_mut().enumerate().take(count) {
+		*slot = start + i as f64 * spacing;
+	}
+	out
+}
+
 pub fn arc_touches_center(arc: &ArcEdge, center: NodeId) -> bool {
 	arc.from == center || arc.to == center
 }
@@ -1175,7 +1262,17 @@ pub fn demo_pair(
 	b_kinds: &[(TileColor, bool)],
 	b_weight: u8,
 ) -> Game {
-	let mut game = Game::empty(RuleSet::default());
+	demo_pair_with(RuleSet::default(), a_kinds, a_weight, b_kinds, b_weight)
+}
+
+pub fn demo_pair_with(
+	rules: RuleSet,
+	a_kinds: &[(TileColor, bool)],
+	a_weight: u8,
+	b_kinds: &[(TileColor, bool)],
+	b_weight: u8,
+) -> Game {
+	let mut game = Game::empty(rules);
 	if let Some((a, b)) = empty_neighbor_pair(&game) {
 		let t = game.alloc_ring_kinds(Player::One, a_kinds, a_weight, 1);
 		let u = game.alloc_ring_kinds(Player::Two, b_kinds, b_weight, 1);
@@ -1406,20 +1503,23 @@ mod tests {
 		assert!(shared_normal_colors(a, b)[0].is_none());
 		let paint = arc_paint(Some(a), Some(b));
 		assert_eq!(paint.body, ArcBody::Hidden, "zag-on-zag must not draw a match stroke");
-		assert_eq!(paint.zag_from_count(), 3, "A's three zags stay on A's side");
-		assert_eq!(paint.zag_to_count(), 3, "B's three zags stay on B's side");
-		assert!(paint
-			.zags_from
-			.iter()
-			.chain(paint.zags_to.iter())
-			.all(|c| *c == Some(TileColor::Blue)));
+		assert_eq!(paint.zag_from_count(), 0, "SUM inks the center, not the sides");
+		assert_eq!(paint.zag_to_count(), 0);
+		assert_eq!(paint.zag_mid_count(), 6, "SUM: three hitting strokes per tile");
+		assert!(paint.zags_mid.iter().all(|c| *c == Some(TileColor::Blue)));
 		let one = Tile::with_ring_kinds(3, Player::One, &[(TileColor::Blue, true)], 1, 1);
 		let paint = arc_paint(Some(one), Some(one));
 		assert_eq!(paint.body, ArcBody::Hidden);
-		assert_eq!(paint.zag_from_count(), 1);
-		assert_eq!(paint.zag_to_count(), 1);
-		assert_eq!(paint.zags_from[0], Some(TileColor::Blue));
-		assert_eq!(paint.zags_to[0], Some(TileColor::Blue));
+		assert_eq!(paint.zag_mid_count(), 2, "A orange-vs-orange analogue: two blue zags");
+		assert_eq!(paint.zags_mid[0], Some(TileColor::Blue));
+		assert_eq!(paint.zags_mid[1], Some(TileColor::Blue));
+		let collapsed = arc_paint_with(Some(one), Some(one), ZagMismatchCount::Collapsed);
+		assert_eq!(collapsed.zag_mid_count(), 1, "COLLAPSED: one squiggle per color");
+		assert_eq!(collapsed.zags_mid[0], Some(TileColor::Blue));
+		let directional = arc_paint_with(Some(a), Some(b), ZagMismatchCount::Directional);
+		assert_eq!(directional.zag_from_count(), 3);
+		assert_eq!(directional.zag_to_count(), 3);
+		assert_eq!(directional.zag_mid_count(), 0);
 	}
 
 	#[test]
@@ -1450,8 +1550,9 @@ mod tests {
 		assert_eq!(one_ended_two.zag_from_count(), 2);
 		let two_ended_two = arc_paint(Some(two), Some(two));
 		assert_eq!(two_ended_two.body, ArcBody::Hidden);
-		assert_eq!(two_ended_two.zag_from_count(), 2);
-		assert_eq!(two_ended_two.zag_to_count(), 2);
+		assert_eq!(two_ended_two.zag_from_count(), 0);
+		assert_eq!(two_ended_two.zag_to_count(), 0);
+		assert_eq!(two_ended_two.zag_mid_count(), 4, "SUM bundles 2+2 on the center line");
 		let mixed = Tile::with_ring_kinds(
 			3,
 			Player::One,
@@ -1487,6 +1588,19 @@ mod tests {
 		let match_inner =
 			zag_lane_inner(ArcBody::Solid { color: TileColor::Blue, thick: true }, off, 0.0);
 		assert!(match_inner > inner + 1e-9, "zags sit outside a center match stroke");
+	}
+
+	#[test]
+	fn zag_center_offsets_bundle_around_the_path() {
+		let spacing = 4.0;
+		let one = zag_center_offsets(1, spacing);
+		assert!((one[0]).abs() < 1e-12, "a single zag sits on the center line");
+		let two = zag_center_offsets(2, spacing);
+		assert!((two[0] + two[1]).abs() < 1e-12, "two zags straddle the center");
+		assert!((two[1] - two[0] - spacing).abs() < 1e-12);
+		let three = zag_center_offsets(3, spacing);
+		assert!((three[1]).abs() < 1e-12, "odd counts keep a center stroke");
+		assert!((three[2] - three[0] - 2.0 * spacing).abs() < 1e-12);
 	}
 
 	#[test]
@@ -1600,13 +1714,20 @@ mod tests {
 		);
 		let paint = arc_paint(Some(zag), Some(zag));
 		assert_eq!(paint.body, ArcBody::Hidden, "orange zag hits both ways: draw only the zags");
-		assert_eq!(paint.zags_from[0], Some(TileColor::Orange));
-		assert_eq!(paint.zags_to[0], Some(TileColor::Orange));
+		assert_eq!(paint.zag_from_count(), 0);
+		assert_eq!(paint.zag_to_count(), 0);
+		assert_eq!(paint.zag_mid_count(), 2);
+		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
+		assert_eq!(paint.zags_mid[1], Some(TileColor::Orange));
+		let collapsed = arc_paint_with(Some(zag), Some(zag), ZagMismatchCount::Collapsed);
+		assert_eq!(collapsed.zag_mid_count(), 1, "COLLAPSED orange vs orange is one squiggle");
 		let orange_zag = Tile::with_ring_kinds(6, Player::One, &[(TileColor::Orange, true)], 1, 1);
 		let orange_normal = Tile::mono(7, Player::Two, TileColor::Orange, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(orange_normal));
 		assert_eq!(paint.body, ArcBody::Hidden);
-		assert_eq!(paint.zags_from[0], Some(TileColor::Orange));
+		assert_eq!(paint.zag_mid_count(), 1, "one-sided hit still sits on the center line");
+		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
+		assert_eq!(paint.zag_from_count(), 0);
 		assert_eq!(paint.zag_to_count(), 0);
 		let mixed = Tile::with_ring_kinds(
 			8,
@@ -1632,7 +1753,9 @@ mod tests {
 			Tile::with_rings(10, Player::Two, &[TileColor::Blue, TileColor::Orange], 2, 1);
 		let paint = arc_paint(Some(match_and_zag), Some(blue_and_orange));
 		assert_eq!(paint.body, ArcBody::Hidden, "hitting zag suppresses the blue match line");
-		assert_eq!(paint.zags_from[0], Some(TileColor::Orange));
+		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
+		assert_eq!(paint.zag_mid_count(), 1);
+		assert_eq!(paint.zag_from_count(), 0);
 		assert_eq!(paint.zag_to_count(), 0);
 		let blue_only = Tile::mono(12, Player::Two, TileColor::Blue, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(blue_only));
@@ -1707,8 +1830,32 @@ mod tests {
 			Tile::with_ring_kinds(20, Player::One, &[(TileColor::Green, true)], 1, 1);
 		let paint = arc_paint(Some(green_zag_only), Some(two_green));
 		assert_eq!(paint.body, ArcBody::Hidden, "zag mismatch is the only realized ink");
-		assert_eq!(paint.zags_from[0], Some(TileColor::Green));
+		assert_eq!(paint.zags_mid[0], Some(TileColor::Green));
+		assert_eq!(paint.zag_mid_count(), 1);
+		assert_eq!(paint.zag_from_count(), 0);
 		assert_eq!(paint.zag_to_count(), 0);
+		let mixed = Tile::with_ring_kinds(
+			21,
+			Player::One,
+			&[(TileColor::Blue, false), (TileColor::Orange, true)],
+			2,
+			1,
+		);
+		let other = Tile::with_ring_kinds(
+			22,
+			Player::Two,
+			&[(TileColor::Green, false), (TileColor::Orange, false)],
+			2,
+			1,
+		);
+		let paint = arc_paint(Some(mixed), Some(other));
+		assert_eq!(
+			paint.body,
+			ArcBody::Hidden,
+			"zag + normal conflict on one edge still draws only the zag"
+		);
+		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
+		assert_eq!(paint.zag_mid_count(), 1);
 	}
 
 	#[test]
@@ -1747,7 +1894,7 @@ mod tests {
 		for arc in game.board().arcs() {
 			let from = game.tile_at(arc.from);
 			let to = game.tile_at(arc.to);
-			let paint = arc_paint(from, to);
+			let paint = arc_paint_with(from, to, game.rules().zag_mismatch);
 			if paint.zag_count() > 0 {
 				zag_arcs += 1;
 			}
@@ -1764,6 +1911,12 @@ mod tests {
 			}
 			if let (Some(a), Some(b)) = (from, to) {
 				if paint.body == ArcBody::Hidden && paint.zag_count() > 0 {
+					assert_eq!(
+						paint.zag_from_count() + paint.zag_to_count(),
+						0,
+						"two-ended SUM zags sit on the center line"
+					);
+					assert!(paint.zag_mid_count() > 0);
 					zag_only += 1;
 				}
 				if paint.body == ArcBody::Hidden
@@ -1860,7 +2013,7 @@ mod tests {
 		for arc in board.arcs() {
 			let from = game.tile_at(arc.from);
 			let to = game.tile_at(arc.to);
-			let paint = arc_paint(from, to);
+			let paint = arc_paint_with(from, to, game.rules().zag_mismatch);
 			match (from, to) {
 				(Some(a), Some(b)) => {
 					let orange_and_green_zag = |t: crate::game::Tile, other: crate::game::Tile| {

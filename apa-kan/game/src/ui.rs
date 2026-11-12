@@ -11,7 +11,7 @@ use rand::SeedableRng;
 use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
-use crate::game::{Action, Game, Player, Tile};
+use crate::game::{Action, Game, Player, Tile, ZagMismatchCount};
 use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
@@ -478,6 +478,7 @@ fn refresh_view(
 			play.game.tile_at(arc.from),
 			play.game.tile_at(arc.to),
 			board.center(),
+			play.game.rules().zag_mismatch,
 		);
 	}
 
@@ -594,6 +595,7 @@ fn spawn_arc(
 	from: Option<Tile>,
 	to: Option<Tile>,
 	center: NodeId,
+	zag_mismatch: ZagMismatchCount,
 ) {
 	let samples = arc.sample(visual::ARC_SAMPLES);
 	let pts: Vec<[f64; 2]> = samples
@@ -604,7 +606,7 @@ fn spawn_arc(
 		})
 		.collect();
 	let width = layout.arc_width;
-	let paint = visual::arc_paint(from, to);
+	let paint = visual::arc_paint_with(from, to, zag_mismatch);
 	let stripe_off = if visual::arc_touches_center(arc, center) {
 		f64::from(layout.stripe_off_center)
 	} else {
@@ -742,6 +744,23 @@ fn spawn_arc(
 			zag_w,
 			rgb(visual::tile_rgb(color)),
 			visual::Z_ARC_OVER + 0.02 * (i + visual::MAX_TILE_ZAGS) as f32,
+		);
+	}
+	let mid_n = paint.zag_mid_count();
+	let mid_off = visual::zag_center_offsets(mid_n, spacing);
+	for (i, zag) in paint.zags_mid.iter().enumerate() {
+		let Some(color) = *zag else {
+			continue;
+		};
+		let zig = visual::zigzag_alongside(&pts, mid_off[i], zag_amp, teeth);
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&zig,
+			zag_w,
+			rgb(visual::tile_rgb(color)),
+			visual::Z_ARC_OVER + 0.03 * i as f32,
 		);
 	}
 }

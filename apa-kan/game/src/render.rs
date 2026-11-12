@@ -49,7 +49,11 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		let samples = arc.sample(visual::ARC_SAMPLES);
 		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
 		let width = f64::from(layout.arc_width);
-		let paint = visual::arc_paint(game.tile_at(arc.from), game.tile_at(arc.to));
+		let paint = visual::arc_paint_with(
+			game.tile_at(arc.from),
+			game.tile_at(arc.to),
+			game.rules().zag_mismatch,
+		);
 		let stripe_off = if visual::arc_touches_center(arc, board.center()) {
 			f64::from(layout.stripe_off_center)
 		} else {
@@ -162,6 +166,15 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			};
 			let side = visual::zag_fan_offset(i, -1.0, inner, spacing);
 			let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
+			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
+		}
+		let mid_n = paint.zag_mid_count();
+		let mid_off = visual::zag_center_offsets(mid_n, spacing);
+		for (i, zag) in paint.zags_mid.iter().enumerate() {
+			let Some(color) = *zag else {
+				continue;
+			};
+			let zig = visual::zigzag_alongside(&pts, mid_off[i], zag_amp, teeth);
 			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
 		}
 	}
@@ -485,6 +498,7 @@ fn glyph(c: char) -> [u8; 7] {
 		'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
 		'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
 		'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+		'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
 		'0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
 		'1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
 		'2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
@@ -546,9 +560,10 @@ mod tests {
 		if !dir.is_dir() {
 			return;
 		}
-		use crate::game::TileColor;
+		use crate::game::{RuleSet, TileColor, ZagMismatchCount};
 		use crate::visual::{
-			demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair, demo_zag_tile,
+			demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair, demo_pair_with,
+			demo_zag_tile,
 		};
 		let board = demo_midgame();
 		write_png_sized(
@@ -657,6 +672,51 @@ mod tests {
 			dir.join("zag_thickness_tile.png"),
 			"thicker tile zags",
 			28.0,
+		);
+		write_png_sized(
+			&board,
+			dir.join("zag_edge_board_1280x800.png"),
+			"undirected zag mismatches on the center line",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_cropped(
+			&demo_pair(&[(TileColor::Orange, true)], 1, &[(TileColor::Orange, true)], 1),
+			dir.join("orange_zag_vs_orange_zag_sum.png"),
+			"SUM: orange zag vs orange zag = 2 center squiggles",
+			48.0,
+		);
+		let mut collapsed = RuleSet::default();
+		collapsed.zag_mismatch = ZagMismatchCount::Collapsed;
+		write_cropped(
+			&demo_pair_with(
+				collapsed,
+				&[(TileColor::Orange, true)],
+				1,
+				&[(TileColor::Orange, true)],
+				1,
+			),
+			dir.join("orange_zag_vs_orange_zag_collapsed.png"),
+			"COLLAPSED: orange zag vs orange zag = 1 center squiggle",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(&[(TileColor::Orange, true)], 1, &[(TileColor::Orange, false)], 1),
+			dir.join("one_sided_zag_hit_center.png"),
+			"one-sided orange zag hit on the center line",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(
+				&[(TileColor::Blue, false), (TileColor::Orange, true)],
+				2,
+				&[(TileColor::Green, false), (TileColor::Orange, false)],
+				2,
+			),
+			dir.join("zag_and_normal_mismatch_same_edge.png"),
+			"zag + normal conflict: center zag only, no diamond",
+			48.0,
 		);
 	}
 
