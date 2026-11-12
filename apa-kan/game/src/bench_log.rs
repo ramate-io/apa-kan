@@ -970,10 +970,8 @@ mod tests {
 		assert_eq!(log.to_rules().unwrap(), r);
 	}
 
-	#[test]
-	fn committed_deck11_jsonl_gz_replays_all_games() {
-		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-			.join("benchmark_results/low_value_pairs_deck11_on.jsonl.gz");
+	fn assert_committed_jsonl_gz_replays(rel: &str) {
+		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
 		if !path.exists() {
 			return;
 		}
@@ -982,12 +980,13 @@ mod tests {
 		assert_eq!(logs.len(), 108, "standard H2H is 9 pairings × 12 games");
 		for (i, log) in logs.iter().enumerate() {
 			assert_eq!(log.v, SCHEMA_VERSION);
-			assert_eq!(log.rules.bag_size, 11);
-			assert!(log.rules.self_capture_budget);
+			assert_eq!(log.rules.bag_size, 11, "{rel}");
+			assert!(log.rules.self_capture_budget, "{rel}");
 			assert_eq!(log.search_rng_seed, search_rng_seed(log.seed));
 			assert!(!log.opening.p1_bench.is_empty());
 			assert!(!log.actions.is_empty() || log.turns == 0);
-			let replayed = replay(log).unwrap_or_else(|e| panic!("replay game {}: {e}", i + 1));
+			let replayed =
+				replay(log).unwrap_or_else(|e| panic!("replay {rel} game {}: {e}", i + 1));
 			assert_eq!(
 				replayed.status(),
 				log.end.to_status().unwrap(),
@@ -1008,6 +1007,16 @@ mod tests {
 				assert_eq!(final_state.p2_board.len(), p2_n);
 			}
 		}
+	}
+
+	#[test]
+	fn committed_deck11_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/low_value_pairs_deck11_on.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_defaults_bag11_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/defaults_bag11.jsonl.gz");
 	}
 
 	#[test]

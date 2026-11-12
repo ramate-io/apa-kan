@@ -610,11 +610,11 @@ mod tests {
 	}
 
 	#[test]
-	fn shuffle_bags_preserves_smaller_deck_multiset() {
+	fn shuffle_bags_preserves_full_deck_multiset() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 11;
+		rules.bag_size = crate::game::BAG_SIZE as u8;
 		let mut game = Game::new(rules, 1);
-		assert_eq!(game.bag_len(Player::One), 4);
+		assert_eq!(game.bag_len(Player::One), 20);
 		let kinds = |g: &Game, p: Player| {
 			let mut v: Vec<_> = g.bag(p).iter().map(|t| t.kind_index()).collect();
 			v.sort_unstable();
@@ -624,7 +624,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, kinds(&game, Player::One));
-		assert_eq!(game.bag_len(Player::One), 4);
+		assert_eq!(game.bag_len(Player::One), 20);
 	}
 
 	#[test]

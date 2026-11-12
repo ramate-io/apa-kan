@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::ai::Actor;
 use crate::game::{
 	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
-	SamePieceTwice, ZagMismatchCount, BAG_SIZE,
+	SamePieceTwice, ZagMismatchCount, BAG_SIZE, BAG_SIZE_DEFAULT,
 };
 use crate::scenario::Scenario;
 
@@ -252,7 +252,7 @@ where
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n == 0 || n > BAG_SIZE as u64 {
 				return Err(format!(
-					"invalid --bag-size (expected 1..{BAG_SIZE}, default {BAG_SIZE})"
+					"invalid --bag-size (expected 1..{BAG_SIZE}, default {BAG_SIZE_DEFAULT})"
 				));
 			}
 			rules.bag_size = n as u8;
@@ -343,7 +343,7 @@ pub fn usage() -> &'static str {
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-bench <1..27>                   Opening deal and capture budget (default: 7)\n\
-	   --bag-size <1..27>                         Total sampled tiles per player (default: 27)\n\
+	   --bag-size <1..27>                         Total sampled tiles per player (default: 11)\n\
 	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
@@ -467,7 +467,7 @@ mod tests {
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
-		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE as u8);
+		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);
 		assert!(cfg.rules.self_capture_budget);
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
@@ -545,11 +545,16 @@ mod tests {
 
 	#[test]
 	fn parses_bag_size() {
-		let cfg = GameConfig::parse(["--bag-size", "11"]).unwrap();
-		assert_eq!(cfg.rules.bag_size, 11);
-		assert_eq!(cfg.rules.starting_bench_size, 7);
+		let default = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(default.rules.bag_size, BAG_SIZE_DEFAULT as u8);
+		let eleven = GameConfig::parse(["--bag-size", "11"]).unwrap();
+		assert_eq!(eleven.rules.bag_size, 11);
+		assert_eq!(eleven.rules.starting_bench_size, 7);
+		let full = GameConfig::parse(["--bag-size", "27"]).unwrap();
+		assert_eq!(full.rules.bag_size, BAG_SIZE as u8);
 		let err = GameConfig::parse(["--bag-size", "28"]).unwrap_err();
 		assert!(err.contains("bag-size"));
+		assert!(err.contains("default 11"), "{err}");
 		let err = GameConfig::parse(["--bag-size", "0"]).unwrap_err();
 		assert!(err.contains("bag-size"));
 	}

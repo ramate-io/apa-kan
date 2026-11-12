@@ -144,8 +144,8 @@ pub struct Scenario {
 	/// Copy P1's kind sequence onto P2 (new tile ids / owner).
 	pub mirror: bool,
 	/// Sample [`crate::game::RuleSet::bag_size`] tiles from the ring/color
-	/// process (same as `Game::new`, default [`crate::game::BAG_SIZE`]) instead
-	/// of expanding `p1`/`p2` kinds.
+	/// process (same as `Game::new`, default [`crate::game::BAG_SIZE_DEFAULT`])
+	/// instead of expanding `p1`/`p2` kinds.
 	pub generative: bool,
 	pub p1: DeckSpec,
 	pub p2: DeckSpec,
