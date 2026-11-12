@@ -47,9 +47,9 @@ Default:
 
 - Each player has a **bag** of **27 independently sampled tiles** (ring process × uniform weight 1–3 × uniform dots 1–3), shuffled with a seed. The old 27 unique 3-color kinds no longer fit the six-color / multi-ring space.
 - **`identical_bags` (default true):** both players get the same shuffle (new tile ids / owners), for fairness.
-- Opening **deal of `starting_bench_size` (default 7)** from bag onto the bench. CLI: `--starting-bench <1..27>`. A deal of 7 leaves **20** in the bag. Draw rules are unchanged: one bag tile per opponent tile removed on a MOVE; empty bag skips the draw. Insufficient-tiles still counts `board + bench` only, so starting at 7 begins further above the 5-tile floor.
-- **ADD** places one concrete bench tile onto an empty spawn (not an abstract “any kind” picker).
-- On a **MOVE**, each **opponent** tile removed draws one more tile from the mover’s bag onto their bench. ADD captures do not draw. Empty bag → the draw is skipped.
+- Opening **deal of `starting_bench_size` (default 7)** from bag onto the bench. CLI: `--starting-bench <1..27>`. A deal of 7 leaves **20** in the bag. The same N is the opening **capture budget** (N blank tokens). Insufficient-tiles still counts `board + bench` only, so starting at 7 begins further above the 5-tile floor.
+- **ADD** places one concrete bench tile onto an empty spawn (not an abstract “any kind” picker). Any remaining bench tile may be chosen at any time; the only ADD gate is **budget > 0** (plus an empty spawn). ADD spends 1 budget token (popped from the front of the stack, so opening blanks spend first).
+- **Capture budget:** each capture on your turn earns +1, including capturing your **own** tile (self-capture already happens under simultaneous overwhelm; it is not a new capture rule). The captured tile is pushed onto the budget stack beside the bench. Opponent tiles removed on a **MOVE** still draw one bag tile onto the bench (`capture_draw_on_move`); ADD captures still do not draw. Empty bag → the draw is skipped. Self-capture does not draw; rotating in a new tile needs a remaining bench tile (opening remainder or a later opponent-MOVE draw).
 - Remaining bag tiles do **not** keep a player alive.
 - **Scenarios** (`--scenario <name|path>`, TOML under `apa-kan/game/scenarios/`): replace the default deal with a named or file-backed deck. Builtins: `default`/`same` (`generative = true`, mirrored 27-tile sample); `independent` (each player sampled separately); `complementary` (P1 green+orange, P2 blue+orange, 18 one-ring tiles, mirrored weight/dot order); `complementary-swapped` (exclusive colors flipped). Optional per-player `colors` / `tiles` (`color` or `colors = [...]`) / `bench`. The app and `apa-kan-bench` share the loader.
 
@@ -77,7 +77,7 @@ The designer example: a **double green** next to two oranges has matches 2 / mis
 
 One action per turn by default (`actions_per_turn`, default 1):
 
-1. **ADD** a bench tile to an empty spawn. Legal even if the tile would be immediately overwhelmed; the UI warns.
+1. **ADD** any remaining bench tile to an empty spawn, if you have capture budget. Legal even if the tile would be immediately overwhelmed; the UI warns. Spends 1 budget.
 2. **MOVE** one of your tiles along the graph.
 3. **PASS** only when you have no legal ADD or MOVE **and** `no_moves_loses` is off.
 
@@ -111,6 +111,11 @@ One-ended edges (the tile has no neighbor on that arc) still draw all of that ti
 
 - **Win (elimination):** the opponent has **no tiles on the board and an empty bench**. A remaining bag does not save them. If both players are eliminated in the same resolution, the game is a **draw**.
 - **Win (locked-out):** if `no_moves_loses` is on (default) and the player to move has no legal ADD and no legal MOVE, they **lose immediately**. Detected at the start of their turn (after the previous player’s turn switch) and if they would otherwise pass.
+- **Win (low-value):** if **both** players have capture budget 0 **and** both have fewer than 5 board tiles (`LOW_VALUE_BOARD_LT`), the game ends. The player holding the **lowest-value** board piece wins. Value weights live in `PieceValueWeights` (easy to extend when new ring types appear):
+  1. **Primary:** `dots * 1 + normal_rings * 1 + zag_rings * 1` (every ring counts 1). Lower wins.
+  2. **Tie-break:** recompute with `zag_rings * 2` (`PieceValueWeights::TIEBREAK`). Lower wins. A 1-dot/1-zag loses to a 1-dot/1-normal.
+  3. Still tied: **draw**. There is **no** fall-through to the next-lowest piece.
+  Checked **after lockout** of the incoming player: someone with no legal action still loses by lockout even if they hold the lowest piece. Control / hold wins and the turn-limit are still earlier in `finish_turn`.
 - **Win (center hold):** if `center_hold_win` is on (default **off**) and a player occupies the center at the end of `center_hold_n` consecutive **own** turns (default 5), they win.
 - **Win (control):** if `control_win` is on (default) and a player occupies at least `control_n` of the 9-node control set (center + inner ring; default 5 of 9) at the end of `control_hold_turns` consecutive **own** turns (default 1), they win.
 - **Win (petal majority):** if `petal_majority_win` is on (default **off**) and a player occupies a majority of the inner-ring nodes (the 8 unique neighbors of the center — one attachment per petal) at the end of `petal_majority_n` consecutive **own** turns (default 1), they win.
@@ -120,13 +125,13 @@ One-ended edges (the tile has no neighbor on that arc) still draw all of that ti
 
 ### Stall-prevention options
 
-Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut`, `CenterHold`, `PetalMajority`, `Control`, and `InsufficientTiles` terminals are scored as wins/losses (`±WIN`) in search from the **mover's** perspective (hold-style wins leave the winner to move; lockouts switch to the loser).
+Each option is independently toggleable on `RuleSet` and via CLI. Greedy / minimax / MCTS share `legal_actions` / `apply`, so they honor every option. `LockedOut`, `CenterHold`, `PetalMajority`, `Control`, `InsufficientTiles`, and `LowValue` terminals are scored as wins/losses (`±WIN`) in search from the **mover's** perspective (hold-style wins leave the winner to move; lockouts switch to the loser; low-value is checked after lockout).
 
 #### 1. `no_moves_loses` (default **on**)
 
 CLI: `--no-moves-loses <on|off>`
 
-If the player to move has no legal action — no ADD from their bench onto an empty spawn, and no legal MOVE — they **lose immediately** (`EndReason::LockedOut`). The winner is the opponent.
+If the player to move has no legal action — no ADD (zero budget, empty bench, or no empty spawn), and no legal MOVE — they **lose immediately** (`EndReason::LockedOut`). The winner is the opponent.
 
 - PASS is not a legal action while this is on. `legal_actions` returns an empty list; applying PASS still records the lockout so bots that fall back to PASS end the game cleanly.
 - The legacy **double-pass draw is disabled** while this is on (a pass never occurs). Turn-limit draws remain as a safety net.
@@ -189,7 +194,7 @@ The **control set** is the center (node 0) plus the 8 inner-ring nodes (`Board::
 
 - Grabbing the center alone is 1 of 9 and is **not** a win. This is meant as a center-hold replacement so a center rush is not a race to victory.
 - At the end of player P’s turn: if P occupies at least `control_n` control-set nodes, P’s counter increments; if it reaches `control_hold_turns`, P wins (`EndReason::Control`). Otherwise P’s counter resets to 0. The opponent’s counter resets when they drop below `control_n`.
-- Check order at end of turn: center-hold, then petal-majority, then control, then insufficient-tiles, then turn-limit, then lockout of the incoming player.
+- Check order at end of turn: center-hold, then petal-majority, then control, then insufficient-tiles, then turn-limit, then lockout of the incoming player, then low-value (both broke, both under 5 board tiles).
 - The HUD shows `ctl P1 a/k h/t P2 b/k i/t` while this option is on.
 - Chosen default package (from [`control_win_t1_bench7.txt`](../../apa-kan/game/benchmark_results/control_win_t1_bench7.txt)): control-win **on** (5 of 9, t=1), center-hold **off**, starting bench 7, insufficient-tiles **off**, petal-majority **off**. Restore the previous package with `--center-hold-win on --control-win off --starting-bench 5`.
 - Total game clocks (a draw condition) are a planned follow-up; they are not implemented here.
@@ -247,9 +252,9 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` on, `pass_through_ring_cmp` ge, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7, `max_rings` 3, `zag_numer` 1 (1/7), `zag_mismatch` sum, `path_constraint` no-edge-revisit.
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` on, `pass_through_ring_cmp` ge, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7 (deal and capture budget), `max_rings` 3, `zag_numer` 1 (1/7), `zag_mismatch` sum, `path_constraint` no-edge-revisit.
 
-Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, petal-majority, control, and insufficient-tiles terminals are wins/losses in search.
+Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Locked-out, center-hold, petal-majority, control, insufficient-tiles, and low-value terminals are wins/losses in search.
 
 Headless round-robin: `apa-kan-bench` (same rule flags and `--scenario`; `--bots greedy,minimax,mcts`). Logs include per-game opening benches and a Pearson correlation of a simple deck-strength measure (sum of weights, dots, color count) with outcome.
 
@@ -269,7 +274,7 @@ Headless round-robin: `apa-kan-bench` (same rule flags and `--scenario`; `--bots
 ## Alternatives considered
 
 - Unique-neighbor degree 4 for every non-center node — false for the inner ring; arc-degree 4 is the geometric fact.
-- Infinite 27-kind picker with an ADD counter — rejected; benches are concrete tiles dealt from a bag.
+- Infinite 27-kind picker with an ADD counter — rejected; benches are still concrete tiles dealt from a bag. The capture budget is an ADD counter **on top of** that concrete hand: you pick any remaining bench tile, and budget is the only ADD gate.
 - MOVE “up to d” — rejected; exact `d`.
 - Overwhelm by owner — rejected; color, as in the original game.
 

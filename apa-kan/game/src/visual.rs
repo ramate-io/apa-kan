@@ -7,7 +7,9 @@
 use std::f64::consts::PI;
 
 use crate::board::{ArcEdge, Board, NodeId};
-use crate::game::{Game, GameStatus, Player, RuleSet, Tile, TileColor, ZagMismatchCount};
+use crate::game::{
+	BudgetToken, Game, GameStatus, Player, RuleSet, Tile, TileColor, ZagMismatchCount,
+};
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
 pub const PREV_TILE_RADIUS_PX: f32 = 22.0;
@@ -97,7 +99,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then a bench tile to ADD, or click your tile to MOVE. Win: 5 of 9 (center+inner).";
+	"Click a spawn then any bench tile to ADD (costs 1 budget). MOVE your tile. Win: 5 of 9, or lowest piece if both budgets are 0 with <5 tiles.";
 
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];
@@ -108,6 +110,8 @@ pub const NODE_RGB: [f32; 3] = [0.75, 0.75, 0.75];
 pub const CENTER_RGB: [f32; 3] = [0.85, 0.85, 0.85];
 pub const HIGHLIGHT_RGB: [f32; 3] = [0.95, 0.85, 0.25];
 pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
+/// Rim on a blank budget token so dark P2 blanks stay visible.
+pub const BLANK_TOKEN_RIM_RGB: [f32; 3] = [0.55, 0.56, 0.58];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArcPaint {
@@ -512,11 +516,12 @@ impl ViewLayout {
 		let tile_radius = tile_u * scale;
 		let node_radius = NODE_RADIUS_UNITS * scale;
 		let spawn_radius = SPAWN_RADIUS_UNITS * scale;
-		// Seven-tile benches must fit the window width on phones; shrink the
-		// bench discs (not the board tiles) and cap spacing if needed.
+		// Seven-tile benches plus a budget-token stack on the right; shrink
+		// the bench discs (not the board tiles) and cap spacing if needed.
 		let n_slots = 7.0_f32;
-		let available_w = width - 2.0 * SIDE_MARGIN_PX;
 		let min_gap = 6.0;
+		let stack_reserve = ((width - 2.0 * SIDE_MARGIN_PX) / 10.0).max(28.0);
+		let available_w = (width - 2.0 * SIDE_MARGIN_PX - stack_reserve).max(80.0);
 		let max_bench_r = ((available_w - (n_slots - 1.0) * min_gap) / (2.0 * n_slots)).max(8.0);
 		let bench_tile_radius = tile_radius.min(max_bench_r);
 		let desired_spacing = 2.0 * bench_tile_radius + (0.40 * bench_tile_radius).max(min_gap);
@@ -588,6 +593,25 @@ impl ViewLayout {
 		let total = self.bench_spacing * len.saturating_sub(1) as f32;
 		let start = -total / 2.0;
 		[start + index as f32 * self.bench_spacing, y]
+	}
+
+	/// Overlapping pile just to the right of a 7-tile bench row. Index 0 is
+	/// the back of the stack (opening blanks); later tokens sit toward the board.
+	pub fn budget_stack_pos(&self, player: Player, index: usize, _len: usize) -> [f32; 2] {
+		let y = match player {
+			Player::Two => self.p2_bench_y,
+			Player::One => self.p1_bench_y,
+		};
+		let bench_right = self.bench_pos(player, 6, 7);
+		let max_x = self.width / 2.0 - SIDE_MARGIN_PX - self.bench_tile_radius;
+		let x = (bench_right[0] + self.bench_spacing).min(max_x);
+		let toward_board = match player {
+			Player::One => 1.0,
+			Player::Two => -1.0,
+		};
+		let step = (self.bench_tile_radius * 0.22).max(2.5);
+		let i = index as f32;
+		[x, y + toward_board * i * step]
 	}
 
 	pub fn board_top(&self) -> f32 {
@@ -964,14 +988,16 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 			}
 			let hold = extra;
 			format!(
-				"Turn {}{HUD_SEP}{} ({}) to play{HUD_SEP}P1 light {}/{}{HUD_SEP}P2 dark {}/{}{hold}",
+				"Turn {}{HUD_SEP}{} ({}) to play{HUD_SEP}P1 light {}/{} bud {}{HUD_SEP}P2 dark {}/{} bud {}{hold}",
 				game.turn_count() + 1,
 				game.current_player().label(),
 				actor_name,
 				game.bench(Player::One).len(),
 				game.bag_len(Player::One),
+				game.budget(Player::One),
 				game.bench(Player::Two).len(),
-				game.bag_len(Player::Two)
+				game.bag_len(Player::Two),
+				game.budget(Player::Two)
 			)
 		}
 		GameStatus::Won { winner, reason } => {
@@ -1221,6 +1247,16 @@ pub fn demo_midgame() -> Game {
 	];
 	game.set_bench(Player::One, p1_bench);
 	game.set_bench(Player::Two, p2_bench);
+	let p1_cap = game.alloc_tile(Player::Two, TileColor::Orange, 2, 1);
+	let p1_cap2 = game.alloc_rings(Player::Two, &[TileColor::Blue, TileColor::Green], 2, 2);
+	let mut p1_tokens = game.budget_tokens(Player::One).to_vec();
+	p1_tokens.push(BudgetToken::Captured(p1_cap));
+	p1_tokens.push(BudgetToken::Captured(p1_cap2));
+	game.set_budget_tokens(Player::One, p1_tokens);
+	let p2_cap = game.alloc_tile(Player::One, TileColor::Green, 1, 3);
+	let mut p2_tokens = game.budget_tokens(Player::Two).to_vec();
+	p2_tokens.push(BudgetToken::Captured(p2_cap));
+	game.set_budget_tokens(Player::Two, p2_tokens);
 
 	let mut bag1 = Vec::new();
 	let mut bag2 = Vec::new();
@@ -2068,7 +2104,7 @@ mod tests {
 		assert!(HELP_TEXT.contains("5 of 9"));
 		assert!(!header.contains('·'));
 		assert!(!turn.contains('·'));
-		assert!(turn.len() < 110, "turn line should fit a 1024px window: {turn}");
+		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
 		assert!(turn.contains("ctl"), "control-win HUD should show on default rules: {turn}");
 	}
 
@@ -2081,10 +2117,10 @@ mod tests {
 		assert_eq!(game.bag_len(Player::One), 20);
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("ctl P1 0/5 0/1 P2 0/5 0/1"), "{turn}");
-		assert!(turn.contains("P1 light 7/20"), "{turn}");
-		assert!(turn.contains("P2 dark 7/20"), "{turn}");
+		assert!(turn.contains("P1 light 7/20 bud 7"), "{turn}");
+		assert!(turn.contains("P2 dark 7/20 bud 7"), "{turn}");
 		assert!(!turn.contains("hold P1"), "{turn}");
-		assert!(turn.len() < 110, "turn line should fit a 1024px window: {turn}");
+		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
 	}
 
 	#[test]

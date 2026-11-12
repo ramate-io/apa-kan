@@ -316,7 +316,7 @@ pub fn usage() -> &'static str {
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
-	   --starting-bench <1..27>                   Opening deal from the 27-tile bag (default: 7)\n\
+	   --starting-bench <1..27>                   Opening deal and capture budget (default: 7)\n\
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\

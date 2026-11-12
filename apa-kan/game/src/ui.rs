@@ -11,7 +11,7 @@ use rand::SeedableRng;
 use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
-use crate::game::{Action, Game, Player, Tile, ZagMismatchCount};
+use crate::game::{Action, BudgetToken, Game, Player, Tile, ZagMismatchCount};
 use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
@@ -559,6 +559,30 @@ fn refresh_view(
 				layout.bench_tile_radius,
 			);
 		}
+		let tokens = play.game.budget_tokens(player).to_vec();
+		let n = tokens.len();
+		for (i, token) in tokens.iter().enumerate() {
+			let p = layout.budget_stack_pos(player, i, n);
+			match token {
+				BudgetToken::Blank => spawn_blank_token(
+					&mut commands,
+					&mut meshes,
+					&mut materials,
+					Vec2::new(p[0], p[1]),
+					player,
+					layout.bench_tile_radius,
+				),
+				BudgetToken::Captured(tile) => spawn_tile_at(
+					&mut commands,
+					&mut meshes,
+					&mut materials,
+					Vec2::new(p[0], p[1]),
+					*tile,
+					false,
+					layout.bench_tile_radius,
+				),
+			}
+		}
 	}
 }
 
@@ -915,6 +939,33 @@ fn spawn_ring(
 	));
 }
 
+fn spawn_blank_token(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pos: Vec2,
+	player: Player,
+	radius: f32,
+) {
+	commands.spawn((
+		DynamicView,
+		Mesh2d(meshes.add(Circle::new(radius))),
+		MeshMaterial2d(materials.add(ColorMaterial::from(rgb(visual::owner_fill_rgb(player))))),
+		Transform::from_translation(pos.extend(visual::Z_TILE)),
+	));
+	let rim = (radius * 0.10).max(1.4);
+	spawn_ring(
+		commands,
+		meshes,
+		materials,
+		pos,
+		(radius - rim).max(1.0),
+		radius,
+		rgb(visual::BLANK_TOKEN_RIM_RGB),
+		visual::Z_TILE_RING,
+	);
+}
+
 fn spawn_tile_at(
 	commands: &mut Commands,
 	meshes: &mut Assets<Mesh>,
@@ -1104,6 +1155,16 @@ fn view_fingerprint(play: &PlayState, layout: &ViewLayout) -> u64 {
 	for p in [Player::One, Player::Two] {
 		for t in play.game.bench(p) {
 			t.id.hash(&mut h);
+		}
+		play.game.budget(p).hash(&mut h);
+		for token in play.game.budget_tokens(p) {
+			match token {
+				BudgetToken::Blank => 0u8.hash(&mut h),
+				BudgetToken::Captured(t) => {
+					1u8.hash(&mut h);
+					t.id.hash(&mut h);
+				}
+			}
 		}
 	}
 	h.finish()

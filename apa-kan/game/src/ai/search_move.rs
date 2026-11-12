@@ -80,7 +80,7 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	let mut out = Vec::new();
 	let current = game.current_player();
 	let bench = game.bench(current);
-	if !bench.is_empty() {
+	if game.budget(current) > 0 && !bench.is_empty() {
 		let mut seen = [false; KIND_COUNT];
 		let dests: Vec<NodeId> = if game.rules().add_only_on_spawns {
 			game.board()
@@ -119,9 +119,10 @@ pub fn apply_move(game: &mut Game, mv: SearchMove) -> Result<crate::game::Action
 	game.apply(action)
 }
 
-/// True when the action removed at least one opponent tile (capture / overwhelm).
-pub fn is_capture(outcome: &crate::game::ActionOutcome, mover: crate::game::Player) -> bool {
-	outcome.removals.iter().any(|r| r.tile.owner != mover) || outcome.draws > 0
+/// True when the action removed at least one tile (capture / overwhelm).
+/// Own-tile removals count: they earn capture budget the same as opponent tiles.
+pub fn is_capture(outcome: &crate::game::ActionOutcome, _mover: crate::game::Player) -> bool {
+	!outcome.removals.is_empty() || outcome.draws > 0
 }
 
 /// Cheap move-ordering key (higher is searched first). Callers add TT/killer/history.

@@ -171,6 +171,7 @@ struct SeatStats {
 	petal_majority: u32,
 	control: u32,
 	insuff: u32,
+	low_value: u32,
 	turn_limit: u32,
 	double_pass: u32,
 	games_repeat_ge2: u32,
@@ -183,6 +184,7 @@ struct SeatStats {
 	iter_sum: f64,
 	iter_n: u32,
 	captures: u32,
+	self_captures: u32,
 }
 
 fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
@@ -260,7 +262,7 @@ fn run(cfg: BenchConfig) {
 		"# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).".into(),
 	);
 	lines.push(
-		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures".into(),
+		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
 	);
 
 	let record_holder: Mutex<Option<GameRecord>> = Mutex::new(None);
@@ -319,9 +321,11 @@ fn run(cfg: BenchConfig) {
 	let mut end_petal = 0u32;
 	let mut end_control = 0u32;
 	let mut end_insuff = 0u32;
+	let mut end_low_value = 0u32;
 	let mut end_limit = 0u32;
 	let mut end_pass = 0u32;
 	let mut captures = 0u32;
+	let mut self_captures = 0u32;
 	for (_, stats, line) in &pairing_results {
 		println!("{line}");
 		lines.push(line.clone());
@@ -334,9 +338,11 @@ fn run(cfg: BenchConfig) {
 		end_petal += stats.petal_majority;
 		end_control += stats.control;
 		end_insuff += stats.insuff;
+		end_low_value += stats.low_value;
 		end_limit += stats.turn_limit;
 		end_pass += stats.double_pass;
 		captures += stats.captures;
+		self_captures += stats.self_captures;
 		stall_games += cfg.games;
 		stall_rep2 += stats.games_repeat_ge2;
 		stall_rep3 += stats.games_repeat_ge3;
@@ -352,12 +358,13 @@ fn run(cfg: BenchConfig) {
 		p1_w + p1_d + p1_l
 	));
 	lines.push(format!(
-		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} turn_limit={end_limit} double_pass={end_pass}"
+		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} turn_limit={end_limit} double_pass={end_pass}"
 	));
 	let games_n = p1_w + p1_d + p1_l;
 	let avg_cap = if games_n == 0 { 0.0 } else { f64::from(captures) / f64::from(games_n) };
-	lines.push(format!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}"));
-	println!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}");
+	let avg_self = if games_n == 0 { 0.0 } else { f64::from(self_captures) / f64::from(games_n) };
+	lines.push(format!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}"));
+	println!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}");
 	println!(
 		"# seat_totals  P1 {p1_w}-{p1_d}-{p1_l}  P2 {p1_l}-{p1_d}-{p1_w}  games={}",
 		p1_w + p1_d + p1_l
@@ -374,7 +381,7 @@ fn run(cfg: BenchConfig) {
 		stall_turn_limit_and_rep3
 	));
 	lines.push(
-		"# Visible hash covers occupancy, tile kind, owner, benches, side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).".into(),
+		"# Visible hash covers occupancy, tile kind, owner, benches, capture budget, side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).".into(),
 	);
 	lines.push(
 		"# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.".into(),
@@ -480,6 +487,7 @@ fn run_pairing(
 		stats.sum_max_repeat += result.max_repeat;
 		stats.sum_max_occ_repeat += result.max_occ_repeat;
 		stats.captures += result.captures;
+		stats.self_captures += result.self_captures;
 		match result.status {
 			GameStatus::Won { winner, reason } => {
 				if winner == Player::One {
@@ -523,8 +531,9 @@ fn run_pairing(
 		if stats.depth_n == 0 { 0.0 } else { stats.depth_sum / f64::from(stats.depth_n) };
 	let avg_iters = if stats.iter_n == 0 { 0.0 } else { stats.iter_sum / f64::from(stats.iter_n) };
 	let avg_cap = f64::from(stats.captures) / f64::from(n);
+	let avg_self = f64::from(stats.self_captures) / f64::from(n);
 	let line = format!(
-		"{:<15} vs {:<15}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}",
+		"{:<15} vs {:<15}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}  self={:.2}",
 		p1.name(),
 		p2.name(),
 		stats.wins,
@@ -537,13 +546,15 @@ fn run_pairing(
 		stats.petal_majority,
 		stats.control,
 		stats.insuff,
+		stats.low_value,
 		stats.turn_limit,
 		stats.double_pass,
 		stats.games_repeat_ge3,
 		avg_rep,
 		avg_depth,
 		avg_iters,
-		avg_cap
+		avg_cap,
+		avg_self
 	);
 	(stats, line)
 }
@@ -558,6 +569,7 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 		EndReason::PetalMajority => stats.petal_majority += 1,
 		EndReason::Control => stats.control += 1,
 		EndReason::InsufficientTiles => stats.insuff += 1,
+		EndReason::LowValue => stats.low_value += 1,
 	}
 }
 
@@ -623,6 +635,7 @@ struct PlayResult {
 	iter_sum: f64,
 	iter_n: u32,
 	captures: u32,
+	self_captures: u32,
 	record: Option<GameRecord>,
 	deck: DeckRow,
 }
@@ -687,6 +700,7 @@ fn play_game(
 	let mut iter_n = 0u32;
 	let mut record_lines = Vec::new();
 	let mut captures = 0u32;
+	let mut self_captures = 0u32;
 	let mut guard = 0u32;
 	let mut add_rings = [0u32; 4];
 	let mut move_rings = [0u32; 4];
@@ -755,6 +769,9 @@ fn play_game(
 				captures +=
 					outcome.removals.iter().filter(|r| r.tile.owner != outcome.player).count()
 						as u32;
+				self_captures +=
+					outcome.removals.iter().filter(|r| r.tile.owner == outcome.player).count()
+						as u32;
 				if keep_record {
 					record_lines.push(format!(
 						"{:>3}. {}   [depth={} iters={}]",
@@ -820,6 +837,7 @@ fn play_game(
 		iter_sum,
 		iter_n,
 		captures,
+		self_captures,
 		record,
 		deck: DeckRow {
 			pairing: String::new(),
