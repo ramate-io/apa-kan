@@ -99,7 +99,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any bench tile to ADD (costs 1 budget). MOVE your tile. Win: 5 of 9, or lowest piece if both budgets are 0 with <5 tiles.";
+	"Click a spawn then any bench tile to ADD (costs 1 usable budget). MOVE your tile. Win: 5 of 9, or lowest piece if both usable budgets are 0 with <5 tiles.";
 
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];
@@ -112,6 +112,28 @@ pub const HIGHLIGHT_RGB: [f32; 3] = [0.95, 0.85, 0.25];
 pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
 /// Rim on a blank budget token so dark P2 blanks stay visible.
 pub const BLANK_TOKEN_RIM_RGB: [f32; 3] = [0.55, 0.56, 0.58];
+/// Mix surplus (unusable) budget-token colors toward the background.
+pub const SURPLUS_TOKEN_FADE: f32 = 0.58;
+
+/// Fade `c` toward [`BG_RGB`] so leftover tokens stay visible but inactive.
+pub fn surplus_rgb(c: [f32; 3]) -> [f32; 3] {
+	[
+		c[0] * (1.0 - SURPLUS_TOKEN_FADE) + BG_RGB[0] * SURPLUS_TOKEN_FADE,
+		c[1] * (1.0 - SURPLUS_TOKEN_FADE) + BG_RGB[1] * SURPLUS_TOKEN_FADE,
+		c[2] * (1.0 - SURPLUS_TOKEN_FADE) + BG_RGB[2] * SURPLUS_TOKEN_FADE,
+	]
+}
+
+/// Usable budget, or `usable+surplus` when tokens exceed the bench.
+pub fn format_budget(game: &Game, player: Player) -> String {
+	let usable = game.budget(player);
+	let surplus = game.budget_surplus(player);
+	if surplus == 0 {
+		usable.to_string()
+	} else {
+		format!("{usable}+{surplus}")
+	}
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArcPaint {
@@ -994,10 +1016,10 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 				actor_name,
 				game.bench(Player::One).len(),
 				game.bag_len(Player::One),
-				game.budget(Player::One),
+				format_budget(game, Player::One),
 				game.bench(Player::Two).len(),
 				game.bag_len(Player::Two),
-				game.budget(Player::Two)
+				format_budget(game, Player::Two)
 			)
 		}
 		GameStatus::Won { winner, reason } => {
@@ -2133,6 +2155,19 @@ mod tests {
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("P1 light 7/4 bud 7"), "{turn}");
 		assert!(turn.contains("P2 dark 7/4 bud 7"), "{turn}");
+		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
+	}
+
+	#[test]
+	fn hud_shows_surplus_tokens_beside_usable_budget() {
+		let game = demo_midgame();
+		assert_eq!(game.budget(Player::One), 5);
+		assert_eq!(game.budget_surplus(Player::One), 4);
+		assert_eq!(game.budget(Player::Two), 5);
+		assert_eq!(game.budget_surplus(Player::Two), 3);
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("P1 light 5/14 bud 5+4"), "{turn}");
+		assert!(turn.contains("P2 dark 5/14 bud 5+3"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
 	}
 
