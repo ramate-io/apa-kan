@@ -1,0 +1,320 @@
+# apa-kan turn-limit draw diagnostic
+# think_ms=1000 late_turns=30 bag_size=11 self_capture_budget=on seed protocol = bench (rng = seed ^ 0x51ed)
+# Search bots are time-bounded, so a replay may diverge from the logged game; greedy is deterministic.
+# elapsed_sec=197.3
+# summary  pairing  result  turns  matched_tl  lv_ready  P1_usable/P2_usable  1v1_type_kills  late_cap_to_move  late_either  late_declined
+#   greedy vs greedy g6  Draw TurnLimit  t200  matched_tl=true  lv_ready=false  usable=1/0  type_kills=0  cap=14/30  either=27/30  declined=14/30
+#   greedy vs greedy g9  Draw TurnLimit  t200  matched_tl=true  lv_ready=false  usable=2/0  type_kills=0  cap=0/30  either=0/30  declined=0/30
+#   minimax vs minimax g4  Won Two Control  t38  matched_tl=false  lv_ready=false  usable=0/2  type_kills=1  cap=2/30  either=3/30  declined=0/30
+#   minimax vs minimax g6  Won Two Control  t38  matched_tl=false  lv_ready=false  usable=2/0  type_kills=1  cap=3/30  either=3/30  declined=0/30
+#   minimax vs mcts g10  Won Two LowValue  t28  matched_tl=false  lv_ready=true  usable=0/0  type_kills=0  cap=1/28  either=3/28  declined=0/28
+#   mcts vs minimax g3  Draw TurnLimit  t200  matched_tl=true  lv_ready=false  usable=0/1  type_kills=2  cap=1/30  either=2/30  declined=0/30
+#   mcts vs minimax g9  Won Two LowValue  t54  matched_tl=false  lv_ready=true  usable=0/0  type_kills=2  cap=0/30  either=1/30  declined=0/30
+#   mcts vs mcts g9  Draw TurnLimit  t200  matched_tl=true  lv_ready=false  usable=1/2  type_kills=0  cap=2/30  either=3/30  declined=0/30
+#   mcts vs mcts g11  Draw TurnLimit  t200  matched_tl=true  lv_ready=false  usable=1/0  type_kills=0  cap=0/30  either=0/30  declined=0/30
+
+## greedy vs greedy g6  seed=6  greedy vs greedy
+result=Draw TurnLimit  turns=200  (log expected Draw TurnLimit at 200)
+low_value_trigger_ready=false  (both usable=0 and both board<5)
+P1 bench=1 bag=4 usable=1 surplus=2 tokens=3 board=2
+P2 bench=0 bag=3 usable=0 surplus=6 tokens=6 board=3
+P1 bench [b1-1]
+P2 bench [-]
+P1 board (2)
+  g3-2 d2 n1 z0 w3 @6(inner)
+  m+g2-2 d2 n2 z0 w2 @18(inner)
+P2 board (3)
+  b+g1-2 d2 n2 z0 w1 @21(inner)
+  g3-2 d2 n1 z0 w3 @0(center)
+  m+g2-2 d2 n2 z0 w2 @9(inner)
+type_threats  pairs=6  P1_kills_P2_type=0  P2_kills_P1_type=0  either=0
+geometry  contact_edges=2  P1_approach_dests=5  P2_approach_dests=4  P1_cap_moves=0  P2_cap_moves=0  P1_cap_adds=0  P2_cap_adds=0
+late last 30 turns: n=30 MOVE=30 ADD=0 PASS=0 opp_caps=0 self_caps=1
+late capture_avail  to_move=14/30  either_side=27/30  declined_noncapture=14/30  unique_pos=30  max_repeat=1
+late mix (turn player KIND cap? declined? opp/self caps)
+  t189 P1 MOVE cap_avail=true declined=true opp=0 self=0
+  t190 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t191 P1 MOVE cap_avail=true declined=true opp=0 self=0
+  t192 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t193 P1 MOVE cap_avail=true declined=true opp=0 self=0
+  t194 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t195 P1 MOVE cap_avail=true declined=true opp=0 self=0
+  t196 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t197 P1 MOVE cap_avail=true declined=true opp=0 self=0
+  t198 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t199 P1 MOVE cap_avail=true declined=true opp=0 self=0
+  t200 P2 MOVE cap_avail=false declined=false opp=0 self=1
+
+## greedy vs greedy g9  seed=9  greedy vs greedy
+result=Draw TurnLimit  turns=200  (log expected Draw TurnLimit at 200)
+low_value_trigger_ready=false  (both usable=0 and both board<5)
+P1 bench=2 bag=3 usable=2 surplus=0 tokens=2 board=2
+P2 bench=0 bag=4 usable=0 surplus=8 tokens=8 board=2
+P1 bench [b1-1,o1-1]
+P2 bench [-]
+P1 board (2)
+  o3-2 d2 n1 z0 w3 @1(inner)
+  p2-2 d2 n1 z0 w2 @6(inner)
+P2 board (2)
+  b3-3 d3 n1 z0 w3 @3(inner)
+  o3-2 d2 n1 z0 w3 @16(inner)
+type_threats  pairs=4  P1_kills_P2_type=0  P2_kills_P1_type=0  either=0
+geometry  contact_edges=0  P1_approach_dests=0  P2_approach_dests=5  P1_cap_moves=0  P2_cap_moves=0  P1_cap_adds=0  P2_cap_adds=0
+late last 30 turns: n=30 MOVE=30 ADD=0 PASS=0 opp_caps=0 self_caps=0
+late capture_avail  to_move=0/30  either_side=0/30  declined_noncapture=0/30  unique_pos=30  max_repeat=1
+late mix (turn player KIND cap? declined? opp/self caps)
+  t189 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t190 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t191 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t192 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t193 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t194 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t195 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t196 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t197 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t198 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t199 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t200 P2 MOVE cap_avail=false declined=false opp=0 self=0
+
+## minimax vs minimax g4  seed=40004  minimax vs minimax
+result=Won Two Control  turns=38  (log expected Draw TurnLimit at 200)
+low_value_trigger_ready=false  (both usable=0 and both board<5)
+P1 bench=0 bag=4 usable=0 surplus=0 tokens=0 board=4
+P2 bench=2 bag=2 usable=2 surplus=3 tokens=5 board=5
+P1 bench [-]
+P2 bench [b1-2,g2-3]
+P1 board (4)
+  b2-2 d2 n1 z0 w2 @18(inner)
+  b3-3 d3 n1 z0 w3 @10(mid)
+  g+b2-3 d3 n2 z0 w2 @6(inner)
+  gz+oz2-1 d1 n0 z2 w2 @22(mid)
+P2 board (5)
+  b2-2 d2 n1 z0 w2 @0(center)
+  b2-2 d2 n1 z0 w2 @16(inner)
+  b3-3 d3 n1 z0 w3 @1(inner)
+  g+b2-3 d3 n2 z0 w2 @12(inner)
+  oz3-1 d1 n0 z1 w3 @9(inner)
+type_threats  pairs=20  P1_kills_P2_type=1  P2_kills_P1_type=1  either=1
+  e.g. gz+oz2-1 vs oz3-1 -> P1dies=true P2dies=true
+geometry  contact_edges=2  P1_approach_dests=9  P2_approach_dests=22  P1_cap_moves=0  P2_cap_moves=0  P1_cap_adds=0  P2_cap_adds=0
+late last 30 turns: n=30 MOVE=21 ADD=9 PASS=0 opp_caps=3 self_caps=2
+late capture_avail  to_move=2/30  either_side=3/30  declined_noncapture=0/30  unique_pos=30  max_repeat=1
+late mix (turn player KIND cap? declined? opp/self caps)
+  t27  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t28  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t29  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t30  P2 MOVE cap_avail=true declined=false opp=1 self=0
+  t31  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t32  P2 ADD  cap_avail=false declined=false opp=1 self=1
+  t33  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t34  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t35  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t36  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t37  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t38  P2 MOVE cap_avail=false declined=false opp=0 self=0
+
+## minimax vs minimax g6  seed=40006  minimax vs minimax
+result=Won Two Control  turns=38  (log expected Draw TurnLimit at 200)
+low_value_trigger_ready=false  (both usable=0 and both board<5)
+P1 bench=2 bag=3 usable=2 surplus=0 tokens=2 board=3
+P2 bench=0 bag=3 usable=0 surplus=4 tokens=4 board=5
+P1 bench [o1-1,b1-3]
+P2 bench [-]
+P1 board (3)
+  g1-3 d3 n1 z0 w1 @3(inner)
+  g2-3 d3 n1 z0 w2 @1(inner)
+  g3-2 d2 n1 z0 w3 @0(center)
+P2 board (5)
+  b2-3 d3 n1 z0 w2 @9(inner)
+  g1-2 d2 n1 z0 w1 @21(inner)
+  g1-3 d3 n1 z0 w1 @18(inner)
+  g2-3 d3 n1 z0 w2 @6(inner)
+  g3-2 d2 n1 z0 w3 @16(inner)
+type_threats  pairs=15  P1_kills_P2_type=0  P2_kills_P1_type=1  either=1
+  e.g. g1-3 vs b2-3 -> P1dies=true P2dies=false
+geometry  contact_edges=5  P1_approach_dests=21  P2_approach_dests=9  P1_cap_moves=4  P2_cap_moves=0  P1_cap_adds=0  P2_cap_adds=0
+late last 30 turns: n=30 MOVE=22 ADD=8 PASS=0 opp_caps=4 self_caps=2
+late capture_avail  to_move=3/30  either_side=3/30  declined_noncapture=0/30  unique_pos=30  max_repeat=1
+late mix (turn player KIND cap? declined? opp/self caps)
+  t27  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t28  P2 ADD  cap_avail=false declined=false opp=0 self=0
+  t29  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t30  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t31  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t32  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t33  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t34  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t35  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t36  P2 ADD  cap_avail=false declined=false opp=0 self=0
+  t37  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t38  P2 MOVE cap_avail=false declined=false opp=0 self=0
+
+## minimax vs mcts g10  seed=50010  minimax vs mcts
+result=Won Two LowValue  turns=28  (log expected Draw TurnLimit at 200)
+low_value_trigger_ready=true  (both usable=0 and both board<5)
+P1 bench=0 bag=4 usable=0 surplus=2 tokens=2 board=2
+P2 bench=0 bag=3 usable=0 surplus=8 tokens=8 board=2
+P1 bench [-]
+P2 bench [-]
+P1 board (2)
+  o+gz3-2 d2 n1 z1 w3 @0(center)
+  o3-2 d2 n1 z0 w3 @8(spawn)
+P2 board (2)
+  b2-2 d2 n1 z0 w2 @23(spawn)
+  o3-2 d2 n1 z0 w3 @16(inner)
+type_threats  pairs=4  P1_kills_P2_type=0  P2_kills_P1_type=0  either=0
+geometry  contact_edges=1  P1_approach_dests=2  P2_approach_dests=7  P1_cap_moves=0  P2_cap_moves=0  P1_cap_adds=0  P2_cap_adds=0
+late last 30 turns: n=28 MOVE=13 ADD=15 PASS=0 opp_caps=5 self_caps=6
+late capture_avail  to_move=1/28  either_side=3/28  declined_noncapture=0/28  unique_pos=28  max_repeat=1
+late mix (turn player KIND cap? declined? opp/self caps)
+  t17  P1 ADD  cap_avail=false declined=false opp=1 self=1
+  t18  P2 ADD  cap_avail=false declined=false opp=0 self=0
+  t19  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t20  P2 MOVE cap_avail=true declined=false opp=1 self=0
+  t21  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t22  P2 ADD  cap_avail=false declined=false opp=1 self=1
+  t23  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t24  P2 ADD  cap_avail=false declined=false opp=1 self=1
+  t25  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t26  P2 ADD  cap_avail=false declined=false opp=0 self=2
+  t27  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t28  P2 ADD  cap_avail=false declined=false opp=0 self=0
+
+## mcts vs minimax g3  seed=70003  mcts vs minimax
+result=Draw TurnLimit  turns=200  (log expected Draw TurnLimit at 200)
+low_value_trigger_ready=false  (both usable=0 and both board<5)
+P1 bench=0 bag=3 usable=0 surplus=3 tokens=3 board=4
+P2 bench=1 bag=3 usable=1 surplus=2 tokens=3 board=4
+P1 bench [-]
+P2 bench [p+oz1-3]
+P1 board (4)
+  b1-3 d3 n1 z0 w1 @3(inner)
+  b2-2 d2 n1 z0 w2 @12(inner)
+  b3-3 d3 n1 z0 w3 @18(inner)
+  o+b1-2 d2 n2 z0 w1 @21(inner)
+P2 board (4)
+  b1-3 d3 n1 z0 w1 @11(spawn)
+  b2-2 d2 n1 z0 w2 @6(inner)
+  b3-3 d3 n1 z0 w3 @0(center)
+  g2-3 d3 n1 z0 w2 @8(spawn)
+type_threats  pairs=16  P1_kills_P2_type=0  P2_kills_P1_type=2  either=2
+  e.g. b1-3 vs g2-3 -> P1dies=true P2dies=false
+  e.g. o+b1-2 vs g2-3 -> P1dies=true P2dies=false
+geometry  contact_edges=5  P1_approach_dests=11  P2_approach_dests=6  P1_cap_moves=4  P2_cap_moves=0  P1_cap_adds=0  P2_cap_adds=0
+late last 30 turns: n=30 MOVE=28 ADD=2 PASS=0 opp_caps=1 self_caps=0
+late capture_avail  to_move=1/30  either_side=2/30  declined_noncapture=0/30  unique_pos=30  max_repeat=1
+late mix (turn player KIND cap? declined? opp/self caps)
+  t189 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t190 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t191 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t192 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t193 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t194 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t195 P1 ADD  cap_avail=false declined=false opp=0 self=0
+  t196 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t197 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t198 P2 MOVE cap_avail=true declined=false opp=1 self=0
+  t199 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t200 P2 ADD  cap_avail=false declined=false opp=0 self=0
+
+## mcts vs minimax g9  seed=70009  mcts vs minimax
+result=Won Two LowValue  turns=54  (log expected Draw TurnLimit at 200)
+low_value_trigger_ready=true  (both usable=0 and both board<5)
+P1 bench=0 bag=3 usable=0 surplus=2 tokens=2 board=4
+P2 bench=0 bag=3 usable=0 surplus=4 tokens=4 board=4
+P1 bench [-]
+P2 bench [-]
+P1 board (4)
+  b+gz2-2 d2 n1 z1 w2 @15(mid)
+  b1-2 d2 n1 z0 w1 @1(inner)
+  b2-2 d2 n1 z0 w2 @16(inner)
+  o3-2 d2 n1 z0 w3 @3(inner)
+P2 board (4)
+  b1-2 d2 n1 z0 w1 @8(spawn)
+  b2-2 d2 n1 z0 w2 @9(inner)
+  o+b2-1 d1 n2 z0 w2 @0(center)
+  o3-2 d2 n1 z0 w3 @21(inner)
+type_threats  pairs=16  P1_kills_P2_type=1  P2_kills_P1_type=1  either=2
+  e.g. b1-2 vs o3-2 -> P1dies=true P2dies=false
+  e.g. o3-2 vs b1-2 -> P1dies=false P2dies=true
+geometry  contact_edges=3  P1_approach_dests=15  P2_approach_dests=4  P1_cap_moves=0  P2_cap_moves=0  P1_cap_adds=0  P2_cap_adds=0
+late last 30 turns: n=30 MOVE=25 ADD=5 PASS=0 opp_caps=1 self_caps=3
+late capture_avail  to_move=0/30  either_side=1/30  declined_noncapture=0/30  unique_pos=30  max_repeat=1
+late mix (turn player KIND cap? declined? opp/self caps)
+  t43  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t44  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t45  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t46  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t47  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t48  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t49  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t50  P2 ADD  cap_avail=false declined=false opp=0 self=0
+  t51  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t52  P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t53  P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t54  P2 ADD  cap_avail=false declined=false opp=1 self=2
+
+## mcts vs mcts g9  seed=80009  mcts vs mcts
+result=Draw TurnLimit  turns=200  (log expected Draw TurnLimit at 200)
+low_value_trigger_ready=false  (both usable=0 and both board<5)
+P1 bench=1 bag=3 usable=1 surplus=4 tokens=5 board=2
+P2 bench=2 bag=3 usable=2 surplus=3 tokens=5 board=2
+P1 bench [b3-3]
+P2 bench [o1-1,b3-3]
+P1 board (2)
+  g3-2 d2 n1 z0 w3 @21(inner)
+  t3-3 d3 n1 z0 w3 @0(center)
+P2 board (2)
+  g3-2 d2 n1 z0 w3 @6(inner)
+  t3-3 d3 n1 z0 w3 @15(mid)
+type_threats  pairs=4  P1_kills_P2_type=0  P2_kills_P1_type=0  either=0
+geometry  contact_edges=1  P1_approach_dests=3  P2_approach_dests=8  P1_cap_moves=0  P2_cap_moves=0  P1_cap_adds=0  P2_cap_adds=0
+late last 30 turns: n=30 MOVE=27 ADD=3 PASS=0 opp_caps=2 self_caps=1
+late capture_avail  to_move=2/30  either_side=3/30  declined_noncapture=0/30  unique_pos=30  max_repeat=1
+late mix (turn player KIND cap? declined? opp/self caps)
+  t189 P1 ADD  cap_avail=false declined=false opp=0 self=1
+  t190 P2 ADD  cap_avail=false declined=false opp=0 self=0
+  t191 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t192 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t193 P1 MOVE cap_avail=true declined=false opp=1 self=0
+  t194 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t195 P1 ADD  cap_avail=false declined=false opp=0 self=0
+  t196 P2 MOVE cap_avail=true declined=false opp=1 self=0
+  t197 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t198 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t199 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t200 P2 MOVE cap_avail=false declined=false opp=0 self=0
+
+## mcts vs mcts g11  seed=80011  mcts vs mcts
+result=Draw TurnLimit  turns=200  (log expected Draw TurnLimit at 200)
+low_value_trigger_ready=false  (both usable=0 and both board<5)
+P1 bench=1 bag=2 usable=1 surplus=4 tokens=5 board=2
+P2 bench=0 bag=1 usable=0 surplus=4 tokens=4 board=3
+P1 bench [t1-3]
+P2 bench [-]
+P1 board (2)
+  g2-3 d3 n1 z0 w2 @0(center)
+  g3-2 d2 n1 z0 w3 @24(mid)
+P2 board (3)
+  g1-2 d2 n1 z0 w1 @4(mid)
+  g2-3 d3 n1 z0 w2 @6(inner)
+  g3-2 d2 n1 z0 w3 @1(inner)
+type_threats  pairs=6  P1_kills_P2_type=0  P2_kills_P1_type=0  either=0
+geometry  contact_edges=3  P1_approach_dests=5  P2_approach_dests=13  P1_cap_moves=0  P2_cap_moves=0  P1_cap_adds=0  P2_cap_adds=0
+late last 30 turns: n=30 MOVE=28 ADD=2 PASS=0 opp_caps=1 self_caps=1
+late capture_avail  to_move=0/30  either_side=0/30  declined_noncapture=0/30  unique_pos=30  max_repeat=1
+late mix (turn player KIND cap? declined? opp/self caps)
+  t189 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t190 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t191 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t192 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t193 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t194 P2 ADD  cap_avail=false declined=false opp=0 self=0
+  t195 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t196 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t197 P1 MOVE cap_avail=false declined=false opp=0 self=0
+  t198 P2 MOVE cap_avail=false declined=false opp=0 self=0
+  t199 P1 ADD  cap_avail=false declined=false opp=1 self=1
+  t200 P2 MOVE cap_avail=false declined=false opp=0 self=0
+
+# elapsed_sec=197.3
