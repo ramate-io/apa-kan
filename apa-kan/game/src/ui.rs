@@ -736,21 +736,17 @@ fn spawn_arc(
 				f64::from(layout.braid_amp)
 			};
 			let strand_w = width * visual::BRAID_STRAND_WIDTH_SCALE;
-			let n = visual::braid_strand_count(colors).max(1) as f64;
-			for (i, color) in colors.iter().enumerate() {
-				let Some(color) = *color else {
-					continue;
-				};
-				let phase = i as f64 * (std::f64::consts::TAU / n);
-				let strand = visual::braid_alongside(&pts, amp, phase, visual::BRAID_TURNS);
-				spawn_stroke(
+			for thread in visual::braid_threads(&pts, amp, visual::braid_turns(arc), colors) {
+				spawn_braid_strand(
 					commands,
 					meshes,
 					materials,
-					&strand,
+					&thread.pts,
+					&thread.phase,
 					strand_w,
-					rgb(visual::tile_rgb(color)),
-					visual::Z_ARC + 0.01 * i as f32,
+					rgb(visual::tile_rgb(thread.color)),
+					visual::Z_ARC,
+					visual::Z_ARC_OVER,
 				);
 			}
 		}
@@ -893,6 +889,23 @@ fn spawn_hitch_half(
 	}
 }
 
+fn spawn_braid_strand(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f64; 2]],
+	phase: &[f64],
+	width: f32,
+	color: Color,
+	z_back: f32,
+	z_front: f32,
+) {
+	visual::for_braid_segments(pts, phase, |slice, front| {
+		let z = if front { z_front } else { z_back };
+		spawn_stroke(commands, meshes, materials, slice, width, color, z);
+	});
+}
+
 fn spawn_stroke(
 	commands: &mut Commands,
 	meshes: &mut Assets<Mesh>,
@@ -1023,6 +1036,9 @@ fn spawn_tile_at(
 	let ring_half = draw.stroke * 0.5;
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
+		if tile.stroke_is_braid(k) {
+			continue;
+		}
 		let r = draw.ring_radius(radius, k);
 		if r > 6.0 * draw.scale {
 			let color = tile.stroke_color(k);
@@ -1044,17 +1060,6 @@ fn spawn_tile_at(
 					paint(visual::tile_rgb(color), dim),
 					z,
 				);
-			} else if tile.stroke_is_braid(k) {
-				let [a, b] = visual::braid_circle(
-					[f64::from(pos.x), f64::from(pos.y)],
-					f64::from(r - ring_half * 0.5),
-					f64::from(draw.braid_amp),
-					draw.braid_samples,
-				);
-				let col = paint(visual::tile_rgb(color), dim);
-				let w = draw.braid_stroke.max(0.4);
-				spawn_stroke(commands, meshes, materials, &a, w, col, z);
-				spawn_stroke(commands, meshes, materials, &b, w, col, z + 0.005);
 			} else {
 				spawn_ring(
 					commands,
@@ -1065,6 +1070,29 @@ fn spawn_tile_at(
 					r,
 					paint(visual::tile_rgb(color), dim),
 					z,
+				);
+			}
+		}
+	}
+	if tile.braid_ring_count() >= 2 {
+		let r = f64::from(draw.ring_radius(radius, 0) - ring_half * 0.5);
+		if r > 6.0 * f64::from(draw.scale) {
+			let center = [f64::from(pos.x), f64::from(pos.y)];
+			let rim = visual::circle_polyline(center, r, draw.braid_samples);
+			let amp = f64::from(draw.braid_amp);
+			let turns = visual::tile_braid_turns(r);
+			let w = draw.braid_stroke.max(0.5);
+			for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
+				spawn_braid_strand(
+					commands,
+					meshes,
+					materials,
+					&thread.pts,
+					&thread.phase,
+					w,
+					paint(visual::tile_rgb(thread.color), dim),
+					visual::Z_TILE_RING,
+					visual::Z_TILE_RING + 0.08,
 				);
 			}
 		}

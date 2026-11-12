@@ -144,14 +144,15 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 					f64::from(layout.braid_amp)
 				};
 				let strand_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
-				let n = visual::braid_strand_count(colors).max(1) as f64;
-				for (i, color) in colors.iter().enumerate() {
-					let Some(color) = *color else {
-						continue;
-					};
-					let phase = i as f64 * (std::f64::consts::TAU / n);
-					let strand = visual::braid_alongside(&pts, amp, phase, visual::BRAID_TURNS);
-					back.push((strand, rgb_of(visual::tile_rgb(color)), strand_w));
+				for thread in visual::braid_threads(&pts, amp, visual::braid_turns(arc), colors) {
+					split_braid(
+						&thread.pts,
+						&thread.phase,
+						rgb_of(visual::tile_rgb(thread.color)),
+						strand_w,
+						&mut back,
+						&mut front,
+					);
 				}
 			}
 		}
@@ -198,6 +199,20 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	for (pts, color, width) in back.into_iter().chain(front) {
 		stroke_polyline(img, &pts, color, width);
 	}
+}
+
+fn split_braid(
+	pts: &[[f64; 2]],
+	phase: &[f64],
+	color: Rgba<u8>,
+	width: f64,
+	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+	front: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+) {
+	visual::for_braid_segments(pts, phase, |slice, is_front| {
+		let dest = if is_front { &mut *front } else { &mut *back };
+		dest.push((slice.to_vec(), color, width));
+	});
 }
 
 fn push_stripe(
@@ -370,6 +385,9 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile, dim: bool) 
 	let draw = visual::TileRingDraw::for_radius(r as f32);
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
+		if tile.stroke_is_braid(k) {
+			continue;
+		}
 		let rr = f64::from(draw.ring_radius(r as f32, k));
 		if rr > 4.0 * f64::from(draw.scale) {
 			let color = tile.stroke_color(k);
@@ -384,19 +402,32 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile, dim: bool) 
 					draw.zag_samples,
 				);
 				stroke_polyline(img, &zig, rgb_of(fade_rgb(visual::tile_rgb(color), dim)), width);
-			} else if tile.stroke_is_braid(k) {
-				let [a, b] = visual::braid_circle(
-					[c.0, c.1],
-					rr,
-					f64::from(draw.braid_amp),
-					draw.braid_samples,
-				);
-				let rgb = rgb_of(fade_rgb(visual::tile_rgb(color), dim));
-				let w = f64::from(draw.braid_stroke);
-				stroke_polyline(img, &a, rgb, w);
-				stroke_polyline(img, &b, rgb, w);
 			} else {
 				stroke_circle(img, c, rr, rgb_of(fade_rgb(visual::tile_rgb(color), dim)), width);
+			}
+		}
+	}
+	if tile.braid_ring_count() >= 2 {
+		let rr = f64::from(draw.ring_radius(r as f32, 0));
+		if rr > 4.0 * f64::from(draw.scale) {
+			let rim = visual::circle_polyline([c.0, c.1], rr, draw.braid_samples);
+			let amp = f64::from(draw.braid_amp);
+			let turns = visual::tile_braid_turns(rr);
+			let w = f64::from(draw.braid_stroke);
+			let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
+			let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
+			for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
+				split_braid(
+					&thread.pts,
+					&thread.phase,
+					rgb_of(fade_rgb(visual::tile_rgb(thread.color), dim)),
+					w,
+					&mut back,
+					&mut front,
+				);
+			}
+			for (pts, color, width) in back.into_iter().chain(front) {
+				stroke_polyline(img, &pts, color, width);
 			}
 		}
 	}
@@ -622,10 +653,10 @@ mod tests {
 		if !dir.is_dir() {
 			return;
 		}
-		use crate::game::{RuleSet, TileColor, ZagMismatchCount};
+		use crate::game::{RingType, RuleSet, TileColor, ZagMismatchCount};
 		use crate::visual::{
 			demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair, demo_pair_with,
-			demo_zag_tile,
+			demo_typed_pair, demo_zag_tile,
 		};
 		let board = demo_midgame();
 		write_png_sized(
@@ -668,6 +699,58 @@ mod tests {
 			dir.join("diamond_blue_vs_orange.png"),
 			"blue vs orange diamond",
 			36.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+				1,
+				&[(TileColor::Orange, RingType::Normal), (TileColor::Green, RingType::Normal)],
+				1,
+			),
+			dir.join("braid_orange_green_satisfied.png"),
+			"orange+green braid vs both colors: old conflict weave",
+			40.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+				1,
+				&[(TileColor::Orange, RingType::Normal), (TileColor::Orange, RingType::Normal)],
+				1,
+			),
+			dir.join("braid_orange_orange_satisfied.png"),
+			"orange+orange braid: two orange threads",
+			40.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[
+					(TileColor::Orange, RingType::Braid),
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Braid),
+				],
+				1,
+				&[
+					(TileColor::Orange, RingType::Normal),
+					(TileColor::Green, RingType::Normal),
+					(TileColor::Blue, RingType::Normal),
+				],
+				1,
+			),
+			dir.join("braid_three_threads_satisfied.png"),
+			"3-braid: three woven threads",
+			40.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+				1,
+				&[(TileColor::Blue, RingType::Normal)],
+				1,
+			),
+			dir.join("braid_failed_hitch.png"),
+			"failed braid still uses the highway diamond",
+			40.0,
 		);
 		write_cropped(
 			&demo_pair(

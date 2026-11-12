@@ -77,16 +77,17 @@ pub const TILE_ZAG_AMP: f32 = 0.80;
 pub const TILE_ZAG_STROKE: f32 = 0.90;
 pub const TILE_ZAG_TEETH: u32 = 16;
 pub const TILE_ZAG_SAMPLES: u32 = 96;
-/// Twisted double-stroke on a braid ring. Amp stays inside the ring gap.
-pub const TILE_BRAID_AMP: f32 = 0.55;
-pub const TILE_BRAID_STROKE: f32 = 0.70;
-pub const TILE_BRAID_TURNS: f64 = 3.0;
+/// Tile-rim braid: the old conflict weave, one thread per braid slot.
+pub const TILE_BRAID_AMP: f32 = 1.6;
+pub const TILE_BRAID_STROKE: f32 = 1.35;
 pub const TILE_BRAID_SAMPLES: u32 = 96;
-/// Satisfied-braid strands along an arc: sine twist, slightly wider than a zag.
-pub const BRAID_AMP_UNITS: f32 = 0.010;
-pub const BRAID_AMP_CENTER_UNITS: f32 = 0.008;
-pub const BRAID_STRAND_WIDTH_SCALE: f32 = 0.55;
-pub const BRAID_TURNS: f64 = 4.0;
+/// Satisfied-braid weave (the old two-ended conflict braid). Amplitude and
+/// strand width match that glyph; turn count follows arc length.
+pub const BRAID_AMP_UNITS: f32 = 0.030;
+pub const BRAID_AMP_CENTER_UNITS: f32 = 0.016;
+pub const BRAID_STRAND_WIDTH_SCALE: f32 = 0.78;
+/// Board units per full braid twist; [`braid_turns`] clamps the result.
+pub const BRAID_TURN_UNITS: f64 = 0.42;
 
 pub const Z_ARC: f32 = 0.0;
 pub const Z_ARC_OVER: f32 = 0.08;
@@ -186,8 +187,8 @@ pub enum ArcBody {
 	/// No connection line in the middle. Used when a confirmed zag mismatch
 	/// occupies a two-ended edge (the zag is the only realized effect).
 	Hidden,
-	/// Satisfied braid: twisted strands in the braid's slot colors. Jag
-	/// overlays may still sit on the same edge (scores sum).
+	/// Satisfied braid: the old conflict weave, one thread per braid slot,
+	/// colored by that slot. Jag overlays may still sit on the same edge.
 	Braid {
 		colors: [Option<TileColor>; 3],
 	},
@@ -613,8 +614,8 @@ impl ViewLayout {
 		let hitch_r_center = (HITCH_RADIUS_CENTER_UNITS * scale).max(HITCH_RADIUS_CENTER_MIN_PX);
 		let zag_amp = (ZAG_AMP_UNITS * scale).max(0.85);
 		let zag_amp_center = (ZAG_AMP_CENTER_UNITS * scale).max(0.7);
-		let braid_amp = (BRAID_AMP_UNITS * scale).max(1.1);
-		let braid_amp_center = (BRAID_AMP_CENTER_UNITS * scale).max(0.9);
+		let braid_amp = (BRAID_AMP_UNITS * scale).max(2.0);
+		let braid_amp_center = (BRAID_AMP_CENTER_UNITS * scale).max(1.4);
 
 		Self {
 			width,
@@ -893,56 +894,83 @@ pub fn zigzag_polyline(centerline: &[[f64; 2]], amplitude: f64, teeth: f64) -> V
 	zigzag_alongside(centerline, 0.0, amplitude, teeth)
 }
 
-/// Two sine strands around a circle: the tile-ring braid mark.
-pub fn braid_circle(
-	center: [f64; 2],
-	radius: f64,
-	amplitude: f64,
-	samples: u32,
-) -> [Vec<[f64; 2]>; 2] {
-	let n = samples.max(8);
-	let mut a = Vec::with_capacity(n as usize + 1);
-	let mut b = Vec::with_capacity(n as usize + 1);
-	for i in 0..=n {
-		let t = f64::from(i) / f64::from(n);
-		let ang = t * 2.0 * PI;
-		let s = (t * TILE_BRAID_TURNS * 2.0 * PI).sin();
-		let ca = ang.cos();
-		let sa = ang.sin();
-		a.push([
-			center[0] + (radius + amplitude * s) * ca,
-			center[1] + (radius + amplitude * s) * sa,
-		]);
-		b.push([
-			center[0] + (radius - amplitude * s) * ca,
-			center[1] + (radius - amplitude * s) * sa,
-		]);
-	}
-	[a, b]
-}
-
-/// One sine strand along an arc centerline (`phase` in radians).
-pub fn braid_alongside(
-	centerline: &[[f64; 2]],
-	amplitude: f64,
-	phase: f64,
-	turns: f64,
-) -> Vec<[f64; 2]> {
-	let n = centerline.len();
-	let mut out = Vec::with_capacity(n);
-	for i in 0..n {
-		let t = if n <= 1 { 0.0 } else { i as f64 / (n - 1) as f64 };
-		let wave = (t * turns * 2.0 * PI + phase).sin();
-		let (nx, ny) = polyline_normal(centerline, i);
-		let p = centerline[i];
-		let off = amplitude * wave;
-		out.push([p[0] + nx * off, p[1] + ny * off]);
-	}
-	out
+/// One thread of the old conflict-style braid weave.
+#[derive(Clone, Debug)]
+pub struct BraidThread {
+	pub pts: Vec<[f64; 2]>,
+	/// `2π · turns · t + slot_offset`. Over/under uses `phase.cos() >= 0`.
+	pub phase: Vec<f64>,
+	pub color: TileColor,
 }
 
 pub fn braid_strand_count(colors: [Option<TileColor>; 3]) -> usize {
 	colors.iter().filter(|c| c.is_some()).count()
+}
+
+/// Closed circle used as a braid centerline (last point repeats the first).
+pub fn circle_polyline(center: [f64; 2], radius: f64, samples: u32) -> Vec<[f64; 2]> {
+	let n = samples.max(8);
+	let mut pts = Vec::with_capacity(n as usize + 1);
+	for i in 0..=n {
+		let ang = f64::from(i) / f64::from(n) * 2.0 * PI;
+		pts.push([center[0] + radius * ang.cos(), center[1] + radius * ang.sin()]);
+	}
+	pts
+}
+
+/// Old conflict braid: opposite sines for two slots (`0` and `π`), 120°
+/// spacing for three. Each slot is one thread in that slot's color.
+pub fn braid_threads(
+	centerline: &[[f64; 2]],
+	amplitude: f64,
+	turns: f64,
+	colors: [Option<TileColor>; 3],
+) -> Vec<BraidThread> {
+	let n_slots = braid_strand_count(colors).max(1) as f64;
+	let n = centerline.len();
+	let mut out = Vec::new();
+	for (i, color) in colors.iter().enumerate() {
+		let Some(color) = *color else {
+			continue;
+		};
+		let offset = 2.0 * PI * (i as f64) / n_slots;
+		let mut pts = Vec::with_capacity(n);
+		let mut phase = Vec::with_capacity(n);
+		for j in 0..n {
+			let t = if n <= 1 { 0.0 } else { j as f64 / (n - 1) as f64 };
+			let ph = 2.0 * PI * turns * t + offset;
+			let (nx, ny) = polyline_normal(centerline, j);
+			let p = centerline[j];
+			let off = amplitude * ph.sin();
+			pts.push([p[0] + nx * off, p[1] + ny * off]);
+			phase.push(ph);
+		}
+		out.push(BraidThread { pts, phase, color });
+	}
+	out
+}
+
+/// Split a thread into over/under slices so the weave stacks in z-order.
+/// `true` = this slice sits in front ([`Z_ARC_OVER`]).
+pub fn for_braid_segments(
+	pts: &[[f64; 2]],
+	phase: &[f64],
+	mut emit: impl FnMut(&[[f64; 2]], bool),
+) {
+	if pts.len() < 2 || phase.len() != pts.len() {
+		return;
+	}
+	let mut start = 0usize;
+	for i in 1..pts.len() {
+		let this_front = phase[i].cos() >= 0.0;
+		let prev_front = phase[i - 1].cos() >= 0.0;
+		if this_front != prev_front || i + 1 == pts.len() {
+			if i > start {
+				emit(&pts[start..=i], prev_front);
+			}
+			start = i.saturating_sub(1);
+		}
+	}
 }
 
 pub fn zigzag_circle(
@@ -984,6 +1012,18 @@ pub fn arc_length(arc: &ArcEdge) -> f64 {
 /// Spellcheck-underline teeth: twice the previous frequency, still low amp.
 pub fn zag_teeth(arc: &ArcEdge) -> f64 {
 	(arc_length(arc) / ZAG_TOOTH_UNITS).clamp(7.0, 16.0)
+}
+
+/// How many twists the old conflict braid makes along `arc`.
+pub fn braid_turns(arc: &ArcEdge) -> f64 {
+	(arc_length(arc) / BRAID_TURN_UNITS).clamp(1.2, 3.6)
+}
+
+/// Integer twists around a tile rim so a closed weave meets itself.
+pub fn tile_braid_turns(radius: f64) -> f64 {
+	((2.0 * PI * radius) / (BRAID_TURN_UNITS * f64::from(PREV_SCALE)))
+		.clamp(1.0, 3.0)
+		.round()
 }
 
 pub fn zag_lane_spacing(stripe_off: f64) -> f64 {
@@ -1441,6 +1481,22 @@ pub fn demo_pair_with(
 	if let Some((a, b)) = empty_neighbor_pair(&game) {
 		let t = game.alloc_ring_kinds(Player::One, a_kinds, a_weight, 1);
 		let u = game.alloc_ring_kinds(Player::Two, b_kinds, b_weight, 1);
+		game.place_tile(a, t);
+		game.place_tile(b, u);
+	}
+	game
+}
+
+pub fn demo_typed_pair(
+	a_parts: &[(TileColor, RingType)],
+	a_weight: u8,
+	b_parts: &[(TileColor, RingType)],
+	b_weight: u8,
+) -> Game {
+	let mut game = Game::empty(RuleSet::default());
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let t = game.alloc_typed_rings(Player::One, a_parts, a_weight, 1);
+		let u = game.alloc_typed_rings(Player::Two, b_parts, b_weight, 1);
 		game.place_tile(a, t);
 		game.place_tile(b, u);
 	}
@@ -2083,6 +2139,55 @@ mod tests {
 			"satisfied braid stays visible next to a jag"
 		);
 		assert_eq!(both.zag_mid_count(), 1);
+		let same = Tile::with_typed_rings(
+			6,
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+			1,
+			1,
+		);
+		let two_orange = Tile::with_typed_rings(
+			7,
+			Player::Two,
+			&[(TileColor::Orange, RingType::Normal), (TileColor::Orange, RingType::Normal)],
+			1,
+			1,
+		);
+		match arc_paint(Some(same), Some(two_orange)).body {
+			ArcBody::Braid { colors } => {
+				assert_eq!(colors, [Some(TileColor::Orange), Some(TileColor::Orange), None]);
+				assert_eq!(braid_strand_count(colors), 2);
+			}
+			other => panic!("expected braid, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn braid_threads_are_one_per_slot_with_old_opposite_sines() {
+		let pts = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]];
+		let two =
+			braid_threads(&pts, 0.5, 1.0, [Some(TileColor::Orange), Some(TileColor::Green), None]);
+		assert_eq!(two.len(), 2);
+		assert_eq!(two[0].color, TileColor::Orange);
+		assert_eq!(two[1].color, TileColor::Green);
+		assert_eq!(two[0].pts.len(), 4);
+		assert!(two[0].pts[1][1].abs() > 0.2);
+		assert!(
+			(two[0].pts[1][1] + two[1].pts[1][1]).abs() < 1e-9,
+			"two-slot braid is the old +sin / −sin pair"
+		);
+		let three = braid_threads(
+			&pts,
+			0.5,
+			1.0,
+			[Some(TileColor::Orange), Some(TileColor::Green), Some(TileColor::Blue)],
+		);
+		assert_eq!(three.len(), 3);
+		assert_eq!(three[2].color, TileColor::Blue);
+		let same =
+			braid_threads(&pts, 0.5, 1.0, [Some(TileColor::Orange), Some(TileColor::Orange), None]);
+		assert_eq!(same.len(), 2);
+		assert!(same.iter().all(|t| t.color == TileColor::Orange));
 	}
 
 	#[test]
