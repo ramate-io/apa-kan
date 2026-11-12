@@ -113,12 +113,12 @@ pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
 pub struct ArcPaint {
 	pub body: ArcBody,
 	/// Zag strokes **from** the arc's `from` tile, fanning out on the + side.
-	/// Used for one-ended potentials and the directional (legacy) two-ended rule.
+	/// Used for one-ended potentials.
 	pub zags_from: [Option<TileColor>; MAX_TILE_ZAGS],
 	/// Zag strokes **from** the arc's `to` tile, fanning out on the − side.
 	pub zags_to: [Option<TileColor>; MAX_TILE_ZAGS],
-	/// Realized zag mismatches bundled around the arc center line (SUM /
-	/// COLLAPSED two-ended edges). One-ended edges leave this empty.
+	/// Realized zag mismatches bundled around the arc center line (SUM / MAX
+	/// two-ended edges). One-ended edges leave this empty.
 	pub zags_mid: [Option<TileColor>; MAX_EDGE_ZAGS],
 }
 
@@ -234,18 +234,13 @@ fn pack_zags(colors: impl IntoIterator<Item = TileColor>) -> [Option<TileColor>;
 
 /// Zag strokes on a single tile, one color per drawn zag ring.
 /// One-ended edges draw every zag (potential). Two-ended edges use
-/// [`hitting_zag_strokes`] so only a realized mismatch is inked.
+/// [`edge_zag_strokes`] so only a realized mismatch is inked.
 pub fn tile_zag_strokes(tile: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
 	pack_zags(
 		(0..tile.ring_strokes())
 			.filter(|&k| tile.stroke_is_zag(k))
 			.map(|k| tile.stroke_color(k)),
 	)
-}
-
-/// Zag strokes on `tile` that actually mismatch `other` (other holds the color).
-pub fn hitting_zag_strokes(tile: Tile, other: Tile) -> [Option<TileColor>; MAX_TILE_ZAGS] {
-	pack_zags(hitting_zag_colors(tile, other))
 }
 
 fn hitting_zag_colors(tile: Tile, other: Tile) -> impl Iterator<Item = TileColor> {
@@ -280,21 +275,13 @@ pub fn edge_zag_strokes(
 	mode: ZagMismatchCount,
 ) -> [Option<TileColor>; MAX_EDGE_ZAGS] {
 	match mode {
-		ZagMismatchCount::Directional => ArcPaint::no_mid(),
 		ZagMismatchCount::Sum => {
 			pack_edge_zags(hitting_zag_colors(a, b).chain(hitting_zag_colors(b, a)))
 		}
-		ZagMismatchCount::Collapsed => {
-			let mut out = [None; MAX_EDGE_ZAGS];
-			let mut n = 0usize;
-			for c in hitting_zag_colors(a, b).chain(hitting_zag_colors(b, a)) {
-				if !out.contains(&Some(c)) && n < MAX_EDGE_ZAGS {
-					out[n] = Some(c);
-					n += 1;
-				}
-			}
-			out
-		}
+		ZagMismatchCount::Max => pack_edge_zags(TileColor::ALL.iter().flat_map(|&c| {
+			let n = a.zag_hits_of_color(b, c).max(b.zag_hits_of_color(a, c));
+			std::iter::repeat(c).take(n as usize)
+		})),
 	}
 }
 
@@ -361,14 +348,7 @@ pub fn diamond_across(along_r: f64) -> f64 {
 fn two_ended(a: Tile, b: Tile, mode: ZagMismatchCount) -> ArcPaint {
 	let any_hit = a.zag_hits_on(b) > 0 || b.zag_hits_on(a) > 0;
 	if any_hit {
-		// Confirmed zag mismatch: draw only the hitting zag(s).
-		if mode == ZagMismatchCount::Directional {
-			return ArcPaint::with_sides(
-				ArcBody::Hidden,
-				hitting_zag_strokes(a, b),
-				hitting_zag_strokes(b, a),
-			);
-		}
+		// Confirmed zag mismatch: draw only the hitting zag(s) on the center.
 		return ArcPaint {
 			body: ArcBody::Hidden,
 			zags_from: ArcPaint::no_zags(),
@@ -1513,13 +1493,15 @@ mod tests {
 		assert_eq!(paint.zag_mid_count(), 2, "A orange-vs-orange analogue: two blue zags");
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Blue));
 		assert_eq!(paint.zags_mid[1], Some(TileColor::Blue));
-		let collapsed = arc_paint_with(Some(one), Some(one), ZagMismatchCount::Collapsed);
-		assert_eq!(collapsed.zag_mid_count(), 1, "COLLAPSED: one squiggle per color");
-		assert_eq!(collapsed.zags_mid[0], Some(TileColor::Blue));
-		let directional = arc_paint_with(Some(a), Some(b), ZagMismatchCount::Directional);
-		assert_eq!(directional.zag_from_count(), 3);
-		assert_eq!(directional.zag_to_count(), 3);
-		assert_eq!(directional.zag_mid_count(), 0);
+		let max = arc_paint_with(Some(a), Some(b), ZagMismatchCount::Max);
+		assert_eq!(max.body, ArcBody::Hidden);
+		assert_eq!(max.zag_from_count(), 0);
+		assert_eq!(max.zag_to_count(), 0);
+		assert_eq!(max.zag_mid_count(), 3, "MAX: 3 blue vs 3 blue is three squiggles");
+		assert!(max.zags_mid.iter().take(3).all(|c| *c == Some(TileColor::Blue)));
+		let one_max = arc_paint_with(Some(one), Some(one), ZagMismatchCount::Max);
+		assert_eq!(one_max.zag_mid_count(), 1, "MAX orange-vs-orange analogue: one squiggle");
+		assert_eq!(one_max.zags_mid[0], Some(TileColor::Blue));
 	}
 
 	#[test]
@@ -1553,6 +1535,12 @@ mod tests {
 		assert_eq!(two_ended_two.zag_from_count(), 0);
 		assert_eq!(two_ended_two.zag_to_count(), 0);
 		assert_eq!(two_ended_two.zag_mid_count(), 4, "SUM bundles 2+2 on the center line");
+		let two_vs_one = Tile::with_ring_kinds(4, Player::Two, &[(TileColor::Orange, true)], 1, 1);
+		let sum_2v1 = arc_paint(Some(two), Some(two_vs_one));
+		assert_eq!(sum_2v1.zag_mid_count(), 3, "SUM: 2 orange vs 1 orange = 3");
+		let max_2v1 = arc_paint_with(Some(two), Some(two_vs_one), ZagMismatchCount::Max);
+		assert_eq!(max_2v1.zag_mid_count(), 2, "MAX: 2 orange vs 1 orange = 2");
+		assert!(max_2v1.zags_mid.iter().take(2).all(|c| *c == Some(TileColor::Orange)));
 		let mixed = Tile::with_ring_kinds(
 			3,
 			Player::One,
@@ -1719,8 +1707,8 @@ mod tests {
 		assert_eq!(paint.zag_mid_count(), 2);
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
 		assert_eq!(paint.zags_mid[1], Some(TileColor::Orange));
-		let collapsed = arc_paint_with(Some(zag), Some(zag), ZagMismatchCount::Collapsed);
-		assert_eq!(collapsed.zag_mid_count(), 1, "COLLAPSED orange vs orange is one squiggle");
+		let max = arc_paint_with(Some(zag), Some(zag), ZagMismatchCount::Max);
+		assert_eq!(max.zag_mid_count(), 1, "MAX orange vs orange is one squiggle");
 		let orange_zag = Tile::with_ring_kinds(6, Player::One, &[(TileColor::Orange, true)], 1, 1);
 		let orange_normal = Tile::mono(7, Player::Two, TileColor::Orange, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(orange_normal));

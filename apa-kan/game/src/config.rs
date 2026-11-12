@@ -320,7 +320,7 @@ pub fn usage() -> &'static str {
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
-	   --zag-mismatch <sum|collapsed|directional> Zag edge count (default: sum)\n\
+	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -451,11 +451,11 @@ mod tests {
 	fn parses_zag_mismatch() {
 		let sum = GameConfig::parse(["--zag-mismatch", "sum"]).unwrap();
 		assert_eq!(sum.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
-		let collapsed = GameConfig::parse(["--zag-mismatch", "collapsed"]).unwrap();
-		assert_eq!(collapsed.rules.zag_mismatch, crate::game::ZagMismatchCount::Collapsed);
-		let directional = GameConfig::parse(["--zag-mismatch", "directional"]).unwrap();
-		assert_eq!(directional.rules.zag_mismatch, crate::game::ZagMismatchCount::Directional);
-		let err = GameConfig::parse(["--zag-mismatch", "avg"]).unwrap_err();
+		let max = GameConfig::parse(["--zag-mismatch", "max"]).unwrap();
+		assert_eq!(max.rules.zag_mismatch, crate::game::ZagMismatchCount::Max);
+		let err = GameConfig::parse(["--zag-mismatch", "collapsed"]).unwrap_err();
+		assert!(err.contains("zag-mismatch"));
+		let err = GameConfig::parse(["--zag-mismatch", "directional"]).unwrap_err();
 		assert!(err.contains("zag-mismatch"));
 	}
 

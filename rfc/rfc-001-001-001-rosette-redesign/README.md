@@ -35,7 +35,7 @@ Construction stats for the default rosette (`R = 1`, offset `67.5°` so an outer
 Each tile has:
 
 - **Owner** as a light/dark shade: P1 light, P2 dark (fill).
-- **Rings** (1–3 distinct colors). A **normal** ring indicates a color the tile can match (in and out). A **zag** ring never matches. A zag on either tile whose color the other tile holds (normal or zag) is a mismatch on the **edge** between them; both tiles take that edge count (`zag_mismatch`, default `sum`). Generation still draws distinct colors as in the six-color tree, then each ring independently becomes a zag with chance 1/7 (`zag_numer / 7`; `--zag-chance 0` / `--zags off` disables). You cannot have both a normal and a zag of the same color on a generated tile (one ring per color; stacked same-color zags exist only as test fixtures so mismatch counts can sum per ring). Braid / bead / antipodal ring types are not implemented. Colors: green, blue, orange (weight 81 each), lavender-pink, teal (9 each), maroon (1). Ring 1 always exists. Ring 2: weight 7 same as ring 1, weight 1 any color from the same tree (a redraw of ring 1 is not a new ring). Ring 3: same rule relative to the last existing ring. `--max-rings` caps this at 1–3 (default 3).
+- **Rings** (1–3 distinct colors). A **normal** ring indicates a color the tile can match (in and out). A **zag** ring never matches. A zag on either tile whose color the other tile holds (normal or zag) is a mismatch on the **edge** between them; both tiles take that edge count (`zag_mismatch`, default `sum`; `max` takes the per-color max of hitting zag strokes). Generation still draws distinct colors as in the six-color tree, then each ring independently becomes a zag with chance 1/7 (`zag_numer / 7`; `--zag-chance 0` / `--zags off` disables). You cannot have both a normal and a zag of the same color on a generated tile (one ring per color; stacked same-color zags exist only as test fixtures so SUM can add strokes and MAX can take a per-color max). Braid / bead / antipodal ring types are not implemented. Colors: green, blue, orange (weight 81 each), lavender-pink, teal (9 each), maroon (1). Ring 1 always exists. Ring 2: weight 7 same as ring 1, weight 1 any color from the same tree (a redraw of ring 1 is not a new ring). Ring 3: same rule relative to the last existing ring. `--max-rings` caps this at 1–3 (default 3).
 - **Weight** `w ∈ {1,2,3}` — overwhelm match base (and hop compare when graph hops are on). Pass-through uses ring count, not weight. Drawn as concentric strokes; extra colors take additional strokes when `n_rings > 1`.
 - **Dots** `d ∈ {1,2,3}` drawn as 1–3 dots (MOVE length).
 
@@ -61,10 +61,9 @@ Evaluated **board-wide, simultaneously**, after every action.
 
 - A neighbor **matches** if the two tiles share a **normal** ring color. Zags never produce a match.
 - Zag mismatches are an **edge** event (`RuleSet::zag_mismatch`, CLI `--zag-mismatch`): a zag on either tile whose color the other holds (normal or zag) counts. Both tiles take the same number. Non-matching zags are empty (no match, no mismatch, no conflict). If that zag-hit count is 0 and the tiles share no normal color, the ordinary +1 mismatch (or neighbor weight if `mismatch_uses_neighbor_weight`). A tile can still take that ordinary mismatch on its **normal** rings even if it also has zags.
-  - **`sum` (default):** count every hitting zag stroke on both tiles. A orange zag vs B orange zag = 2. A player adds up the hitting zags on both tiles.
-  - **`collapsed`:** count distinct colors for which a zag on either side hits. A orange zag vs B orange zag = 1.
-  - **`directional`:** previous per-tile rule (mismatches U imposes on T = U's hitting zag strokes). Kept for comparison.
-- Example: blue normal + orange zag vs the same → 1 blue match and **2** mismatches under `sum` (both orange zags hit), or **1** under `collapsed` / `directional`. Two orange zags on U vs T carrying orange → 2 under `sum` / `directional`, 1 under `collapsed`.
+  - **`sum` (default):** count every hitting zag stroke on both tiles. A orange zag vs B orange zag = 2. 3 blue zags vs 3 blue zags = 6. 2 orange vs 1 orange = 3.
+  - **`max`:** for each color, the edge count for that color is the **max**, over the two tiles, of how many of that tile's zag strokes of that color hit the other (the other holds that color on any ring). The edge total is the sum of those per-color maxima. Orange zag vs orange zag = 1. 3 blue vs 3 blue = 3. 2 orange vs 1 orange = 2. A 2 orange zags (B holds orange) + B 1 green zag (A holds green) = 3.
+- Example: blue normal + orange zag vs the same → 1 blue match and **2** mismatches under `sum` (both orange zags hit), or **1** under `max`. Two orange zags on U vs T carrying orange → 2 under both `sum` and `max`.
 - Blue-normal vs orange-normal + green-zag is a mismatch on the normals (blue vs orange); the green zag does not hit blue. Green-zag vs orange-normal + two green normals is a one-sided zag hit (both tiles take 1). Blue-normal + orange-zag vs green-normal + orange-normal is a zag hit on the same edge as a latent normal conflict; the zag count replaces the ordinary +1.
 - `matches = own weight + (number of matching adjacent tiles, either owner)`
 - Removed iff `mismatches >= matches`
@@ -101,7 +100,7 @@ A hop over a chain is still one step of the exact-`d` MOVE. Empty walks, pass-th
 
 Two-ended edges (both nodes occupied) draw **only realized effects**:
 
-- Confirmed zag mismatch → draw **only** the hitting zag(s), on the **center line** of the arc (the mismatch is undirected, including when only one tile zags). Under `sum`, one squiggle per counted zag, bundled around the center; under `collapsed`, one per distinct color. No match line, highway stripes, or conflict diamond on that edge. A zag that does not hit the neighbor is not drawn on that edge. (`directional` still fans each tile's zags to its own side.)
+- Confirmed zag mismatch → draw **only** the hitting zag(s), on the **center line** of the arc (the mismatch is undirected, including when only one tile zags). Under `sum`, one squiggle per counted zag stroke, bundled around the center; under `max`, per color as many center-line squiggles as that color's max count. No match line, highway stripes, or conflict diamond on that edge. A zag that does not hit the neighbor is not drawn on that edge.
 - Shared normal(s) and no zag hit → single thick match line, or highway stripes if more than one shared normal.
 - Both tiles have normals, share none, and no zag hit → one elongated **diamond** at the midpoint (edge slope matches a zag tooth). Each tile's unmatched-color highway wraps one pair of edges as a bundle; the halves meet at the along-arc vertices. A multi-color edge still draws a single diamond.
 - Nothing realized (for example a non-hitting zag against a tile that has no shared normal and is not a normal-vs-normal conflict) → grey base arc.
@@ -243,7 +242,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --control-win on|off --control-n K --control-hold-turns T
         --insufficient-tiles-loss off|strict|no-recapture
         --starting-bench N --max-rings 1..3 --zag-chance 0..7 --zags on|off
-        --zag-mismatch sum|collapsed|directional
+        --zag-mismatch sum|max
         --scenario name|path --list-scenarios
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```

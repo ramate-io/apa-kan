@@ -664,7 +664,7 @@ mod tests {
 				3,
 			),
 			dir.join("zag_thickness_arc.png"),
-			"thicker directional zags",
+			"thicker zag strokes",
 			48.0,
 		);
 		write_cropped(
@@ -687,18 +687,34 @@ mod tests {
 			"SUM: orange zag vs orange zag = 2 center squiggles",
 			48.0,
 		);
-		let mut collapsed = RuleSet::default();
-		collapsed.zag_mismatch = ZagMismatchCount::Collapsed;
+		let mut max = RuleSet::default();
+		max.zag_mismatch = ZagMismatchCount::Max;
+		let three_blue =
+			[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
 		write_cropped(
-			&demo_pair_with(
-				collapsed,
-				&[(TileColor::Orange, true)],
-				1,
-				&[(TileColor::Orange, true)],
-				1,
-			),
-			dir.join("orange_zag_vs_orange_zag_collapsed.png"),
-			"COLLAPSED: orange zag vs orange zag = 1 center squiggle",
+			&demo_pair(&three_blue, 3, &three_blue, 3),
+			dir.join("three_blue_zags_vs_three_blue_zags_sum.png"),
+			"SUM: 3 blue zags vs 3 blue zags = 6 center squiggles",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair_with(max, &three_blue, 3, &three_blue, 3),
+			dir.join("three_blue_zags_vs_three_blue_zags_max.png"),
+			"MAX: 3 blue zags vs 3 blue zags = 3 center squiggles",
+			48.0,
+		);
+		let two_orange = [(TileColor::Orange, true), (TileColor::Orange, true)];
+		let one_orange = [(TileColor::Orange, true)];
+		write_cropped(
+			&demo_pair(&two_orange, 2, &one_orange, 1),
+			dir.join("two_orange_zags_vs_one_orange_zag_sum.png"),
+			"SUM: 2 orange zags vs 1 orange zag = 3 center squiggles",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair_with(max, &two_orange, 2, &one_orange, 1),
+			dir.join("two_orange_zags_vs_one_orange_zag_max.png"),
+			"MAX: 2 orange zags vs 1 orange zag = 2 center squiggles",
 			48.0,
 		);
 		write_cropped(
