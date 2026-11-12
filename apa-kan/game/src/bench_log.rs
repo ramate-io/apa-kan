@@ -1054,6 +1054,11 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_braid_rings_deck11_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/braid_rings_deck11.jsonl.gz");
+	}
+
+	#[test]
 	fn default_games_log_path_is_jsonl_gz_sibling() {
 		let p =
 			std::path::Path::new("apa-kan/game/benchmark_results/low_value_pairs_deck11_on.txt");
