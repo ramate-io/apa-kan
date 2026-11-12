@@ -292,6 +292,7 @@ fn draw_marks(
 		return;
 	};
 	let board = game.board();
+	// Destinations follow RuleSet movement (pass-through default, hops optional).
 	for id in game.legal_destinations(from) {
 		let p = image_pt(layout, board.position(id));
 		stroke_circle(

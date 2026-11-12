@@ -6,7 +6,10 @@ use std::process;
 use std::time::Duration;
 
 use crate::ai::Actor;
-use crate::game::{HopWeightCmp, InsufficientTilesLoss, PathConstraint, RuleSet, SamePieceTwice};
+use crate::game::{
+	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
+	SamePieceTwice,
+};
 use crate::scenario::Scenario;
 
 #[derive(Clone, Debug)]
@@ -194,6 +197,13 @@ where
 		"--counted-pass-through" => {
 			rules.counted_pass_through = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--graph-hops" => {
+			rules.counted_pass_through = !parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--pass-through-ring-cmp" => {
+			rules.pass_through_ring_cmp =
+				PassThroughRingCmp::parse(&require_value(arg, it.next())?)?;
+		}
 		"--hop-weight-cmp" => {
 			rules.hop_weight_cmp = HopWeightCmp::parse(&require_value(arg, it.next())?)?;
 		}
@@ -291,9 +301,11 @@ pub fn usage() -> &'static str {
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
 	   --no-same-piece-twice <off|always|when-bench-empty>\n\
 	                                              Repeat-piece rule (default: when-bench-empty)\n\
-	   --color-restricted-hops <on|off>           Hop only own color (default: on)\n\
+	   --color-restricted-hops <on|off>           Hop only own color (default: on; hops off by default)\n\
 	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
-	   --counted-pass-through <on|off>            Pass through occupied tiles at 1/step (default: off)\n\
+	   --counted-pass-through <on|off>            Pass through occupied tiles at 1/step (default: on)\n\
+	   --graph-hops <on|off>                      Restore graph hops (alias: counted-pass-through off)\n\
+	   --pass-through-ring-cmp <ge|gt>            Pass-through ring gate (default: ge)\n\
 	   --petal-majority-win <on|off>              Inner-ring majority win (default: off)\n\
 	   --petal-majority-n <1..64>                 Turns to hold majority (default: 1)\n\
 	   --control-win <on|off>                     Center+inner-ring control win (default: on)\n\
@@ -426,7 +438,8 @@ mod tests {
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
-		assert!(!cfg.rules.counted_pass_through);
+		assert!(cfg.rules.counted_pass_through);
+		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 	}
 
 	#[test]
@@ -435,6 +448,24 @@ mod tests {
 		assert!(on.rules.counted_pass_through);
 		let off = GameConfig::parse(["--counted-pass-through", "off"]).unwrap();
 		assert!(!off.rules.counted_pass_through);
+	}
+
+	#[test]
+	fn parses_graph_hops() {
+		let on = GameConfig::parse(["--graph-hops", "on"]).unwrap();
+		assert!(!on.rules.counted_pass_through);
+		let off = GameConfig::parse(["--graph-hops", "off"]).unwrap();
+		assert!(off.rules.counted_pass_through);
+	}
+
+	#[test]
+	fn parses_pass_through_ring_cmp() {
+		let ge = GameConfig::parse(["--pass-through-ring-cmp", "ge"]).unwrap();
+		assert_eq!(ge.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
+		let gt = GameConfig::parse(["--pass-through-ring-cmp", "gt"]).unwrap();
+		assert_eq!(gt.rules.pass_through_ring_cmp, PassThroughRingCmp::Gt);
+		let err = GameConfig::parse(["--pass-through-ring-cmp", "le"]).unwrap_err();
+		assert!(err.contains("pass-through-ring-cmp"));
 	}
 
 	#[test]

@@ -522,6 +522,42 @@ impl HopWeightCmp {
 	}
 }
 
+/// Ring-count comparison used when [`RuleSet::counted_pass_through`] is on.
+///
+/// Occupant may be passed through (never landed on) only if it shares a
+/// normal color with the mover **and** this comparison holds. Default is
+/// [`Self::Ge`] (`occupant.n_rings >= mover.n_rings`). [`Self::Gt`] is
+/// strict (`>`), so a 3-ring tile can never pass through (max rings is 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PassThroughRingCmp {
+	Ge,
+	Gt,
+}
+
+impl PassThroughRingCmp {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"ge" | ">=" | "geq" | "greater-equal" => Ok(Self::Ge),
+			"gt" | ">" | "greater" => Ok(Self::Gt),
+			other => Err(format!("unknown pass-through-ring-cmp '{other}' (expected ge|gt)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Ge => "ge",
+			Self::Gt => "gt",
+		}
+	}
+
+	pub fn allows(self, occupant_rings: u8, mover_rings: u8) -> bool {
+		match self {
+			Self::Ge => occupant_rings >= mover_rings,
+			Self::Gt => occupant_rings > mover_rings,
+		}
+	}
+}
+
 /// Lose when board tiles + bench cannot reach the control-set occupancy
 /// threshold (`control_n`, default 5). Default [`Self::Off`].
 ///
@@ -652,11 +688,16 @@ pub struct RuleSet {
 	/// Default [`PathConstraint::NoEdgeRevisit`] (`no_repeated_edge` on;
 	/// node revisits via a different arc are allowed).
 	pub path_constraint: PathConstraint,
-	/// If true, occupied tiles are never hopped: a path may **pass through**
-	/// (not land on) an occupant that shares a normal color with the mover
-	/// and whose ring count is `>=` the mover's. Each such node costs one
-	/// of the exact-`d` steps. Default false (graph hops remain the default).
+	/// If true (default), occupied tiles are never hopped: a path may
+	/// **pass through** (not land on) an occupant that shares a normal color
+	/// with the mover and whose ring count compares with
+	/// [`Self::pass_through_ring_cmp`]. Each such node costs one of the
+	/// exact-`d` steps. False restores graph hops (`--graph-hops on`).
 	pub counted_pass_through: bool,
+	/// Occupant-vs-mover ring-count comparison for pass-through.
+	/// Default [`PassThroughRingCmp::Ge`] (`occupant.n_rings >= mover`).
+	/// [`PassThroughRingCmp::Gt`] is strict, so 3-ring tiles never pass through.
+	pub pass_through_ring_cmp: PassThroughRingCmp,
 }
 
 impl Default for RuleSet {
@@ -687,7 +728,8 @@ impl Default for RuleSet {
 			control_hold_turns: 1,
 			insufficient_tiles_loss: InsufficientTilesLoss::Off,
 			path_constraint: PathConstraint::NoEdgeRevisit,
-			counted_pass_through: false,
+			counted_pass_through: true,
+			pass_through_ring_cmp: PassThroughRingCmp::Ge,
 		}
 	}
 }
@@ -1448,7 +1490,8 @@ impl Game {
 	}
 
 	fn pass_through_ok(&self, occupant: Tile, mover: Tile) -> bool {
-		occupant.shares_normal(mover) && occupant.n_rings >= mover.n_rings
+		occupant.shares_normal(mover)
+			&& self.rules.pass_through_ring_cmp.allows(occupant.n_rings, mover.n_rings)
 	}
 
 	fn hop_occupant_ok(&self, occupant: Tile, mover: Tile) -> bool {
@@ -1949,6 +1992,8 @@ mod tests {
 		assert_eq!(rules.zag_numer, ZAG_NUMER_DEFAULT);
 		assert!(!rules.petal_majority_win);
 		assert_eq!(rules.insufficient_tiles_loss, InsufficientTilesLoss::Off);
+		assert!(rules.counted_pass_through);
+		assert_eq!(rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bench(Player::Two).len(), 7);
@@ -2089,9 +2134,15 @@ mod tests {
 		assert!(!game.destinations(from).contains(&from));
 	}
 
+	fn hop_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.counted_pass_through = false;
+		rules
+	}
+
 	#[test]
 	fn hop_costs_one_and_requires_weight() {
-		let mut rules = RuleSet::default();
+		let mut rules = hop_rules();
 		rules.color_restricted_hops = false;
 		let mut game = Game::empty(rules);
 		let b = game.board().clone();
@@ -2117,7 +2168,7 @@ mod tests {
 
 	#[test]
 	fn hop_along_a_run_of_equal_or_greater_weight() {
-		let mut rules = RuleSet::default();
+		let mut rules = hop_rules();
 		rules.color_restricted_hops = false;
 		let mut game = Game::empty(rules);
 		let b = game.board().clone();
@@ -2137,7 +2188,7 @@ mod tests {
 
 	#[test]
 	fn hop_turns_at_the_center_and_lands_on_any_adjacent_empty() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(hop_rules());
 		let board = game.board().clone();
 		let center = board.center();
 		let spawn = board.spawns()[0];
@@ -2167,7 +2218,7 @@ mod tests {
 
 	#[test]
 	fn hop_changes_direction_at_a_non_center_node() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(hop_rules());
 		let board = game.board().clone();
 		let spawn = board.spawns()[0];
 		let inner = *board
@@ -2199,8 +2250,13 @@ mod tests {
 	}
 
 	fn pass_through_game() -> Game {
+		Game::empty(RuleSet::default())
+	}
+
+	fn pass_through_with(cmp: PassThroughRingCmp) -> Game {
 		let mut rules = RuleSet::default();
 		rules.counted_pass_through = true;
+		rules.pass_through_ring_cmp = cmp;
 		Game::empty(rules)
 	}
 
@@ -2265,7 +2321,7 @@ mod tests {
 
 	#[test]
 	fn counted_pass_through_two_tiles_cost_two_unlike_a_hop() {
-		let mut hop = Game::empty(RuleSet::default());
+		let mut hop = Game::empty(hop_rules());
 		let mut pass = pass_through_game();
 		let b = hop.board().clone();
 		let cycle = b.circle_cycle(0).to_vec();
@@ -2321,6 +2377,86 @@ mod tests {
 		assert!(
 			game.destinations(from).contains(&land),
 			"shared normal and occupant.n_rings >= mover.n_rings"
+		);
+	}
+
+	#[test]
+	fn pass_through_ring_cmp_gt_is_strict() {
+		let mut ge = pass_through_with(PassThroughRingCmp::Ge);
+		let b = ge.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		let place = |game: &mut Game, occ_rings: &[TileColor]| {
+			let mover = game.alloc_rings(Player::One, &[TileColor::Green, TileColor::Blue], 2, 2);
+			game.place_tile(from, mover);
+			let occ = game.alloc_rings(Player::Two, occ_rings, 2, 1);
+			game.place_tile(mid, occ);
+			game.set_current(Player::One);
+		};
+
+		place(&mut ge, &[TileColor::Green, TileColor::Orange]);
+		assert!(ge.destinations(from).contains(&land), "GE allows equal ring counts");
+
+		let mut gt_eq = pass_through_with(PassThroughRingCmp::Gt);
+		place(&mut gt_eq, &[TileColor::Green, TileColor::Orange]);
+		assert!(
+			!gt_eq.destinations(from).contains(&land),
+			"GT forbids occupant.n_rings == mover.n_rings"
+		);
+
+		let mut gt_gt = pass_through_with(PassThroughRingCmp::Gt);
+		place(&mut gt_gt, &[TileColor::Green, TileColor::Orange, TileColor::Blue]);
+		assert!(
+			gt_gt.destinations(from).contains(&land),
+			"GT allows occupant.n_rings > mover.n_rings"
+		);
+	}
+
+	#[test]
+	fn pass_through_gt_triples_cannot_pass_through() {
+		let mut game = pass_through_with(PassThroughRingCmp::Gt);
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		let mover = game.alloc_rings(
+			Player::One,
+			&[TileColor::Green, TileColor::Blue, TileColor::Orange],
+			3,
+			2,
+		);
+		game.place_tile(from, mover);
+		let occ = game.alloc_rings(
+			Player::Two,
+			&[TileColor::Green, TileColor::Blue, TileColor::Orange],
+			3,
+			1,
+		);
+		game.place_tile(mid, occ);
+		game.set_current(Player::One);
+		assert!(
+			!game.destinations(from).contains(&land),
+			"GT: a 3-ring mover can never pass through (max rings is 3)"
+		);
+
+		let mut ge = pass_through_with(PassThroughRingCmp::Ge);
+		let mover = ge.alloc_rings(
+			Player::One,
+			&[TileColor::Green, TileColor::Blue, TileColor::Orange],
+			3,
+			2,
+		);
+		ge.place_tile(from, mover);
+		let occ = ge.alloc_rings(
+			Player::Two,
+			&[TileColor::Green, TileColor::Blue, TileColor::Orange],
+			3,
+			1,
+		);
+		ge.place_tile(mid, occ);
+		ge.set_current(Player::One);
+		assert!(
+			ge.destinations(from).contains(&land),
+			"GE still lets a 3-ring tile pass through another 3-ring tile"
 		);
 	}
 
@@ -3209,7 +3345,7 @@ mod tests {
 	#[test]
 	fn color_restricted_hops_only_lighter_same_color() {
 		assert_eq!(RuleSet::default().hop_weight_cmp, HopWeightCmp::Le);
-		let mut rules = RuleSet::default();
+		let mut rules = hop_rules();
 		rules.color_restricted_hops = true;
 		rules.hop_weight_cmp = HopWeightCmp::Lt;
 		let mut game = Game::empty(rules);
@@ -3423,7 +3559,7 @@ mod tests {
 
 	#[test]
 	fn color_restricted_hops_allow_any_shared_ring() {
-		let mut rules = RuleSet::default();
+		let mut rules = hop_rules();
 		rules.color_restricted_hops = true;
 		rules.hop_weight_cmp = HopWeightCmp::Le;
 		let mut game = Game::empty(rules);
@@ -3778,7 +3914,7 @@ mod tests {
 
 	#[test]
 	fn color_restricted_hops_ignore_zag_colors() {
-		let mut rules = RuleSet::default();
+		let mut rules = hop_rules();
 		rules.color_restricted_hops = true;
 		rules.hop_weight_cmp = HopWeightCmp::Le;
 		let mut game = Game::empty(rules);

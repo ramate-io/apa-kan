@@ -1234,7 +1234,9 @@ pub fn demo_left_cluster() -> Game {
 /// d=1 hop that turns at the center: green mover on a spawn, hoppable green
 /// tiles on the inner neighbor and the center.
 pub fn demo_hop_turn() -> (Game, NodeId) {
-	let mut game = Game::empty(RuleSet::default());
+	let mut rules = RuleSet::default();
+	rules.counted_pass_through = false;
+	let mut game = Game::empty(rules);
 	let board = game.board().clone();
 	let center = board.center();
 	let spawn = board.spawns()[0];
