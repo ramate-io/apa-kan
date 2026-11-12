@@ -513,6 +513,33 @@ mod tests {
 	}
 
 	#[test]
+	fn minimax_takes_immediate_low_value_win() {
+		use crate::game::{EndReason, GameStatus, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = false;
+		rules.petal_majority_win = false;
+		let mut game = Game::empty(rules);
+		let p1 = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		game.place_tile(game.board().spawns()[0], p1);
+		let p2 = game.alloc_tile(Player::Two, TileColor::Green, 1, 2);
+		game.place_tile(game.board().spawns()[4], p2);
+		game.set_budget_tokens(Player::One, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		game.set_current(Player::One);
+		let from = game.board().spawns()[0];
+		assert!(!game.destinations(from).is_empty());
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+	}
+
+	#[test]
 	fn minimax_takes_immediate_petal_majority_win() {
 		use crate::game::{EndReason, GameStatus, Player, TileColor};
 
