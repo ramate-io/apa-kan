@@ -732,9 +732,15 @@ pub struct RuleSet {
 	/// Starting tiles dealt from each bag onto the bench, and the opening
 	/// capture budget (that many blank tokens). Default 7. The bag is
 	/// [`BAG_SIZE`] independently sampled tiles; a deal of 7 leaves 20 in
-	/// the bag. ADD spends 1 budget; each capture (own or opponent) earns 1.
-	/// Empty bag skips the capture-draw.
+	/// the bag. ADD spends 1 budget; each opponent capture earns 1. Own-tile
+	/// captures earn 1 iff [`Self::self_capture_budget`]. Empty bag skips
+	/// the capture-draw.
 	pub starting_bench_size: u8,
+	/// If true (default), capturing your own tile on your turn earns +1
+	/// budget the same as capturing an opponent tile. False still removes
+	/// the tile (overwhelm is unchanged) but does not refund a token.
+	/// CLI: `--self-capture-budget on|off`.
+	pub self_capture_budget: bool,
 	/// Both players receive the same shuffled [`BAG_SIZE`]-tile bag. Default true.
 	pub identical_bags: bool,
 	/// Fill the bag by sampling [`BAG_SIZE`] tiles (historical name: one-of-each
@@ -822,6 +828,7 @@ impl Default for RuleSet {
 	fn default() -> Self {
 		Self {
 			starting_bench_size: 7,
+			self_capture_budget: true,
 			identical_bags: true,
 			bag_one_of_each_kind: true,
 			max_rings: MAX_COLOR_RINGS,
@@ -1765,10 +1772,12 @@ impl Game {
 		let is_move = matches!(action, Action::Move { .. });
 		for rem in &removals {
 			self.tiles[rem.node as usize] = None;
-			// Any overwhelm removal on your turn is a capture, including
-			// your own tile (self-capture already exists via simultaneous
-			// overwhelm). Each one earns +1 budget.
-			self.earn_budget(player, rem.tile);
+			// Opponent tiles always earn +1. Own-tile removals (self-capture
+			// via simultaneous overwhelm) earn +1 only when
+			// `self_capture_budget` is on (default).
+			if rem.tile.owner != player || self.rules.self_capture_budget {
+				self.earn_budget(player, rem.tile);
+			}
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
 				if self.draw_from_bag(player).is_some() {
 					draws = draws.saturating_add(1);
@@ -1958,7 +1967,7 @@ impl Game {
 	/// `(primary, tiebreak)` of this player's lowest board piece. `None` if
 	/// they hold no board tiles. Does not fall through to the next-lowest
 	/// piece: a full two-step tie is a draw even if other pieces differ.
-	fn lowest_piece_keys(&self, player: Player) -> Option<(i32, i32)> {
+	pub fn lowest_piece_keys(&self, player: Player) -> Option<(i32, i32)> {
 		let mut best: Option<(i32, i32)> = None;
 		for (_, tile) in self.tiles() {
 			if tile.owner != player {
@@ -2235,6 +2244,7 @@ mod tests {
 		assert!(rules.counted_pass_through);
 		assert_eq!(rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
+		assert!(rules.self_capture_budget);
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bench(Player::Two).len(), 7);
@@ -4513,6 +4523,83 @@ mod tests {
 		assert!(outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One));
 		// Spent 1 to ADD, earned 1 for the self-capture.
 		assert_eq!(game.budget(Player::One), 7);
+	}
+
+	fn self_capture_rules(refund: bool) -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.self_capture_budget = refund;
+		rules
+	}
+
+	#[test]
+	fn self_capture_on_own_turn_does_not_earn_budget_when_toggled_off() {
+		let mut game = Game::empty(self_capture_rules(false));
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
+		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		assert!(game.is_overwhelmed(spawn), "own tile is already overwhelmed");
+		let from = game.board().spawns()[4];
+		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		game.set_current(Player::One);
+		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
+		assert_eq!(game.budget(Player::One), 7);
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One),
+			"own overwhelmed tile must be removed: {:?}",
+			outcome.removals
+		);
+		assert_eq!(outcome.removals.len(), 1);
+		assert_eq!(game.budget(Player::One), 7, "self-capture must not refund when toggled off");
+		assert!(game.budget_tokens(Player::One).iter().all(|t| matches!(t, BudgetToken::Blank)));
+	}
+
+	#[test]
+	fn suicidal_add_spends_without_refund_when_self_capture_budget_off() {
+		let mut game = Game::empty(self_capture_rules(false));
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
+		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		let tile = green(&mut game, Player::One, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_current(Player::One);
+		assert_eq!(game.budget(Player::One), 7);
+		let outcome = game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(outcome.removals.len(), 1);
+		assert!(outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One));
+		assert_eq!(game.budget(Player::One), 6);
+	}
+
+	#[test]
+	fn opponent_capture_still_earns_when_self_capture_budget_off() {
+		let mut game = Game::empty(self_capture_rules(false));
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		assert!(nbs.len() >= 3);
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		game.set_current(Player::One);
+		assert_eq!(game.budget(Player::One), 7);
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.tile.owner == Player::Two),
+			"opponent tile should be removed: {:?}",
+			outcome.removals
+		);
+		let earned = outcome.removals.iter().filter(|r| r.tile.owner != Player::One).count();
+		assert!(earned > 0);
+		assert_eq!(game.budget(Player::One), 7 + earned);
 	}
 
 	#[test]

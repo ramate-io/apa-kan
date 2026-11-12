@@ -245,6 +245,9 @@ where
 			}
 			rules.starting_bench_size = n as u8;
 		}
+		"--self-capture-budget" => {
+			rules.self_capture_budget = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--max-rings" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n == 0 || n > 3 {
@@ -317,6 +320,7 @@ pub fn usage() -> &'static str {
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-bench <1..27>                   Opening deal and capture budget (default: 7)\n\
+	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
@@ -445,6 +449,15 @@ mod tests {
 		assert!(cfg.rules.counted_pass_through);
 		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		assert_eq!(cfg.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
+		assert!(cfg.rules.self_capture_budget);
+	}
+
+	#[test]
+	fn parses_self_capture_budget() {
+		let on = GameConfig::parse(["--self-capture-budget", "on"]).unwrap();
+		assert!(on.rules.self_capture_budget);
+		let off = GameConfig::parse(["--self-capture-budget", "off"]).unwrap();
+		assert!(!off.rules.self_capture_budget);
 	}
 
 	#[test]

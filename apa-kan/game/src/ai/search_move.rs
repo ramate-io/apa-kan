@@ -120,7 +120,8 @@ pub fn apply_move(game: &mut Game, mv: SearchMove) -> Result<crate::game::Action
 }
 
 /// True when the action removed at least one tile (capture / overwhelm).
-/// Own-tile removals count: they earn capture budget the same as opponent tiles.
+/// Own-tile removals count: they change the board (and earn budget when
+/// `self_capture_budget` is on).
 pub fn is_capture(outcome: &crate::game::ActionOutcome, _mover: crate::game::Player) -> bool {
 	!outcome.removals.is_empty() || outcome.draws > 0
 }
