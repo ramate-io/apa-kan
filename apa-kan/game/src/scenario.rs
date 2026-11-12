@@ -143,8 +143,9 @@ pub struct Scenario {
 	pub shuffle: bool,
 	/// Copy P1's kind sequence onto P2 (new tile ids / owner).
 	pub mirror: bool,
-	/// Sample [`crate::game::BAG_SIZE`] tiles from the ring/color process
-	/// (same as `Game::new`) instead of expanding `p1`/`p2` kinds.
+	/// Sample [`crate::game::RuleSet::bag_size`] tiles from the ring/color
+	/// process (same as `Game::new`, default [`crate::game::BAG_SIZE`]) instead
+	/// of expanding `p1`/`p2` kinds.
 	pub generative: bool,
 	pub p1: DeckSpec,
 	pub p2: DeckSpec,
@@ -622,6 +623,25 @@ mod tests {
 			let s = Scenario::builtin(name).expect(name);
 			assert!(!s.name.is_empty() || name == &"default", "{name}");
 		}
+	}
+
+	#[test]
+	fn generative_scenario_respects_bag_size() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = 11;
+		let a = Game::new(rules, 7);
+		let b = Game::from_scenario(rules, 7, &Scenario::same()).unwrap();
+		assert_eq!(a.bag_len(Player::One), 4);
+		assert_eq!(b.bag_len(Player::One), 4);
+		assert_eq!(a.bench(Player::One).len(), 7);
+		assert_eq!(b.bench(Player::One).len(), 7);
+		let kinds = |g: &Game, p: Player| {
+			g.bench(p)
+				.iter()
+				.map(|t| (t.primary(), t.weight, t.dots, t.color_mask()))
+				.collect::<Vec<_>>()
+		};
+		assert_eq!(kinds(&a, Player::One), kinds(&b, Player::One));
 	}
 
 	#[test]

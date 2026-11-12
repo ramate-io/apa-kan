@@ -173,6 +173,26 @@ mod tests {
 	use crate::game::{Action, RuleSet};
 
 	#[test]
+	fn visible_hash_ignores_remaining_bag() {
+		use crate::game::{Game, Player, TileColor};
+
+		let mut small = Game::empty(RuleSet::default());
+		let mut large = Game::empty(RuleSet::default());
+		let tile = small.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		small.set_bench(Player::One, vec![tile]);
+		large.set_bench(Player::One, vec![tile]);
+		let leftover = small.alloc_tile(Player::One, TileColor::Blue, 2, 2);
+		small.set_bag(Player::One, vec![leftover]);
+		large.set_bag(
+			Player::One,
+			(0..20)
+				.map(|_| small.alloc_tile(Player::One, TileColor::Orange, 1, 1))
+				.collect(),
+		);
+		assert_eq!(hash(&small), hash(&large), "visible hash must not include bag remainder");
+	}
+
+	#[test]
 	fn hash_changes_on_add_and_is_stable() {
 		let mut game = crate::game::Game::new(RuleSet::default(), 11);
 		let a = hash(&game);

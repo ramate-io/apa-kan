@@ -610,6 +610,24 @@ mod tests {
 	}
 
 	#[test]
+	fn shuffle_bags_preserves_smaller_deck_multiset() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = 11;
+		let mut game = Game::new(rules, 1);
+		assert_eq!(game.bag_len(Player::One), 4);
+		let kinds = |g: &Game, p: Player| {
+			let mut v: Vec<_> = g.bag(p).iter().map(|t| t.kind_index()).collect();
+			v.sort_unstable();
+			v
+		};
+		let before = kinds(&game, Player::One);
+		let mut rng = StdRng::seed_from_u64(99);
+		game.shuffle_bags(&mut rng);
+		assert_eq!(before, kinds(&game, Player::One));
+		assert_eq!(game.bag_len(Player::One), 4);
+	}
+
+	#[test]
 	fn branching_sample_sees_adds() {
 		let report = sample_branching(2, 1, RuleSet::default());
 		assert!(report.add_n > 0);

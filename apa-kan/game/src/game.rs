@@ -73,7 +73,8 @@ pub const RING_EXIST_TOTAL: u32 = RING_SAME_WEIGHT + RING_ANY_WEIGHT;
 /// Each ring is independently a zag with probability `zag_numer / ZAG_DENOM`.
 pub const ZAG_DENOM: u8 = 7;
 pub const ZAG_NUMER_DEFAULT: u8 = 1;
-/// Sampled bag size (replaces the old 27 unique 3-color kinds).
+/// Default sampled bag size (replaces the old 27 unique 3-color kinds).
+/// Override per game with [`RuleSet::bag_size`] / `--bag-size`.
 pub const BAG_SIZE: usize = 27;
 pub const MAX_COLOR_RINGS: u8 = 3;
 /// Each of 6 colors is absent (0), a normal ring (1), or a zag ring (2).
@@ -730,14 +731,24 @@ impl GameStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
 	/// Starting tiles dealt from each bag onto the bench, and the opening
-	/// capture budget (that many blank tokens). Default 7. The bag is
-	/// [`BAG_SIZE`] independently sampled tiles; a deal of 7 leaves 20 in
-	/// the bag. ADD spends 1 budget; each capture (own or opponent) earns 1.
-	/// Empty bag skips the capture-draw.
+	/// capture budget (that many blank tokens). Default 7. Must be `<=`
+	/// [`Self::bag_size`]. A deal of 7 from the default 27-tile bag leaves 20
+	/// in the bag. ADD spends 1 budget; each opponent capture earns 1.
+	/// Own-tile captures earn 1 iff [`Self::self_capture_budget`]. Empty bag
+	/// skips the capture-draw.
 	pub starting_bench_size: u8,
-	/// Both players receive the same shuffled [`BAG_SIZE`]-tile bag. Default true.
+	/// Total sampled tiles per player (opening deal plus remaining draws).
+	/// Default [`BAG_SIZE`] (27). CLI: `--bag-size`. The opening deal is still
+	/// [`Self::starting_bench_size`] (7), so 11 leaves 4 to draw and 13 leaves 6.
+	pub bag_size: u8,
+	/// If true (default), capturing your own tile on your turn earns +1
+	/// budget the same as capturing an opponent tile. False still removes
+	/// the tile (overwhelm is unchanged) but does not refund a token.
+	/// CLI: `--self-capture-budget on|off`.
+	pub self_capture_budget: bool,
+	/// Both players receive the same shuffled [`Self::bag_size`]-tile bag. Default true.
 	pub identical_bags: bool,
-	/// Fill the bag by sampling [`BAG_SIZE`] tiles (historical name: one-of-each
+	/// Fill the bag by sampling [`Self::bag_size`] tiles (historical name: one-of-each
 	/// 27-kind). Default true. False leaves an empty bag.
 	pub bag_one_of_each_kind: bool,
 	/// Max distinct rings per tile (1–3). Default 3. `1` is the
@@ -822,6 +833,8 @@ impl Default for RuleSet {
 	fn default() -> Self {
 		Self {
 			starting_bench_size: 7,
+			bag_size: BAG_SIZE as u8,
+			self_capture_budget: true,
 			identical_bags: true,
 			bag_one_of_each_kind: true,
 			max_rings: MAX_COLOR_RINGS,
@@ -999,6 +1012,7 @@ impl Game {
 		let p1_bag = build_bag(
 			Player::One,
 			rules.bag_one_of_each_kind,
+			rules.bag_size as usize,
 			rules.max_rings,
 			rules.zag_numer,
 			&mut next_tile_id,
@@ -1017,6 +1031,7 @@ impl Game {
 			build_bag(
 				Player::Two,
 				rules.bag_one_of_each_kind,
+				rules.bag_size as usize,
 				rules.max_rings,
 				rules.zag_numer,
 				&mut next_tile_id,
@@ -1765,10 +1780,12 @@ impl Game {
 		let is_move = matches!(action, Action::Move { .. });
 		for rem in &removals {
 			self.tiles[rem.node as usize] = None;
-			// Any overwhelm removal on your turn is a capture, including
-			// your own tile (self-capture already exists via simultaneous
-			// overwhelm). Each one earns +1 budget.
-			self.earn_budget(player, rem.tile);
+			// Opponent tiles always earn +1. Own-tile removals (self-capture
+			// via simultaneous overwhelm) earn +1 only when
+			// `self_capture_budget` is on (default).
+			if rem.tile.owner != player || self.rules.self_capture_budget {
+				self.earn_budget(player, rem.tile);
+			}
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
 				if self.draw_from_bag(player).is_some() {
 					draws = draws.saturating_add(1);
@@ -2080,6 +2097,7 @@ pub fn sample_tile(
 fn build_bag(
 	owner: Player,
 	fill: bool,
+	size: usize,
 	max_rings: u8,
 	zag_numer: u8,
 	next_id: &mut u32,
@@ -2088,8 +2106,8 @@ fn build_bag(
 	if !fill {
 		return Vec::new();
 	}
-	let mut bag = Vec::with_capacity(BAG_SIZE);
-	for _ in 0..BAG_SIZE {
+	let mut bag = Vec::with_capacity(size);
+	for _ in 0..size {
 		bag.push(sample_tile(owner, max_rings, zag_numer, next_id, rng));
 	}
 	bag.shuffle(rng);
@@ -2221,6 +2239,40 @@ mod tests {
 	}
 
 	#[test]
+	fn opening_deal_respects_bag_size_eleven() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = 11;
+		let game = Game::new(rules, 1);
+		assert_eq!(game.bench(Player::One).len(), 7);
+		assert_eq!(game.bench(Player::Two).len(), 7);
+		assert_eq!(game.budget(Player::One), 7);
+		assert_eq!(game.bag_len(Player::One), 4);
+		assert_eq!(game.bag_len(Player::Two), 4);
+		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), 11);
+		assert_eq!(game.legal_adds().len(), 7 * 8);
+	}
+
+	#[test]
+	fn opening_deal_respects_bag_size_thirteen() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = 13;
+		let game = Game::new(rules, 2);
+		assert_eq!(game.bench(Player::One).len(), 7);
+		assert_eq!(game.bag_len(Player::One), 6);
+		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), 13);
+	}
+
+	#[test]
+	fn bag_size_equal_to_deal_leaves_empty_bag() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = 7;
+		let game = Game::new(rules, 3);
+		assert_eq!(game.bench(Player::One).len(), 7);
+		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.budget(Player::One), 7);
+	}
+
+	#[test]
 	fn default_rules_are_control_win_with_bench_seven() {
 		let rules = RuleSet::default();
 		assert!(!rules.center_hold_win);
@@ -2228,6 +2280,8 @@ mod tests {
 		assert_eq!(rules.control_n, 5);
 		assert_eq!(rules.control_hold_turns, 1);
 		assert_eq!(rules.starting_bench_size, 7);
+		assert_eq!(rules.bag_size, BAG_SIZE as u8);
+		assert!(rules.self_capture_budget);
 		assert_eq!(rules.max_rings, 3);
 		assert_eq!(rules.zag_numer, ZAG_NUMER_DEFAULT);
 		assert!(!rules.petal_majority_win);
@@ -3300,6 +3354,17 @@ mod tests {
 	}
 
 	#[test]
+	fn small_deck_opening_stays_above_insufficient_floor() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = 11;
+		rules.insufficient_tiles_loss = InsufficientTilesLoss::Strict;
+		let game = Game::new(rules, 1);
+		assert_eq!(game.reachable_tiles(Player::One), 7);
+		assert_eq!(game.bag_len(Player::One), 4, "leftover bag is not reachable");
+		assert_eq!(game.status(), GameStatus::InProgress);
+	}
+
+	#[test]
 	fn insufficient_tiles_strict_loses_below_five_ignoring_bag() {
 		let mut rules = RuleSet::default();
 		rules.center_hold_win = false;
@@ -3859,6 +3924,7 @@ mod tests {
 	#[test]
 	fn sampled_bags_are_mirrored_and_size_27() {
 		let game = Game::new(RuleSet::default(), 11);
+		assert_eq!(game.rules().bag_size as usize, BAG_SIZE);
 		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), BAG_SIZE);
 		let p1: Vec<_> = game
 			.bench(Player::One)
@@ -4381,6 +4447,24 @@ mod tests {
 		assert_eq!(before, snapshot(&game, Player::One));
 	}
 
+	#[test]
+	fn shuffle_bags_determinizes_a_smaller_deck() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = 11;
+		let mut game = Game::new(rules, 12);
+		assert_eq!(game.bag_len(Player::One), 4);
+		let snapshot = |g: &Game, p: Player| {
+			let mut v: Vec<_> = g.bag(p).iter().map(|t| t.kind_index()).collect();
+			v.sort_unstable();
+			v
+		};
+		let before = snapshot(&game, Player::One);
+		let mut rng = StdRng::seed_from_u64(99);
+		game.shuffle_bags(&mut rng);
+		assert_eq!(before, snapshot(&game, Player::One));
+		assert_eq!(game.bag_len(Player::One), 4);
+	}
+
 	fn zero_budget(game: &mut Game) {
 		game.set_budget_tokens(Player::One, Vec::new());
 		game.set_budget_tokens(Player::Two, Vec::new());
@@ -4513,6 +4597,109 @@ mod tests {
 		assert!(outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One));
 		// Spent 1 to ADD, earned 1 for the self-capture.
 		assert_eq!(game.budget(Player::One), 7);
+	}
+
+	fn self_capture_rules(refund: bool) -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.self_capture_budget = refund;
+		rules
+	}
+
+	#[test]
+	fn self_capture_on_own_turn_does_not_earn_budget_when_toggled_off() {
+		let mut game = Game::empty(self_capture_rules(false));
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
+		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		assert!(game.is_overwhelmed(spawn), "own tile is already overwhelmed");
+		let from = game.board().spawns()[4];
+		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		game.set_current(Player::One);
+		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
+		assert_eq!(game.budget(Player::One), 7);
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One),
+			"own overwhelmed tile must be removed: {:?}",
+			outcome.removals
+		);
+		assert_eq!(outcome.removals.len(), 1);
+		assert_eq!(game.budget(Player::One), 7, "self-capture must not refund when toggled off");
+		assert!(game.budget_tokens(Player::One).iter().all(|t| matches!(t, BudgetToken::Blank)));
+	}
+
+	#[test]
+	fn suicidal_add_spends_without_refund_when_self_capture_budget_off() {
+		let mut game = Game::empty(self_capture_rules(false));
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
+		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		let tile = green(&mut game, Player::One, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_current(Player::One);
+		assert_eq!(game.budget(Player::One), 7);
+		let outcome = game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(outcome.removals.len(), 1);
+		assert!(outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One));
+		assert_eq!(game.budget(Player::One), 6);
+	}
+
+	#[test]
+	fn opponent_capture_still_earns_when_self_capture_budget_off() {
+		let mut game = Game::empty(self_capture_rules(false));
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		assert!(nbs.len() >= 3);
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		game.set_current(Player::One);
+		assert_eq!(game.budget(Player::One), 7);
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.tile.owner == Player::Two),
+			"opponent tile should be removed: {:?}",
+			outcome.removals
+		);
+		let earned = outcome.removals.iter().filter(|r| r.tile.owner != Player::One).count();
+		assert!(earned > 0);
+		assert_eq!(game.budget(Player::One), 7 + earned);
+	}
+
+	#[test]
+	fn empty_bag_skips_capture_draw_on_move() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		assert!(nbs.len() >= 3);
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		game.set_bag(Player::One, Vec::new());
+		game.set_current(Player::One);
+		let bench_before = game.bench(Player::One).len();
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::Two));
+		assert_eq!(outcome.draws, 0);
+		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.bench(Player::One).len(), bench_before);
 	}
 
 	#[test]
