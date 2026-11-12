@@ -533,6 +533,7 @@ fn refresh_view(
 				tile,
 				matches!(play.selection, Selection::Piece(n) if n == id),
 				layout.tile_radius,
+				false,
 			);
 		} else if board.is_spawn(id) && matches!(play.selection, Selection::Bench(_)) {
 			spawn_label(
@@ -557,12 +558,15 @@ fn refresh_view(
 				*tile,
 				highlight,
 				layout.bench_tile_radius,
+				false,
 			);
 		}
 		let tokens = play.game.budget_tokens(player).to_vec();
 		let n = tokens.len();
+		let usable = play.game.budget(player);
 		for (i, token) in tokens.iter().enumerate() {
 			let p = layout.budget_stack_pos(player, i, n);
+			let surplus = i >= usable;
 			match token {
 				BudgetToken::Blank => spawn_blank_token(
 					&mut commands,
@@ -571,6 +575,7 @@ fn refresh_view(
 					Vec2::new(p[0], p[1]),
 					player,
 					layout.bench_tile_radius,
+					surplus,
 				),
 				BudgetToken::Captured(tile) => spawn_tile_at(
 					&mut commands,
@@ -580,6 +585,7 @@ fn refresh_view(
 					*tile,
 					false,
 					layout.bench_tile_radius,
+					surplus,
 				),
 			}
 		}
@@ -946,11 +952,14 @@ fn spawn_blank_token(
 	pos: Vec2,
 	player: Player,
 	radius: f32,
+	surplus: bool,
 ) {
 	commands.spawn((
 		DynamicView,
 		Mesh2d(meshes.add(Circle::new(radius))),
-		MeshMaterial2d(materials.add(ColorMaterial::from(rgb(visual::owner_fill_rgb(player))))),
+		MeshMaterial2d(
+			materials.add(ColorMaterial::from(paint(visual::owner_fill_rgb(player), surplus))),
+		),
 		Transform::from_translation(pos.extend(visual::Z_TILE)),
 	));
 	let rim = (radius * 0.10).max(1.4);
@@ -961,7 +970,7 @@ fn spawn_blank_token(
 		pos,
 		(radius - rim).max(1.0),
 		radius,
-		rgb(visual::BLANK_TOKEN_RIM_RGB),
+		paint(visual::BLANK_TOKEN_RIM_RGB, surplus),
 		visual::Z_TILE_RING,
 	);
 }
@@ -974,9 +983,10 @@ fn spawn_tile_at(
 	tile: Tile,
 	highlight: bool,
 	radius: f32,
+	dim: bool,
 ) {
-	let fill = rgb(visual::owner_fill_rgb(tile.owner));
-	let primary = rgb(visual::tile_rgb(tile.primary()));
+	let fill = paint(visual::owner_fill_rgb(tile.owner), dim);
+	let primary = paint(visual::tile_rgb(tile.primary()), dim);
 	let z = visual::Z_TILE;
 	commands.spawn((
 		DynamicView,
@@ -1006,7 +1016,7 @@ fn spawn_tile_at(
 					materials,
 					&zig,
 					draw.zag_stroke.max(0.45),
-					rgb(visual::tile_rgb(color)),
+					paint(visual::tile_rgb(color), dim),
 					z,
 				);
 			} else {
@@ -1017,7 +1027,7 @@ fn spawn_tile_at(
 					pos,
 					(r - ring_half).max(1.0),
 					r,
-					rgb(visual::tile_rgb(color)),
+					paint(visual::tile_rgb(color), dim),
 					z,
 				);
 			}
@@ -1062,6 +1072,10 @@ fn spawn_label(commands: &mut Commands, pos: Vec2, text: &str) {
 
 fn rgb(c: [f32; 3]) -> Color {
 	Color::srgb(c[0], c[1], c[2])
+}
+
+fn paint(c: [f32; 3], dim: bool) -> Color {
+	rgb(if dim { visual::surplus_rgb(c) } else { c })
 }
 
 fn update_hud(

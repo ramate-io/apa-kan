@@ -133,7 +133,10 @@ pub fn hash(game: &Game) -> u64 {
 		h ^= z.center_hold[player.index()][game.center_hold(player).min(15) as usize];
 		h ^= z.petal_majority[player.index()][game.petal_majority(player).min(15) as usize];
 		h ^= z.control_hold[player.index()][game.control_hold(player).min(15) as usize];
-		h ^= z.budget[player.index()][game.budget(player).min(63)];
+		// Physical token count, not usable budget: surplus can become usable
+		// after a later bench draw, so two empty-bench stacks of different
+		// lengths must not collide.
+		h ^= z.budget[player.index()][game.budget_token_count(player).min(63)];
 	}
 	match game.moved_this_turn() {
 		None => h ^= z.moved_this_turn_none,
@@ -201,6 +204,19 @@ mod tests {
 		let _ = game.apply(action).unwrap();
 		let b = hash(&game);
 		assert_ne!(a, b);
+	}
+
+	#[test]
+	fn hash_distinguishes_surplus_token_counts() {
+		use crate::game::{BudgetToken, Game, Player};
+
+		let mut few = Game::empty(RuleSet::default());
+		let mut many = Game::empty(RuleSet::default());
+		few.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 2]);
+		many.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 5]);
+		assert_eq!(few.budget(Player::One), 0);
+		assert_eq!(many.budget(Player::One), 0);
+		assert_ne!(hash(&few), hash(&many), "surplus token count must be in the visible hash");
 	}
 
 	#[test]

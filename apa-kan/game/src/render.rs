@@ -258,7 +258,7 @@ fn draw_tiles(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	for id in 0..board.node_count() as u8 {
 		if let Some(tile) = game.tile_at(id) {
 			let p = image_pt(layout, board.position(id));
-			draw_tile(img, tup(p), f64::from(layout.tile_radius), tile);
+			draw_tile(img, tup(p), f64::from(layout.tile_radius), tile, false);
 		}
 	}
 }
@@ -305,18 +305,21 @@ fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				(f64::from(q[0]), f64::from(q[1])),
 				f64::from(layout.bench_tile_radius),
 				*tile,
+				false,
 			);
 		}
 		let tokens = game.budget_tokens(player);
 		let n = tokens.len();
+		let usable = game.budget(player);
 		for (i, token) in tokens.iter().enumerate() {
 			let p = layout.budget_stack_pos(player, i, n);
 			let q = layout.world_to_image(p);
 			let c = (f64::from(q[0]), f64::from(q[1]));
 			let r = f64::from(layout.bench_tile_radius);
+			let surplus = i >= usable;
 			match token {
-				BudgetToken::Blank => draw_blank_token(img, c, r, player),
-				BudgetToken::Captured(tile) => draw_tile(img, c, r, *tile),
+				BudgetToken::Blank => draw_blank_token(img, c, r, player, surplus),
+				BudgetToken::Captured(tile) => draw_tile(img, c, r, *tile, surplus),
 			}
 		}
 	}
@@ -333,14 +336,20 @@ fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str
 	draw_text(img, 16, (layout.height - 22.0) as u32, visual::HELP_TEXT, lo);
 }
 
-fn draw_blank_token(img: &mut RgbaImage, c: (f64, f64), r: f64, player: Player) {
-	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(player)));
-	stroke_circle(img, c, r, rgb_of(visual::BLANK_TOKEN_RIM_RGB), (r * 0.10).max(1.4));
+fn draw_blank_token(img: &mut RgbaImage, c: (f64, f64), r: f64, player: Player, surplus: bool) {
+	fill_circle(img, c, r, rgb_of(fade_rgb(visual::owner_fill_rgb(player), surplus)));
+	stroke_circle(
+		img,
+		c,
+		r,
+		rgb_of(fade_rgb(visual::BLANK_TOKEN_RIM_RGB, surplus)),
+		(r * 0.10).max(1.4),
+	);
 }
 
-fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
-	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(tile.owner)));
-	let primary = rgb_of(visual::tile_rgb(tile.primary()));
+fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile, dim: bool) {
+	fill_circle(img, c, r, rgb_of(fade_rgb(visual::owner_fill_rgb(tile.owner), dim)));
+	let primary = rgb_of(fade_rgb(visual::tile_rgb(tile.primary()), dim));
 	let draw = visual::TileRingDraw::for_radius(r as f32);
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
@@ -357,9 +366,9 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 					draw.zag_teeth,
 					draw.zag_samples,
 				);
-				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
+				stroke_polyline(img, &zig, rgb_of(fade_rgb(visual::tile_rgb(color), dim)), width);
 			} else {
-				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
+				stroke_circle(img, c, rr, rgb_of(fade_rgb(visual::tile_rgb(color), dim)), width);
 			}
 		}
 	}
@@ -380,6 +389,14 @@ fn image_pt(layout: &ViewLayout, p: [f64; 2]) -> [f64; 2] {
 
 fn tup(p: [f64; 2]) -> (f64, f64) {
 	(p[0], p[1])
+}
+
+fn fade_rgb(c: [f32; 3], dim: bool) -> [f32; 3] {
+	if dim {
+		visual::surplus_rgb(c)
+	} else {
+		c
+	}
 }
 
 fn rgb_of(rgb: [f32; 3]) -> Rgba<u8> {
@@ -594,7 +611,7 @@ mod tests {
 		write_png_sized(
 			&board,
 			dir.join("capture_budget_stack_1280x800.png"),
-			"budget stack: 7 blanks + captured tiles beside each bench",
+			"budget stack: usable tokens plus faded surplus beside each bench",
 			1280,
 			800,
 		)

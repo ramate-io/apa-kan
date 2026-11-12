@@ -384,7 +384,7 @@ fn run(cfg: BenchConfig) {
 		stall_turn_limit_and_rep3
 	));
 	lines.push(
-		"# Visible hash covers occupancy, tile kind, owner, benches, capture budget, side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).".into(),
+		"# Visible hash covers occupancy, tile kind, owner, benches, capture-budget token count (including surplus), side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).".into(),
 	);
 	lines.push(
 		"# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.".into(),

@@ -273,6 +273,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 		bench_score -= 28 + 10 * i32::from(tile.weight);
 	}
 	let bag = 3 * (game.bag_len(me) as i32 - game.bag_len(opp) as i32);
+	// Usable budget only (min(tokens, bench)); surplus tokens are not ADD permission.
 	let budget = 90 * (game.budget(me) as i32 - game.budget(opp) as i32);
 	let presence = 32 * (my_board - opp_board);
 	let mobility = 4 * (mobility_of(game, me) - mobility_of(game, opp));
@@ -601,6 +602,31 @@ mod tests {
 		let s = evaluate(&game, Player::One, 0);
 		assert!(s < -WIN / 2);
 		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+	}
+
+	#[test]
+	fn evaluate_ignores_surplus_tokens_beyond_the_bench() {
+		use crate::game::{BudgetToken, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		let mut surplus = Game::empty(rules);
+		let mut none = Game::empty(rules);
+		let spawn = surplus.board().spawns()[0];
+		let other = surplus.board().spawns()[4];
+		let p1 = surplus.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		let p2 = surplus.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+		surplus.place_tile(spawn, p1);
+		surplus.place_tile(other, p2);
+		none.place_tile(spawn, p1);
+		none.place_tile(other, p2);
+		surplus.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 5]);
+		surplus.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; 5]);
+		none.set_budget_tokens(Player::One, Vec::new());
+		none.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(surplus.budget(Player::One), 0);
+		assert_eq!(evaluate(&surplus, Player::One, 0), evaluate(&none, Player::One, 0));
 	}
 
 	#[test]
