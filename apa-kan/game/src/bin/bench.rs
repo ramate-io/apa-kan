@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apa_kan::ai::{self, Actor, BranchingReport, Searcher};
+use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::game::{
 	sample_tile, Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet, Tile,
@@ -32,6 +33,7 @@ struct BenchConfig {
 	seed: u64,
 	out: PathBuf,
 	record: PathBuf,
+	games_log: Option<PathBuf>,
 	measure_games: u32,
 	bots: Vec<Actor>,
 	rules: RuleSet,
@@ -52,6 +54,8 @@ fn usage() -> &'static str {
 	   --measure-games <n>  Games for branching sample (default: 12)\n\
 	   --out <path>         Output log path\n\
 	   --record <path>      Full minimax vs mcts game record\n\
+	   --games-log <path>   Per-game JSONL (default: <out>.jsonl.gz; gzip if .gz)\n\
+	   --no-games-log       Disable the per-game JSONL (on by default)\n\
 	   --label <text>       Header label written into the log\n\
 	   --scenario <name|path> Opening deck preset or TOML file\n\
 	   --list-scenarios     Print builtin deck scenarios\n\
@@ -72,12 +76,15 @@ where
 	S: AsRef<str>,
 {
 	let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmark_results");
+	let default_out = root.join("search_h2h.txt");
+	let mut games_log_set = false;
 	let mut cfg = BenchConfig {
 		games: 6,
 		think: Duration::from_millis(1000),
 		seed: 1,
-		out: root.join("search_h2h.txt"),
+		out: default_out.clone(),
 		record: root.join("minimax_vs_mcts_game.txt"),
+		games_log: Some(bench_log::default_games_log_path(&default_out)),
 		measure_games: 12,
 		bots: vec![Actor::Greedy, Actor::Minimax, Actor::Mcts],
 		rules: RuleSet::default(),
@@ -107,8 +114,26 @@ where
 				cfg.measure_games =
 					parse_u64("--measure-games", &need("--measure-games", it.next())?)? as u32;
 			}
-			"--out" => cfg.out = PathBuf::from(need("--out", it.next())?),
+			"--out" => {
+				cfg.out = PathBuf::from(need("--out", it.next())?);
+				if !games_log_set {
+					cfg.games_log = Some(bench_log::default_games_log_path(&cfg.out));
+				}
+			}
 			"--record" => cfg.record = PathBuf::from(need("--record", it.next())?),
+			"--games-log" => {
+				let v = need("--games-log", it.next())?;
+				games_log_set = true;
+				if v == "off" || v == "none" {
+					cfg.games_log = None;
+				} else {
+					cfg.games_log = Some(PathBuf::from(v));
+				}
+			}
+			"--no-games-log" => {
+				games_log_set = true;
+				cfg.games_log = None;
+			}
 			"--label" => cfg.label = need("--label", it.next())?,
 			"--scenario" => cfg.scenario = Some(Scenario::load(&need("--scenario", it.next())?)?),
 			"--list-scenarios" => {
@@ -276,6 +301,8 @@ fn run(cfg: BenchConfig) {
 
 	let record_holder: Mutex<Option<GameRecord>> = Mutex::new(None);
 	let deck_holder: Mutex<Vec<DeckRow>> = Mutex::new(Vec::new());
+	let logs_holder: Mutex<Vec<GameLog>> = Mutex::new(Vec::new());
+	let keep_log = cfg.games_log.is_some();
 	let mut pairing_results: Vec<(usize, SeatStats, String)> = Vec::new();
 	let pairs = pairings(&cfg.bots);
 
@@ -287,6 +314,7 @@ fn run(cfg: BenchConfig) {
 			let seed_base = cfg.seed;
 			let rec = &record_holder;
 			let decks = &deck_holder;
+			let logs = &logs_holder;
 			let scenario = cfg.scenario.clone();
 			handles.push(scope.spawn(move || {
 				let (stats, line) = run_pairing(
@@ -300,6 +328,8 @@ fn run(cfg: BenchConfig) {
 					scenario.as_ref(),
 					rec,
 					decks,
+					keep_log,
+					logs,
 				);
 				(pi, stats, line)
 			}));
@@ -439,6 +469,17 @@ fn run(cfg: BenchConfig) {
 		lines.push("# game_record=(none — minimax vs mcts game did not complete)".into());
 	}
 
+	if let Some(path) = cfg.games_log.as_ref() {
+		let mut logs = logs_holder.lock().unwrap_or_else(|e| e.into_inner());
+		logs.sort_by(|a, b| a.pairing.cmp(&b.pairing).then(a.game.cmp(&b.game)));
+		if let Err(err) = write_games_log(path, &logs) {
+			eprintln!("failed to write {}: {err}", path.display());
+			std::process::exit(1);
+		}
+		lines.push(format!("# games_log={}", path.display()));
+		println!("wrote {} ({} games, {})", path.display(), logs.len(), games_log_size(path));
+	}
+
 	lines.push(format!("# elapsed_sec={:.1}", started.elapsed().as_secs_f64()));
 	let body = lines.join("\n") + "\n";
 	if let Err(err) = fs::write(&cfg.out, &body) {
@@ -474,6 +515,39 @@ fn push_branching(
 	lines.push(format!("ALL       {:<12} {:<6.2} {}", b.all_n, b.all_avg(), b.all_max));
 }
 
+fn write_games_log(path: &Path, logs: &[GameLog]) -> Result<(), String> {
+	let body = bench_log::encode_jsonl(logs)?;
+	if let Some(parent) = path.parent() {
+		fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+	}
+	if bench_log::path_is_gzip(path) {
+		use std::io::Write;
+		let file = fs::File::create(path).map_err(|e| e.to_string())?;
+		let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+		enc.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
+		enc.finish().map_err(|e| e.to_string())?;
+	} else {
+		fs::write(path, body).map_err(|e| e.to_string())?;
+	}
+	Ok(())
+}
+
+fn games_log_size(path: &Path) -> String {
+	match fs::metadata(path) {
+		Ok(meta) => {
+			let n = meta.len();
+			if n >= 1024 * 1024 {
+				format!("{:.1} MiB", n as f64 / (1024.0 * 1024.0))
+			} else if n >= 1024 {
+				format!("{:.1} KiB", n as f64 / 1024.0)
+			} else {
+				format!("{n} B")
+			}
+		}
+		Err(_) => "size unknown".into(),
+	}
+}
+
 fn run_pairing(
 	pi: usize,
 	p1: Actor,
@@ -485,6 +559,8 @@ fn run_pairing(
 	scenario: Option<&Scenario>,
 	record_holder: &Mutex<Option<GameRecord>>,
 	deck_holder: &Mutex<Vec<DeckRow>>,
+	keep_log: bool,
+	logs_holder: &Mutex<Vec<GameLog>>,
 ) -> (SeatStats, String) {
 	let mut stats = SeatStats::default();
 	for g in 0..games {
@@ -492,10 +568,19 @@ fn run_pairing(
 			.wrapping_add((pi as u64).wrapping_mul(10_000))
 			.wrapping_add(u64::from(g));
 		let want_record = p1 == Actor::Minimax && p2 == Actor::Mcts && g == 0;
-		let result = play_game(rules, seed, p1, p2, think, want_record, scenario);
+		let result = play_game(rules, seed, p1, p2, think, want_record, keep_log, scenario);
 		if want_record {
 			if let Ok(mut guard) = record_holder.lock() {
 				*guard = result.record.clone();
+			}
+		}
+		if let Some(mut log) = result.log {
+			log.game = g + 1;
+			log.pairing = format!("{} vs {}", p1.name(), p2.name());
+			log.p1 = p1.name().to_string();
+			log.p2 = p2.name().to_string();
+			if let Ok(mut guard) = logs_holder.lock() {
+				guard.push(log);
 			}
 		}
 		stats.turns += result.turns;
@@ -684,6 +769,7 @@ struct PlayResult {
 	captures: u32,
 	self_captures: u32,
 	record: Option<GameRecord>,
+	log: Option<GameLog>,
 	deck: DeckRow,
 }
 
@@ -717,6 +803,7 @@ fn play_game(
 	p2: Actor,
 	think: Duration,
 	keep_record: bool,
+	keep_log: bool,
 	scenario: Option<&Scenario>,
 ) -> PlayResult {
 	let mut game = Game::start(rules, seed, scenario).unwrap_or_else(|e| {
@@ -734,7 +821,7 @@ fn play_game(
 		&mut ring_n,
 		&mut color_n,
 	);
-	let mut rng = StdRng::seed_from_u64(seed ^ 0x51ed);
+	let mut rng = StdRng::seed_from_u64(bench_log::search_rng_seed(seed));
 	let mut s1 = Searcher::new();
 	let mut s2 = Searcher::new();
 	let mut visible: HashMap<u64, u32> = HashMap::new();
@@ -746,6 +833,17 @@ fn play_game(
 	let mut iter_sum = 0.0;
 	let mut iter_n = 0u32;
 	let mut record_lines = Vec::new();
+	let mut game_log = keep_log.then(|| {
+		GameLog::begin(
+			0,
+			String::new(),
+			p1.name(),
+			p2.name(),
+			think.as_millis() as u64,
+			scenario.map(|s| s.name.as_str()).unwrap_or("default"),
+			&game,
+		)
+	});
 	let mut captures = 0u32;
 	let mut self_captures = 0u32;
 	let mut guard = 0u32;
@@ -789,6 +887,7 @@ fn play_game(
 			Player::Two => &mut s2,
 		};
 		let action = searcher.choose(&game, actor, &mut rng, think);
+		let piece = bench_log::piece_for_action(&game, action);
 		let st = searcher.stats();
 		if actor == Actor::Minimax {
 			depth_sum += f64::from(st.depth);
@@ -828,12 +927,25 @@ fn play_game(
 						st.iterations
 					));
 				}
+				if let Some(log) = game_log.as_mut() {
+					log.push_action(action, piece, &outcome, &game);
+				}
 			}
 			Err(_) => {
 				if let Some(fallback) = game.legal_actions().into_iter().next() {
-					let _ = game.apply(fallback);
+					let piece = bench_log::piece_for_action(&game, fallback);
+					if let Ok(outcome) = game.apply(fallback) {
+						if let Some(log) = game_log.as_mut() {
+							log.push_action(fallback, piece, &outcome, &game);
+						}
+					}
 				} else {
-					let _ = game.apply(Action::Pass);
+					let piece = bench_log::piece_for_action(&game, Action::Pass);
+					if let Ok(outcome) = game.apply(Action::Pass) {
+						if let Some(log) = game_log.as_mut() {
+							log.push_action(Action::Pass, piece, &outcome, &game);
+						}
+					}
 				}
 				break;
 			}
@@ -873,11 +985,10 @@ fn play_game(
 		GameStatus::Won { winner: Player::Two, .. } => -1,
 		_ => 0,
 	};
-	let low_value = match game.status() {
-		GameStatus::Won { reason: EndReason::LowValue, .. }
-		| GameStatus::Draw { reason: EndReason::LowValue } => Some(game.low_value_resolution()),
-		_ => None,
-	};
+	let low_value = bench_log::low_value_of(&game);
+	if let Some(log) = game_log.as_mut() {
+		log.finish(&game, low_value);
+	}
 
 	PlayResult {
 		status: game.status(),
@@ -892,6 +1003,7 @@ fn play_game(
 		captures,
 		self_captures,
 		record,
+		log: game_log,
 		deck: DeckRow {
 			pairing: String::new(),
 			game: 0,
