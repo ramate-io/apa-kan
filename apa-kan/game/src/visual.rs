@@ -79,8 +79,11 @@ pub const TILE_ZAG_TEETH: u32 = 16;
 pub const TILE_ZAG_SAMPLES: u32 = 96;
 /// Tile-rim braid: the old conflict weave, one thread per braid slot.
 pub const TILE_BRAID_AMP: f32 = 1.6;
-pub const TILE_BRAID_STROKE: f32 = 1.35;
-pub const TILE_BRAID_SAMPLES: u32 = 96;
+/// Thinner than a zag ring so over/under threads keep visible air between them.
+pub const TILE_BRAID_STROKE: f32 = 0.70;
+pub const TILE_BRAID_SAMPLES: u32 = 128;
+/// Tile-rim weave period: half the arc conflict period (~2× frequency).
+pub const TILE_BRAID_TURN_UNITS: f64 = BRAID_TURN_UNITS * 0.5;
 /// Satisfied-braid weave (the old two-ended conflict braid). Amplitude and
 /// strand width match that glyph; turn count follows arc length.
 pub const BRAID_AMP_UNITS: f32 = 0.030;
@@ -551,7 +554,7 @@ impl TileRingDraw {
 			zag_teeth: TILE_ZAG_TEETH,
 			zag_samples: TILE_ZAG_SAMPLES,
 			braid_amp: (TILE_BRAID_AMP * scale).max(0.4),
-			braid_stroke: (TILE_BRAID_STROKE * scale).max(0.45),
+			braid_stroke: (TILE_BRAID_STROKE * scale).max(0.28),
 			braid_samples: TILE_BRAID_SAMPLES,
 			dot_r: (2.6 * scale).max(1.8),
 			dot_spread: 7.0 * scale,
@@ -1111,11 +1114,11 @@ pub fn hitch_braid_amp(full_amp: f64, hitch_r: f64) -> f64 {
 }
 
 /// Integer twists around a tile rim so a closed weave meets itself.
-/// Same spatial period as the original conflict braid (`BRAID_TURN_UNITS`
-/// at [`PREV_SCALE`]), not [`TILE_ZAG_TEETH`].
+/// ~2× the arc conflict frequency (`TILE_BRAID_TURN_UNITS`), not
+/// [`TILE_ZAG_TEETH`] and not the slower arc clamp.
 pub fn tile_braid_turns(radius: f64) -> f64 {
-	((2.0 * PI * radius) / (BRAID_TURN_UNITS * f64::from(PREV_SCALE)))
-		.clamp(1.0, 3.0)
+	((2.0 * PI * radius) / (TILE_BRAID_TURN_UNITS * f64::from(PREV_SCALE)))
+		.clamp(4.0, 6.0)
 		.round()
 }
 
@@ -1970,11 +1973,20 @@ mod tests {
 			(BRAID_TURN_UNITS - ZAG_TOOTH_UNITS).abs() > 1e-6,
 			"braid weave must not share the zag tooth period"
 		);
+		assert!((TILE_BRAID_TURN_UNITS - BRAID_TURN_UNITS * 0.5).abs() < 1e-12);
+		assert!(
+			(TILE_BRAID_STROKE - 0.70).abs() < 1e-6,
+			"tile-rim braid threads stay thinner than a zag ring"
+		);
+		assert!(TILE_BRAID_STROKE < TILE_ZAG_STROKE);
 		assert_eq!(
 			tile_braid_turns(22.0),
-			((2.0 * PI * 22.0) / (0.42 * f64::from(PREV_SCALE))).clamp(1.0, 3.0).round(),
-			"tile-rim braid uses the original conflict period, not TILE_ZAG_TEETH"
+			((2.0 * PI * 22.0) / (TILE_BRAID_TURN_UNITS * f64::from(PREV_SCALE)))
+				.clamp(4.0, 6.0)
+				.round(),
+			"tile-rim braid is ~2× the arc conflict frequency, not TILE_ZAG_TEETH"
 		);
+		assert_eq!(tile_braid_turns(22.0), 4.0);
 		assert_ne!(tile_braid_turns(22.0), f64::from(TILE_ZAG_TEETH));
 	}
 

@@ -1192,7 +1192,7 @@ fn spawn_tile_at(
 			let rim = visual::circle_polyline(center, r, draw.braid_samples);
 			let amp = f64::from(draw.braid_amp);
 			let turns = visual::tile_braid_turns(r);
-			let w = draw.braid_stroke.max(0.5);
+			let w = draw.braid_stroke.max(0.28);
 			for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
 				spawn_braid_strand(
 					commands,
