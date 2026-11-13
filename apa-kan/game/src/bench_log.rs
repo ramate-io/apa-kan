@@ -1014,6 +1014,7 @@ mod tests {
 		r.zag_mismatch = ZagMismatchCount::Max;
 		r.pass_through_ring_cmp = PassThroughRingCmp::Gt;
 		r.turn_limit = 50;
+		r.braid_fail_mismatch = BraidFailMismatch::Sum;
 		let log = RulesLog::from_rules(r);
 		assert_eq!(log.to_rules().unwrap(), r);
 	}
@@ -1100,6 +1101,16 @@ mod tests {
 	#[test]
 	fn committed_independent_channels_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays("benchmark_results/independent_channels.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_braid_fail_sum_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/braid_fail_sum.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_braid_fail_weight_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/braid_fail_weight.jsonl.gz");
 	}
 
 	#[test]

@@ -727,6 +727,7 @@ fn spawn_arc(
 				from,
 				to,
 				[None; 3],
+				[None; 3],
 				hitch_r,
 				stripe_off,
 				f64::from(width),
@@ -788,7 +789,7 @@ fn spawn_arc(
 					);
 				}
 			}
-			BraidLane::Failed { colors } => {
+			BraidLane::Failed { from, to } => {
 				spawn_hitch_diamond(
 					commands,
 					meshes,
@@ -796,7 +797,8 @@ fn spawn_arc(
 					&braid_pts,
 					[None; 3],
 					[None; 3],
-					colors,
+					from,
+					to,
 					hitch_r,
 					stripe_off,
 					f64::from(width),
@@ -869,7 +871,8 @@ fn spawn_hitch_diamond(
 	pts: &[[f64; 2]],
 	from: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
 	to: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
-	braid: [Option<crate::game::TileColor>; 3],
+	from_braid: [Option<crate::game::TileColor>; 3],
+	to_braid: [Option<crate::game::TileColor>; 3],
 	hitch_r: f64,
 	stripe_off: f64,
 	width: f64,
@@ -888,29 +891,33 @@ fn spawn_hitch_diamond(
 	let to_path = visual::diamond_to_path(&to_pts, &diamond);
 	let amp = visual::hitch_braid_amp(braid_amp, hitch_r);
 	let braid_w = width as f32 * visual::BRAID_STRAND_WIDTH_SCALE;
-	let mix = visual::braid_strand_count(braid) >= 2;
-	if mix {
+	let from_weave = visual::braid_strand_count(from_braid) >= 2;
+	let to_weave = visual::braid_strand_count(to_braid) >= 2;
+	if from_weave {
 		spawn_hitch_braid(
 			commands,
 			meshes,
 			materials,
 			&from_path,
-			braid,
+			from_braid,
 			amp,
 			visual::braid_turns_along(&from_path, scale),
 			braid_w,
 		);
+	}
+	if to_weave {
 		spawn_hitch_braid(
 			commands,
 			meshes,
 			materials,
 			&to_path,
-			braid,
+			to_braid,
 			amp,
 			visual::braid_turns_along(&to_path, scale),
 			braid_w,
 		);
 	}
+	let mix = from_weave || to_weave;
 	spawn_hitch_half(
 		commands,
 		meshes,

@@ -31,7 +31,7 @@ A channel contributes on an edge only if **at least one** of the two tiles has a
 |---|---|---|---|
 | **Normal** | some ring on A or B is normal | 1, if some normal-ring color of A is in Colors_B **or** some normal-ring color of B is in Colors_A | 1 otherwise (`mismatch_uses_neighbor_weight` still uses the neighbor's ring count) |
 | **Zag** | some ring on A or B is a zag | never | +1 for each zag color on one side that appears among the other side's colors, counted as a multiset union over both directions (`zag_mismatch` `sum` / `max`, same formula as today) |
-| **Braid** | some tile has a 2- or 3-slot braid | the single largest fulfillable braid on either side (`−2` or `−3`). Tied sizes pick either | if **no** braid on the edge can be fulfilled: **exactly one** mismatch of weight **+1** for the edge, not one per side and not the braid's weight |
+| **Braid** | some tile has a 2- or 3-slot braid | the single largest fulfillable braid on either side (`−2` or `−3`). Tied sizes pick either | if **no** braid on the edge can be fulfilled: **exactly one** mismatch of weight **+1** for the edge (`one`, default). `weight` uses the largest braid's slots; `sum` adds every braid's slots on both sides (2+3 = +5) |
 
 A braid is fulfilled when the other tile's color multiset covers the braid's color multiset (orange+orange needs two orange rings).
 
@@ -40,13 +40,17 @@ A braid is fulfilled when the other tile's color multiset covers the braid's col
 - A zag on A plus a normal ring of the same color on B nets 0.
 - A satisfied braid **stacks** with a normal match.
 
-**Planned variant:** `--braid-fail-mismatch weight` sets the failed-braid mismatch to the largest unfulfilled braid's slot count (2 or 3). Default remains `one`.
+**Variants** (`--braid-fail-mismatch`, default `one`):
+
+- `one` — exactly +1 for the edge.
+- `weight` — the largest unfulfilled braid's slot count (2 or 3).
+- `sum` — the sum of every braid's slot count on both sides (a 2-braid vs a 3-braid is +5; a lone 3-braid is +3).
 
 ### Plain English
 
 - **Normal.** If either tile has a normal ring, the edge either likes the pair (they "see" a shared color from a normal into the neighbor's rings) or it doesn't. One point either way. Leftover extra colors do not add extra hitch points once a match exists.
 - **Zag.** Zags only punish. Count every hitting zag stroke on the edge (SUM by default). They never make a match of their own; a same-color normal on the other tile is the normal channel's job.
-- **Braid.** Look at both braids, keep the biggest one that the neighbor can cover, and score that hitch as a match of its size. If neither braid is covered, the edge takes a single +1 (not the braid's size, unless the weight variant is on).
+- **Braid.** Look at both braids, keep the biggest one that the neighbor can cover, and score that hitch as a match of its size. If neither braid is covered, the edge takes a single +1 by default (`one`). `weight` costs the largest braid; `sum` costs every braid thread on the edge.
 
 ## Worked table
 
@@ -87,7 +91,7 @@ Lane offsets, given pitch `≈ 2.4 ×` highway stripe offset:
 **Braid**
 
 - Fulfilled: draw the max fulfilled braid between the two tiles (existing weave: one thread per slot, arc period `BRAID_TURN_UNITS = 0.42`).
-- Failed: a braid woven from the **union** of the braid colors with a diamond in the middle, analogous to the normal mismatch.
+- Failed: like the normal mismatch. From each tile, **that tile's own** braid weave reaches the middle (its threads only) and the two meet at a diamond. If only one side has a braid, only that side reaches in, up to the diamond.
 - Unconnected edges still show the would-be braid (potential weave, no diamond).
 
 Tile rims are unchanged: `TILE_BRAID_TURN_UNITS = 0.21`, stroke `0.70`. Mobile crowding of stacked lanes is acceptable for now.
@@ -95,14 +99,14 @@ Tile rims are unchanged: `TILE_BRAID_TURN_UNITS = 0.21`, stroke `0.70`. Mobile c
 ## Implementation
 
 - `EdgeChannels` / `Game::edge_channels` in `apa-kan/game/src/game.rs`
-- `BraidFailMismatch` on `RuleSet` (`--braid-fail-mismatch one|weight`)
+- `BraidFailMismatch` on `RuleSet` (`--braid-fail-mismatch one|weight|sum`)
 - `ArcPaint.braid: Option<BraidLane>` plus lane offsets in `visual.rs`; renderers in `render.rs` / `ui.rs`
 - JSONL writes `braid_fail_mismatch`. Historical logs omit it; full replay of those games is skipped because captures used the old overrides.
 
 ## Alternatives considered
 
 - Keep zag-hits replacing the ordinary mismatch — rejected; a same-color zag vs normal should net 0.
-- Failed-braid mismatch equals the braid's weight by default — deferred as `--braid-fail-mismatch weight`.
+- Failed-braid mismatch equals the braid's weight by default — deferred as `--braid-fail-mismatch weight` / `sum`.
 - Draw all three lanes even when a channel is quiet — rejected; omit quiet lanes.
 
 ## Open questions

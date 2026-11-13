@@ -98,6 +98,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 					from,
 					to,
 					[None; 3],
+					[None; 3],
 					hitch_r,
 					stripe_off,
 					width,
@@ -159,12 +160,13 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 						);
 					}
 				}
-				BraidLane::Failed { colors } => {
+				BraidLane::Failed { from, to } => {
 					push_hitch_diamond(
 						&braid_pts,
 						[None; 3],
 						[None; 3],
-						colors,
+						from,
+						to,
 						hitch_r,
 						stripe_off,
 						width,
@@ -290,7 +292,8 @@ fn push_hitch_diamond(
 	pts: &[[f64; 2]],
 	from: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
 	to: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
-	braid: [Option<crate::game::TileColor>; 3],
+	from_braid: [Option<crate::game::TileColor>; 3],
+	to_braid: [Option<crate::game::TileColor>; 3],
 	hitch_r: f64,
 	stripe_off: f64,
 	width: f64,
@@ -311,20 +314,23 @@ fn push_hitch_diamond(
 	let to_path = visual::diamond_to_path(&to_pts, &diamond);
 	let amp = visual::hitch_braid_amp(braid_amp, hitch_r);
 	let braid_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
-	let mix = visual::braid_strand_count(braid) >= 2;
-	if mix {
+	let from_weave = visual::braid_strand_count(from_braid) >= 2;
+	let to_weave = visual::braid_strand_count(to_braid) >= 2;
+	if from_weave {
 		push_hitch_braid(
 			&from_path,
-			braid,
+			from_braid,
 			amp,
 			visual::braid_turns_along(&from_path, scale),
 			braid_w,
 			back,
 			front,
 		);
+	}
+	if to_weave {
 		push_hitch_braid(
 			&to_path,
-			braid,
+			to_braid,
 			amp,
 			visual::braid_turns_along(&to_path, scale),
 			braid_w,
@@ -332,6 +338,7 @@ fn push_hitch_diamond(
 			front,
 		);
 	}
+	let mix = from_weave || to_weave;
 	push_hitch_half(&from_path, from, stripe_off, width, 1.0, mix, amp, braid_w, back);
 	push_hitch_half(&to_path, to, stripe_off, width, -1.0, mix, amp, braid_w, back);
 }
@@ -1209,7 +1216,44 @@ mod tests {
 				1,
 			),
 			dir.join("lane_braid_failed.png"),
-			"failed braid lane: union weave with a midpoint diamond",
+			"failed braid: each side weaves its own colors into a midpoint diamond",
+			48.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+				1,
+				&[(TileColor::Blue, RingType::Normal)],
+				1,
+			),
+			dir.join("lane_braid_failed_one_side.png"),
+			"one-sided failed braid: only that braid reaches the diamond",
+			48.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+				1,
+				&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+				1,
+			),
+			dir.join("lane_braid_failed_both.png"),
+			"both-sided failed braids: orange+green meets blue+teal at the diamond",
+			48.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[
+					(TileColor::Orange, RingType::Braid),
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Zag),
+				],
+				1,
+				&[(TileColor::Blue, RingType::Normal), (TileColor::Teal, RingType::Normal)],
+				1,
+			),
+			dir.join("lane_braid_failed_plus_lanes.png"),
+			"failed braid plus normal match and zag lanes",
 			48.0,
 		);
 	}

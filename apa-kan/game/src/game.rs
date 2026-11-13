@@ -1017,20 +1017,24 @@ impl ZagMismatchCount {
 
 /// Failed-braid mismatch on an edge where at least one tile has a braid and
 /// none is fulfilled. Default [`Self::One`] is a single +1 for the edge.
-/// [`Self::Weight`] is the planned variant: the mismatch equals the largest
-/// braid's slot count (2 or 3), not 1.
+/// [`Self::Weight`] is the largest braid's slot count (2 or 3).
+/// [`Self::Sum`] adds every braid's slot count on both sides (2+3 = 5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BraidFailMismatch {
 	One,
 	Weight,
+	Sum,
 }
 
 impl BraidFailMismatch {
 	pub fn parse(s: &str) -> Result<Self, String> {
 		match s.to_ascii_lowercase().replace('_', "-").as_str() {
 			"one" | "1" | "unit" => Ok(Self::One),
-			"weight" | "full" | "braid-weight" => Ok(Self::Weight),
-			other => Err(format!("unknown braid-fail-mismatch '{other}' (expected one|weight)")),
+			"weight" | "full" | "braid-weight" | "max" => Ok(Self::Weight),
+			"sum" | "threads" | "all" => Ok(Self::Sum),
+			other => {
+				Err(format!("unknown braid-fail-mismatch '{other}' (expected one|weight|sum)"))
+			}
 		}
 	}
 
@@ -1038,14 +1042,18 @@ impl BraidFailMismatch {
 		match self {
 			Self::One => "one",
 			Self::Weight => "weight",
+			Self::Sum => "sum",
 		}
 	}
 
 	/// Mismatch the braid channel applies when no braid on `a`–`b` is fulfilled.
 	pub fn cost(self, a: Tile, b: Tile) -> i32 {
+		let a_n = a.braid_ring_count();
+		let b_n = b.braid_ring_count();
 		match self {
 			Self::One => 1,
-			Self::Weight => i32::from(a.braid_ring_count().max(b.braid_ring_count()).max(1)),
+			Self::Weight => i32::from(a_n.max(b_n).max(1)),
+			Self::Sum => i32::from(a_n) + i32::from(b_n),
 		}
 	}
 }
@@ -1242,7 +1250,8 @@ pub struct RuleSet {
 	pub zag_mismatch: ZagMismatchCount,
 	/// Failed-braid channel mismatch. Default [`BraidFailMismatch::One`]:
 	/// exactly +1 for the edge. [`BraidFailMismatch::Weight`] uses the
-	/// braid's slot count (planned benchmark variant).
+	/// largest braid's slot count. [`BraidFailMismatch::Sum`] adds every
+	/// braid's slot count on both sides.
 	pub braid_fail_mismatch: BraidFailMismatch,
 }
 
@@ -6120,6 +6129,49 @@ mod tests {
 		);
 		let miss = game.alloc_rings(Player::Two, &[TileColor::Teal], 1, 1);
 		assert_eq!(game.edge_channels(size3, miss).braid_mismatch, 3);
+	}
+
+	#[test]
+	fn failed_braid_sum_variant_adds_every_braid_on_the_edge() {
+		let mut rules = RuleSet::default();
+		rules.braid_fail_mismatch = BraidFailMismatch::Sum;
+		let mut game = Game::empty(rules);
+		let two = orange_green_braid(&mut game, Player::One);
+		let miss = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(game.edge_channels(two, miss).braid_mismatch, 2, "lone 2-braid is +2");
+		let three = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Braid),
+			],
+			1,
+			1,
+		);
+		let teal = game.alloc_rings(Player::Two, &[TileColor::Teal], 1, 1);
+		assert_eq!(game.edge_channels(three, teal).braid_mismatch, 3, "lone 3-braid is +3");
+		let other_two = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_eq!(
+			game.edge_channels(two, other_two).braid_mismatch,
+			4,
+			"2-braid vs 2-braid is +4"
+		);
+		assert_eq!(
+			game.edge_channels(three, other_two).braid_mismatch,
+			5,
+			"2-braid vs 3-braid is +5"
+		);
+		assert_eq!(game.edge_channels(three, other_two), game.edge_channels(other_two, three));
+		assert_eq!(
+			game.edge_channels(two, miss).braid_mismatch,
+			BraidFailMismatch::Sum.cost(two, miss)
+		);
 	}
 
 	#[test]

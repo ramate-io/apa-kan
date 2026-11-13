@@ -359,7 +359,7 @@ pub fn usage() -> &'static str {
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
-	   --braid-fail-mismatch <one|weight>         Failed-braid mismatch (default: one)\n\
+	   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -508,7 +508,9 @@ mod tests {
 		assert_eq!(one.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::One);
 		let weight = GameConfig::parse(["--braid-fail-mismatch", "weight"]).unwrap();
 		assert_eq!(weight.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::Weight);
-		let err = GameConfig::parse(["--braid-fail-mismatch", "sum"]).unwrap_err();
+		let sum = GameConfig::parse(["--braid-fail-mismatch", "sum"]).unwrap();
+		assert_eq!(sum.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::Sum);
+		let err = GameConfig::parse(["--braid-fail-mismatch", "product"]).unwrap_err();
 		assert!(err.contains("braid-fail-mismatch"));
 	}
 

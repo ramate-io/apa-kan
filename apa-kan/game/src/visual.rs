@@ -167,10 +167,14 @@ pub struct ArcPaint {
 
 /// Braid lane: a fulfilled (or one-ended potential) weave, or a failed braid
 /// whose threads wrap a midpoint diamond — analogous to a normal hitch.
+///
+/// Failed halves use **that tile's own** braid colors, not a union: each
+/// side weaves toward the middle and they meet at the diamond. A missing
+/// braid on one side leaves that half empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BraidLane {
 	Weave { colors: [Option<TileColor>; 3] },
-	Failed { colors: [Option<TileColor>; 3] },
+	Failed { from: [Option<TileColor>; 3], to: [Option<TileColor>; 3] },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,9 +272,9 @@ impl ArcPaint {
 			.with_braid(BraidLane::Weave { colors })
 	}
 
-	pub fn failed_braid(colors: [Option<TileColor>; 3]) -> Self {
+	pub fn failed_braid(from: [Option<TileColor>; 3], to: [Option<TileColor>; 3]) -> Self {
 		Self::with_sides(ArcBody::Hidden, Self::no_zags(), Self::no_zags())
-			.with_braid(BraidLane::Failed { colors })
+			.with_braid(BraidLane::Failed { from, to })
 	}
 
 	pub fn zag_count(self) -> usize {
@@ -313,23 +317,13 @@ pub fn matched_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 	out
 }
 
-/// Multiset union of braid slot colors on the edge, capped at 3 threads.
-pub fn union_braid_colors(a: Tile, b: Tile) -> [Option<TileColor>; 3] {
-	let mut out = [None; 3];
-	let mut n = 0usize;
-	for t in [a, b] {
-		for c in t.braid_colors() {
-			let Some(c) = c else {
-				continue;
-			};
-			if n >= 3 {
-				break;
-			}
-			out[n] = Some(c);
-			n += 1;
-		}
+/// This tile's braid-lane threads, or empty when it has no 2-/3-slot braid.
+pub fn side_braid_colors(tile: Tile) -> [Option<TileColor>; 3] {
+	if tile.braid_ring_count() >= 2 {
+		tile.braid_colors()
+	} else {
+		[None; 3]
 	}
-	out
 }
 
 /// Parallel-lane offsets for the fixed order normal, zag, braid.
@@ -525,7 +519,7 @@ fn two_ended(a: Tile, b: Tile, mode: ZagMismatchCount) -> ArcPaint {
 	let braid = if let Some((tile, _)) = selected_braid(a, b) {
 		Some(BraidLane::Weave { colors: tile.braid_colors() })
 	} else if a.braid_ring_count() >= 2 || b.braid_ring_count() >= 2 {
-		Some(BraidLane::Failed { colors: union_braid_colors(a, b) })
+		Some(BraidLane::Failed { from: side_braid_colors(a), to: side_braid_colors(b) })
 	} else {
 		None
 	};
@@ -2445,9 +2439,10 @@ mod tests {
 		assert_eq!(
 			hitch.braid,
 			Some(BraidLane::Failed {
-				colors: [Some(TileColor::Orange), Some(TileColor::Green), None]
+				from: [Some(TileColor::Orange), Some(TileColor::Green), None],
+				to: [None; 3],
 			}),
-			"unsatisfied braid is its own diamond-weave lane"
+			"one-sided fail weaves only the braid's own colors up to the diamond"
 		);
 		let one_ended = arc_paint(Some(braid), None);
 		assert_eq!(one_ended.body, ArcBody::Hidden);
@@ -2481,8 +2476,24 @@ mod tests {
 		assert_eq!(
 			mixed_paint.braid,
 			Some(BraidLane::Failed {
-				colors: [Some(TileColor::Orange), Some(TileColor::Green), None]
+				from: [Some(TileColor::Orange), Some(TileColor::Green), None],
+				to: [None; 3],
 			})
+		);
+		let both_fail = Tile::with_typed_rings(
+			10,
+			Player::Two,
+			&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_eq!(
+			arc_paint(Some(braid), Some(both_fail)).braid,
+			Some(BraidLane::Failed {
+				from: [Some(TileColor::Orange), Some(TileColor::Green), None],
+				to: [Some(TileColor::Blue), Some(TileColor::Teal), None],
+			}),
+			"each side weaves only its own braid colors; they meet at the diamond"
 		);
 		let braid_zag = Tile::with_typed_rings(
 			4,
