@@ -448,8 +448,8 @@ impl Tile {
 		m
 	}
 
-	/// How many live rings of `color`, any type. Braid satisfaction reads this
-	/// on the neighbor.
+	/// How many live **rings** of `color`, any type. Braid satisfaction reads
+	/// this on the neighbor. Tile weight does not add to the count.
 	pub fn color_count(self, color: TileColor) -> u8 {
 		self.ring_colors().iter().filter(|&&c| c == color).count() as u8
 	}
@@ -515,9 +515,11 @@ impl Tile {
 		TileColor::ALL.iter().map(|&c| self.zag_hits_of_color(target, c)).sum()
 	}
 
-	/// This tile's braid is satisfied when `other`'s facing color **counts**
-	/// (any ring types) cover every color in the braid. Size is the braid's
-	/// slot count (2 or 3), not extra weight strokes.
+	/// This tile's braid is satisfied when `other`'s facing **ring** color
+	/// counts (any ring types) cover every color in the braid. Each ring
+	/// counts as 1; tile `weight` is overwhelm only and does not add rings.
+	/// Size is the braid's slot count (2 or 3). An orange+orange braid needs
+	/// two orange rings on the neighbor.
 	pub fn braid_fulfilled_by(self, other: Tile) -> Option<u8> {
 		let size = self.braid_ring_count();
 		if size < 2 {
@@ -5415,6 +5417,15 @@ mod tests {
 			game.edge_score(braid, normal_and_zag),
 			(2, 1),
 			"zag orange still counts toward the braid; the jag also mismatches"
+		);
+		let weight_three = game.alloc_rings(Player::Two, &[TileColor::Orange], 3, 1);
+		assert_eq!(weight_three.n_rings, 1, "tile weight is not extra rings");
+		assert_eq!(weight_three.color_count(TileColor::Orange), 1);
+		assert_eq!(weight_three.ring_strokes(), 3, "extra concentric copies are visual only");
+		assert_eq!(
+			game.edge_score(braid, weight_three),
+			(0, 1),
+			"a weight-3 single orange ring cannot cover orange+orange; two orange rings are required"
 		);
 	}
 

@@ -724,12 +724,18 @@ fn spawn_arc(
 					},
 					hitch_r,
 				);
-				let turns = visual::braid_turns(arc);
 				let braid_w = width * visual::BRAID_STRAND_WIDTH_SCALE;
 				let from_mix = visual::braid_strand_count(from_braid) >= 2;
 				let to_mix = visual::braid_strand_count(to_braid) >= 2;
 				spawn_hitch_braid(
-					commands, meshes, materials, &from_path, from_braid, amp, turns, braid_w,
+					commands,
+					meshes,
+					materials,
+					&from_path,
+					from_braid,
+					amp,
+					visual::braid_turns_along(&from_path, layout.scale),
+					braid_w,
 				);
 				spawn_hitch_half(
 					commands,
@@ -745,7 +751,14 @@ fn spawn_arc(
 					f64::from(braid_w),
 				);
 				spawn_hitch_braid(
-					commands, meshes, materials, &to_path, to_braid, amp, turns, braid_w,
+					commands,
+					meshes,
+					materials,
+					&to_path,
+					to_braid,
+					amp,
+					visual::braid_turns_along(&to_path, layout.scale),
+					braid_w,
 				);
 				spawn_hitch_half(
 					commands,

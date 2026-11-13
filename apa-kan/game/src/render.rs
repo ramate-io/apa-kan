@@ -98,18 +98,29 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 						},
 						hitch_r,
 					);
-					let turns = visual::braid_turns(arc);
 					let braid_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
 					let from_mix = visual::braid_strand_count(from_braid) >= 2;
 					let to_mix = visual::braid_strand_count(to_braid) >= 2;
 					push_hitch_braid(
-						&from_path, from_braid, amp, turns, braid_w, &mut back, &mut front,
+						&from_path,
+						from_braid,
+						amp,
+						visual::braid_turns_along(&from_path, layout.scale),
+						braid_w,
+						&mut back,
+						&mut front,
 					);
 					push_hitch_half(
 						&from_path, from, stripe_off, width, 1.0, from_mix, amp, braid_w, &mut back,
 					);
 					push_hitch_braid(
-						&to_path, to_braid, amp, turns, braid_w, &mut back, &mut front,
+						&to_path,
+						to_braid,
+						amp,
+						visual::braid_turns_along(&to_path, layout.scale),
+						braid_w,
+						&mut back,
+						&mut front,
 					);
 					push_hitch_half(
 						&to_path, to, stripe_off, width, -1.0, to_mix, amp, braid_w, &mut back,
