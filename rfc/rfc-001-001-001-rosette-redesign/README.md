@@ -36,23 +36,23 @@ Each tile has:
 
 - **Owner** as a light/dark shade: P1 light, P2 dark (fill).
 - **Rings** (1–3 distinct colors). A **normal** ring indicates a color the tile can match (in and out). A **zag** ring never matches. A zag on either tile whose color the other tile holds (normal or zag) is a mismatch on the **edge** between them; both tiles take that edge count (`zag_mismatch`, default `sum`; `max` takes the per-color max of hitting zag strokes). Generation still draws distinct colors as in the six-color tree, then each ring independently becomes a zag with chance 1/7 (`zag_numer / 7`; `--zag-chance 0` / `--zags off` disables). You cannot have both a normal and a zag of the same color on a generated tile (one ring per color; stacked same-color zags exist only as test fixtures so SUM can add strokes and MAX can take a per-color max). A **braid** occupies 2 or 3 ring slots (1–3 colors; single-color braids allowed) and is satisfied when the neighbor’s **ring** color counts cover it (match weight = braid size; each ring counts 1, tile weight does not add rings). An orange+orange braid needs two orange rings on the neighbor. Unsatisfied braids still hitch, but keep the threaded weave mixed into the diamond with leftover highway colors. One-ended braids draw the would-be weave. Per edge, take the largest fulfilled braid (no summing). A jag and a braid on the same edge both score. Satisfied braids draw the old conflict weave (one thread per slot). `--braid-chance` / `--braids` default 1/7. Bead / antipodal ring types are not implemented. Colors: green, blue, orange (weight 81 each), lavender-pink, teal (9 each), maroon (1). Ring 1 always exists. Ring 2: weight 7 same as ring 1, weight 1 any color from the same tree (a redraw of ring 1 is not a new ring). Ring 3: same rule relative to the last existing ring. `--max-rings` caps this at 1–3 (default 3).
-- **Weight** `w ∈ {1,2,3}` — overwhelm match base (and hop compare when graph hops are on). Pass-through uses ring count, not weight. Drawn as concentric strokes; extra colors take additional strokes when `n_rings > 1`.
+- **Weight** is the live ring-slot count (`n_rings`, braid slots included). Overwhelm match base and hop compare use that count. There is no separate hidden weight, and painters do not draw extra concentric copies of the last ring.
 - **Dots** `d ∈ {1,2,3}` drawn as 1–3 dots (MOVE length).
 
-Weight and dots are independent of each other and of the ring colors.
+Dots are independent of ring colors. Weight is not: it is exactly the number of rings.
 
 ### Bench and bag (`RuleSet` options)
 
 Default:
 
-- Each player has a **bag** of **`bag_size` independently sampled tiles** (default 11; CLI `--bag-size <1..27>`). Ring process × uniform weight 1–3 × uniform dots 1–3, shuffled with a seed. The old 27 unique 3-color kinds no longer fit the six-color / multi-ring space. `bag_size` is the total deck: opening deal plus remaining capture-draws. `--bag-size 27` restores the historical full bag.
+- Each player has a **bag** of **`bag_size` independently sampled tiles** (default 11; CLI `--bag-size <1..27>`). Ring process × uniform dots 1–3, shuffled with a seed. Weight is the resulting ring-slot count. The old 27 unique 3-color kinds no longer fit the six-color / multi-ring space. `bag_size` is the total deck: opening deal plus remaining capture-draws. `--bag-size 27` restores the historical full bag.
 - **`identical_bags` (default true):** both players get the same shuffle (new tile ids / owners), for fairness.
 - Opening **deal of `starting_bench_size` (default 7)** from bag onto the bench. CLI: `--starting-bench <1..27>` (must be `<= bag_size`). A deal of 7 from the default 11-tile bag leaves **4** in the bag; `--bag-size 13` leaves 6, `--bag-size 27` leaves 20. The same N is the opening **capture-budget stack** (N blank tokens). Insufficient-tiles still counts `board + bench` only, so starting at 7 begins further above the 5-tile floor.
 - **Usable budget** is `min(tokens in the stack, tiles on the bench)`. Tokens beyond the bench are still earned and still shown (the stack fades that surplus) but do not count as budget for ADD legality, lockout, low-value, or eval. A later bag draw onto the bench re-enables surplus tokens, one per drawn tile.
 - **ADD** places one concrete bench tile onto an empty spawn (not an abstract “any kind” picker). Any remaining bench tile may be chosen at any time; the only ADD gate is **usable budget > 0** (plus an empty spawn). ADD spends 1 budget token (popped from the front of the stack, so opening blanks spend first).
 - **Capture budget:** each opponent capture on your turn earns +1 token. Capturing your **own** tile (self-capture already happens under simultaneous overwhelm; it is not a new capture rule) also earns +1 when `self_capture_budget` is on (default; CLI `--self-capture-budget on|off`). The captured tile is pushed onto the budget stack only when it earns a token. Opponent tiles removed on a **MOVE** still draw one bag tile onto the bench (`capture_draw_on_move`); ADD captures still do not draw. Empty bag → the draw is skipped. Self-capture does not draw; rotating in a new tile needs a remaining bench tile (opening remainder or a later opponent-MOVE draw).
 - Remaining bag tiles do **not** keep a player alive.
-- **Scenarios** (`--scenario <name|path>`, TOML under `apa-kan/game/scenarios/`): replace the default deal with a named or file-backed deck. Builtins: `default`/`same` (`generative = true`, mirrored `bag_size`-tile sample, default 11); `independent` (each player sampled separately); `complementary` (P1 green+orange, P2 blue+orange, 18 one-ring tiles, mirrored weight/dot order); `complementary-swapped` (exclusive colors flipped). Optional per-player `colors` / `tiles` (`color` or `colors = [...]`) / `bench`. The app and `apa-kan-bench` share the loader. Generative scenarios honor `--bag-size`.
+- **Scenarios** (`--scenario <name|path>`, TOML under `apa-kan/game/scenarios/`): replace the default deal with a named or file-backed deck. Builtins: `default`/`same` (`generative = true`, mirrored `bag_size`-tile sample, default 11); `independent` (each player sampled separately); `complementary` (P1 green+orange, P2 blue+orange, 18 one-ring tiles, mirrored dots order; weight is always 1); `complementary-swapped` (exclusive colors flipped). Optional per-player `colors` / `tiles` (`color` or `colors = [...]`) / `bench`. The app and `apa-kan-bench` share the loader. Generative scenarios honor `--bag-size`. TOML `weight` is accepted and ignored; tile weight is the ring-slot count.
 
 Options: `starting_bench_size`, `bag_size`, `self_capture_budget`, `identical_bags`, `bag_one_of_each_kind`, `capture_draw_on_move`, plus scenario files.
 
@@ -66,13 +66,13 @@ Evaluated **board-wide, simultaneously**, after every action.
   - **`max`:** for each color, the edge count for that color is the **max**, over the two tiles, of how many of that tile's zag strokes of that color hit the other (the other holds that color on any ring). The edge total is the sum of those per-color maxima. Orange zag vs orange zag = 1. 3 blue vs 3 blue = 3. 2 orange vs 1 orange = 2. A 2 orange zags (B holds orange) + B 1 green zag (A holds green) = 3.
 - Example: blue normal + orange zag vs the same → 1 blue match and **2** mismatches under `sum` (both orange zags hit), or **1** under `max`. Two orange zags on U vs T carrying orange → 2 under both `sum` and `max`.
 - Blue-normal vs orange-normal + green-zag is a mismatch on the normals (blue vs orange); the green zag does not hit blue. Green-zag vs orange-normal + two green normals is a one-sided zag hit (both tiles take 1). Blue-normal + orange-zag vs green-normal + orange-normal is a zag hit on the same edge as a latent normal conflict; the zag count replaces the ordinary +1.
-- `matches = own weight + (number of matching adjacent tiles, either owner)`
+- `matches = own ring count + (number of matching adjacent tiles, either owner)`
 - Removed iff `mismatches >= matches`
-- A one-ring zag is inert in isolation. On contact with a tile that carries that color it never matches, so a weight-1 zag is captured under the ordinary rule; a heavier color-carrier takes the zag hit and may survive.
+- A one-ring zag is inert in isolation. On contact with a tile that carries that color it never matches, so a 1-ring zag is captured under the ordinary rule; a 3-ring color-carrier takes the zag hit and may survive.
 
 The designer example: a **double green** next to two oranges has matches 2 / mismatches 2 and is overwhelmed; a green neighbor makes matches 3, so it survives. Adjacent same-color tiles of the opponent still count as matches.
 
-**`mismatch_uses_neighbor_weight` (default false):** if on, each mismatch adds the neighbor’s weight instead of 1.
+**`mismatch_uses_neighbor_weight` (default false):** if on, each mismatch adds the neighbor’s ring count instead of 1.
 
 ### Actions
 
@@ -93,7 +93,7 @@ One action per turn by default (`actions_per_turn`, default 1):
   - `Both` — node uniqueness and edge uniqueness.
 - **Empty step:** walk along any unused adjacency (a generating-circle arc) to a neighboring empty node. Cost 1. Inner↔center still has two distinct arcs.
 - **Counted pass-through (default, `counted_pass_through` on):** hops are disabled. Each step is still to an adjacent node and costs 1. An occupied tile may be **passed through** (never landed on) iff it **shares a normal ring color** with the mover and its ring count compares with `pass_through_ring_cmp`. Default **`ge`**: occupant `n_rings >=` mover. **`gt`** is strict (`>`), so a 3-ring tile can never pass through (max rings is 3). Zag colors do not enable pass-through. Passing through counts as one of the exact-`d` steps (a two-tile occupied run plus a landing needs `d=3`). `NoEdgeRevisit` still applies. Capture/overwhelm resolves after landing as usual. CLI: `--counted-pass-through on|off`, `--graph-hops on|off` (alias: hops on ⇔ pass-through off), `--pass-through-ring-cmp ge|gt`.
-- **Hop (optional, `--graph-hops on` / `counted_pass_through` off, `color_restricted_hops` on):** if a neighboring node is occupied, flood any adjacency through the connected chain of **hoppable** occupied tiles — each must **share a normal ring color** with the mover and compare with `hop_weight_cmp` (default `le`: occupant `<=` mover). The path may change direction at any node, **including the center**. Spend **1 step** to land on any empty node adjacent to that chain. Owner does not matter. Zag colors do not enable hops. Hopped nodes are marked visited; hopped arcs are marked used (`NoEdgeRevisit` still applies). You cannot land on an occupied node. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`.
+- **Hop (optional, `--graph-hops on` / `counted_pass_through` off, `color_restricted_hops` on):** if a neighboring node is occupied, flood any adjacency through the connected chain of **hoppable** occupied tiles — each must **share a normal ring color** with the mover and compare with `hop_weight_cmp` (default `le`: occupant ring count `<=` mover). The path may change direction at any node, **including the center**. Spend **1 step** to land on any empty node adjacent to that chain. Owner does not matter. Zag colors do not enable hops. Hopped nodes are marked visited; hopped arcs are marked used (`NoEdgeRevisit` still applies). You cannot land on an occupied node. With `color_restricted_hops` off, hopped tiles may be any color and `hop_requires_ge_weight` (default true) requires occupant rings `>=` mover rings.
 
 A hop over a chain is still one step of the exact-`d` MOVE. Empty walks, pass-throughs, and hops all follow unique neighbor adjacency; the two inner↔center petal arcs remain distinct unused-edge choices.
 
@@ -171,11 +171,11 @@ CLI: `--color-restricted-hops <on|off>` `--hop-weight-cmp <lt|le>` `--graph-hops
 **Interpretation** of the designer note *“If the weight in your color is less than, you can traverse.”* When this option is **on**, a hop may only cross a connected chain of tiles that are:
 
 1. sharing a **normal** ring color with the mover (either owner), and
-2. whose weight compares to the mover’s weight with `hop_weight_cmp`.
+2. whose ring count compares to the mover’s ring count with `hop_weight_cmp`.
 
-Default comparison is **`Le`** (occupant weight **less than or equal to** the mover). `Lt` is the stricter option (occupant **strictly less than** the mover). Owner still does not matter. Other colors cannot be hopped at all.
+Default comparison is **`Le`** (occupant rings **less than or equal to** the mover). `Lt` is the stricter option (occupant **strictly less than** the mover). Owner still does not matter. Other colors cannot be hopped at all.
 
-When this option is **off**, the legacy rule applies: hopped tiles may be any color/owner, and `hop_requires_ge_weight` (default true) requires `occupant.weight >= mover.weight`. The color-restricted regime **overrides** `hop_requires_ge_weight`.
+When this option is **off**, the legacy rule applies: hopped tiles may be any color/owner, and `hop_requires_ge_weight` (default true) requires occupant rings `>=` mover rings. The color-restricted regime **overrides** `hop_requires_ge_weight`.
 
 This is the opposite inequality of the legacy hop (`color_restricted_hops` off: hop equal-or-heavier of any color; on: hop equal-or-lighter of your color only, or strictly lighter with `lt`).
 

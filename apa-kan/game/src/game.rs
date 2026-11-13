@@ -300,12 +300,16 @@ pub struct Tile {
 	/// Parallel to [`Self::rings`]: normal, zag (jag), or braid. At most one
 	/// braid group per tile, occupying 2 or 3 slots.
 	pub ring_type: [RingType; 3],
+	/// Overwhelm match base and hop compare. Always equal to [`Self::n_rings`]
+	/// (braid slots count). Constructor `weight` arguments are ignored.
 	pub weight: u8,
 	pub dots: u8,
 }
 
-/// Kind space: color-state (3^6) × weight × dots.
-pub const KIND_COUNT: usize = COLOR_STATES * 9;
+/// Kind space: color-state × dots. Weight is the ring-slot count, already
+/// encoded in [`Tile::color_state`].
+pub const KIND_DOTS: usize = 3;
+pub const KIND_COUNT: usize = COLOR_STATES * KIND_DOTS;
 
 impl Tile {
 	pub fn mono(id: u32, owner: Player, color: TileColor, weight: u8, dots: u8) -> Self {
@@ -359,7 +363,8 @@ impl Tile {
 		if n == 0 {
 			n = 1;
 		}
-		Self { id, owner, rings, n_rings: n, ring_type, weight, dots }
+		let _ = weight;
+		Self { id, owner, rings, n_rings: n, ring_type, weight: n, dots }
 	}
 
 	pub fn ring_colors(&self) -> &[TileColor] {
@@ -402,11 +407,10 @@ impl Tile {
 			.any(|(i, &c)| c == color && self.ring_type[i].is_normal())
 	}
 
-	/// Concentric strokes drawn for this tile: one per ring, extra weight
-	/// strokes reuse the last ring (so a weight-3 one-ring zag shows three
-	/// zag rings).
+	/// Concentric strokes drawn for this tile: one per live ring slot
+	/// (braid slots included). There are no extra copies of the last ring.
 	pub fn ring_strokes(self) -> u8 {
-		self.weight.max(self.n_rings).max(1)
+		self.n_rings.max(1)
 	}
 
 	fn stroke_idx(self, k: u8) -> usize {
@@ -449,7 +453,7 @@ impl Tile {
 	}
 
 	/// How many live **rings** of `color`, any type. Braid satisfaction reads
-	/// this on the neighbor. Tile weight does not add to the count.
+	/// this on the neighbor. Each ring counts as 1.
 	pub fn color_count(self, color: TileColor) -> u8 {
 		self.ring_colors().iter().filter(|&&c| c == color).count() as u8
 	}
@@ -495,31 +499,29 @@ impl Tile {
 		(self.normal_mask() & other.normal_mask()) != 0
 	}
 
-	/// How many of this tile's zag **strokes** of `color` hit `target`
-	/// (`target` holds that color on any ring). Extra weight strokes of a zag
-	/// last-ring count, matching the concentric rings that are drawn.
+	/// How many of this tile's zag **rings** of `color` hit `target`
+	/// (`target` holds that color on any ring). Counts live ring slots only.
 	pub fn zag_hits_of_color(self, target: Tile, color: TileColor) -> i32 {
 		if !target.has_color(color) {
 			return 0;
 		}
-		(0..self.ring_strokes())
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
 			.filter(|&k| self.stroke_is_zag(k) && self.stroke_color(k) == color)
 			.count() as i32
 	}
 
-	/// How many of this tile's zag **strokes** have their color on `target`
-	/// (normal, zag, or braid). Extra weight strokes of a zag last-ring count,
-	/// matching the concentric rings that are drawn. Own zags do not mismatch
-	/// their owner. A zag whose color `target` lacks is absent (not a hit).
+	/// How many of this tile's zag **rings** have their color on `target`
+	/// (normal, zag, or braid). Counts live ring slots only. Own zags do not
+	/// mismatch their owner. A zag whose color `target` lacks is absent (not
+	/// a hit).
 	pub fn zag_hits_on(self, target: Tile) -> i32 {
 		TileColor::ALL.iter().map(|&c| self.zag_hits_of_color(target, c)).sum()
 	}
 
 	/// This tile's braid is satisfied when `other`'s facing **ring** color
 	/// counts (any ring types) cover every color in the braid. Each ring
-	/// counts as 1; tile `weight` is overwhelm only and does not add rings.
-	/// Size is the braid's slot count (2 or 3). An orange+orange braid needs
-	/// two orange rings on the neighbor.
+	/// counts as 1. Size is the braid's slot count (2 or 3). An orange+orange
+	/// braid needs two orange rings on the neighbor.
 	pub fn braid_fulfilled_by(self, other: Tile) -> Option<u8> {
 		let size = self.braid_ring_count();
 		if size < 2 {
@@ -561,11 +563,10 @@ impl Tile {
 		slot_state(self.rings, self.ring_type, self.n_rings)
 	}
 
-	/// `color_state * 9 + (weight-1)*3 + (dots-1)`.
+	/// `color_state * KIND_DOTS + (dots-1)`.
 	pub fn kind_index(self) -> usize {
-		let w = (self.weight.clamp(1, 3) - 1) as usize;
 		let d = (self.dots.clamp(1, 3) - 1) as usize;
-		self.color_state() * 9 + w * 3 + d
+		self.color_state() * KIND_DOTS + d
 	}
 
 	/// How many of this tile's live rings are zags.
@@ -767,7 +768,7 @@ pub fn decode_color_state(mut state: usize) -> ColorStateView {
 	view
 }
 
-/// `(normal_mask, zag_mask)` from a `kind / 9` color-state.
+/// `(normal_mask, zag_mask)` from a `kind / KIND_DOTS` color-state.
 pub fn color_state_masks(state: usize) -> (u8, u8) {
 	let view = decode_color_state(state);
 	(view.normal, view.zag)
@@ -868,11 +869,11 @@ impl PathConstraint {
 	}
 }
 
-/// Weight comparison used when [`RuleSet::color_restricted_hops`] is on.
+/// Ring-count comparison used when [`RuleSet::color_restricted_hops`] is on.
 ///
 /// Interpretation of the designer's "if the weight in your color is less than,
 /// you can traverse": hop only over the mover's color, comparing occupant
-/// weight to mover weight with this operator. Default is `<=` (`Le`).
+/// ring count to mover ring count with this operator. Default is `<=` (`Le`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HopWeightCmp {
 	Lt,
@@ -1079,7 +1080,7 @@ pub struct RuleSet {
 	pub braid_numer: u8,
 	/// On a MOVE, each removed opponent tile draws one bag tile onto the mover's bench.
 	pub capture_draw_on_move: bool,
-	/// If true, a mismatch adds the neighbor's weight instead of 1. Default false.
+	/// If true, a mismatch adds the neighbor's ring count instead of 1. Default false.
 	pub mismatch_uses_neighbor_weight: bool,
 	/// Actions a player may take before the turn passes. Default 1.
 	pub actions_per_turn: u8,
@@ -1089,7 +1090,7 @@ pub struct RuleSet {
 	pub add_only_on_spawns: bool,
 	/// MOVE must consume exactly `dots` steps. Default true.
 	pub move_exact_steps: bool,
-	/// Hopped tiles must have weight >= the mover. Default true.
+	/// Hopped tiles must have ring count >= the mover. Default true.
 	/// Ignored when [`Self::color_restricted_hops`] is on.
 	pub hop_requires_ge_weight: bool,
 	/// If the player to move has no legal ADD or MOVE, they lose immediately
@@ -1107,8 +1108,8 @@ pub struct RuleSet {
 	/// If true, a hop may only cross tiles of the mover's color, compared with
 	/// [`Self::hop_weight_cmp`]. Default true.
 	pub color_restricted_hops: bool,
-	/// Occupant-vs-mover weight comparison used when color-restricted hops are
-	/// on. Default [`HopWeightCmp::Le`] (occupant weight `<=` mover).
+	/// Occupant-vs-mover ring-count comparison used when color-restricted hops
+	/// are on. Default [`HopWeightCmp::Le`] (occupant rings `<=` mover).
 	pub hop_weight_cmp: HopWeightCmp,
 	/// Win by occupying a majority of inner-ring nodes (petal attachments to
 	/// the center; 5 of 8 on the default rosette) for `petal_majority_n`
@@ -2563,7 +2564,7 @@ pub fn sample_tile(
 	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
 	let mut ring_type = sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer);
 	sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
-	let weight = rng.gen_range(1..=3);
+	let weight = n_rings.max(1);
 	let dots = rng.gen_range(1..=3);
 	let id = *next_id;
 	*next_id += 1;
@@ -2655,6 +2656,13 @@ mod tests {
 	}
 	fn put(game: &mut Game, node: NodeId, owner: Player, color: TileColor, weight: u8, dots: u8) {
 		let tile = take(game, owner, color, weight, dots);
+		game.place_tile(node, tile);
+	}
+	fn take_rings(game: &mut Game, owner: Player, colors: &[TileColor], dots: u8) -> Tile {
+		game.alloc_rings(owner, colors, colors.len() as u8, dots)
+	}
+	fn put_rings(game: &mut Game, node: NodeId, owner: Player, colors: &[TileColor], dots: u8) {
+		let tile = take_rings(game, owner, colors, dots);
 		game.place_tile(node, tile);
 	}
 
@@ -2815,16 +2823,22 @@ mod tests {
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		assert!(nbs.len() >= 3);
-		put(&mut game, spawn, Player::One, TileColor::Green, 2, 1);
+		let double = game.alloc_ring_kinds(
+			Player::One,
+			&[(TileColor::Green, false), (TileColor::Green, false)],
+			2,
+			1,
+		);
+		game.place_tile(spawn, double);
 		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
-		put(&mut game, nbs[1], Player::One, TileColor::Orange, 3, 2);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 2);
 		let (m, n) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, n), (2, 2), "own weight 2, two different-color neighbors");
+		assert_eq!((m, n), (2, 2), "own ring count 2, two different-color neighbors");
 		assert!(game.is_overwhelmed(spawn));
 
 		put(&mut game, nbs[2], Player::Two, TileColor::Green, 1, 3);
 		let (m, n) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, n), (3, 2), "double green plus one green neighbor");
+		assert_eq!((m, n), (3, 2), "two green rings plus one green neighbor");
 		assert!(!game.is_overwhelmed(spawn));
 	}
 
@@ -2848,11 +2862,17 @@ mod tests {
 		let mut game = Game::empty(rules);
 		let spawn = game.board().spawns()[2];
 		let nbs = game.board().neighbors(spawn).to_vec();
-		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
-		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
+		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
+		let heavy = game.alloc_rings(
+			Player::Two,
+			&[TileColor::Orange, TileColor::Blue, TileColor::Teal],
+			3,
+			1,
+		);
+		game.place_tile(nbs[0], heavy);
 		let (m, n) = game.tile_score(spawn).unwrap();
-		assert_eq!(m, 3);
-		assert_eq!(n, 3);
+		assert_eq!(m, 1, "own ring count");
+		assert_eq!(n, 3, "mismatch uses neighbor ring count");
 		assert!(game.is_overwhelmed(spawn));
 	}
 
@@ -2960,7 +2980,8 @@ mod tests {
 			(cycle[0], cycle[1], cycle[2])
 		};
 		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
-		put(&mut game, hop_over, Player::Two, TileColor::Orange, 2, 1);
+		let heavier = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Blue], 2, 1);
+		game.place_tile(hop_over, heavier);
 		game.set_current(Player::One);
 		let dests = game.destinations(from);
 		assert!(dests.contains(&land), "d=1 hop over heavier/equal tile to {land}, got {dests:?}");
@@ -2968,10 +2989,16 @@ mod tests {
 		game.clear_tile(hop_over);
 		put(&mut game, hop_over, Player::Two, TileColor::Orange, 1, 1);
 		game.clear_tile(from);
-		put(&mut game, from, Player::One, TileColor::Green, 3, 1);
+		let heavy_mover = game.alloc_rings(
+			Player::One,
+			&[TileColor::Green, TileColor::Blue, TileColor::Teal],
+			3,
+			1,
+		);
+		game.place_tile(from, heavy_mover);
 		game.set_current(Player::One);
 		let dests = game.destinations(from);
-		assert!(!dests.contains(&land), "cannot hop a lighter tile");
+		assert!(!dests.contains(&land), "cannot hop a lighter (fewer-ring) tile");
 	}
 
 	#[test]
@@ -2986,9 +3013,17 @@ mod tests {
 		let a = cycle[1];
 		let c = cycle[2];
 		let land = cycle[3];
-		put(&mut game, from, Player::One, TileColor::Blue, 2, 1);
-		put(&mut game, a, Player::Two, TileColor::Green, 2, 1);
-		put(&mut game, c, Player::One, TileColor::Orange, 3, 1);
+		let mover = game.alloc_rings(Player::One, &[TileColor::Blue, TileColor::Teal], 2, 1);
+		game.place_tile(from, mover);
+		let hop_a = game.alloc_rings(Player::Two, &[TileColor::Green, TileColor::Maroon], 2, 1);
+		game.place_tile(a, hop_a);
+		let hop_c = game.alloc_rings(
+			Player::One,
+			&[TileColor::Orange, TileColor::LavenderPink, TileColor::Blue],
+			3,
+			1,
+		);
+		game.place_tile(c, hop_c);
 		game.set_current(Player::One);
 		let dests = game.destinations(from);
 		assert!(dests.contains(&land), "hop the two-tile run to {land}");
@@ -3575,8 +3610,20 @@ mod tests {
 		let center = game.board().center();
 		let inner = inner_ring(&game);
 		let from = inner[0];
-		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
-		put(&mut game, inner[1], Player::One, TileColor::Green, 3, 1);
+		put_rings(
+			&mut game,
+			from,
+			Player::One,
+			&[TileColor::Blue, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put_rings(
+			&mut game,
+			inner[1],
+			Player::One,
+			&[TileColor::Green, TileColor::LavenderPink, TileColor::Orange],
+			1,
+		);
 		{
 			let t = take(&mut game, Player::One, TileColor::Green, 3, 1);
 			game.set_bench(Player::One, vec![t]);
@@ -3646,14 +3693,25 @@ mod tests {
 		let mut game = Game::empty(rules);
 		let inner = game.board().inner_ring().to_vec();
 		for &node in inner.iter().take(5) {
-			put(&mut game, node, Player::One, TileColor::Green, 3, 1);
+			put_rings(
+				&mut game,
+				node,
+				Player::One,
+				&[TileColor::Green, TileColor::Teal, TileColor::Maroon],
+				1,
+			);
 		}
 		{
 			let t = take(&mut game, Player::One, TileColor::Green, 2, 1);
 			game.set_bench(Player::One, vec![t]);
 		}
 		{
-			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
+			let t = take_rings(
+				&mut game,
+				Player::Two,
+				&[TileColor::Orange, TileColor::LavenderPink, TileColor::Blue],
+				1,
+			);
 			game.set_bench(Player::Two, vec![t]);
 		}
 		game.set_current(Player::One);
@@ -4045,9 +4103,20 @@ mod tests {
 		let inner = inner_ring(&game);
 		let a = inner[0];
 		let center = game.board().center();
-		put(&mut game, a, Player::One, TileColor::Blue, 3, 1);
+		put_rings(
+			&mut game,
+			a,
+			Player::One,
+			&[TileColor::Blue, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
 		{
-			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
+			let t = take_rings(
+				&mut game,
+				Player::Two,
+				&[TileColor::Orange, TileColor::LavenderPink, TileColor::Green],
+				1,
+			);
 			game.set_bench(Player::Two, vec![t]);
 		}
 		game.set_current(Player::One);
@@ -4090,13 +4159,24 @@ mod tests {
 			.iter()
 			.find(|n| **n != spawn && !nbs.contains(n))
 			.expect("land has a neighbor away from spawn");
-		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		put_rings(
+			&mut game,
+			from,
+			Player::One,
+			&[TileColor::Blue, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
 		{
 			let t = take(&mut game, Player::One, TileColor::Green, 3, 1);
 			game.set_bench(Player::One, vec![t]);
 		}
 		{
-			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
+			let t = take_rings(
+				&mut game,
+				Player::Two,
+				&[TileColor::Orange, TileColor::LavenderPink, TileColor::Green],
+				1,
+			);
 			game.set_bench(Player::Two, vec![t]);
 		}
 		game.set_current(Player::One);
@@ -4180,8 +4260,18 @@ mod tests {
 		let cycle = b.circle_cycle(0).to_vec();
 		let (from, hop_over, land) = (cycle[0], cycle[1], cycle[2]);
 
-		put(&mut game, from, Player::One, TileColor::Green, 3, 1);
-		put(&mut game, hop_over, Player::Two, TileColor::Orange, 3, 1);
+		let heavy_green = |game: &mut Game, owner: Player| {
+			game.alloc_rings(owner, &[TileColor::Green, TileColor::Blue, TileColor::Teal], 3, 1)
+		};
+		let from_tile = heavy_green(&mut game, Player::One);
+		game.place_tile(from, from_tile);
+		let orange = game.alloc_rings(
+			Player::Two,
+			&[TileColor::Orange, TileColor::LavenderPink, TileColor::Maroon],
+			3,
+			1,
+		);
+		game.place_tile(hop_over, orange);
 		game.set_current(Player::One);
 		assert!(
 			!game.destinations(from).contains(&land),
@@ -4189,10 +4279,11 @@ mod tests {
 		);
 
 		game.clear_tile(hop_over);
-		put(&mut game, hop_over, Player::Two, TileColor::Green, 3, 1);
+		let equal = heavy_green(&mut game, Player::Two);
+		game.place_tile(hop_over, equal);
 		assert!(
 			!game.destinations(from).contains(&land),
-			"equal-weight same color is not < under hop_weight_cmp=Lt"
+			"equal ring-count same color is not < under hop_weight_cmp=Lt"
 		);
 
 		game.clear_tile(hop_over);
@@ -4205,12 +4296,24 @@ mod tests {
 		let mut le_rules = rules;
 		le_rules.hop_weight_cmp = HopWeightCmp::Le;
 		let mut le_game = Game::empty(le_rules);
-		put(&mut le_game, from, Player::One, TileColor::Green, 3, 1);
-		put(&mut le_game, hop_over, Player::Two, TileColor::Green, 3, 1);
+		let le_from = le_game.alloc_rings(
+			Player::One,
+			&[TileColor::Green, TileColor::Blue, TileColor::Teal],
+			3,
+			1,
+		);
+		le_game.place_tile(from, le_from);
+		let le_over = le_game.alloc_rings(
+			Player::Two,
+			&[TileColor::Green, TileColor::Blue, TileColor::Teal],
+			3,
+			1,
+		);
+		le_game.place_tile(hop_over, le_over);
 		le_game.set_current(Player::One);
 		assert!(
 			le_game.destinations(from).contains(&land),
-			"hop_weight_cmp=Le allows equal-weight same color"
+			"hop_weight_cmp=Le allows equal ring-count same color"
 		);
 	}
 
@@ -4341,15 +4444,14 @@ mod tests {
 		use std::collections::HashSet;
 		let mut seen = HashSet::new();
 		for color in TileColor::ALL {
-			for weight in 1..=3 {
-				for dots in 1..=3 {
-					let t = Tile::mono(0, Player::One, color, weight, dots);
-					assert!(t.kind_index() < KIND_COUNT);
-					assert!(seen.insert(t.kind_index()));
-				}
+			for dots in 1..=3 {
+				let t = Tile::mono(0, Player::One, color, 1, dots);
+				assert_eq!(t.weight, 1);
+				assert!(t.kind_index() < KIND_COUNT);
+				assert!(seen.insert(t.kind_index()));
 			}
 		}
-		assert_eq!(seen.len(), TileColor::ALL.len() * 9);
+		assert_eq!(seen.len(), TileColor::ALL.len() * KIND_DOTS);
 		let dual = Tile::with_rings(0, Player::One, &[TileColor::Green, TileColor::Teal], 2, 1);
 		assert!(dual.kind_index() < KIND_COUNT);
 		assert!(seen.insert(dual.kind_index()));
@@ -4374,14 +4476,14 @@ mod tests {
 		let b = game.alloc_rings(Player::Two, &[TileColor::Teal, TileColor::Maroon], 1, 1);
 		game.place_tile(nbs[0], b);
 		let (m, n) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, n), (2, 0), "shared teal is a match");
+		assert_eq!((m, n), (3, 0), "ring count 2 + shared teal");
 		assert!(!game.is_overwhelmed(spawn));
 
 		game.clear_tile(nbs[0]);
 		let c = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
 		game.place_tile(nbs[0], c);
 		let (m, n) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, n), (1, 1), "no shared ring is a mismatch");
+		assert_eq!((m, n), (2, 1), "no shared ring is a mismatch");
 	}
 
 	#[test]
@@ -4459,6 +4561,10 @@ mod tests {
 			.map(|t| (t.color_mask(), t.n_rings, t.zag(), t.weight, t.dots))
 			.collect();
 		assert_eq!(p1, p2);
+		for t in game.bench(Player::One).iter().chain(game.bag(Player::One)) {
+			assert_eq!(t.weight, t.n_rings, "weight is the ring-slot count");
+			assert_eq!(t.ring_strokes(), t.n_rings.max(1));
+		}
 	}
 
 	#[test]
@@ -4497,10 +4603,10 @@ mod tests {
 		game.place_tile(spawn, a);
 		game.place_tile(nb, b);
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, x), (2, 2), "weight 1 + blue match; SUM counts both orange zags");
-		assert!(game.is_overwhelmed(spawn), "SUM 2 >= matches 2");
+		assert_eq!((m, x), (3, 2), "ring count 2 + blue match; SUM counts both orange zags");
+		assert!(!game.is_overwhelmed(spawn), "SUM 2 < matches 3");
 		let (m2, x2) = game.tile_score(nb).unwrap();
-		assert_eq!((m2, x2), (2, 2), "both tiles take the same edge count");
+		assert_eq!((m2, x2), (3, 2), "both tiles take the same edge count");
 	}
 
 	#[test]
@@ -4523,7 +4629,7 @@ mod tests {
 		game.place_tile(spawn, t);
 		game.place_tile(nb, u);
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!(m, 3, "weight 3, orange zag never matches");
+		assert_eq!(m, 2, "ring count 2, orange zag never matches");
 		assert_eq!(x, 2, "two orange zags on U whose color T has");
 		assert_eq!(game.edge_score(t, u), game.edge_score(u, t), "SUM is symmetric");
 	}
@@ -4552,11 +4658,17 @@ mod tests {
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
-		let heavy = game.alloc_rings(Player::Two, &[TileColor::Orange], 3, 1);
+		let heavy = game.alloc_rings(
+			Player::Two,
+			&[TileColor::Orange, TileColor::Blue, TileColor::Green],
+			3,
+			1,
+		);
 		game.place_tile(spawn, zag);
 		game.place_tile(nb, heavy);
+		assert_eq!(heavy.weight, 3);
 		assert!(game.is_overwhelmed(spawn));
-		assert!(!game.is_overwhelmed(nb), "w3 carrier takes one zag hit and lives");
+		assert!(!game.is_overwhelmed(nb), "3-ring carrier takes one zag hit and lives");
 	}
 
 	#[test]
@@ -4564,16 +4676,16 @@ mod tests {
 		let mut game = Game::empty(RuleSet::default());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
-		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 2, 1);
-		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 2, 1);
+		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
+		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 1, 1);
 		game.place_tile(spawn, a);
 		game.place_tile(nb, b);
-		assert_eq!(game.edge_score(a, b), (0, 4), "SUM: 2 strokes each side");
-		assert_eq!(game.edge_score(b, a), (0, 4));
+		assert_eq!(game.edge_score(a, b), (0, 2), "SUM: one live zag ring each side");
+		assert_eq!(game.edge_score(b, a), (0, 2));
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!(m, 2, "zag never matches, only own weight");
-		assert_eq!(x, 4, "both tiles' two blue zag strokes hit");
-		assert!(game.is_overwhelmed(spawn), "weight 2 vs 4 zag hits is captured");
+		assert_eq!(m, 1, "zag never matches, only own ring count");
+		assert_eq!(x, 2, "both tiles' one blue zag ring hit");
+		assert!(game.is_overwhelmed(spawn), "ring count 1 vs 2 zag hits is captured");
 	}
 
 	#[test]
@@ -4595,17 +4707,62 @@ mod tests {
 	}
 
 	#[test]
-	fn weight_three_one_ring_zag_counts_three_zag_strokes() {
+	fn one_ring_zag_counts_one_zag_stroke() {
 		let mut game = Game::empty(RuleSet::default());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 3, 1);
 		let b = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 3, 1);
+		assert_eq!(a.weight, 1);
+		assert_eq!(a.n_rings, 1);
+		assert_eq!(a.ring_strokes(), 1, "no extra concentric copies");
 		game.place_tile(spawn, a);
 		game.place_tile(nb, b);
-		assert_eq!(a.ring_strokes(), 3);
-		assert_eq!(game.edge_score(a, b), (0, 6), "drawn zag rings on both tiles are hits");
+		assert_eq!(game.edge_score(a, b), (0, 2), "one live zag ring on each tile");
 		assert!(game.is_overwhelmed(spawn));
+	}
+
+	#[test]
+	fn weight_equals_live_ring_slot_count() {
+		let one = Tile::mono(0, Player::One, TileColor::Green, 3, 2);
+		assert_eq!(one.n_rings, 1);
+		assert_eq!(one.weight, 1);
+		assert_eq!(one.ring_strokes(), 1);
+		let braid = Tile::with_typed_rings(
+			1,
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			9,
+			1,
+		);
+		assert_eq!(braid.n_rings, 2);
+		assert_eq!(braid.weight, 2, "braid slots count as rings");
+		assert_eq!(braid.ring_strokes(), 2);
+		let mixed = Tile::with_typed_rings(
+			2,
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		assert_eq!(mixed.n_rings, 3);
+		assert_eq!(mixed.weight, 3);
+		let triple = Tile::with_typed_rings(
+			3,
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Braid),
+			],
+			1,
+			1,
+		);
+		assert_eq!(triple.weight, 3);
 	}
 
 	#[test]
@@ -4671,7 +4828,7 @@ mod tests {
 		game.place_tile(spawn, mixed);
 		game.place_tile(nb, blue);
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, x), (2, 0), "weight 1 + blue match, orange zag is empty");
+		assert_eq!((m, x), (3, 0), "ring count 2 + blue match, orange zag is empty");
 		assert!(!game.is_overwhelmed(spawn));
 		assert!(!game.is_overwhelmed(nb));
 	}
@@ -5153,11 +5310,29 @@ mod tests {
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
-		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
-		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		put_rings(
+			&mut game,
+			nbs[0],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put_rings(
+			&mut game,
+			nbs[1],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
 		assert!(game.is_overwhelmed(spawn), "own tile is already overwhelmed");
 		let from = game.board().spawns()[4];
-		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		put_rings(
+			&mut game,
+			from,
+			Player::One,
+			&[TileColor::Blue, TileColor::LavenderPink, TileColor::Green],
+			1,
+		);
 		game.set_current(Player::One);
 		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
 		assert_eq!(game.budget_token_count(Player::One), 7);
@@ -5184,8 +5359,20 @@ mod tests {
 		let mut game = Game::empty(RuleSet::default());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
-		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
-		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		put_rings(
+			&mut game,
+			nbs[0],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put_rings(
+			&mut game,
+			nbs[1],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
 		let tile = green(&mut game, Player::One, 1, 1);
 		game.set_bench(Player::One, vec![tile]);
 		game.set_current(Player::One);
@@ -5212,11 +5399,29 @@ mod tests {
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
-		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
-		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		put_rings(
+			&mut game,
+			nbs[0],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put_rings(
+			&mut game,
+			nbs[1],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
 		assert!(game.is_overwhelmed(spawn), "own tile is already overwhelmed");
 		let from = game.board().spawns()[4];
-		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		put_rings(
+			&mut game,
+			from,
+			Player::One,
+			&[TileColor::Blue, TileColor::LavenderPink, TileColor::Green],
+			1,
+		);
 		game.set_current(Player::One);
 		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
 		assert_eq!(game.budget_token_count(Player::One), 7);
@@ -5241,8 +5446,20 @@ mod tests {
 		let mut game = Game::empty(self_capture_rules(false));
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
-		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 3, 1);
-		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		put_rings(
+			&mut game,
+			nbs[0],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put_rings(
+			&mut game,
+			nbs[1],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
 		let tile = green(&mut game, Player::One, 1, 1);
 		game.set_bench(Player::One, vec![tile]);
 		game.set_current(Player::One);
@@ -5418,14 +5635,15 @@ mod tests {
 			(2, 1),
 			"zag orange still counts toward the braid; the jag also mismatches"
 		);
-		let weight_three = game.alloc_rings(Player::Two, &[TileColor::Orange], 3, 1);
-		assert_eq!(weight_three.n_rings, 1, "tile weight is not extra rings");
-		assert_eq!(weight_three.color_count(TileColor::Orange), 1);
-		assert_eq!(weight_three.ring_strokes(), 3, "extra concentric copies are visual only");
+		let one_orange_heavy_arg = game.alloc_rings(Player::Two, &[TileColor::Orange], 3, 1);
+		assert_eq!(one_orange_heavy_arg.n_rings, 1);
+		assert_eq!(one_orange_heavy_arg.weight, 1, "constructor weight is ignored");
+		assert_eq!(one_orange_heavy_arg.color_count(TileColor::Orange), 1);
+		assert_eq!(one_orange_heavy_arg.ring_strokes(), 1, "no extra concentric copies");
 		assert_eq!(
-			game.edge_score(braid, weight_three),
+			game.edge_score(braid, one_orange_heavy_arg),
 			(0, 1),
-			"a weight-3 single orange ring cannot cover orange+orange; two orange rings are required"
+			"a single orange ring cannot cover orange+orange; two orange rings are required"
 		);
 	}
 

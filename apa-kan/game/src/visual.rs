@@ -61,7 +61,7 @@ pub const ZAG_STRAND_WIDTH_SCALE: f32 = 0.33;
 /// Parallel zag-lane spacing as a fraction of the highway stripe offset.
 /// Scaled with the thicker stroke so air between lines stays countable.
 pub const ZAG_LANE_SPACING_SCALE: f64 = 1.55;
-/// One overlay line per zag stroke on a single tile (weight.max(n_rings) ≤ 3).
+/// One overlay line per zag ring on a single tile (`n_rings` ≤ 3).
 pub const MAX_TILE_ZAGS: usize = 3;
 /// Two-ended SUM can ink every hitting zag on both tiles (3 + 3).
 pub const MAX_EDGE_ZAGS: usize = MAX_TILE_ZAGS * 2;

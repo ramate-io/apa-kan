@@ -994,6 +994,18 @@ mod tests {
 			48.0,
 		);
 		write_cropped(
+			&demo_pair(&[(TileColor::Blue, true)], 3, &[(TileColor::Blue, true)], 3),
+			dir.join("extra_weight_strokes_one_ring_zag.png"),
+			"one-ring zags: one stroke each (weight = ring count)",
+			36.0,
+		);
+		write_cropped(
+			&demo_pair(&[(TileColor::Orange, false)], 3, &[(TileColor::Green, false)], 1),
+			dir.join("extra_weight_strokes_one_ring_normal.png"),
+			"one-ring orange vs green: one stroke each (weight = ring count)",
+			36.0,
+		);
+		write_cropped(
 			&demo_zag_tile(),
 			dir.join("one_ended_potential_zags.png"),
 			"one-ended potential zags",
