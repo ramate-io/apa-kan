@@ -1,9 +1,10 @@
-# Three colors, two per player. Each color is the full 9 (weight × dots) kinds.
-# Exclusive colors are green (P1) and blue (P2); orange is shared. The (role,
-# weight, dots) sequence is shuffled once and painted onto both players, so
-# the decks are mirror images aside from the exclusive color.
+# Three colors, two per player. Each color is three one-ring tiles (dots 1–3),
+# repeated so the bag stays 18 tiles. Exclusive colors are green (P1) and
+# blue (P2); orange is shared. The (role, dots) sequence is shuffled once and
+# painted onto both players, so the decks are mirror images aside from the
+# exclusive color. Weight is the ring-slot count (always 1 here).
 name = "complementary"
-description = "P1 green+orange, P2 blue+orange; mirrored weight/dot order."
+description = "P1 green+orange, P2 blue+orange; mirrored one-ring / dots order."
 shuffle = true
 exclusive_p1 = "green"
 exclusive_p2 = "blue"

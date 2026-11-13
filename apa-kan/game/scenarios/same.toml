@@ -1,4 +1,4 @@
-# Both players get the same 27 sampled tiles (ring process + weight/dots) in
+# Both players get the same sampled tiles (ring process + dots; weight = rings) in
 # the same order. Only seat and play differ. This is also the current default
 # deal (`identical_bags`).
 name = "same"

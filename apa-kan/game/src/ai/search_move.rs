@@ -1,11 +1,11 @@
 //! Search-facing actions. ADD is keyed by kind so transpositions are stable.
 
 use crate::board::NodeId;
-use crate::game::{Action, Game, KIND_COUNT};
+use crate::game::{Action, Game, KIND_COUNT, KIND_DOTS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchMove {
-	/// `kind` is [`crate::game::Tile::kind_index`] (color-state × weight × dots).
+	/// `kind` is [`crate::game::Tile::kind_index`] (color-state × dots).
 	Add {
 		kind: u16,
 		node: NodeId,
@@ -51,9 +51,10 @@ impl SearchMove {
 	pub fn pack(self) -> (u16, u8, u8) {
 		match self {
 			SearchMove::Add { kind, node } => {
-				let state = kind / 9 + 1;
-				let wd = (kind % 9) as u8;
-				(state, node, wd)
+				let dots_n = KIND_DOTS as u16;
+				let state = kind / dots_n + 1;
+				let dots = (kind % dots_n) as u8;
+				(state, node, dots)
 			}
 			SearchMove::Move { from, to } => (0, from, to),
 			SearchMove::Pass => (u16::MAX, 0, 0),
@@ -64,8 +65,14 @@ impl SearchMove {
 		match kind {
 			u16::MAX => Some(SearchMove::Pass),
 			0 => Some(SearchMove::Move { from: a, to: b }),
-			state if (1..=crate::game::COLOR_STATES as u16).contains(&state) && b < 9 => {
-				Some(SearchMove::Add { kind: (state - 1) * 9 + u16::from(b), node: a })
+			state
+				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
+					&& b < KIND_DOTS as u8 =>
+			{
+				Some(SearchMove::Add {
+					kind: (state - 1) * KIND_DOTS as u16 + u16::from(b),
+					node: a,
+				})
 			}
 			_ => None,
 		}
@@ -166,7 +173,7 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 		}
 		SearchMove::Add { kind, node } => {
 			let mut s = 12;
-			let view = crate::game::decode_color_state((kind / 9) as usize);
+			let view = crate::game::decode_color_state((kind / KIND_DOTS as u16) as usize);
 			let add_all = view.normal | view.zag | view.braid;
 			for &nb in game.board().neighbors(node) {
 				if let Some(other) = game.tile_at(nb) {
@@ -226,10 +233,10 @@ mod tests {
 
 	#[test]
 	fn pack_round_trip_add_and_move() {
-		let add = SearchMove::Add { kind: 9 + 4, node: 3 };
+		let add = SearchMove::Add { kind: KIND_DOTS as u16 + 1, node: 3 };
 		let (k, a, b) = add.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(add));
-		let zag_add = SearchMove::Add { kind: 20 * 9 + 2, node: 5 };
+		let zag_add = SearchMove::Add { kind: 20 * KIND_DOTS as u16 + 2, node: 5 };
 		let packed = zag_add.pack();
 		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(zag_add));
 		let braid = crate::game::Tile::with_typed_rings(

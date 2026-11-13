@@ -80,7 +80,7 @@ pub struct RingLog {
 	pub b: bool,
 }
 
-/// Full tile identity: ids, owner, dots, weight, rings (normal / zag / braid).
+/// Full tile identity: ids, owner, dots, weight (= ring-slot count), rings.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TileLog {
 	pub id: u32,
@@ -136,8 +136,9 @@ impl TileLog {
 				Ok((TileColor::parse(&r.c)?, typ))
 			})
 			.collect();
-		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.weight, self.dots);
+		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.n_rings, self.dots);
 		tile.id = self.id;
+		debug_assert_eq!(tile.weight, tile.n_rings);
 		Ok(tile)
 	}
 }
@@ -1004,6 +1005,16 @@ mod tests {
 		assert_eq!(log.to_rules().unwrap(), r);
 	}
 
+	fn opening_weight_equals_rings(log: &GameLog) -> bool {
+		log.opening
+			.p1_bench
+			.iter()
+			.chain(log.opening.p2_bench.iter())
+			.chain(log.opening.p1_bag.iter())
+			.chain(log.opening.p2_bag.iter())
+			.all(|t| t.weight == t.n_rings)
+	}
+
 	fn assert_committed_jsonl_gz_replays(rel: &str) {
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
 		if !path.exists() {
@@ -1012,6 +1023,7 @@ mod tests {
 		let bytes = std::fs::read(&path).unwrap();
 		let logs = decode_jsonl_gz(&bytes).expect("decode gzip jsonl");
 		assert_eq!(logs.len(), 108, "standard H2H is 9 pairings × 12 games");
+		let derived_weight = logs.iter().all(opening_weight_equals_rings);
 		for (i, log) in logs.iter().enumerate() {
 			assert_eq!(log.v, SCHEMA_VERSION);
 			assert_eq!(log.rules.bag_size, 11, "{rel}");
@@ -1019,6 +1031,9 @@ mod tests {
 			assert_eq!(log.search_rng_seed, search_rng_seed(log.seed));
 			assert!(!log.opening.p1_bench.is_empty());
 			assert!(!log.actions.is_empty() || log.turns == 0);
+			if !derived_weight {
+				continue;
+			}
 			let replayed =
 				replay(log).unwrap_or_else(|e| panic!("replay {rel} game {}: {e}", i + 1));
 			assert_eq!(
@@ -1056,6 +1071,11 @@ mod tests {
 	#[test]
 	fn committed_braid_rings_deck11_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays("benchmark_results/braid_rings_deck11.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_weight_from_rings_deck11_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/weight_from_rings_deck11.jsonl.gz");
 	}
 
 	#[test]

@@ -10,7 +10,8 @@ use serde::Deserialize;
 
 use crate::game::{RingType, Tile, TileColor, MAX_COLOR_RINGS};
 
-/// One (rings × weight × dots) kind. `count` repeats in the bag.
+/// One (rings × dots) kind. `count` repeats in the bag. `weight` is always
+/// the ring-slot count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KindCount {
 	pub rings: [TileColor; 3],
@@ -22,12 +23,12 @@ pub struct KindCount {
 }
 
 impl KindCount {
-	pub fn mono(color: TileColor, weight: u8, dots: u8, count: u8) -> Self {
+	pub fn mono(color: TileColor, _weight: u8, dots: u8, count: u8) -> Self {
 		Self {
 			rings: [color; 3],
 			n_rings: 1,
 			ring_type: [RingType::Normal; 3],
-			weight,
+			weight: 1,
 			dots,
 			count,
 		}
@@ -88,7 +89,7 @@ pub fn tile_tag(tile: Tile) -> String {
 	kind_tag(tile.ring_colors(), &tile.ring_type, tile.weight, tile.dots)
 }
 
-/// Sum of weights, dots, and distinct colors — a simple deck-strength view.
+/// Sum of ring counts (weight), dots, and distinct colors — a simple deck-strength view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeckStrength {
 	pub n_tiles: u32,
@@ -265,10 +266,8 @@ fn resolve_path(name_or_path: &str) -> Result<PathBuf, String> {
 fn all_kinds(colors: impl IntoIterator<Item = TileColor>) -> Vec<KindCount> {
 	let mut out = Vec::new();
 	for color in colors {
-		for weight in 1..=3 {
-			for dots in 1..=3 {
-				out.push(KindCount::mono(color, weight, dots, 1));
-			}
+		for dots in 1..=3 {
+			out.push(KindCount::mono(color, 1, dots, 1));
 		}
 	}
 	out
@@ -511,13 +510,14 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 	Ok((out, types))
 }
 
-fn spec_from_rings(colors: &[TileColor], types: [RingType; 3], weight: u8, dots: u8) -> TileSpec {
+fn spec_from_rings(colors: &[TileColor], types: [RingType; 3], _weight: u8, dots: u8) -> TileSpec {
 	let first = colors[0];
 	let mut rings = [first; 3];
 	for (i, &c) in colors.iter().take(3).enumerate() {
 		rings[i] = c;
 	}
-	TileSpec { rings, n_rings: colors.len().min(3) as u8, ring_type: types, weight, dots }
+	let n_rings = colors.len().min(3) as u8;
+	TileSpec { rings, n_rings, ring_type: types, weight: n_rings.max(1), dots }
 }
 
 fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
@@ -526,13 +526,15 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 	if count == 0 {
 		return Err("tile count must be >= 1".into());
 	}
-	let to_kind = |weight: u8, dots: u8| {
-		let mut k = KindCount::mono(colors[0], weight, dots, count);
+	let to_kind = |dots: u8| {
+		let n = colors.len().min(3) as u8;
+		let mut k = KindCount::mono(colors[0], n, dots, count);
 		for (i, &c) in colors.iter().take(3).enumerate() {
 			k.rings[i] = c;
 			k.ring_type[i] = types[i];
 		}
-		k.n_rings = colors.len().min(3) as u8;
+		k.n_rings = n;
+		k.weight = n.max(1);
 		k.ring_type = types;
 		k
 	};
@@ -546,10 +548,8 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 			.collect()),
 		(None, None) => {
 			let mut out = Vec::new();
-			for weight in 1..=3 {
-				for dots in 1..=3 {
-					out.push(to_kind(weight, dots));
-				}
+			for dots in 1..=3 {
+				out.push(to_kind(dots));
 			}
 			Ok(out)
 		}
@@ -557,10 +557,10 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 			if !(1..=3).contains(&weight) || !(1..=3).contains(&dots) {
 				return Err("weight and dots must be 1..=3".into());
 			}
-			Ok(vec![to_kind(weight, dots)])
+			Ok(vec![to_kind(dots)])
 		}
 		_ => {
-			Err("tile entries need both weight and dots, or neither (all 9 kinds of that color)"
+			Err("tile entries need both weight and dots, or neither (all dots kinds of that color)"
 				.into())
 		}
 	}
@@ -874,9 +874,10 @@ dots = 3
 		rules.starting_bench_size = 1;
 		let game = Game::from_scenario(rules, 1, &s).unwrap();
 		assert_eq!(game.bench(Player::One).len(), 1);
-		assert_eq!(game.bench(Player::One)[0].weight, 3);
+		assert_eq!(game.bench(Player::One)[0].weight, 1);
+		assert_eq!(game.bench(Player::One)[0].n_rings, 1);
 		assert_eq!(game.bench(Player::One)[0].dots, 3);
-		assert_eq!(game.bench(Player::Two)[0].weight, 3);
+		assert_eq!(game.bench(Player::Two)[0].weight, 1);
 	}
 
 	#[test]
