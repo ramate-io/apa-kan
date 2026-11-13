@@ -5,7 +5,7 @@ use std::path::Path;
 use image::{Rgba, RgbaImage};
 
 use crate::game::{BudgetToken, DeckSlot, Game, Player, Tile};
-use crate::visual::{self, ArcBody, ViewLayout};
+use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
 pub fn write_png(game: &Game, path: impl AsRef<Path>, caption: &str) -> Result<(), String> {
 	write_png_sized(game, path, caption, 1280, 960)
@@ -63,6 +63,23 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		} else {
 			f64::from(layout.stripe_off)
 		};
+		let hitch_r = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.hitch_r_center)
+		} else {
+			f64::from(layout.hitch_r)
+		};
+		let braid_amp = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.braid_amp_center)
+		} else {
+			f64::from(layout.braid_amp)
+		};
+		let zag_amp = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.zag_amp_center)
+		} else {
+			f64::from(layout.zag_amp)
+		};
+		let lanes = paint.lane_offsets(visual::channel_lane_pitch(stripe_off));
+		let normal_pts = visual::offset_polyline(&pts, lanes[0].unwrap_or(0.0));
 		match paint.body {
 			ArcBody::Neutral => {
 				back.push((pts.clone(), rgb_of(visual::NEUTRAL_ARC_RGB), width));
@@ -73,71 +90,29 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				} else {
 					width
 				};
-				back.push((pts.clone(), rgb_of(visual::tile_rgb(color)), w));
+				back.push((normal_pts.clone(), rgb_of(visual::tile_rgb(color)), w));
 			}
-			ArcBody::Hitch { from, to, from_braid, to_braid } => {
-				let hitch_r = if visual::arc_touches_center(arc, board.center()) {
-					f64::from(layout.hitch_r_center)
-				} else {
-					f64::from(layout.hitch_r)
-				};
-				let frame = visual::midpoint_frame(&pts);
-				let clearance = visual::hitch_clearance(hitch_r);
-				if frame.index < pts.len() {
-					let diamond =
-						visual::conflict_diamond(frame.mid, frame.tangent, frame.normal, hitch_r);
-					let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
-					let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
-					let from_path = visual::diamond_from_path(&from_pts, &diamond);
-					let to_path = visual::diamond_to_path(&to_pts, &diamond);
-					let amp = visual::hitch_braid_amp(
-						if visual::arc_touches_center(arc, board.center()) {
-							f64::from(layout.braid_amp_center)
-						} else {
-							f64::from(layout.braid_amp)
-						},
-						hitch_r,
-					);
-					let braid_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
-					let from_mix = visual::braid_strand_count(from_braid) >= 2;
-					let to_mix = visual::braid_strand_count(to_braid) >= 2;
-					push_hitch_braid(
-						&from_path,
-						from_braid,
-						amp,
-						visual::braid_turns_along(&from_path, layout.scale),
-						braid_w,
-						&mut back,
-						&mut front,
-					);
-					push_hitch_half(
-						&from_path, from, stripe_off, width, 1.0, from_mix, amp, braid_w, &mut back,
-					);
-					push_hitch_braid(
-						&to_path,
-						to_braid,
-						amp,
-						visual::braid_turns_along(&to_path, layout.scale),
-						braid_w,
-						&mut back,
-						&mut front,
-					);
-					push_hitch_half(
-						&to_path, to, stripe_off, width, -1.0, to_mix, amp, braid_w, &mut back,
-					);
-				}
+			ArcBody::Hitch { from, to } => {
+				push_hitch_diamond(
+					&normal_pts,
+					from,
+					to,
+					[None; 3],
+					hitch_r,
+					stripe_off,
+					width,
+					braid_amp,
+					layout.scale,
+					&mut back,
+					&mut front,
+				);
 			}
 			ArcBody::Stripes { a, b, zag_a, zag_b } => {
 				let strand_w = width * f64::from(visual::STRIPE_STRAND_WIDTH_SCALE);
 				let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
-				let zag_amp = if visual::arc_touches_center(arc, board.center()) {
-					f64::from(layout.zag_amp_center)
-				} else {
-					f64::from(layout.zag_amp)
-				};
 				let teeth = visual::zag_teeth(arc);
 				push_stripe(
-					&pts,
+					&normal_pts,
 					stripe_off,
 					zag_a,
 					rgb_of(visual::tile_rgb(a)),
@@ -149,7 +124,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 					&mut front,
 				);
 				push_stripe(
-					&pts,
+					&normal_pts,
 					-stripe_off,
 					zag_b,
 					rgb_of(visual::tile_rgb(b)),
@@ -162,44 +137,55 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				);
 			}
 			ArcBody::Hidden => {}
-			ArcBody::Braid { colors } => {
-				let amp = if visual::arc_touches_center(arc, board.center()) {
-					f64::from(layout.braid_amp_center)
-				} else {
-					f64::from(layout.braid_amp)
-				};
-				let strand_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
-				for thread in visual::braid_threads(&pts, amp, visual::braid_turns(arc), colors) {
-					split_braid(
-						&thread.pts,
-						&thread.phase,
-						rgb_of(visual::tile_rgb(thread.color)),
-						strand_w,
+		}
+		if let Some(lane) = paint.braid {
+			let braid_pts = visual::offset_polyline(&pts, lanes[2].unwrap_or(0.0));
+			let strand_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
+			match lane {
+				BraidLane::Weave { colors } => {
+					for thread in visual::braid_threads(
+						&braid_pts,
+						braid_amp,
+						visual::braid_turns(arc),
+						colors,
+					) {
+						split_braid(
+							&thread.pts,
+							&thread.phase,
+							rgb_of(visual::tile_rgb(thread.color)),
+							strand_w,
+							&mut back,
+							&mut front,
+						);
+					}
+				}
+				BraidLane::Failed { colors } => {
+					push_hitch_diamond(
+						&braid_pts,
+						[None; 3],
+						[None; 3],
+						colors,
+						hitch_r,
+						stripe_off,
+						width,
+						braid_amp,
+						layout.scale,
 						&mut back,
 						&mut front,
 					);
 				}
 			}
 		}
-		let zag_amp = if visual::arc_touches_center(arc, board.center()) {
-			f64::from(layout.zag_amp_center)
-		} else {
-			f64::from(layout.zag_amp)
-		};
 		let zag_w = width * f64::from(visual::ZAG_STRAND_WIDTH_SCALE);
 		let teeth = visual::zag_teeth(arc);
 		let spacing = visual::zag_lane_spacing(stripe_off);
-		let hitch_r = if visual::arc_touches_center(arc, board.center()) {
-			f64::from(layout.hitch_r_center)
-		} else {
-			f64::from(layout.hitch_r)
-		};
+		let zag_lane = lanes[1].unwrap_or(0.0);
 		let inner = visual::zag_lane_inner(paint.body, stripe_off, hitch_r);
 		for (i, zag) in paint.zags_from.iter().enumerate() {
 			let Some(color) = *zag else {
 				continue;
 			};
-			let side = visual::zag_fan_offset(i, 1.0, inner, spacing);
+			let side = zag_lane + visual::zag_fan_offset(i, 1.0, inner, spacing);
 			let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
 			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
 		}
@@ -207,7 +193,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let Some(color) = *zag else {
 				continue;
 			};
-			let side = visual::zag_fan_offset(i, -1.0, inner, spacing);
+			let side = zag_lane + visual::zag_fan_offset(i, -1.0, inner, spacing);
 			let zig = visual::zigzag_alongside(&pts, side, zag_amp, teeth);
 			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
 		}
@@ -217,7 +203,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let Some(color) = *zag else {
 				continue;
 			};
-			let zig = visual::zigzag_alongside(&pts, mid_off[i], zag_amp, teeth);
+			let zig = visual::zigzag_alongside(&pts, zag_lane + mid_off[i], zag_amp, teeth);
 			front.push((zig, rgb_of(visual::tile_rgb(color)), zag_w));
 		}
 	}
@@ -298,6 +284,56 @@ fn push_hitch_half(
 		));
 		k += 1;
 	}
+}
+
+fn push_hitch_diamond(
+	pts: &[[f64; 2]],
+	from: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	to: [Option<crate::game::TileColor>; visual::MAX_HITCH_COLORS],
+	braid: [Option<crate::game::TileColor>; 3],
+	hitch_r: f64,
+	stripe_off: f64,
+	width: f64,
+	braid_amp: f64,
+	scale: f32,
+	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+	front: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+) {
+	let frame = visual::midpoint_frame(pts);
+	if frame.index >= pts.len() {
+		return;
+	}
+	let clearance = visual::hitch_clearance(hitch_r);
+	let diamond = visual::conflict_diamond(frame.mid, frame.tangent, frame.normal, hitch_r);
+	let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
+	let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
+	let from_path = visual::diamond_from_path(&from_pts, &diamond);
+	let to_path = visual::diamond_to_path(&to_pts, &diamond);
+	let amp = visual::hitch_braid_amp(braid_amp, hitch_r);
+	let braid_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
+	let mix = visual::braid_strand_count(braid) >= 2;
+	if mix {
+		push_hitch_braid(
+			&from_path,
+			braid,
+			amp,
+			visual::braid_turns_along(&from_path, scale),
+			braid_w,
+			back,
+			front,
+		);
+		push_hitch_braid(
+			&to_path,
+			braid,
+			amp,
+			visual::braid_turns_along(&to_path, scale),
+			braid_w,
+			back,
+			front,
+		);
+	}
+	push_hitch_half(&from_path, from, stripe_off, width, 1.0, mix, amp, braid_w, back);
+	push_hitch_half(&to_path, to, stripe_off, width, -1.0, mix, amp, braid_w, back);
 }
 
 fn push_hitch_braid(
@@ -933,7 +969,7 @@ mod tests {
 				1,
 			),
 			dir.join("braid_failed_hitch.png"),
-			"failed braid: threaded weave mixed into the highway diamond",
+			"failed braid lane plus leftover-normal hitch on its own lane",
 			40.0,
 		);
 		write_cropped(
@@ -948,7 +984,7 @@ mod tests {
 				1,
 			),
 			dir.join("braid_failed_hitch_with_leftover.png"),
-			"failed braid + leftover blue vs teal: weave mixed with leftover stripes",
+			"failed braid lane beside leftover blue vs teal hitch",
 			40.0,
 		);
 		write_cropped(
@@ -1104,7 +1140,76 @@ mod tests {
 				2,
 			),
 			dir.join("zag_and_normal_mismatch_same_edge.png"),
-			"zag + normal conflict: center zag only, no diamond",
+			"zag + normal match lanes (orange normal in the zag tile)",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(&[(TileColor::Orange, false)], 1, &[(TileColor::Orange, false)], 1),
+			dir.join("lane_normal_match.png"),
+			"normal match lane: highway in the matched color",
+			36.0,
+		);
+		write_cropped(
+			&demo_pair(&[(TileColor::Blue, false)], 1, &[(TileColor::Orange, false)], 1),
+			dir.join("lane_normal_mismatch.png"),
+			"normal mismatch lane: diamond of unmatched colors",
+			36.0,
+		);
+		write_cropped(
+			&demo_pair(&[(TileColor::Orange, true)], 1, &[(TileColor::Orange, true)], 1),
+			dir.join("lane_zag.png"),
+			"zag lane: each triggered zag between the tiles",
+			48.0,
+		);
+		write_cropped(
+			&demo_pair(&[(TileColor::Orange, true)], 1, &[(TileColor::Orange, false)], 1),
+			dir.join("lane_zag_plus_normal.png"),
+			"zag + normal match lanes (same color nets 0)",
+			48.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[
+					(TileColor::Orange, RingType::Braid),
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Orange, RingType::Normal),
+				],
+				1,
+				&[(TileColor::Orange, RingType::Normal), (TileColor::Green, RingType::Normal)],
+				1,
+			),
+			dir.join("lane_braid_plus_normal.png"),
+			"fulfilled braid stacks with the leftover orange normal match",
+			48.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[
+					(TileColor::Orange, RingType::Braid),
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Zag),
+				],
+				1,
+				&[
+					(TileColor::Orange, RingType::Normal),
+					(TileColor::Green, RingType::Normal),
+					(TileColor::Blue, RingType::Normal),
+				],
+				1,
+			),
+			dir.join("lane_all_three.png"),
+			"all three lanes: normal match, zag, fulfilled braid",
+			48.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+				1,
+				&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+				1,
+			),
+			dir.join("lane_braid_failed.png"),
+			"failed braid lane: union weave with a midpoint diamond",
 			48.0,
 		);
 	}

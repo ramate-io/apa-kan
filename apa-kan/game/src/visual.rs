@@ -151,15 +151,26 @@ pub fn format_budget(game: &Game, player: Player) -> String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArcPaint {
+	/// Normal-channel glyph, or Neutral/Hidden when that channel is omitted.
 	pub body: ArcBody,
 	/// Zag strokes **from** the arc's `from` tile, fanning out on the + side.
 	/// Used for one-ended potentials.
 	pub zags_from: [Option<TileColor>; MAX_TILE_ZAGS],
 	/// Zag strokes **from** the arc's `to` tile, fanning out on the − side.
 	pub zags_to: [Option<TileColor>; MAX_TILE_ZAGS],
-	/// Realized zag mismatches bundled around the arc center line (SUM / MAX
-	/// two-ended edges). One-ended edges leave this empty.
+	/// Realized zag mismatches bundled on the zag lane (SUM / MAX two-ended
+	/// edges). One-ended edges leave this empty.
 	pub zags_mid: [Option<TileColor>; MAX_EDGE_ZAGS],
+	/// Braid-channel glyph. Independent of [`Self::body`].
+	pub braid: Option<BraidLane>,
+}
+
+/// Braid lane: a fulfilled (or one-ended potential) weave, or a failed braid
+/// whose threads wrap a midpoint diamond — analogous to a normal hitch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BraidLane {
+	Weave { colors: [Option<TileColor>; 3] },
+	Failed { colors: [Option<TileColor>; 3] },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,35 +180,24 @@ pub enum ArcBody {
 		color: TileColor,
 		thick: bool,
 	},
-	/// Midpoint diamond joining unmatched leftover **normal** colors. Two-ended
-	/// true conflict only (both ends present toward each other, they share no
-	/// normal, no zag mismatch, and no satisfied braid). One elongated diamond
-	/// per edge: leftover highways wrap one pair of edges as a bundle. An
-	/// unsatisfied braid still weaves its threads along that half's path so
-	/// the braid stays inside the conflict, mixed with leftover stripes.
+	/// Midpoint diamond joining unmatched leftover **normal** colors. The
+	/// normal channel only: leftover highways wrap one pair of edges as a
+	/// bundle. Braid failure is a separate lane, not mixed into this hitch.
 	Hitch {
 		from: [Option<TileColor>; MAX_HITCH_COLORS],
 		to: [Option<TileColor>; MAX_HITCH_COLORS],
-		from_braid: [Option<TileColor>; 3],
-		to_braid: [Option<TileColor>; 3],
 	},
 	/// Parallel highway stripes: one-ended undecided edges, or two-ended
-	/// edges that share more than one normal color. Zag overlays sit outside.
+	/// edges that match more than one normal color.
 	Stripes {
 		a: TileColor,
 		b: TileColor,
 		zag_a: bool,
 		zag_b: bool,
 	},
-	/// No connection line in the middle. Used when a confirmed zag mismatch
-	/// occupies a two-ended edge (the zag is the only realized effect).
+	/// No normal-channel connection line. Used when only zag and/or braid
+	/// lanes fire, or a one-ended zag-only edge.
 	Hidden,
-	/// Threaded braid weave, one thread per slot, colored by that slot.
-	/// Used for a satisfied two-ended braid and for a one-ended would-be
-	/// braid (no neighbor yet). Jag overlays may still sit on the same edge.
-	Braid {
-		colors: [Option<TileColor>; 3],
-	},
 }
 
 impl ArcPaint {
@@ -214,7 +214,34 @@ impl ArcPaint {
 		zags_from: [Option<TileColor>; MAX_TILE_ZAGS],
 		zags_to: [Option<TileColor>; MAX_TILE_ZAGS],
 	) -> Self {
-		Self { body, zags_from, zags_to, zags_mid: Self::no_mid() }
+		Self { body, zags_from, zags_to, zags_mid: Self::no_mid(), braid: None }
+	}
+
+	pub fn with_braid(mut self, braid: BraidLane) -> Self {
+		self.braid = Some(braid);
+		self
+	}
+
+	pub fn has_normal_lane(self) -> bool {
+		matches!(self.body, ArcBody::Solid { .. } | ArcBody::Stripes { .. } | ArcBody::Hitch { .. })
+	}
+
+	pub fn has_zag_lane(self) -> bool {
+		self.zag_count() > 0
+	}
+
+	pub fn has_braid_lane(self) -> bool {
+		self.braid.is_some()
+	}
+
+	/// Lane offsets in order (normal, zag, braid). Absent channels are `None`.
+	pub fn lane_offsets(self, pitch: f64) -> [Option<f64>; 3] {
+		channel_lane_offsets(
+			self.has_normal_lane(),
+			self.has_zag_lane(),
+			self.has_braid_lane(),
+			pitch,
+		)
 	}
 
 	pub fn neutral() -> Self {
@@ -229,20 +256,7 @@ impl ArcPaint {
 		from: [Option<TileColor>; MAX_HITCH_COLORS],
 		to: [Option<TileColor>; MAX_HITCH_COLORS],
 	) -> Self {
-		Self::hitch_braid(from, to, [None; 3], [None; 3])
-	}
-
-	pub fn hitch_braid(
-		from: [Option<TileColor>; MAX_HITCH_COLORS],
-		to: [Option<TileColor>; MAX_HITCH_COLORS],
-		from_braid: [Option<TileColor>; 3],
-		to_braid: [Option<TileColor>; 3],
-	) -> Self {
-		Self::with_sides(
-			ArcBody::Hitch { from, to, from_braid, to_braid },
-			Self::no_zags(),
-			Self::no_zags(),
-		)
+		Self::with_sides(ArcBody::Hitch { from, to }, Self::no_zags(), Self::no_zags())
 	}
 
 	pub fn stripes(a: TileColor, b: TileColor, zag_a: bool, zag_b: bool) -> Self {
@@ -250,7 +264,13 @@ impl ArcPaint {
 	}
 
 	pub fn braid(colors: [Option<TileColor>; 3]) -> Self {
-		Self::with_sides(ArcBody::Braid { colors }, Self::no_zags(), Self::no_zags())
+		Self::with_sides(ArcBody::Hidden, Self::no_zags(), Self::no_zags())
+			.with_braid(BraidLane::Weave { colors })
+	}
+
+	pub fn failed_braid(colors: [Option<TileColor>; 3]) -> Self {
+		Self::with_sides(ArcBody::Hidden, Self::no_zags(), Self::no_zags())
+			.with_braid(BraidLane::Failed { colors })
 	}
 
 	pub fn zag_count(self) -> usize {
@@ -271,18 +291,71 @@ impl ArcPaint {
 }
 
 pub fn shared_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
+	matched_normal_colors(a, b)
+}
+
+/// Unique colors that score a normal-channel match: a normal-ring color of
+/// either tile that appears among the other tile's colors (any type).
+pub fn matched_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 	let mut out = [None; 2];
 	let mut n = 0usize;
-	for (i, &c) in a.ring_colors().iter().enumerate() {
-		if !a.ring_type[i].is_normal() || !b.has_normal(c) {
-			continue;
+	for (src, dst) in [(a, b), (b, a)] {
+		for (i, &c) in src.ring_colors().iter().enumerate() {
+			if !src.ring_type[i].is_normal() || !dst.has_color(c) {
+				continue;
+			}
+			if !out.contains(&Some(c)) && n < 2 {
+				out[n] = Some(c);
+				n += 1;
+			}
 		}
-		if !out.contains(&Some(c)) && n < 2 {
+	}
+	out
+}
+
+/// Multiset union of braid slot colors on the edge, capped at 3 threads.
+pub fn union_braid_colors(a: Tile, b: Tile) -> [Option<TileColor>; 3] {
+	let mut out = [None; 3];
+	let mut n = 0usize;
+	for t in [a, b] {
+		for c in t.braid_colors() {
+			let Some(c) = c else {
+				continue;
+			};
+			if n >= 3 {
+				break;
+			}
 			out[n] = Some(c);
 			n += 1;
 		}
 	}
 	out
+}
+
+/// Parallel-lane offsets for the fixed order normal, zag, braid.
+/// Omitted channels are `None`. One active lane sits on the centerline;
+/// two straddle it; three use `+pitch`, `0`, `−pitch`.
+pub fn channel_lane_offsets(normal: bool, zag: bool, braid: bool, pitch: f64) -> [Option<f64>; 3] {
+	let flags = [normal, zag, braid];
+	let n = flags.iter().filter(|on| **on).count();
+	let slots = match n {
+		2 => [pitch, -pitch, 0.0],
+		3 => [pitch, 0.0, -pitch],
+		_ => [0.0, 0.0, 0.0],
+	};
+	let mut i = 0usize;
+	let mut out = [None; 3];
+	for (k, on) in flags.iter().enumerate() {
+		if *on {
+			out[k] = Some(slots[i]);
+			i += 1;
+		}
+	}
+	out
+}
+
+pub fn channel_lane_pitch(stripe_off: f64) -> f64 {
+	stripe_off.abs() * 2.4
 }
 
 fn pack_zags(colors: impl IntoIterator<Item = TileColor>) -> [Option<TileColor>; MAX_TILE_ZAGS] {
@@ -352,9 +425,7 @@ pub fn edge_zag_strokes(
 }
 
 /// Leftover unique **normal** colors on `tile` for a conflict diamond. Zags
-/// and braid slots are omitted: zags already draw as squiggles, and an
-/// unsatisfied braid weaves along the hitch half instead of becoming extra
-/// highway stripes.
+/// and braid slots are omitted: they occupy their own lanes.
 pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_HITCH_COLORS] {
 	let mut out = [None; MAX_HITCH_COLORS];
 	let mut n = 0usize;
@@ -369,15 +440,6 @@ pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_HITCH_COLORS] {
 		}
 	}
 	out
-}
-
-/// Braid threads mixed into a hitch half. Empty when this tile has no braid.
-pub fn hitch_braid_colors(tile: Tile) -> [Option<TileColor>; 3] {
-	if tile.braid_ring_count() >= 2 {
-		tile.braid_colors()
-	} else {
-		[None; 3]
-	}
 }
 
 pub fn packed_color_count(colors: [Option<TileColor>; MAX_HITCH_COLORS]) -> usize {
@@ -444,36 +506,36 @@ fn two_ended(a: Tile, b: Tile, mode: ZagMismatchCount) -> ArcPaint {
 	} else {
 		ArcPaint::no_mid()
 	};
-	if let Some((tile, _)) = selected_braid(a, b) {
-		return ArcPaint {
-			body: ArcBody::Braid { colors: tile.braid_colors() },
-			zags_from: ArcPaint::no_zags(),
-			zags_to: ArcPaint::no_zags(),
-			zags_mid: zag_mid,
-		};
-	}
-	if zag_mid[0].is_some() {
-		// Confirmed zag mismatch, no satisfied braid: draw only the zag(s).
-		return ArcPaint {
-			body: ArcBody::Hidden,
-			zags_from: ArcPaint::no_zags(),
-			zags_to: ArcPaint::no_zags(),
-			zags_mid: zag_mid,
-		};
-	}
-	let shared = shared_normal_colors(a, b);
-	let body = match (shared[0], shared[1]) {
-		(Some(color), None) => ArcBody::Solid { color, thick: true },
-		(Some(c1), Some(c2)) => ArcBody::Stripes { a: c1, b: c2, zag_a: false, zag_b: false },
-		(None, _) if a.present_toward(b) && b.present_toward(a) => ArcBody::Hitch {
-			from: unique_normals(a),
-			to: unique_normals(b),
-			from_braid: hitch_braid_colors(a),
-			to_braid: hitch_braid_colors(b),
-		},
-		(None, _) => ArcBody::Neutral,
+	let normal_fires = a.normal_ring_count() > 0 || b.normal_ring_count() > 0;
+	let body = if !normal_fires {
+		if zag_mid[0].is_some() || a.braid_ring_count() >= 2 || b.braid_ring_count() >= 2 {
+			ArcBody::Hidden
+		} else {
+			ArcBody::Neutral
+		}
+	} else if a.normal_channel_matches(b) {
+		match matched_normal_colors(a, b) {
+			[Some(color), None] => ArcBody::Solid { color, thick: true },
+			[Some(c1), Some(c2)] => ArcBody::Stripes { a: c1, b: c2, zag_a: false, zag_b: false },
+			_ => ArcBody::Solid { color: a.primary(), thick: true },
+		}
+	} else {
+		ArcBody::Hitch { from: unique_normals(a), to: unique_normals(b) }
 	};
-	ArcPaint::with_sides(body, ArcPaint::no_zags(), ArcPaint::no_zags())
+	let braid = if let Some((tile, _)) = selected_braid(a, b) {
+		Some(BraidLane::Weave { colors: tile.braid_colors() })
+	} else if a.braid_ring_count() >= 2 || b.braid_ring_count() >= 2 {
+		Some(BraidLane::Failed { colors: union_braid_colors(a, b) })
+	} else {
+		None
+	};
+	ArcPaint {
+		body,
+		zags_from: ArcPaint::no_zags(),
+		zags_to: ArcPaint::no_zags(),
+		zags_mid: zag_mid,
+		braid,
+	}
 }
 
 /// Paint an arc using the default SUM zag-mismatch rule.
@@ -490,36 +552,38 @@ pub fn arc_paint_with(from: Option<Tile>, to: Option<Tile>, mode: ZagMismatchCou
 	}
 }
 
-/// One-ended edges: unique **normal** colors as a highway in the middle,
-/// this tile's zag strokes fanned on one side, and a would-be braid as the
-/// threaded weave in the braid's ring colors.
+/// One-ended edges: unique **normal** colors as a highway, this tile's zag
+/// strokes as a zag lane, and a would-be braid as the threaded weave.
 fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
 	let zags = tile_zag_strokes(tile);
-	let body = if tile.braid_ring_count() >= 2 {
-		ArcBody::Braid { colors: tile.braid_colors() }
-	} else {
-		let mut normals: Vec<TileColor> = Vec::new();
-		for k in 0..tile.ring_strokes() {
-			if tile.stroke_is_zag(k) {
-				continue;
-			}
-			let c = tile.stroke_color(k);
-			if !normals.contains(&c) {
-				normals.push(c);
-			}
+	let mut normals: Vec<TileColor> = Vec::new();
+	for k in 0..tile.ring_strokes() {
+		if !tile.stroke_is_normal(k) {
+			continue;
 		}
-		match normals.as_slice() {
-			[] if zags[0].is_none() => ArcBody::Neutral,
-			[] => ArcBody::Hidden,
-			[c] => ArcBody::Solid { color: *c, thick: false },
-			[a, b, ..] => ArcBody::Stripes { a: *a, b: *b, zag_a: false, zag_b: false },
+		let c = tile.stroke_color(k);
+		if !normals.contains(&c) {
+			normals.push(c);
 		}
+	}
+	let body = match normals.as_slice() {
+		[] if zags[0].is_none() && tile.braid_ring_count() < 2 => ArcBody::Neutral,
+		[] => ArcBody::Hidden,
+		[c] => ArcBody::Solid { color: *c, thick: false },
+		[a, b, ..] => ArcBody::Stripes { a: *a, b: *b, zag_a: false, zag_b: false },
 	};
-	if on_from {
+	let braid = if tile.braid_ring_count() >= 2 {
+		Some(BraidLane::Weave { colors: tile.braid_colors() })
+	} else {
+		None
+	};
+	let mut paint = if on_from {
 		ArcPaint::with_sides(body, zags, ArcPaint::no_zags())
 	} else {
 		ArcPaint::with_sides(body, ArcPaint::no_zags(), zags)
-	}
+	};
+	paint.braid = braid;
+	paint
 }
 
 /// Stroke counts and radii for concentric tile rings, including zag amplitude
@@ -1126,17 +1190,13 @@ pub fn zag_lane_spacing(stripe_off: f64) -> f64 {
 	stripe_off * ZAG_LANE_SPACING_SCALE
 }
 
-/// Distance from the arc path to the first zag lane. Lane 0 is skipped so a
-/// Hidden body keeps a visible middle gap (3 | gap | 3), and a match/highway/
-/// diamond keeps the connection line in the center. `hitch_r` pushes zags
-/// outside a conflict diamond so they don't run through the glyph.
+/// Distance from the zag-lane centerline to the first one-ended fan stroke.
+/// Two-ended zags sit on the zag lane itself via [`zag_center_offsets`].
 pub fn zag_lane_inner(body: ArcBody, stripe_off: f64, hitch_r: f64) -> f64 {
 	let spacing = zag_lane_spacing(stripe_off);
 	match body {
 		ArcBody::Hitch { .. } => hitch_r.max(stripe_off) + spacing,
-		ArcBody::Stripes { .. } | ArcBody::Solid { .. } | ArcBody::Braid { .. } => {
-			stripe_off + spacing
-		}
+		ArcBody::Stripes { .. } | ArcBody::Solid { .. } => stripe_off + spacing,
 		ArcBody::Hidden | ArcBody::Neutral => spacing,
 	}
 }
@@ -1510,6 +1570,12 @@ pub fn demo_midgame() -> Game {
 			}
 		}
 	}
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let t = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
+		let u = game.alloc_ring_kinds(Player::Two, &[(TileColor::Teal, true)], 1, 1);
+		game.place_tile(a, t);
+		game.place_tile(b, u);
+	}
 
 	let p1_bench = vec![
 		game.alloc_ring_kinds(
@@ -1704,9 +1770,9 @@ pub fn demo_left_cluster() -> Game {
 	place(&mut game, nw_inner, Player::Two, TileColor::Blue, 2, 2);
 	if let Some((a, b)) = empty_neighbor_pair(&game) {
 		let zag = game.alloc_ring_kinds(Player::Two, &[(TileColor::Blue, true)], 1, 1);
-		let orange = game.alloc_rings(Player::One, &[TileColor::Orange], 1, 1);
+		let other = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
 		game.place_tile(a, zag);
-		game.place_tile(b, orange);
+		game.place_tile(b, other);
 	}
 	game
 }
@@ -1918,6 +1984,45 @@ mod tests {
 		let match_inner =
 			zag_lane_inner(ArcBody::Solid { color: TileColor::Blue, thick: true }, off, 0.0);
 		assert!(match_inner > inner + 1e-9, "zags sit outside a center match stroke");
+	}
+
+	#[test]
+	fn channel_lanes_omit_quiet_channels_and_order_normal_zag_braid() {
+		let pitch = 4.0;
+		assert_eq!(channel_lane_offsets(true, false, false, pitch), [Some(0.0), None, None]);
+		assert_eq!(channel_lane_offsets(false, true, false, pitch), [None, Some(0.0), None]);
+		assert_eq!(
+			channel_lane_offsets(true, true, false, pitch),
+			[Some(pitch), Some(-pitch), None]
+		);
+		assert_eq!(
+			channel_lane_offsets(true, true, true, pitch),
+			[Some(pitch), Some(0.0), Some(-pitch)]
+		);
+		let braid = Tile::with_typed_rings(
+			1,
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Zag),
+			],
+			1,
+			1,
+		);
+		let cover = Tile::with_rings(
+			2,
+			Player::Two,
+			&[TileColor::Orange, TileColor::Green, TileColor::Blue],
+			1,
+			1,
+		);
+		let paint = arc_paint(Some(braid), Some(cover));
+		assert!(paint.has_normal_lane());
+		assert!(paint.has_zag_lane());
+		assert!(matches!(paint.braid, Some(BraidLane::Weave { .. })));
+		let offs = paint.lane_offsets(pitch);
+		assert_eq!(offs, [Some(pitch), Some(0.0), Some(-pitch)]);
 	}
 
 	#[test]
@@ -2141,7 +2246,11 @@ mod tests {
 			1,
 		);
 		let paint = arc_paint(Some(zag), Some(zag));
-		assert_eq!(paint.body, ArcBody::Hidden, "orange zag hits both ways: draw only the zags");
+		assert_eq!(
+			paint.body,
+			ArcBody::Solid { color: TileColor::Blue, thick: true },
+			"blue normals still match on their own lane"
+		);
 		assert_eq!(paint.zag_from_count(), 0);
 		assert_eq!(paint.zag_to_count(), 0);
 		assert_eq!(paint.zag_mid_count(), 2);
@@ -2152,8 +2261,12 @@ mod tests {
 		let orange_zag = Tile::with_ring_kinds(6, Player::One, &[(TileColor::Orange, true)], 1, 1);
 		let orange_normal = Tile::mono(7, Player::Two, TileColor::Orange, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(orange_normal));
-		assert_eq!(paint.body, ArcBody::Hidden);
-		assert_eq!(paint.zag_mid_count(), 1, "one-sided hit still sits on the center line");
+		assert_eq!(
+			paint.body,
+			ArcBody::Solid { color: TileColor::Orange, thick: true },
+			"normal match and zag mismatch occupy independent lanes"
+		);
+		assert_eq!(paint.zag_mid_count(), 1, "one-sided hit still sits on the zag lane");
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
 		assert_eq!(paint.zag_from_count(), 0);
 		assert_eq!(paint.zag_to_count(), 0);
@@ -2180,14 +2293,21 @@ mod tests {
 		let blue_and_orange =
 			Tile::with_rings(10, Player::Two, &[TileColor::Blue, TileColor::Orange], 2, 1);
 		let paint = arc_paint(Some(match_and_zag), Some(blue_and_orange));
-		assert_eq!(paint.body, ArcBody::Hidden, "hitting zag suppresses the blue match line");
+		assert!(
+			matches!(paint.body, ArcBody::Solid { .. } | ArcBody::Stripes { .. }),
+			"hitting zag no longer suppresses the normal match lane: {:?}",
+			paint.body
+		);
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
 		assert_eq!(paint.zag_mid_count(), 1);
 		assert_eq!(paint.zag_from_count(), 0);
 		assert_eq!(paint.zag_to_count(), 0);
 		let blue_only = Tile::mono(12, Player::Two, TileColor::Blue, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(blue_only));
-		assert_eq!(paint.body, ArcBody::Neutral, "non-hitting zag is a grey no-effect edge");
+		assert!(
+			matches!(paint.body, ArcBody::Hitch { .. }),
+			"zag-only vs other-color normal is a normal hitch"
+		);
 		assert_eq!(paint.zag_count(), 0, "non-hitting zag is not drawn two-ended");
 		let mixed_vs_blue = Tile::with_ring_kinds(
 			13,
@@ -2214,8 +2334,6 @@ mod tests {
 			ArcBody::Hitch {
 				from: [Some(TileColor::Blue), Some(TileColor::Green), None],
 				to: [Some(TileColor::Orange), Some(TileColor::Teal), None],
-				from_braid: [None; 3],
-				to_braid: [None; 3],
 			},
 			"diamond halves list unmatched normals only"
 		);
@@ -2229,11 +2347,9 @@ mod tests {
 		);
 		let paint = arc_paint(Some(mixed_hitch), Some(green));
 		match paint.body {
-			ArcBody::Hitch { from, to, from_braid, to_braid } => {
+			ArcBody::Hitch { from, to } => {
 				assert_eq!(from, [Some(TileColor::Blue), None, None]);
 				assert_eq!(to, [Some(TileColor::Green), None, None]);
-				assert_eq!(from_braid, [None; 3]);
-				assert_eq!(to_braid, [None; 3]);
 			}
 			other => panic!("expected hitch, got {other:?}"),
 		}
@@ -2261,7 +2377,11 @@ mod tests {
 		let green_zag_only =
 			Tile::with_ring_kinds(20, Player::One, &[(TileColor::Green, true)], 1, 1);
 		let paint = arc_paint(Some(green_zag_only), Some(two_green));
-		assert_eq!(paint.body, ArcBody::Hidden, "zag mismatch is the only realized ink");
+		assert_eq!(
+			paint.body,
+			ArcBody::Solid { color: TileColor::Green, thick: true },
+			"holder's green normal matches on its own lane"
+		);
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Green));
 		assert_eq!(paint.zag_mid_count(), 1);
 		assert_eq!(paint.zag_from_count(), 0);
@@ -2283,8 +2403,8 @@ mod tests {
 		let paint = arc_paint(Some(mixed), Some(other));
 		assert_eq!(
 			paint.body,
-			ArcBody::Hidden,
-			"zag + normal conflict on one edge still draws only the zag"
+			ArcBody::Solid { color: TileColor::Orange, thick: true },
+			"other's orange normal is in mixed's colors: normal match lane plus zag"
 		);
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
 		assert_eq!(paint.zag_mid_count(), 1);
@@ -2302,29 +2422,40 @@ mod tests {
 		let cover = Tile::with_rings(2, Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
 		let paint = arc_paint(Some(braid), Some(cover));
 		assert_eq!(
-			paint.body,
-			ArcBody::Braid { colors: [Some(TileColor::Orange), Some(TileColor::Green), None] }
+			paint.braid,
+			Some(BraidLane::Weave {
+				colors: [Some(TileColor::Orange), Some(TileColor::Green), None]
+			})
+		);
+		assert!(
+			matches!(paint.body, ArcBody::Solid { .. } | ArcBody::Stripes { .. }),
+			"fulfilled braid stacks with the cover's normal match: {:?}",
+			paint.body
 		);
 		assert_eq!(paint.zag_count(), 0);
 		let failed = Tile::with_rings(3, Player::Two, &[TileColor::Blue], 1, 1);
 		let hitch = arc_paint(Some(braid), Some(failed));
 		match hitch.body {
-			ArcBody::Hitch { from, to, from_braid, to_braid } => {
+			ArcBody::Hitch { from, to } => {
 				assert_eq!(from, [None; 3], "braid slots are not leftover highway");
 				assert_eq!(to, [Some(TileColor::Blue), None, None]);
-				assert_eq!(
-					from_braid,
-					[Some(TileColor::Orange), Some(TileColor::Green), None],
-					"unsatisfied braid still carries its threads into the diamond"
-				);
-				assert_eq!(to_braid, [None; 3]);
 			}
 			other => panic!("expected hitch, got {other:?}"),
 		}
-		let one_ended = arc_paint(Some(braid), None);
 		assert_eq!(
-			one_ended.body,
-			ArcBody::Braid { colors: [Some(TileColor::Orange), Some(TileColor::Green), None] },
+			hitch.braid,
+			Some(BraidLane::Failed {
+				colors: [Some(TileColor::Orange), Some(TileColor::Green), None]
+			}),
+			"unsatisfied braid is its own diamond-weave lane"
+		);
+		let one_ended = arc_paint(Some(braid), None);
+		assert_eq!(one_ended.body, ArcBody::Hidden);
+		assert_eq!(
+			one_ended.braid,
+			Some(BraidLane::Weave {
+				colors: [Some(TileColor::Orange), Some(TileColor::Green), None]
+			}),
 			"unconnected edge still shows the would-be braid weave"
 		);
 		let mixed = Tile::with_typed_rings(
@@ -2339,15 +2470,20 @@ mod tests {
 			1,
 		);
 		let teal = Tile::mono(9, Player::Two, TileColor::Teal, 1, 1);
-		match arc_paint(Some(mixed), Some(teal)).body {
-			ArcBody::Hitch { from, to, from_braid, to_braid } => {
+		let mixed_paint = arc_paint(Some(mixed), Some(teal));
+		match mixed_paint.body {
+			ArcBody::Hitch { from, to } => {
 				assert_eq!(from, [Some(TileColor::Blue), None, None]);
 				assert_eq!(to, [Some(TileColor::Teal), None, None]);
-				assert_eq!(from_braid, [Some(TileColor::Orange), Some(TileColor::Green), None]);
-				assert_eq!(to_braid, [None; 3]);
 			}
 			other => panic!("expected mixed hitch, got {other:?}"),
 		}
+		assert_eq!(
+			mixed_paint.braid,
+			Some(BraidLane::Failed {
+				colors: [Some(TileColor::Orange), Some(TileColor::Green), None]
+			})
+		);
 		let braid_zag = Tile::with_typed_rings(
 			4,
 			Player::One,
@@ -2368,9 +2504,10 @@ mod tests {
 		);
 		let both = arc_paint(Some(braid_zag), Some(cover3));
 		assert!(
-			matches!(both.body, ArcBody::Braid { .. }),
+			matches!(both.braid, Some(BraidLane::Weave { .. })),
 			"satisfied braid stays visible next to a jag"
 		);
+		assert!(both.has_normal_lane(), "cover normals still match");
 		assert_eq!(both.zag_mid_count(), 1);
 		let same = Tile::with_typed_rings(
 			6,
@@ -2386,12 +2523,12 @@ mod tests {
 			1,
 			1,
 		);
-		match arc_paint(Some(same), Some(two_orange)).body {
-			ArcBody::Braid { colors } => {
+		match arc_paint(Some(same), Some(two_orange)).braid {
+			Some(BraidLane::Weave { colors }) => {
 				assert_eq!(colors, [Some(TileColor::Orange), Some(TileColor::Orange), None]);
 				assert_eq!(braid_strand_count(colors), 2);
 			}
-			other => panic!("expected braid, got {other:?}"),
+			other => panic!("expected braid weave, got {other:?}"),
 		}
 	}
 
@@ -2525,41 +2662,31 @@ mod tests {
 				{
 					grey_no_effect += 1;
 				}
-				if matches!(paint.body, ArcBody::Hitch { .. }) {
-					assert_eq!(paint.zag_count(), 0, "hitch never shares an edge with a zag");
+				if matches!(paint.body, ArcBody::Hitch { .. }) && paint.zag_count() > 0 {
+					hitch_with_zag += 1;
 				}
-				if matches!(paint.body, ArcBody::Solid { .. } | ArcBody::Stripes { .. }) {
-					assert_eq!(paint.zag_count(), 0, "two-ended match has no zag ink");
+				if matches!(paint.body, ArcBody::Solid { .. } | ArcBody::Stripes { .. })
+					&& paint.zag_count() > 0
+				{
+					stripe_with_zag += 1;
 				}
 			}
 			match paint.body {
 				ArcBody::Neutral => gray += 1,
 				ArcBody::Solid { thick: false, .. } => one += 1,
 				ArcBody::Solid { thick: true, .. } => same += 1,
-				ArcBody::Hitch {
-					from: cols_a,
-					to: cols_b,
-					from_braid: braid_a,
-					to_braid: braid_b,
-				} => {
+				ArcBody::Hitch { from: cols_a, to: cols_b } => {
 					hitch += 1;
 					assert!(from.is_some() && to.is_some(), "hitch is two-ended only");
 					if let (Some(a), Some(b)) = (from, to) {
 						assert!(
-							shared_normal_colors(a, b)[0].is_none()
-								&& selected_braid(a, b).is_none()
-								&& a.present_toward(b) && b.present_toward(a),
-							"hitch is for true color conflicts only"
+							!a.normal_channel_matches(b),
+							"hitch is the normal-channel mismatch"
 						);
 						assert_eq!(cols_a, unique_normals(a));
 						assert_eq!(cols_b, unique_normals(b));
-						assert_eq!(braid_a, hitch_braid_colors(a));
-						assert_eq!(braid_b, hitch_braid_colors(b));
 						if packed_color_count(cols_a) >= 2 && packed_color_count(cols_b) >= 2 {
 							multi_color_hitch += 1;
-						}
-						if paint.zag_count() > 0 {
-							hitch_with_zag += 1;
 						}
 					}
 				}
@@ -2575,7 +2702,9 @@ mod tests {
 					}
 				}
 				ArcBody::Hidden => hidden += 1,
-				ArcBody::Braid { .. } => braid_arcs += 1,
+			}
+			if paint.braid.is_some() {
+				braid_arcs += 1;
 			}
 		}
 		assert!(braid_arcs > 0, "need a satisfied-braid arc");
@@ -2584,7 +2713,10 @@ mod tests {
 		assert!(same > 0, "need same-color solid arcs");
 		assert!(hitch > 0, "need two-ended conflicting hitches");
 		assert!(multi_color_hitch > 0, "need a multi-color vs multi-color hitch");
-		assert_eq!(hitch_with_zag, 0, "a hitch is not drawn beside a zag");
+		assert!(
+			hitch_with_zag > 0 || stripe_with_zag > 0,
+			"independent lanes may draw a hitch or match beside a zag"
+		);
 		assert!(stripes > 0, "need highway-stripe arcs");
 		assert!(two_ended_stripes > 0, "need a two-ended multi-shared-color highway");
 		assert!(
@@ -2624,10 +2756,9 @@ mod tests {
 							&& t.zag_hits_on(other) > 0
 					};
 					if orange_and_green_zag(a, b) || orange_and_green_zag(b, a) {
-						assert_eq!(
-							paint.body,
-							ArcBody::Hidden,
-							"green zag vs orange holder must not draw the orange link"
+						assert!(
+							paint.has_normal_lane(),
+							"green zag vs orange holder keeps the orange match lane"
 						);
 						assert!(paint.zag_count() > 0);
 						zag_only_orange_green += 1;
@@ -2642,7 +2773,6 @@ mod tests {
 					}
 					if matches!(paint.body, ArcBody::Hitch { .. }) {
 						hitch += 1;
-						assert_eq!(paint.zag_count(), 0);
 					}
 				}
 				(Some(t), None) | (None, Some(t)) => {

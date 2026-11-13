@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use crate::ai::Actor;
 use crate::game::{
-	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
-	SamePieceTwice, ZagMismatchCount, BAG_SIZE, BAG_SIZE_DEFAULT,
+	BraidFailMismatch, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint,
+	RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE, BAG_SIZE_DEFAULT,
 };
 use crate::scenario::Scenario;
 
@@ -292,6 +292,9 @@ where
 		"--zag-mismatch" => {
 			rules.zag_mismatch = ZagMismatchCount::parse(&require_value(arg, it.next())?)?;
 		}
+		"--braid-fail-mismatch" => {
+			rules.braid_fail_mismatch = BraidFailMismatch::parse(&require_value(arg, it.next())?)?;
+		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
 		}
@@ -356,6 +359,7 @@ pub fn usage() -> &'static str {
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
+	   --braid-fail-mismatch <one|weight>         Failed-braid mismatch (default: one)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -483,6 +487,7 @@ mod tests {
 		assert!(cfg.rules.counted_pass_through);
 		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		assert_eq!(cfg.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
+		assert_eq!(cfg.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::One);
 	}
 
 	#[test]
@@ -495,6 +500,16 @@ mod tests {
 		assert!(err.contains("zag-mismatch"));
 		let err = GameConfig::parse(["--zag-mismatch", "directional"]).unwrap_err();
 		assert!(err.contains("zag-mismatch"));
+	}
+
+	#[test]
+	fn parses_braid_fail_mismatch() {
+		let one = GameConfig::parse(["--braid-fail-mismatch", "one"]).unwrap();
+		assert_eq!(one.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::One);
+		let weight = GameConfig::parse(["--braid-fail-mismatch", "weight"]).unwrap();
+		assert_eq!(weight.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::Weight);
+		let err = GameConfig::parse(["--braid-fail-mismatch", "sum"]).unwrap_err();
+		assert!(err.contains("braid-fail-mismatch"));
 	}
 
 	#[test]

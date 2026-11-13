@@ -35,7 +35,7 @@ Construction stats for the default rosette (`R = 1`, offset `67.5°` so an outer
 Each tile has:
 
 - **Owner** as a light/dark shade: P1 light, P2 dark (fill).
-- **Rings** (1–3 distinct colors). A **normal** ring indicates a color the tile can match (in and out). A **zag** ring never matches. A zag on either tile whose color the other tile holds (normal or zag) is a mismatch on the **edge** between them; both tiles take that edge count (`zag_mismatch`, default `sum`; `max` takes the per-color max of hitting zag strokes). Generation still draws distinct colors as in the six-color tree, then each ring independently becomes a zag with chance 1/7 (`zag_numer / 7`; `--zag-chance 0` / `--zags off` disables). You cannot have both a normal and a zag of the same color on a generated tile (one ring per color; stacked same-color zags exist only as test fixtures so SUM can add strokes and MAX can take a per-color max). A **braid** occupies 2 or 3 ring slots (1–3 colors; single-color braids allowed) and is satisfied when the neighbor’s **ring** color counts cover it (match weight = braid size; each ring counts 1, tile weight does not add rings). An orange+orange braid needs two orange rings on the neighbor. Unsatisfied braids still hitch, but keep the threaded weave mixed into the diamond with leftover highway colors. One-ended braids draw the would-be weave. Per edge, take the largest fulfilled braid (no summing). A jag and a braid on the same edge both score. Satisfied braids draw the old conflict weave (one thread per slot). `--braid-chance` / `--braids` default 1/7. Bead / antipodal ring types are not implemented. Colors: green, blue, orange (weight 81 each), lavender-pink, teal (9 each), maroon (1). Ring 1 always exists. Ring 2: weight 7 same as ring 1, weight 1 any color from the same tree (a redraw of ring 1 is not a new ring). Ring 3: same rule relative to the last existing ring. `--max-rings` caps this at 1–3 (default 3).
+- **Rings** (1–3 distinct colors). A **normal** ring indicates a color the tile can match (in and out) on the **normal channel**. A **zag** ring never matches on its own channel. A zag on either tile whose color the other tile holds (normal or zag) is a mismatch on the **zag channel** (`zag_mismatch`, default `sum`; `max` takes the per-color max of hitting zag strokes). Generation still draws distinct colors as in the six-color tree, then each ring independently becomes a zag with chance 1/7 (`zag_numer / 7`; `--zag-chance 0` / `--zags off` disables). You cannot have both a normal and a zag of the same color on a generated tile (one ring per color; stacked same-color zags exist only as test fixtures so SUM can add strokes and MAX can take a per-color max). A **braid** occupies 2 or 3 ring slots (1–3 colors; single-color braids allowed) and is satisfied when the neighbor’s **ring** color counts cover it (braid-channel match = braid size). An orange+orange braid needs two orange rings on the neighbor. Unsatisfied braids score **one** +1 mismatch for the edge (`--braid-fail-mismatch one`, default) and draw a union-color weave with a diamond; `weight` is the planned variant. One-ended braids draw the would-be weave. Per edge, take the largest fulfilled braid (no summing). Channels are independent: a zag and a braid on the same edge both score, and a leftover normal match stacks with a fulfilled braid. `--braid-chance` / `--braids` default 1/7. Bead / antipodal ring types are not implemented. Colors: green, blue, orange (weight 81 each), lavender-pink, teal (9 each), maroon (1). Ring 1 always exists. Ring 2: weight 7 same as ring 1, weight 1 any color from the same tree (a redraw of ring 1 is not a new ring). Ring 3: same rule relative to the last existing ring. `--max-rings` caps this at 1–3 (default 3).
 - **Weight** is the live ring-slot count (`n_rings`, braid slots included). Overwhelm match base and hop compare use that count. There is no separate hidden weight, and painters do not draw extra concentric copies of the last ring.
 - **Dots** `d ∈ {1,2,3}` drawn as 1–3 dots (MOVE length).
 
@@ -63,12 +63,14 @@ Options: `starting_bench_size` (spawn tokens), `bag_size` (public deck), `self_c
 
 Evaluated **board-wide, simultaneously**, after every action.
 
-- A neighbor **matches** if the two tiles share a **normal** ring color. Zags never produce a match.
-- Zag mismatches are an **edge** event (`RuleSet::zag_mismatch`, CLI `--zag-mismatch`): a zag on either tile whose color the other holds (normal or zag) counts. Both tiles take the same number. Non-matching zags are empty (no match, no mismatch, no conflict). If that zag-hit count is 0 and the tiles share no normal color, the ordinary +1 mismatch (or neighbor weight if `mismatch_uses_neighbor_weight`). A tile can still take that ordinary mismatch on its **normal** rings even if it also has zags.
+**Independent channels** (see [`rfc-001-001-002-independent-channels`](../rfc-001-001-002-independent-channels/README.md)) replace the earlier cross-type overrides. Core: every ring has weight 1; `effective_weight = mismatch − match` summed over edges; overwhelmed iff `effective_weight >= ring_weight`. Per edge, normal / zag / braid each score on their own and **add**. A zag vs a same-color normal nets 0; a fulfilled braid stacks with a normal match. Failed braid default mismatch is +1 (`--braid-fail-mismatch weight` is the planned variant).
+
+- A neighbor **matches** on the **normal** channel if some normal-ring color of either tile is in the other tile's color multiset (including zag and braid colors). Zags never produce a zag-channel match.
+- Zag mismatches are an **edge** event (`RuleSet::zag_mismatch`, CLI `--zag-mismatch`): a zag on either tile whose color the other holds (normal or zag) counts. Both tiles take the same number. The zag channel no longer suppresses the normal lane.
   - **`sum` (default):** count every hitting zag stroke on both tiles. A orange zag vs B orange zag = 2. 3 blue zags vs 3 blue zags = 6. 2 orange vs 1 orange = 3.
   - **`max`:** for each color, the edge count for that color is the **max**, over the two tiles, of how many of that tile's zag strokes of that color hit the other (the other holds that color on any ring). The edge total is the sum of those per-color maxima. Orange zag vs orange zag = 1. 3 blue vs 3 blue = 3. 2 orange vs 1 orange = 2. A 2 orange zags (B holds orange) + B 1 green zag (A holds green) = 3.
-- Example: blue normal + orange zag vs the same → 1 blue match and **2** mismatches under `sum` (both orange zags hit), or **1** under `max`. Two orange zags on U vs T carrying orange → 2 under both `sum` and `max`.
-- Blue-normal vs orange-normal + green-zag is a mismatch on the normals (blue vs orange); the green zag does not hit blue. Green-zag vs orange-normal + two green normals is a one-sided zag hit (both tiles take 1). Blue-normal + orange-zag vs green-normal + orange-normal is a zag hit on the same edge as a latent normal conflict; the zag count replaces the ordinary +1.
+- Example: blue normal + orange zag vs the same → 1 blue **normal** match and **2** zag mismatches under `sum` (both orange zags hit), or **1** under `max`. Two orange zags on U vs T carrying orange → 2 under both `sum` and `max`.
+- Blue-normal vs orange-normal + green-zag is a mismatch on the **normal** channel (blue vs orange); the green zag does not hit blue. Green-zag vs orange-normal + two green normals is a one-sided zag hit (both tiles take 1) plus a **normal** match (green). Blue-normal + orange-zag vs green-normal + orange-normal is a **normal** match (orange) **and** a zag hit of 1 — they add; the zag no longer replaces the ordinary hitch.
 - `matches = own ring count + (number of matching adjacent tiles, either owner)`
 - Removed iff `mismatches >= matches`
 - A one-ring zag is inert in isolation. On contact with a tile that carries that color it never matches, so a 1-ring zag is captured under the ordinary rule; a 3-ring color-carrier takes the zag hit and may survive.
@@ -102,15 +104,16 @@ A hop over a chain is still one step of the exact-`d` MOVE. Empty walks, pass-th
 
 ### Edge rendering (realized state)
 
-Two-ended edges (both nodes occupied) draw **only realized effects**:
+Two-ended edges (both nodes occupied) draw **one lane per firing channel**, in order **normal, zag, braid**. Quiet channels are omitted. See [`rfc-001-001-002`](../rfc-001-001-002-independent-channels/README.md).
 
-- Confirmed zag mismatch → draw **only** the hitting zag(s), on the **center line** of the arc (the mismatch is undirected, including when only one tile zags). Under `sum`, one squiggle per counted zag stroke, bundled around the center; under `max`, per color as many center-line squiggles as that color's max count. No match line, highway stripes, or conflict diamond on that edge. A zag that does not hit the neighbor is not drawn on that edge.
-- Shared normal(s) and no zag hit → single thick match line, or highway stripes if more than one shared normal.
-- Both tiles have normals, share none, and no zag hit → one elongated **diamond** at the midpoint (edge slope matches a zag tooth). Each tile's unmatched leftover-normal highway wraps one pair of edges as a bundle; the halves meet at the along-arc vertices. A multi-color edge still draws a single diamond. An unsatisfied braid on that edge still draws the threaded weave along its hitch half, mixed with leftover highway stripes, so the braid stays visible inside the conflict.
-- Satisfied braid (no larger competing rule) → the old conflict weave, one thread per braid slot.
-- Nothing realized (for example a non-hitting zag against a tile that has no shared normal and is not a normal-vs-normal conflict) → grey base arc.
+- **Normal match** → highway stripe in the matched color(s). **Normal mismatch** → diamond of unmatched leftover **normal** colors (braid threads are not mixed in).
+- **Zag** → each triggered zag between the tiles, bundled on the zag lane (`sum` / `max` stroke counts unchanged). A non-hitting zag is not drawn on that edge.
+- **Braid** → the max fulfilled weave, or a failed union-color weave with a midpoint diamond. Unconnected edges still show the would-be braid.
+- Nothing firing → grey base arc.
 
-One-ended edges (the tile has no neighbor on that arc) still draw all of that tile's **potential** effects: a would-be braid as the threaded weave in the braid's ring colors, otherwise leftover normal colors as a highway, and every zag, so it is clear what would be in play if another tile landed there.
+Tile-rim braid weave is unchanged (`TILE_BRAID_TURN_UNITS = 0.21`, stroke 0.70). Mobile crowding of stacked lanes is acceptable for now.
+
+One-ended edges (the tile has no neighbor on that arc) still draw all of that tile's **potential** effects: a would-be braid as the threaded weave in the braid's ring colors, leftover normal colors as a highway, and every zag, so it is clear what would be in play if another tile landed there.
 
 ### Win and draw
 
@@ -255,7 +258,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --insufficient-tiles-loss off|strict|no-recapture
         --starting-tokens N --deck-size N --self-capture-budget on|off
         --max-rings 1..3 --zag-chance 0..7 --zags on|off
-        --zag-mismatch sum|max
+	   --zag-mismatch sum|max --braid-fail-mismatch one|weight
         --scenario name|path --list-scenarios
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```

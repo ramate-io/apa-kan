@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::game::{
-	Action, ActionOutcome, BudgetToken, EndReason, Game, GameStatus, HopWeightCmp,
-	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player,
-	RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
+	Action, ActionOutcome, BraidFailMismatch, BudgetToken, EndReason, Game, GameStatus,
+	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
+	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -211,6 +211,10 @@ pub struct RulesLog {
 	pub counted_pass_through: bool,
 	pub pass_through_ring_cmp: String,
 	pub zag_mismatch: String,
+	/// Absent on logs from before independent channels. Replay of those
+	/// logs is skipped because capture outcomes used the old overrides.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub braid_fail_mismatch: Option<String>,
 }
 
 impl RulesLog {
@@ -247,6 +251,7 @@ impl RulesLog {
 			counted_pass_through: r.counted_pass_through,
 			pass_through_ring_cmp: r.pass_through_ring_cmp.name().into(),
 			zag_mismatch: r.zag_mismatch.name().into(),
+			braid_fail_mismatch: Some(r.braid_fail_mismatch.name().into()),
 		}
 	}
 
@@ -283,6 +288,10 @@ impl RulesLog {
 			counted_pass_through: self.counted_pass_through,
 			pass_through_ring_cmp: PassThroughRingCmp::parse(&self.pass_through_ring_cmp)?,
 			zag_mismatch: ZagMismatchCount::parse(&self.zag_mismatch)?,
+			braid_fail_mismatch: match &self.braid_fail_mismatch {
+				Some(s) => BraidFailMismatch::parse(s)?,
+				None => BraidFailMismatch::One,
+			},
 		})
 	}
 }
@@ -1028,6 +1037,7 @@ mod tests {
 		let logs = decode_jsonl_gz(&bytes).expect("decode gzip jsonl");
 		assert_eq!(logs.len(), 108, "standard H2H is 9 pairings × 12 games");
 		let derived_weight = logs.iter().all(opening_weight_equals_rings);
+		let independent_channels = logs.iter().all(|log| log.rules.braid_fail_mismatch.is_some());
 		for (i, log) in logs.iter().enumerate() {
 			assert_eq!(log.v, SCHEMA_VERSION);
 			assert_eq!(log.rules.bag_size, 11, "{rel}");
@@ -1035,7 +1045,7 @@ mod tests {
 			assert_eq!(log.search_rng_seed, search_rng_seed(log.seed));
 			assert!(!log.opening.p1_bench.is_empty());
 			assert!(!log.actions.is_empty() || log.turns == 0);
-			if !derived_weight {
+			if !derived_weight || !independent_channels {
 				continue;
 			}
 			let replayed =
@@ -1085,6 +1095,11 @@ mod tests {
 	#[test]
 	fn committed_public_deck_tokens_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays("benchmark_results/public_deck_tokens.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_independent_channels_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/independent_channels.jsonl.gz");
 	}
 
 	#[test]

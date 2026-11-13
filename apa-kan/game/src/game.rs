@@ -433,6 +433,10 @@ impl Tile {
 		self.stroke_type(k).is_zag()
 	}
 
+	pub fn stroke_is_normal(self, k: u8) -> bool {
+		self.stroke_type(k).is_normal()
+	}
+
 	pub fn stroke_is_braid(self, k: u8) -> bool {
 		self.stroke_type(k).is_braid()
 	}
@@ -498,8 +502,25 @@ impl Tile {
 
 	/// Shared **normal** ring. Zags and braids never produce a normal match.
 	/// A color that either tile holds only as zags or braids does not count.
+	/// Pass-through and hops still use this (both sides must hold the color
+	/// as a normal). Edge scoring uses [`Self::normal_channel_matches`].
 	pub fn shares_normal(self, other: Tile) -> bool {
 		(self.normal_mask() & other.normal_mask()) != 0
+	}
+
+	/// True if some **normal**-ring color of this tile appears among `other`'s
+	/// colors (any ring type: normal, zag, or braid).
+	pub fn normal_color_in(self, other: Tile) -> bool {
+		self.ring_colors()
+			.iter()
+			.enumerate()
+			.any(|(i, &c)| self.ring_type[i].is_normal() && other.has_color(c))
+	}
+
+	/// Independent normal channel: a match when some normal-ring color of
+	/// either tile is in the other tile's color multiset.
+	pub fn normal_channel_matches(self, other: Tile) -> bool {
+		self.normal_color_in(other) || other.normal_color_in(self)
 	}
 
 	/// How many of this tile's zag **rings** of `color` hit `target`
@@ -994,6 +1015,68 @@ impl ZagMismatchCount {
 	}
 }
 
+/// Failed-braid mismatch on an edge where at least one tile has a braid and
+/// none is fulfilled. Default [`Self::One`] is a single +1 for the edge.
+/// [`Self::Weight`] is the planned variant: the mismatch equals the largest
+/// braid's slot count (2 or 3), not 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BraidFailMismatch {
+	One,
+	Weight,
+}
+
+impl BraidFailMismatch {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().replace('_', "-").as_str() {
+			"one" | "1" | "unit" => Ok(Self::One),
+			"weight" | "full" | "braid-weight" => Ok(Self::Weight),
+			other => Err(format!("unknown braid-fail-mismatch '{other}' (expected one|weight)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::One => "one",
+			Self::Weight => "weight",
+		}
+	}
+
+	/// Mismatch the braid channel applies when no braid on `a`–`b` is fulfilled.
+	pub fn cost(self, a: Tile, b: Tile) -> i32 {
+		match self {
+			Self::One => 1,
+			Self::Weight => i32::from(a.braid_ring_count().max(b.braid_ring_count()).max(1)),
+		}
+	}
+}
+
+/// Independent per-type edge channels. Match weights are positive here; the
+/// signed edge total is [`Self::effective`] (`mismatch − match`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EdgeChannels {
+	pub normal_match: i32,
+	pub normal_mismatch: i32,
+	pub zag_mismatch: i32,
+	pub braid_match: i32,
+	pub braid_mismatch: i32,
+}
+
+impl EdgeChannels {
+	pub fn match_weight(self) -> i32 {
+		self.normal_match + self.braid_match
+	}
+
+	pub fn mismatch_weight(self) -> i32 {
+		self.normal_mismatch + self.zag_mismatch + self.braid_mismatch
+	}
+
+	/// Per-edge `mismatch_weight − match_weight`. Summed over a tile's edges
+	/// and compared with `ring_weight` (`n_rings`).
+	pub fn effective(self) -> i32 {
+		self.mismatch_weight() - self.match_weight()
+	}
+}
+
 /// Lose when board tiles + remaining deck cannot reach the control-set occupancy
 /// threshold (`control_n`, default 5). Default [`Self::Off`].
 ///
@@ -1157,6 +1240,10 @@ pub struct RuleSet {
 	/// take that count. [`ZagMismatchCount::Max`] takes, per color, the
 	/// larger of the two tiles' hitting zag-stroke counts of that color.
 	pub zag_mismatch: ZagMismatchCount,
+	/// Failed-braid channel mismatch. Default [`BraidFailMismatch::One`]:
+	/// exactly +1 for the edge. [`BraidFailMismatch::Weight`] uses the
+	/// braid's slot count (planned benchmark variant).
+	pub braid_fail_mismatch: BraidFailMismatch,
 }
 
 impl Default for RuleSet {
@@ -1193,6 +1280,7 @@ impl Default for RuleSet {
 			counted_pass_through: true,
 			pass_through_ring_cmp: PassThroughRingCmp::Ge,
 			zag_mismatch: ZagMismatchCount::Sum,
+			braid_fail_mismatch: BraidFailMismatch::One,
 		}
 	}
 }
@@ -1786,40 +1874,64 @@ impl Game {
 		Tile::with_typed_rings(id, owner, parts, weight, dots)
 	}
 
+	/// Independent per-type channels on the undirected edge `tile`–`other`.
+	///
+	/// A channel contributes only if at least one of the two tiles has a ring
+	/// of that type. Channels never override each other: a zag vs a same-color
+	/// normal nets 0, and a fulfilled braid stacks with a normal match.
+	///
+	/// - **Normal:** match 1 if some normal-ring color of either tile is in
+	///   the other tile's color multiset; otherwise mismatch 1 (or the
+	///   neighbor's ring count when `mismatch_uses_neighbor_weight`).
+	/// - **Zag:** [`RuleSet::zag_mismatch`] hitting-zag count. Never a match.
+	/// - **Braid:** the single largest fulfilled braid (match = its slot
+	///   count). If none is fulfilled, one mismatch of
+	///   [`RuleSet::braid_fail_mismatch`] (default 1).
+	pub fn edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
+		let mut ch = EdgeChannels::default();
+		if tile.normal_ring_count() > 0 || other.normal_ring_count() > 0 {
+			if tile.normal_channel_matches(other) {
+				ch.normal_match = 1;
+			} else if self.rules.mismatch_uses_neighbor_weight {
+				ch.normal_mismatch = i32::from(other.weight);
+			} else {
+				ch.normal_mismatch = 1;
+			}
+		}
+		if tile.zag_ring_count() > 0 || other.zag_ring_count() > 0 {
+			ch.zag_mismatch = self.rules.zag_mismatch.count(tile, other);
+		}
+		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
+			if let Some((_, n)) = selected_braid(tile, other) {
+				ch.braid_match = i32::from(n);
+			} else {
+				ch.braid_mismatch = self.rules.braid_fail_mismatch.cost(tile, other);
+			}
+		}
+		ch
+	}
+
 	/// Match/mismatch this `tile` receives from neighbor `other`.
 	///
-	/// Matches: the largest fulfilled braid on the edge (weight = braid size
-	/// 2 or 3) if any; otherwise +1 if they share a **normal** color. A
-	/// satisfied braid suppresses the normal match (one or the other). A
-	/// failed braid does not: leftover normal rings can still match.
-	/// Zags never produce a match.
-	///
-	/// Mismatches: [`RuleSet::zag_mismatch`] count of hitting zags (jags) on
-	/// this edge, **plus** a satisfied braid still counts as a match so jag
-	/// and braid scores sum. Ordinary +1 (or neighbor weight) mismatch only
-	/// when the zag-hit count is 0, there is no match (braid or normal), and
-	/// both tiles are actually present toward each other. An unsatisfied
-	/// braid is present like a normal ring, so it hitch-mismatches those
-	/// slots when nothing else scores.
+	/// Returns `(match_weight, mismatch_weight)` summed across independent
+	/// channels. The signed edge total is `mismatch − match`
+	/// ([`EdgeChannels::effective`]). A tile is overwhelmed when the sum of
+	/// those edge totals is `>=` its ring count.
 	pub fn edge_score(&self, tile: Tile, other: Tile) -> (i32, i32) {
-		let braid_match = selected_braid(tile, other).map(|(_, n)| i32::from(n)).unwrap_or(0);
-		let matches =
-			if braid_match > 0 { braid_match } else { i32::from(tile.shares_normal(other)) };
-		let zag = self.rules.zag_mismatch.count(tile, other);
-		let mismatches = if zag > 0 {
-			zag
-		} else if matches > 0 {
-			0
-		} else if tile.present_toward(other) && other.present_toward(tile) {
-			if self.rules.mismatch_uses_neighbor_weight {
-				i32::from(other.weight)
-			} else {
-				1
+		let ch = self.edge_channels(tile, other);
+		(ch.match_weight(), ch.mismatch_weight())
+	}
+
+	/// Sum of per-edge `mismatch − match` against this tile's neighbors.
+	pub fn tile_effective_weight(&self, node: NodeId) -> Option<i32> {
+		let tile = self.tile_at(node)?;
+		let mut effective = 0i32;
+		for &nb in self.board.neighbors(node) {
+			if let Some(other) = self.tile_at(nb) {
+				effective += self.edge_channels(tile, other).effective();
 			}
-		} else {
-			0
-		};
-		(matches, mismatches)
+		}
+		Some(effective)
 	}
 
 	/// Occupied-edge braid stats: `(edges with a braid, satisfied of those)`.
@@ -1860,9 +1972,9 @@ impl Game {
 	}
 
 	pub fn is_overwhelmed(&self, node: NodeId) -> bool {
-		match self.tile_score(node) {
-			Some((m, n)) => n >= m,
-			None => false,
+		match (self.tile_at(node), self.tile_effective_weight(node)) {
+			(Some(tile), Some(eff)) => eff >= i32::from(tile.weight),
+			_ => false,
 		}
 	}
 
@@ -1871,16 +1983,13 @@ impl Game {
 		if self.tile_at(node).is_some() {
 			return false;
 		}
-		let mut matches = i32::from(tile.weight);
-		let mut mismatches = 0i32;
+		let mut effective = 0i32;
 		for &nb in self.board.neighbors(node) {
 			if let Some(other) = self.tile_at(nb) {
-				let (m, x) = self.edge_score(tile, other);
-				matches += m;
-				mismatches += x;
+				effective += self.edge_channels(tile, other).effective();
 			}
 		}
-		mismatches >= matches
+		effective >= i32::from(tile.weight)
 	}
 
 	pub fn collect_removals(&self) -> Vec<Removal> {
@@ -2830,6 +2939,7 @@ mod tests {
 		assert!(rules.counted_pass_through);
 		assert_eq!(rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
+		assert_eq!(rules.braid_fail_mismatch, BraidFailMismatch::One);
 		assert!(rules.no_moves_loses);
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
@@ -4700,14 +4810,19 @@ mod tests {
 		);
 		game.place_tile(spawn, t);
 		game.place_tile(nb, u);
+		assert_eq!(
+			game.edge_score(t, u),
+			(1, 2),
+			"normal match (T's orange is in U) stacks with two zag hits"
+		);
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!(m, 2, "ring count 2, orange zag never matches");
+		assert_eq!(m, 3, "ring count 2 + normal match");
 		assert_eq!(x, 2, "two orange zags on U whose color T has");
 		assert_eq!(game.edge_score(t, u), game.edge_score(u, t), "SUM is symmetric");
 	}
 
 	#[test]
-	fn one_ring_zag_is_captured_on_contact_with_that_color() {
+	fn one_ring_zag_nets_zero_against_same_color_normal() {
 		let mut game = Game::empty(RuleSet::default());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
@@ -4716,12 +4831,18 @@ mod tests {
 		assert!(!game.is_overwhelmed(spawn), "isolated zag is inert");
 		let normal = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
 		game.place_tile(nb, normal);
+		assert_eq!(
+			game.edge_score(zag, normal),
+			(1, 1),
+			"normal match −1 and zag mismatch +1 net 0"
+		);
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, x), (1, 1), "zag never matches; ordinary mismatch captures w=1");
-		assert!(game.is_overwhelmed(spawn));
+		assert_eq!((m, x), (2, 1), "ring count 1 + normal match vs one zag hit");
+		assert!(!game.is_overwhelmed(spawn), "effective 0 < ring_weight 1");
 		let (om, ox) = game.tile_score(nb).unwrap();
-		assert_eq!((om, ox), (1, 1), "U has orange; T's orange zag hits U so U is also captured");
-		assert!(game.is_overwhelmed(nb));
+		assert_eq!((om, ox), (2, 1));
+		assert!(!game.is_overwhelmed(nb));
+		assert_eq!(game.tile_effective_weight(spawn).unwrap(), 0);
 	}
 
 	#[test]
@@ -4739,8 +4860,9 @@ mod tests {
 		game.place_tile(spawn, zag);
 		game.place_tile(nb, heavy);
 		assert_eq!(heavy.weight, 3);
-		assert!(game.is_overwhelmed(spawn));
-		assert!(!game.is_overwhelmed(nb), "3-ring carrier takes one zag hit and lives");
+		assert_eq!(game.edge_score(zag, heavy), (1, 1), "same-color zag vs normal nets 0");
+		assert!(!game.is_overwhelmed(spawn), "net 0 does not overwhelm the zag");
+		assert!(!game.is_overwhelmed(nb), "3-ring carrier takes net 0 and lives");
 	}
 
 	#[test]
@@ -4855,17 +4977,22 @@ mod tests {
 	}
 
 	#[test]
-	fn zag_color_alone_never_counts_as_a_match() {
+	fn zag_color_alone_never_counts_as_a_zag_match() {
 		let mut game = Game::empty(RuleSet::default());
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
 		assert!(!a.shares_normal(b));
-		assert_eq!(game.edge_score(a, b), (0, 1), "ordinary mismatch; zag is not a match");
-		assert_eq!(game.edge_score(b, a), (0, 1), "U's zag hits T's blue");
+		assert!(a.normal_channel_matches(b), "B's blue normal is in A's colors");
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(ch.zag_mismatch, 1);
+		assert_eq!(ch.braid_match, 0);
+		assert_eq!(game.edge_score(a, b), (1, 1), "zags never give a match; normal still can");
+		assert_eq!(game.edge_score(b, a), (1, 1));
 	}
 
 	#[test]
-	fn non_matching_zag_is_empty_not_a_mismatch() {
+	fn zag_only_vs_other_color_normal_is_a_normal_mismatch() {
 		let mut game = Game::empty(RuleSet::default());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
@@ -4873,14 +5000,17 @@ mod tests {
 		let blue = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
 		assert_eq!(zag.zag_hits_on(blue), 0, "blue does not hold orange");
 		assert_eq!(blue.zag_hits_on(zag), 0);
-		assert_eq!(game.edge_score(zag, blue), (0, 0), "non-matching zag is empty");
-		assert_eq!(game.edge_score(blue, zag), (0, 0));
+		let ch = game.edge_channels(zag, blue);
+		assert_eq!(ch.normal_mismatch, 1, "normal channel still fires");
+		assert_eq!(ch.zag_mismatch, 0, "zag color is absent on the other tile");
+		assert_eq!(game.edge_score(zag, blue), (0, 1));
+		assert_eq!(game.edge_score(blue, zag), (0, 1));
 		game.place_tile(spawn, zag);
 		game.place_tile(nb, blue);
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, x), (1, 0), "own weight only; orange zag does not mismatch blue");
-		assert!(!game.is_overwhelmed(spawn));
-		assert!(!game.is_overwhelmed(nb));
+		assert_eq!((m, x), (1, 1), "normal mismatch of 1; zag does not add");
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
 	}
 
 	#[test]
@@ -4952,12 +5082,13 @@ mod tests {
 		);
 		assert_eq!(zag.zag_hits_on(holder), 1);
 		assert!(!zag.shares_normal(holder));
-		assert_eq!(game.edge_score(zag, holder), (0, 1), "green zag hits the green holder");
+		assert!(holder.normal_color_in(zag), "holder's green normal is in the zag tile");
 		assert_eq!(
-			game.edge_score(holder, zag),
-			(0, 1),
-			"holder has no zag; ordinary mismatch does not stack on a zag hit"
+			game.edge_score(zag, holder),
+			(1, 1),
+			"green zag +1 stacks with the holder's green normal match"
 		);
+		assert_eq!(game.edge_score(holder, zag), (1, 1));
 	}
 
 	#[test]
@@ -5005,31 +5136,31 @@ mod tests {
 	}
 
 	#[test]
-	fn one_sided_zag_hit_is_one_on_both_tiles() {
+	fn one_sided_zag_hit_nets_zero_with_the_normal_match() {
 		let zag_kinds = [(TileColor::Orange, true)];
 		let holder_kinds = [(TileColor::Orange, false)];
 		for mode in every_zag_mismatch() {
 			let mut game = Game::empty(rules_with_zag_mismatch(mode));
 			let zag = game.alloc_ring_kinds(Player::One, &zag_kinds, 1, 1);
 			let holder = game.alloc_ring_kinds(Player::Two, &holder_kinds, 1, 1);
-			assert_eq!(game.edge_score(zag, holder), (0, 1), "{mode:?} zag side");
-			assert_eq!(game.edge_score(holder, zag), (0, 1), "{mode:?} holder side");
+			assert_eq!(game.edge_score(zag, holder), (1, 1), "{mode:?} zag side");
+			assert_eq!(game.edge_score(holder, zag), (1, 1), "{mode:?} holder side");
 			let spawn = game.board().spawns()[0];
 			let nb = game.board().neighbors(spawn)[0];
 			game.place_tile(spawn, zag);
 			game.place_tile(nb, holder);
-			assert_eq!(game.tile_score(spawn).unwrap(), (1, 1));
-			assert_eq!(game.tile_score(nb).unwrap(), (1, 1));
-			assert!(game.is_overwhelmed(spawn));
-			assert!(game.is_overwhelmed(nb));
+			assert_eq!(game.tile_score(spawn).unwrap(), (2, 1));
+			assert_eq!(game.tile_score(nb).unwrap(), (2, 1));
+			assert!(!game.is_overwhelmed(spawn));
+			assert!(!game.is_overwhelmed(nb));
 		}
 	}
 
 	#[test]
-	fn zag_and_normal_mismatch_on_the_same_edge() {
+	fn zag_and_normal_channels_stack_on_the_same_edge() {
 		// Blue-normal + orange-zag vs green-normal + orange-normal: the orange
-		// zag hits, and the unmatched normals would be an ordinary conflict if
-		// the zag were absent. Zag hits replace the ordinary count (unchanged).
+		// zag hits, and the other tile's orange *normal* is in the zag tile's
+		// colors, so the normal channel matches rather than hitching.
 		let mixed_kinds = [(TileColor::Blue, false), (TileColor::Orange, true)];
 		let other_kinds = [(TileColor::Green, false), (TileColor::Orange, false)];
 		for mode in every_zag_mismatch() {
@@ -5037,50 +5168,52 @@ mod tests {
 			let mixed = game.alloc_ring_kinds(Player::One, &mixed_kinds, 2, 1);
 			let other = game.alloc_ring_kinds(Player::Two, &other_kinds, 2, 1);
 			assert!(!mixed.shares_normal(other));
+			assert!(other.normal_color_in(mixed));
 			assert_eq!(mixed.zag_hits_on(other), 1);
 			assert_eq!(other.zag_hits_on(mixed), 0);
-			assert_eq!(game.edge_score(mixed, other), (0, 1), "{mode:?}");
-			assert_eq!(game.edge_score(other, mixed), (0, 1), "{mode:?} same edge count");
+			assert_eq!(game.edge_score(mixed, other), (1, 1), "{mode:?}");
+			assert_eq!(game.edge_score(other, mixed), (1, 1), "{mode:?} same edge count");
 			let spawn = game.board().spawns()[0];
 			let nb = game.board().neighbors(spawn)[0];
 			game.place_tile(spawn, mixed);
 			game.place_tile(nb, other);
-			assert_eq!(game.tile_score(spawn).unwrap(), (2, 1));
-			assert_eq!(game.tile_score(nb).unwrap(), (2, 1));
-			assert!(!game.is_overwhelmed(spawn), "weight 2 vs 1 zag hit survives");
+			assert_eq!(game.tile_score(spawn).unwrap(), (3, 1));
+			assert_eq!(game.tile_score(nb).unwrap(), (3, 1));
+			assert!(!game.is_overwhelmed(spawn));
 		}
 
-		// Mutual orange zags plus unmatched normals: SUM 2, MAX 1.
+		// Mutual orange zags plus unmatched leftover normals: zag SUM 2 /
+		// MAX 1 plus a normal mismatch of 1.
 		let both_zag = [(TileColor::Blue, false), (TileColor::Orange, true)];
 		let vs_zag = [(TileColor::Green, false), (TileColor::Orange, true)];
 		let mut sum = Game::empty(rules_with_zag_mismatch(ZagMismatchCount::Sum));
 		let a = sum.alloc_ring_kinds(Player::One, &both_zag, 2, 1);
 		let b = sum.alloc_ring_kinds(Player::Two, &vs_zag, 2, 1);
-		assert_eq!(sum.edge_score(a, b), (0, 2));
-		assert_eq!(sum.edge_score(b, a), (0, 2));
+		assert_eq!(sum.edge_score(a, b), (0, 3));
+		assert_eq!(sum.edge_score(b, a), (0, 3));
 		let mut max = Game::empty(rules_with_zag_mismatch(ZagMismatchCount::Max));
 		let a = max.alloc_ring_kinds(Player::One, &both_zag, 2, 1);
 		let b = max.alloc_ring_kinds(Player::Two, &vs_zag, 2, 1);
-		assert_eq!(max.edge_score(a, b), (0, 1));
-		assert_eq!(max.edge_score(b, a), (0, 1));
+		assert_eq!(max.edge_score(a, b), (0, 2));
+		assert_eq!(max.edge_score(b, a), (0, 2));
 	}
 
 	#[test]
-	fn non_matching_zag_stays_neutral_under_every_count() {
+	fn non_hitting_zag_does_not_cancel_the_normal_channel() {
 		for mode in every_zag_mismatch() {
 			let mut game = Game::empty(rules_with_zag_mismatch(mode));
 			let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
 			let blue = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
-			assert_eq!(game.edge_score(zag, blue), (0, 0), "{mode:?}");
-			assert_eq!(game.edge_score(blue, zag), (0, 0), "{mode:?}");
+			assert_eq!(game.edge_score(zag, blue), (0, 1), "{mode:?}");
+			assert_eq!(game.edge_score(blue, zag), (0, 1), "{mode:?}");
 			let spawn = game.board().spawns()[0];
 			let nb = game.board().neighbors(spawn)[0];
 			game.place_tile(spawn, zag);
 			game.place_tile(nb, blue);
-			assert_eq!(game.tile_score(spawn).unwrap(), (1, 0));
-			assert_eq!(game.tile_score(nb).unwrap(), (1, 0));
-			assert!(!game.is_overwhelmed(spawn));
-			assert!(!game.is_overwhelmed(nb));
+			assert_eq!(game.tile_score(spawn).unwrap(), (1, 1));
+			assert_eq!(game.tile_score(nb).unwrap(), (1, 1));
+			assert!(game.is_overwhelmed(spawn));
+			assert!(game.is_overwhelmed(nb));
 		}
 	}
 
@@ -5115,17 +5248,21 @@ mod tests {
 		let b_kinds = [(TileColor::Orange, false), (TileColor::Green, true)];
 		let a = max.alloc_ring_kinds(Player::One, &a_kinds, 3, 1);
 		let b = max.alloc_ring_kinds(Player::Two, &b_kinds, 2, 1);
-		assert_eq!(max.edge_score(a, b), (0, 3), "max(2,0) orange + max(0,1) green");
-		assert_eq!(max.edge_score(b, a), (0, 3));
+		assert_eq!(
+			max.edge_score(a, b),
+			(1, 3),
+			"normal match plus max(2,0) orange + max(0,1) green"
+		);
+		assert_eq!(max.edge_score(b, a), (1, 3));
 		let a = sum.alloc_ring_kinds(Player::One, &a_kinds, 3, 1);
 		let b = sum.alloc_ring_kinds(Player::Two, &b_kinds, 2, 1);
-		assert_eq!(sum.edge_score(a, b), (0, 3), "SUM also 2 orange + 1 green");
+		assert_eq!(sum.edge_score(a, b), (1, 3), "SUM also 2 orange + 1 green, plus the match");
 
-		// Two orange zags vs an orange holder still counts up under MAX.
+		// Two orange zags vs an orange holder: normal match stacks with zag MAX 2.
 		let a = max.alloc_ring_kinds(Player::One, &two_orange, 2, 1);
 		let holder = max.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
-		assert_eq!(max.edge_score(a, holder), (0, 2));
-		assert_eq!(max.edge_score(holder, a), (0, 2));
+		assert_eq!(max.edge_score(a, holder), (1, 2));
+		assert_eq!(max.edge_score(holder, a), (1, 2));
 	}
 
 	#[test]
@@ -5658,17 +5795,24 @@ mod tests {
 		let mut game = Game::empty(RuleSet::default());
 		let a = orange_green_braid(&mut game, Player::One);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
-		assert_eq!(game.edge_score(a, b), (2, 0), "orange+green braid vs both colors = match 2");
-		assert_eq!(game.edge_score(b, a), (2, 0), "undirected: both tiles take the braid match");
+		assert_eq!(
+			game.edge_score(a, b),
+			(3, 0),
+			"braid match 2 stacks with the neighbor's normal match"
+		);
+		assert_eq!(game.edge_score(b, a), (3, 0), "undirected: both tiles take the same channels");
 	}
 
 	#[test]
-	fn braid_unsatisfied_is_a_normal_mismatch() {
+	fn braid_unsatisfied_is_a_braid_mismatch() {
 		let mut game = Game::empty(RuleSet::default());
 		let a = orange_green_braid(&mut game, Player::One);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
-		assert_eq!(game.edge_score(a, b), (0, 1), "failed braid vs a present neighbor is a hitch");
-		assert_eq!(game.edge_score(b, a), (0, 1));
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.braid_mismatch, 1);
+		assert_eq!(ch.normal_mismatch, 1, "blue is not among the braid colors");
+		assert_eq!(game.edge_score(a, b), (0, 2));
+		assert_eq!(game.edge_score(b, a), (0, 2));
 	}
 
 	#[test]
@@ -5683,8 +5827,8 @@ mod tests {
 		let one_orange = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
 		assert_eq!(
 			game.edge_score(braid, one_orange),
-			(0, 1),
-			"orange+orange braid is not satisfied by a single orange"
+			(1, 1),
+			"unfulfilled orange+orange braid +1; the single orange normal still matches"
 		);
 		let two_normal = game.alloc_typed_rings(
 			Player::Two,
@@ -5694,8 +5838,8 @@ mod tests {
 		);
 		assert_eq!(
 			game.edge_score(braid, two_normal),
-			(2, 0),
-			"two orange normals cover an orange+orange braid"
+			(3, 0),
+			"braid match 2 stacks with the orange normal match"
 		);
 		let normal_and_zag = game.alloc_typed_rings(
 			Player::Two,
@@ -5705,7 +5849,7 @@ mod tests {
 		);
 		assert_eq!(
 			game.edge_score(braid, normal_and_zag),
-			(2, 1),
+			(3, 1),
 			"zag orange still counts toward the braid; the jag also mismatches"
 		);
 		let one_orange_heavy_arg = game.alloc_rings(Player::Two, &[TileColor::Orange], 3, 1);
@@ -5715,7 +5859,7 @@ mod tests {
 		assert_eq!(one_orange_heavy_arg.ring_strokes(), 1, "no extra concentric copies");
 		assert_eq!(
 			game.edge_score(braid, one_orange_heavy_arg),
-			(0, 1),
+			(1, 1),
 			"a single orange ring cannot cover orange+orange; two orange rings are required"
 		);
 	}
@@ -5736,15 +5880,15 @@ mod tests {
 		let orange_only = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
 		assert_eq!(
 			game.edge_score(mixed, orange_only),
-			(1, 0),
-			"braid fails; leftover orange normal still matches"
+			(1, 1),
+			"braid fails (+1) and leftover orange normal still matches (−1)"
 		);
 		let orange_green =
 			game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
 		assert_eq!(
 			game.edge_score(mixed, orange_green),
-			(2, 0),
-			"satisfied braid suppresses the extra normal match"
+			(3, 0),
+			"satisfied braid stacks with the leftover orange normal match"
 		);
 	}
 
@@ -5773,8 +5917,8 @@ mod tests {
 		);
 		assert_eq!(
 			game.edge_score(size3, size2),
-			(3, 0),
-			"both braids fulfill; take the size-3 braid, not 2+3"
+			(4, 0),
+			"largest fulfilled braid is 3; leftover blue normal still matches"
 		);
 		let a = orange_green_braid(&mut game, Player::One);
 		let b = game.alloc_typed_rings(
@@ -5810,8 +5954,192 @@ mod tests {
 		);
 		assert_eq!(
 			game.edge_score(braid_plus_zag, neighbor),
-			(2, 1),
-			"braid match 2 plus blue jag mismatch 1"
+			(3, 1),
+			"braid match 2 stacks with the neighbor's normal match; blue jag +1"
+		);
+	}
+
+	#[test]
+	fn independent_channel_table_rows() {
+		// RFC table: (name, A parts, B parts, match, mismatch, notes).
+		struct Row {
+			name: &'static str,
+			a: &'static [(TileColor, RingType)],
+			b: &'static [(TileColor, RingType)],
+			want_match: i32,
+			want_mismatch: i32,
+			normal_match: i32,
+			normal_mismatch: i32,
+			zag: i32,
+			braid_match: i32,
+			braid_mismatch: i32,
+		}
+		let rows = [
+			Row {
+				name: "zag vs normal same color",
+				a: &[(TileColor::Orange, RingType::Zag)],
+				b: &[(TileColor::Orange, RingType::Normal)],
+				want_match: 1,
+				want_mismatch: 1,
+				normal_match: 1,
+				normal_mismatch: 0,
+				zag: 1,
+				braid_match: 0,
+				braid_mismatch: 0,
+			},
+			Row {
+				name: "braid plus normal stacking",
+				a: &[
+					(TileColor::Orange, RingType::Braid),
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Orange, RingType::Normal),
+				],
+				b: &[(TileColor::Orange, RingType::Normal), (TileColor::Green, RingType::Normal)],
+				want_match: 3,
+				want_mismatch: 0,
+				normal_match: 1,
+				normal_mismatch: 0,
+				zag: 0,
+				braid_match: 2,
+				braid_mismatch: 0,
+			},
+			Row {
+				name: "both sides with braids where one fulfills",
+				a: &[
+					(TileColor::Orange, RingType::Braid),
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Braid),
+				],
+				b: &[
+					(TileColor::Orange, RingType::Braid),
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Normal),
+				],
+				want_match: 4,
+				want_mismatch: 0,
+				normal_match: 1,
+				normal_mismatch: 0,
+				zag: 0,
+				braid_match: 3,
+				braid_mismatch: 0,
+			},
+			Row {
+				name: "neither braid fulfilled",
+				a: &[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+				b: &[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+				want_match: 0,
+				want_mismatch: 1,
+				normal_match: 0,
+				normal_mismatch: 0,
+				zag: 0,
+				braid_match: 0,
+				braid_mismatch: 1,
+			},
+			Row {
+				name: "zag-only tile next to a normal-only tile",
+				a: &[(TileColor::Orange, RingType::Zag)],
+				b: &[(TileColor::Blue, RingType::Normal)],
+				want_match: 0,
+				want_mismatch: 1,
+				normal_match: 0,
+				normal_mismatch: 1,
+				zag: 0,
+				braid_match: 0,
+				braid_mismatch: 0,
+			},
+			Row {
+				name: "same-color braid needing two rings",
+				a: &[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+				b: &[(TileColor::Orange, RingType::Normal)],
+				want_match: 1,
+				want_mismatch: 1,
+				normal_match: 1,
+				normal_mismatch: 0,
+				zag: 0,
+				braid_match: 0,
+				braid_mismatch: 1,
+			},
+		];
+		for row in rows {
+			let mut game = Game::empty(RuleSet::default());
+			let a = game.alloc_typed_rings(Player::One, row.a, 1, 1);
+			let b = game.alloc_typed_rings(Player::Two, row.b, 1, 1);
+			let ch = game.edge_channels(a, b);
+			assert_eq!(ch.normal_match, row.normal_match, "{} normal_match", row.name);
+			assert_eq!(ch.normal_mismatch, row.normal_mismatch, "{} normal_mismatch", row.name);
+			assert_eq!(ch.zag_mismatch, row.zag, "{} zag", row.name);
+			assert_eq!(ch.braid_match, row.braid_match, "{} braid_match", row.name);
+			assert_eq!(ch.braid_mismatch, row.braid_mismatch, "{} braid_mismatch", row.name);
+			assert_eq!(game.edge_score(a, b), (row.want_match, row.want_mismatch), "{}", row.name);
+			assert_eq!(
+				game.edge_score(b, a),
+				(row.want_match, row.want_mismatch),
+				"{} sym",
+				row.name
+			);
+			let spawn = game.board().spawns()[0];
+			let nb = game.board().neighbors(spawn)[0];
+			game.place_tile(spawn, a);
+			game.place_tile(nb, b);
+			let eff = game.tile_effective_weight(spawn).unwrap();
+			assert_eq!(eff, row.want_mismatch - row.want_match, "{} effective", row.name);
+			assert_eq!(
+				game.is_overwhelmed(spawn),
+				eff >= i32::from(a.weight),
+				"{} overwhelm vs ring_weight {}",
+				row.name,
+				a.weight
+			);
+			let (m, x) = game.tile_score(spawn).unwrap();
+			assert_eq!(m, i32::from(a.weight) + row.want_match, "{} tile matches", row.name);
+			assert_eq!(x, row.want_mismatch, "{} tile mismatches", row.name);
+			assert_eq!(x >= m, game.is_overwhelmed(spawn), "{} tile_score vs overwhelm", row.name);
+		}
+	}
+
+	#[test]
+	fn failed_braid_weight_variant_uses_the_braid_slot_count() {
+		let mut rules = RuleSet::default();
+		rules.braid_fail_mismatch = BraidFailMismatch::Weight;
+		let mut game = Game::empty(rules);
+		let a = orange_green_braid(&mut game, Player::One);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.braid_mismatch, 2, "failed 2-braid costs its weight");
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(game.edge_score(a, b), (0, 3));
+		let size3 = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Braid),
+			],
+			1,
+			1,
+		);
+		let miss = game.alloc_rings(Player::Two, &[TileColor::Teal], 1, 1);
+		assert_eq!(game.edge_channels(size3, miss).braid_mismatch, 3);
+	}
+
+	#[test]
+	fn ring_weight_is_the_live_ring_count() {
+		let mut game = Game::empty(RuleSet::default());
+		let mixed = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Zag),
+			],
+			9,
+			1,
+		);
+		assert_eq!(mixed.weight, mixed.n_rings);
+		assert_eq!(mixed.weight, 3);
+		assert_eq!(
+			mixed.braid_ring_count() + mixed.zag_ring_count() + mixed.normal_ring_count(),
+			3
 		);
 	}
 
