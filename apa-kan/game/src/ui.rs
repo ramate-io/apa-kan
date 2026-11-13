@@ -11,7 +11,7 @@ use rand::SeedableRng;
 use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
-use crate::game::{Action, BudgetToken, Game, Player, Tile, ZagMismatchCount};
+use crate::game::{Action, BudgetToken, DeckSlot, Game, Player, Tile, ZagMismatchCount};
 use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
@@ -30,6 +30,7 @@ pub fn run_app(cfg: GameConfig) {
 	let rng = StdRng::seed_from_u64(cfg.seed ^ 0xA5A5_A5A5);
 	let width = cfg.width;
 	let height = cfg.height;
+	let deck_slots = game.rules().bag_size as usize;
 	let mut resolution = WindowResolution::new(width, height);
 	resolution.set_scale_factor_override(Some(1.0));
 	App::new()
@@ -57,7 +58,11 @@ pub fn run_app(cfg: GameConfig) {
 		})
 		.insert_resource(RngRes(rng))
 		.insert_resource(BotClock { wait: 0.4 })
-		.insert_resource(UiLayout(ViewLayout::from_window(width as f32, height as f32)))
+		.insert_resource(UiLayout(ViewLayout::from_window_with_deck(
+			width as f32,
+			height as f32,
+			deck_slots,
+		)))
 		.insert_resource(ShotState {
 			frames: 0,
 			requested_at: 0,
@@ -196,7 +201,11 @@ fn sync_layout(windows: Query<&Window>, mut layout: ResMut<UiLayout>, mut play: 
 	let Some(window) = windows.iter().next() else {
 		return;
 	};
-	let next = ViewLayout::from_window(window.width(), window.height());
+	let next = ViewLayout::from_window_with_deck(
+		window.width(),
+		window.height(),
+		play.game.rules().bag_size as usize,
+	);
 	if (next.width - layout.width).abs() > 0.5 || (next.height - layout.height).abs() > 0.5 {
 		layout.0 = next;
 		play.fingerprint = 0;
@@ -402,14 +411,18 @@ fn hit_node(game: &Game, layout: &ViewLayout, pos: Vec2) -> Option<NodeId> {
 }
 
 fn hit_bench(game: &Game, layout: &ViewLayout, player: Player, pos: Vec2) -> Option<usize> {
-	let bench = game.bench(player);
-	for (i, _) in bench.iter().enumerate() {
-		let p = layout.bench_pos(player, i, bench.len());
+	let deck = game.deck_slots(player);
+	let n = deck.len();
+	for (slot_i, slot) in deck.iter().enumerate() {
+		let DeckSlot::Live(tile) = slot else {
+			continue;
+		};
+		let p = layout.bench_pos(player, slot_i, n);
 		let p = Vec2::new(p[0], p[1]);
 		if pos.distance_squared(p)
 			<= (layout.bench_tile_radius + 6.0) * (layout.bench_tile_radius + 6.0)
 		{
-			return Some(i);
+			return game.bench(player).iter().position(|t| t.id == tile.id);
 		}
 	}
 	None
@@ -533,7 +546,6 @@ fn refresh_view(
 				tile,
 				matches!(play.selection, Selection::Piece(n) if n == id),
 				layout.tile_radius,
-				false,
 			);
 		} else if board.is_spawn(id) && matches!(play.selection, Selection::Bench(_)) {
 			spawn_label(
@@ -545,39 +557,37 @@ fn refresh_view(
 	}
 
 	for player in [Player::Two, Player::One] {
-		let bench = play.game.bench(player).to_vec();
+		let deck = play.game.deck_slots(player);
 		let selected = play.game.current_player() == player;
-		for (i, tile) in bench.iter().enumerate() {
-			let highlight = selected && play.selection == Selection::Bench(i);
-			let p = layout.bench_pos(player, i, bench.len());
-			spawn_tile_at(
-				&mut commands,
-				&mut meshes,
-				&mut materials,
-				Vec2::new(p[0], p[1]),
-				*tile,
-				highlight,
-				layout.bench_tile_radius,
-				false,
-			);
-		}
-		let tokens = play.game.budget_tokens(player).to_vec();
-		let n = tokens.len();
-		let usable = play.game.budget(player);
-		for (i, token) in tokens.iter().enumerate() {
-			let p = layout.budget_stack_pos(player, i, n);
-			let surplus = i >= usable;
-			match token {
-				BudgetToken::Blank => spawn_blank_token(
+		let n = deck.len();
+		for (i, slot) in deck.iter().enumerate() {
+			let p = layout.bench_pos(player, i, n);
+			match slot {
+				DeckSlot::Empty => spawn_blank_token(
 					&mut commands,
 					&mut meshes,
 					&mut materials,
 					Vec2::new(p[0], p[1]),
 					player,
 					layout.bench_tile_radius,
-					surplus,
 				),
-				BudgetToken::Captured(tile) => spawn_tile_at(
+				DeckSlot::Live(tile) => {
+					let bench_i = play.game.bench(player).iter().position(|t| t.id == tile.id);
+					let highlight = selected
+						&& bench_i
+							.map(|idx| play.selection == Selection::Bench(idx))
+							.unwrap_or(false);
+					spawn_tile_at(
+						&mut commands,
+						&mut meshes,
+						&mut materials,
+						Vec2::new(p[0], p[1]),
+						*tile,
+						highlight,
+						layout.bench_tile_radius,
+					);
+				}
+				DeckSlot::Spent(tile) => spawn_tile_at(
 					&mut commands,
 					&mut meshes,
 					&mut materials,
@@ -585,8 +595,33 @@ fn refresh_view(
 					*tile,
 					false,
 					layout.bench_tile_radius,
-					surplus,
 				),
+			}
+		}
+		let tokens = play.game.budget_tokens(player).to_vec();
+		let n = tokens.len();
+		let usable = play.game.budget(player);
+		for (i, token) in tokens.iter().enumerate() {
+			let p = layout.budget_stack_pos(player, i, n);
+			if visual::budget_slot_is_blank_face(token, i, usable) {
+				spawn_blank_token(
+					&mut commands,
+					&mut meshes,
+					&mut materials,
+					Vec2::new(p[0], p[1]),
+					player,
+					layout.bench_tile_radius,
+				);
+			} else if let BudgetToken::Captured(tile) = token {
+				spawn_tile_at(
+					&mut commands,
+					&mut meshes,
+					&mut materials,
+					Vec2::new(p[0], p[1]),
+					*tile,
+					false,
+					layout.bench_tile_radius,
+				);
 			}
 		}
 	}
@@ -1057,14 +1092,11 @@ fn spawn_blank_token(
 	pos: Vec2,
 	player: Player,
 	radius: f32,
-	surplus: bool,
 ) {
 	commands.spawn((
 		DynamicView,
 		Mesh2d(meshes.add(Circle::new(radius))),
-		MeshMaterial2d(
-			materials.add(ColorMaterial::from(paint(visual::owner_fill_rgb(player), surplus))),
-		),
+		MeshMaterial2d(materials.add(ColorMaterial::from(rgb(visual::owner_fill_rgb(player))))),
 		Transform::from_translation(pos.extend(visual::Z_TILE)),
 	));
 	let rim = (radius * 0.10).max(1.4);
@@ -1075,7 +1107,7 @@ fn spawn_blank_token(
 		pos,
 		(radius - rim).max(1.0),
 		radius,
-		paint(visual::BLANK_TOKEN_RIM_RGB, surplus),
+		rgb(visual::BLANK_TOKEN_RIM_RGB),
 		visual::Z_TILE_RING,
 	);
 }
@@ -1088,10 +1120,9 @@ fn spawn_tile_at(
 	tile: Tile,
 	highlight: bool,
 	radius: f32,
-	dim: bool,
 ) {
-	let fill = paint(visual::owner_fill_rgb(tile.owner), dim);
-	let primary = paint(visual::tile_rgb(tile.primary()), dim);
+	let fill = rgb(visual::owner_fill_rgb(tile.owner));
+	let primary = rgb(visual::tile_rgb(tile.primary()));
 	let z = visual::Z_TILE;
 	commands.spawn((
 		DynamicView,
@@ -1124,7 +1155,7 @@ fn spawn_tile_at(
 					materials,
 					&zig,
 					draw.zag_stroke.max(0.45),
-					paint(visual::tile_rgb(color), dim),
+					rgb(visual::tile_rgb(color)),
 					z,
 				);
 			} else {
@@ -1135,7 +1166,7 @@ fn spawn_tile_at(
 					pos,
 					(r - ring_half).max(1.0),
 					r,
-					paint(visual::tile_rgb(color), dim),
+					rgb(visual::tile_rgb(color)),
 					z,
 				);
 			}
@@ -1157,7 +1188,7 @@ fn spawn_tile_at(
 					&thread.pts,
 					&thread.phase,
 					w,
-					paint(visual::tile_rgb(thread.color), dim),
+					rgb(visual::tile_rgb(thread.color)),
 					visual::Z_TILE_RING,
 					visual::Z_TILE_RING + 0.08,
 				);
@@ -1203,10 +1234,6 @@ fn spawn_label(commands: &mut Commands, pos: Vec2, text: &str) {
 
 fn rgb(c: [f32; 3]) -> Color {
 	Color::srgb(c[0], c[1], c[2])
-}
-
-fn paint(c: [f32; 3], dim: bool) -> Color {
-	rgb(if dim { visual::surplus_rgb(c) } else { c })
 }
 
 fn update_hud(

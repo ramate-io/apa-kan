@@ -668,8 +668,45 @@ pub enum BudgetToken {
 	Captured(Tile),
 }
 
+/// One slot in the visual full-deck row (always [`RuleSet::bag_size`] long,
+/// default 11). Tiles still in the bag are [`Self::Empty`]. Live bench tiles
+/// are [`Self::Live`]. Placed, captured, or otherwise used tiles stay in
+/// their original slot as [`Self::Spent`] instead of disappearing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeckSlot {
+	Empty,
+	Live(Tile),
+	Spent(Tile),
+}
+
+impl DeckSlot {
+	pub fn tile(self) -> Option<Tile> {
+		match self {
+			Self::Empty => None,
+			Self::Live(tile) | Self::Spent(tile) => Some(tile),
+		}
+	}
+
+	pub fn is_live(self) -> bool {
+		matches!(self, Self::Live(_))
+	}
+
+	pub fn shows_blank_face(self) -> bool {
+		matches!(self, Self::Empty)
+	}
+}
+
 fn blank_budget(n: u8) -> Vec<BudgetToken> {
 	vec![BudgetToken::Blank; n as usize]
+}
+
+/// Visual deck order: live bench left-to-right, then remaining bag in draw
+/// order (next draw first). The bag is a pop-stack, so draw order is reverse.
+fn visual_deck_order(bench: &[Tile], bag: &[Tile]) -> Vec<Tile> {
+	let mut deck = Vec::with_capacity(bench.len() + bag.len());
+	deck.extend_from_slice(bench);
+	deck.extend(bag.iter().rev().copied());
+	deck
 }
 
 pub fn slot_code(color: TileColor, typ: RingType) -> usize {
@@ -1211,6 +1248,10 @@ pub struct Game {
 	/// Capture-budget token stack. Tokens are earned and spent here; usable
 	/// ADD permission is [`Self::budget`] = min(stack length, bench length).
 	budget_tokens: [Vec<BudgetToken>; 2],
+	/// Original deck in visual order (first-dealt first, remaining bag last),
+	/// snapshotted after the opening deal. The UI shows this many slots for
+	/// the whole game; used tiles stay here even after they leave the bench.
+	opening_deck: [Vec<Tile>; 2],
 }
 
 impl Game {
@@ -1281,10 +1322,12 @@ impl Game {
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
 			],
+			opening_deck: [Vec::new(), Vec::new()],
 		};
 		if !dealt {
 			game.deal_opening();
 		}
+		game.snapshot_opening_decks();
 		Ok(game)
 	}
 
@@ -1345,8 +1388,10 @@ impl Game {
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
 			],
+			opening_deck: [Vec::new(), Vec::new()],
 		};
 		game.deal_opening();
+		game.snapshot_opening_decks();
 		game
 	}
 
@@ -1379,7 +1424,15 @@ impl Game {
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
 			],
+			opening_deck: [Vec::new(), Vec::new()],
 		}
+	}
+
+	fn snapshot_opening_decks(&mut self) {
+		self.opening_deck = [
+			visual_deck_order(self.bench(Player::One), self.bag(Player::One)),
+			visual_deck_order(self.bench(Player::Two), self.bag(Player::Two)),
+		];
 	}
 
 	fn deal_opening(&mut self) {
@@ -1537,6 +1590,67 @@ impl Game {
 
 	pub fn set_budget_tokens(&mut self, player: Player, tokens: Vec<BudgetToken>) {
 		self.budget_tokens[player.index()] = tokens;
+	}
+
+	/// Full visual deck, always [`RuleSet::bag_size`] slots. Used tiles keep
+	/// their original slot; tiles still in the bag are empty faces.
+	pub fn deck_slots(&self, player: Player) -> Vec<DeckSlot> {
+		let n = self.rules.bag_size.max(1) as usize;
+		let source = if self.opening_deck[player.index()].is_empty() {
+			self.inferred_opening_deck(player)
+		} else {
+			self.opening_deck[player.index()].clone()
+		};
+		let mut slots = Vec::with_capacity(n);
+		for tile in source.into_iter().take(n) {
+			slots.push(self.classify_deck_tile(player, tile));
+		}
+		while slots.len() < n {
+			slots.push(DeckSlot::Empty);
+		}
+		slots
+	}
+
+	fn classify_deck_tile(&self, player: Player, tile: Tile) -> DeckSlot {
+		if self.bag(player).iter().any(|t| t.id == tile.id) {
+			DeckSlot::Empty
+		} else if self.bench(player).iter().any(|t| t.id == tile.id) {
+			DeckSlot::Live(tile)
+		} else {
+			DeckSlot::Spent(tile)
+		}
+	}
+
+	fn inferred_opening_deck(&self, player: Player) -> Vec<Tile> {
+		let mut out = Vec::new();
+		let mut seen: Vec<u32> = Vec::new();
+		let mut push = |tile: Tile| {
+			if !seen.contains(&tile.id) {
+				seen.push(tile.id);
+				out.push(tile);
+			}
+		};
+		for tile in self.bench(player) {
+			push(*tile);
+		}
+		for (_, tile) in self.tiles() {
+			if tile.owner == player {
+				push(tile);
+			}
+		}
+		for p in [Player::One, Player::Two] {
+			for token in self.budget_tokens(p) {
+				if let BudgetToken::Captured(tile) = token {
+					if tile.owner == player {
+						push(*tile);
+					}
+				}
+			}
+		}
+		for tile in self.bag(player).iter().rev() {
+			push(*tile);
+		}
+		out
 	}
 
 	pub fn bag_len(&self, player: Player) -> usize {
@@ -2597,6 +2711,30 @@ mod tests {
 		assert_eq!(game.bag_len(Player::One), 6);
 		assert_eq!(game.bag_len(Player::Two), 6);
 		assert_eq!(game.legal_adds().len(), 5 * 8);
+	}
+
+	#[test]
+	fn visual_deck_always_shows_eleven_slots_and_keeps_used_tiles() {
+		let mut game = Game::new(RuleSet::default(), 3);
+		let before = game.deck_slots(Player::One);
+		assert_eq!(before.len(), BAG_SIZE_DEFAULT);
+		assert_eq!(before.iter().filter(|s| s.is_live()).count(), 7);
+		assert_eq!(before.iter().filter(|s| s.shows_blank_face()).count(), 4);
+		let action = game.legal_adds().into_iter().next().expect("opening ADD");
+		let added_id = match action {
+			Action::Add { bench_index, .. } => game.bench(Player::One)[bench_index].id,
+			other => panic!("expected ADD, got {other:?}"),
+		};
+		game.apply(action).unwrap();
+		assert_eq!(game.bench(Player::One).len(), 6);
+		let after = game.deck_slots(Player::One);
+		assert_eq!(after.len(), BAG_SIZE_DEFAULT);
+		assert_eq!(after.iter().filter(|s| s.is_live()).count(), 6);
+		assert_eq!(after.iter().filter(|s| matches!(s, DeckSlot::Spent(_))).count(), 1);
+		assert!(after.iter().any(|s| matches!(s, DeckSlot::Spent(t) if t.id == added_id)));
+		for (a, b) in before.iter().zip(&after) {
+			assert_eq!(a.tile().map(|t| t.id), b.tile().map(|t| t.id), "deck slot identity moved");
+		}
 	}
 
 	#[test]

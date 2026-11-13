@@ -4,7 +4,7 @@ use std::path::Path;
 
 use image::{Rgba, RgbaImage};
 
-use crate::game::{BudgetToken, Game, Player, Tile};
+use crate::game::{BudgetToken, DeckSlot, Game, Player, Tile};
 use crate::visual::{self, ArcBody, ViewLayout};
 
 pub fn write_png(game: &Game, path: impl AsRef<Path>, caption: &str) -> Result<(), String> {
@@ -29,7 +29,11 @@ pub fn write_png_view(
 	height: u32,
 	selected: Option<crate::board::NodeId>,
 ) -> Result<(), String> {
-	let layout = ViewLayout::from_window(width as f32, height as f32);
+	let layout = ViewLayout::from_window_with_deck(
+		width as f32,
+		height as f32,
+		game.rules().bag_size as usize,
+	);
 	let bg = visual::rgb8(visual::BG_RGB);
 	let mut img = RgbaImage::from_pixel(width, height, rgba(bg[0], bg[1], bg[2], 255));
 	draw_arcs(&mut img, game, &layout);
@@ -336,7 +340,7 @@ fn draw_tiles(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	for id in 0..board.node_count() as u8 {
 		if let Some(tile) = game.tile_at(id) {
 			let p = image_pt(layout, board.position(id));
-			draw_tile(img, tup(p), f64::from(layout.tile_radius), tile, false);
+			draw_tile(img, tup(p), f64::from(layout.tile_radius), tile);
 		}
 	}
 }
@@ -374,17 +378,17 @@ fn draw_marks(
 
 fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	for player in [Player::Two, Player::One] {
-		let bench = game.bench(player);
-		for (i, tile) in bench.iter().enumerate() {
-			let p = layout.bench_pos(player, i, bench.len());
+		let deck = game.deck_slots(player);
+		let n = deck.len();
+		for (i, slot) in deck.iter().enumerate() {
+			let p = layout.bench_pos(player, i, n);
 			let q = layout.world_to_image(p);
-			draw_tile(
-				img,
-				(f64::from(q[0]), f64::from(q[1])),
-				f64::from(layout.bench_tile_radius),
-				*tile,
-				false,
-			);
+			let c = (f64::from(q[0]), f64::from(q[1]));
+			let r = f64::from(layout.bench_tile_radius);
+			match slot {
+				DeckSlot::Empty => draw_blank_token(img, c, r, player),
+				DeckSlot::Live(tile) | DeckSlot::Spent(tile) => draw_tile(img, c, r, *tile),
+			}
 		}
 		let tokens = game.budget_tokens(player);
 		let n = tokens.len();
@@ -394,10 +398,10 @@ fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let q = layout.world_to_image(p);
 			let c = (f64::from(q[0]), f64::from(q[1]));
 			let r = f64::from(layout.bench_tile_radius);
-			let surplus = i >= usable;
-			match token {
-				BudgetToken::Blank => draw_blank_token(img, c, r, player, surplus),
-				BudgetToken::Captured(tile) => draw_tile(img, c, r, *tile, surplus),
+			if visual::budget_slot_is_blank_face(token, i, usable) {
+				draw_blank_token(img, c, r, player);
+			} else if let BudgetToken::Captured(tile) = token {
+				draw_tile(img, c, r, *tile);
 			}
 		}
 	}
@@ -414,20 +418,14 @@ fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str
 	draw_text(img, 16, (layout.height - 22.0) as u32, visual::HELP_TEXT, lo);
 }
 
-fn draw_blank_token(img: &mut RgbaImage, c: (f64, f64), r: f64, player: Player, surplus: bool) {
-	fill_circle(img, c, r, rgb_of(fade_rgb(visual::owner_fill_rgb(player), surplus)));
-	stroke_circle(
-		img,
-		c,
-		r,
-		rgb_of(fade_rgb(visual::BLANK_TOKEN_RIM_RGB, surplus)),
-		(r * 0.10).max(1.4),
-	);
+fn draw_blank_token(img: &mut RgbaImage, c: (f64, f64), r: f64, player: Player) {
+	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(player)));
+	stroke_circle(img, c, r, rgb_of(visual::BLANK_TOKEN_RIM_RGB), (r * 0.10).max(1.4));
 }
 
-fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile, dim: bool) {
-	fill_circle(img, c, r, rgb_of(fade_rgb(visual::owner_fill_rgb(tile.owner), dim)));
-	let primary = rgb_of(fade_rgb(visual::tile_rgb(tile.primary()), dim));
+fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
+	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(tile.owner)));
+	let primary = rgb_of(visual::tile_rgb(tile.primary()));
 	let draw = visual::TileRingDraw::for_radius(r as f32);
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
@@ -447,9 +445,9 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile, dim: bool) 
 					draw.zag_teeth,
 					draw.zag_samples,
 				);
-				stroke_polyline(img, &zig, rgb_of(fade_rgb(visual::tile_rgb(color), dim)), width);
+				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
 			} else {
-				stroke_circle(img, c, rr, rgb_of(fade_rgb(visual::tile_rgb(color), dim)), width);
+				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
 			}
 		}
 	}
@@ -466,7 +464,7 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile, dim: bool) 
 				split_braid(
 					&thread.pts,
 					&thread.phase,
-					rgb_of(fade_rgb(visual::tile_rgb(thread.color), dim)),
+					rgb_of(visual::tile_rgb(thread.color)),
 					w,
 					&mut back,
 					&mut front,
@@ -494,14 +492,6 @@ fn image_pt(layout: &ViewLayout, p: [f64; 2]) -> [f64; 2] {
 
 fn tup(p: [f64; 2]) -> (f64, f64) {
 	(p[0], p[1])
-}
-
-fn fade_rgb(c: [f32; 3], dim: bool) -> [f32; 3] {
-	if dim {
-		visual::surplus_rgb(c)
-	} else {
-		c
-	}
 }
 
 fn rgb_of(rgb: [f32; 3]) -> Rgba<u8> {
@@ -671,6 +661,32 @@ mod tests {
 	use crate::game::{Game, RuleSet};
 
 	#[test]
+	fn opening_deck_paints_empty_bag_slots_as_opaque_blanks() {
+		use crate::game::Player;
+		use crate::visual::{self, ViewLayout};
+		let game = Game::new(RuleSet::default(), 1);
+		let slots = game.deck_slots(Player::One);
+		assert_eq!(slots.len(), 11);
+		assert_eq!(slots.iter().filter(|s| s.is_live()).count(), 7);
+		assert!(slots[7].shows_blank_face() && slots[10].shows_blank_face());
+		let w = 1280u32;
+		let h = 800u32;
+		let path = std::env::temp_dir().join("apa-kan-opening-deck.png");
+		write_png_sized(&game, &path, "opening deck", w, h).unwrap();
+		let img = image::open(&path).unwrap().to_rgba8();
+		let layout = ViewLayout::from_window_with_deck(w as f32, h as f32, 11);
+		let p = layout.world_to_image(layout.bench_pos(Player::One, 10, 11));
+		let px = img.get_pixel(p[0] as u32, p[1] as u32);
+		let fill = visual::rgb8(visual::owner_fill_rgb(Player::One));
+		assert!(
+			channel_near(px[0], fill[0], 18)
+				&& channel_near(px[1], fill[1], 18)
+				&& channel_near(px[2], fill[2], 18),
+			"unfilled bag slot should be an opaque blank face, got {px:?}"
+		);
+	}
+
+	#[test]
 	fn writes_a_png() {
 		let game = Game::new(RuleSet::default(), 1);
 		let path = std::env::temp_dir().join("apa-kan-render-test.png");
@@ -691,6 +707,101 @@ mod tests {
 			assert!(bytes.len() > 100);
 			assert_eq!(&bytes[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
 		}
+	}
+
+	#[test]
+	fn budget_stack_is_left_and_empty_slots_are_opaque_blank() {
+		use crate::game::Player;
+		use crate::visual::{self, ViewLayout};
+		let game = visual::demo_midgame();
+		let w = 1280u32;
+		let h = 800u32;
+		let path = std::env::temp_dir().join("apa-kan-budget-stack-left.png");
+		write_png_sized(&game, &path, "budget stack left", w, h).unwrap();
+		let img = image::open(&path).unwrap().to_rgba8();
+		let layout =
+			ViewLayout::from_window_with_deck(w as f32, h as f32, game.rules().bag_size as usize);
+		for player in [Player::One, Player::Two] {
+			let tokens = game.budget_tokens(player);
+			let usable = game.budget(player);
+			let n = tokens.len();
+			let deck_n = game.deck_slots(player).len();
+			assert_eq!(deck_n, game.rules().bag_size as usize);
+			let bench0 = layout.world_to_image(layout.bench_pos(player, 0, deck_n));
+			let stack0 = layout.world_to_image(layout.budget_stack_pos(player, 0, n));
+			assert!(
+				stack0[0] < bench0[0],
+				"{player:?}: stack x {} should be left of bench {}",
+				stack0[0],
+				bench0[0]
+			);
+			assert!(stack0[0] < w as f32 * 0.45, "{player:?}: stack not on the left side");
+			let i = n - 1;
+			assert!(visual::budget_slot_is_blank_face(&tokens[i], i, usable));
+			let p = layout.world_to_image(layout.budget_stack_pos(player, i, n));
+			let px = img.get_pixel(p[0] as u32, p[1] as u32);
+			let fill = visual::rgb8(visual::owner_fill_rgb(player));
+			assert!(
+				channel_near(px[0], fill[0], 18)
+					&& channel_near(px[1], fill[1], 18)
+					&& channel_near(px[2], fill[2], 18),
+				"{player:?}: empty-slot center should be opaque owner fill {fill:?}, got {px:?}"
+			);
+			let r = layout.bench_tile_radius * 0.35;
+			let ring_px = img.get_pixel((p[0] + r) as u32, p[1] as u32);
+			assert!(
+				channel_near(ring_px[0], fill[0], 40)
+					&& channel_near(ring_px[1], fill[1], 40)
+					&& channel_near(ring_px[2], fill[2], 40),
+				"{player:?}: empty slot must not show rings/dots, got {ring_px:?} vs fill {fill:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn usable_captured_budget_token_keeps_tile_graphics() {
+		use crate::game::{BudgetToken, Player, TileColor};
+		use crate::visual::{self, ViewLayout};
+		let mut game = Game::empty(RuleSet::default());
+		let bench_tile = game.alloc_tile(Player::One, TileColor::Blue, 1, 1);
+		game.set_bench(Player::One, vec![bench_tile]);
+		let cap = game.alloc_tile(Player::Two, TileColor::Orange, 2, 1);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Captured(cap), BudgetToken::Blank]);
+		assert_eq!(game.budget(Player::One), 1);
+		assert!(!visual::budget_slot_is_blank_face(&game.budget_tokens(Player::One)[0], 0, 1));
+		let w = 1280u32;
+		let h = 800u32;
+		let path = std::env::temp_dir().join("apa-kan-budget-captured.png");
+		write_png_sized(&game, &path, "usable captured token", w, h).unwrap();
+		let img = image::open(&path).unwrap().to_rgba8();
+		let layout =
+			ViewLayout::from_window_with_deck(w as f32, h as f32, game.rules().bag_size as usize);
+		let p = layout.world_to_image(layout.budget_stack_pos(Player::One, 0, 2));
+		let draw = visual::TileRingDraw::for_radius(layout.bench_tile_radius);
+		let rr = f64::from(draw.ring_radius(layout.bench_tile_radius, 0));
+		let orange = visual::rgb8(visual::tile_rgb(TileColor::Orange));
+		let mut found = false;
+		for a in 0..24 {
+			let th = f64::from(a) * std::f64::consts::TAU / 24.0;
+			let x = (f64::from(p[0]) + rr * th.cos()).round() as u32;
+			let y = (f64::from(p[1]) + rr * th.sin()).round() as u32;
+			if x >= img.width() || y >= img.height() {
+				continue;
+			}
+			let px = img.get_pixel(x, y);
+			if channel_near(px[0], orange[0], 50)
+				&& channel_near(px[1], orange[1], 60)
+				&& px[0] > px[2]
+			{
+				found = true;
+				break;
+			}
+		}
+		assert!(found, "usable captured token should keep its orange ring");
+	}
+
+	fn channel_near(got: u8, want: u8, tol: u8) -> bool {
+		got.abs_diff(want) <= tol
 	}
 
 	#[test]
@@ -716,7 +827,23 @@ mod tests {
 		write_png_sized(
 			&board,
 			dir.join("capture_budget_stack_1280x800.png"),
-			"budget stack: usable tokens plus faded surplus beside each bench",
+			"left stacks, full 11-tile decks, opaque empty faces",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_png_sized(
+			&board,
+			dir.join("capture_budget_stack_390x844.png"),
+			"left stacks and 11-tile decks on a mobile portrait window",
+			390,
+			844,
+		)
+		.unwrap();
+		write_png_sized(
+			&Game::new(RuleSet::default(), 1),
+			dir.join("opening_deck_1280x800.png"),
+			"opening: 11-slot decks, 4 empty bag faces, stacks on the left",
 			1280,
 			800,
 		)

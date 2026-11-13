@@ -9,7 +9,7 @@ use std::f64::consts::PI;
 use crate::board::{ArcEdge, Board, NodeId};
 use crate::game::{
 	selected_braid, BudgetToken, Game, GameStatus, Player, RingType, RuleSet, Tile, TileColor,
-	ZagMismatchCount,
+	ZagMismatchCount, BAG_SIZE_DEFAULT,
 };
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
@@ -124,16 +124,10 @@ pub const HIGHLIGHT_RGB: [f32; 3] = [0.95, 0.85, 0.25];
 pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
 /// Rim on a blank budget token so dark P2 blanks stay visible.
 pub const BLANK_TOKEN_RIM_RGB: [f32; 3] = [0.55, 0.56, 0.58];
-/// Mix surplus (unusable) budget-token colors toward the background.
-pub const SURPLUS_TOKEN_FADE: f32 = 0.58;
 
-/// Fade `c` toward [`BG_RGB`] so leftover tokens stay visible but inactive.
-pub fn surplus_rgb(c: [f32; 3]) -> [f32; 3] {
-	[
-		c[0] * (1.0 - SURPLUS_TOKEN_FADE) + BG_RGB[0] * SURPLUS_TOKEN_FADE,
-		c[1] * (1.0 - SURPLUS_TOKEN_FADE) + BG_RGB[1] * SURPLUS_TOKEN_FADE,
-		c[2] * (1.0 - SURPLUS_TOKEN_FADE) + BG_RGB[2] * SURPLUS_TOKEN_FADE,
-	]
+/// Unusable surplus or unfilled blanks: opaque owner-fill face, rim only.
+pub fn budget_slot_is_blank_face(token: &BudgetToken, index: usize, usable: usize) -> bool {
+	index >= usable || matches!(token, BudgetToken::Blank)
 }
 
 /// Usable budget, or `usable+surplus` when tokens exceed the bench.
@@ -605,6 +599,8 @@ pub struct ViewLayout {
 	pub bench_spacing: f32,
 	pub p1_bench_y: f32,
 	pub p2_bench_y: f32,
+	pub n_deck_slots: usize,
+	pub deck_origin_x: f32,
 	pub arc_width: f32,
 	pub stripe_off: f32,
 	pub stripe_off_center: f32,
@@ -618,8 +614,13 @@ pub struct ViewLayout {
 
 impl ViewLayout {
 	pub fn from_window(width: f32, height: f32) -> Self {
+		Self::from_window_with_deck(width, height, BAG_SIZE_DEFAULT)
+	}
+
+	pub fn from_window_with_deck(width: f32, height: f32, deck_slots: usize) -> Self {
 		let width = width.max(320.0);
 		let height = height.max(240.0);
+		let n_deck_slots = deck_slots.max(1);
 		let tile_u = TILE_RADIUS_UNITS;
 		let extent_u = BOARD_EXTENT_UNITS;
 		let fixed_h = HUD_TOP_PX + HELP_BOTTOM_PX + 2.0 * MARGIN_PX + 2.0 * BOARD_GAP_PX;
@@ -631,16 +632,17 @@ impl ViewLayout {
 		let tile_radius = tile_u * scale;
 		let node_radius = NODE_RADIUS_UNITS * scale;
 		let spawn_radius = SPAWN_RADIUS_UNITS * scale;
-		// Seven-tile benches plus a budget-token stack on the right; shrink
-		// the bench discs (not the board tiles) and cap spacing if needed.
-		let n_slots = 7.0_f32;
-		let min_gap = 6.0;
-		let stack_reserve = ((width - 2.0 * SIDE_MARGIN_PX) / 10.0).max(28.0);
+		// Full-deck row (default 11) plus a budget-token stack on the left;
+		// shrink the deck discs (not the board tiles) and cap spacing.
+		let n_slots = n_deck_slots as f32;
+		let min_gap = 4.0;
+		let stack_reserve = ((width - 2.0 * SIDE_MARGIN_PX) / 9.0).max(26.0);
 		let available_w = (width - 2.0 * SIDE_MARGIN_PX - stack_reserve).max(80.0);
-		let max_bench_r = ((available_w - (n_slots - 1.0) * min_gap) / (2.0 * n_slots)).max(8.0);
+		let gaps = (n_slots - 1.0).max(1.0);
+		let max_bench_r = ((available_w - gaps * min_gap) / (2.0 * n_slots)).max(7.0);
 		let bench_tile_radius = tile_radius.min(max_bench_r);
-		let desired_spacing = 2.0 * bench_tile_radius + (0.40 * bench_tile_radius).max(min_gap);
-		let max_spacing = (available_w - 2.0 * bench_tile_radius) / (n_slots - 1.0);
+		let desired_spacing = 2.0 * bench_tile_radius + (0.28 * bench_tile_radius).max(min_gap);
+		let max_spacing = (available_w - 2.0 * bench_tile_radius) / gaps;
 		let bench_spacing = desired_spacing.min(max_spacing.max(2.0 * bench_tile_radius + 1.0));
 
 		let top = height / 2.0;
@@ -652,6 +654,19 @@ impl ViewLayout {
 		let board_bot = p1_bench_y + bench_tile_radius + BOARD_GAP_PX;
 		let origin_y = 0.5 * (board_top + board_bot);
 		let origin_x = 0.0;
+		// Keep the budget stack in the left gutter; shift the deck right if a
+		// centered 11-tile row would collide with it (narrow/mobile windows).
+		let row_span = bench_spacing * (n_slots - 1.0);
+		let stack_x = -width / 2.0 + SIDE_MARGIN_PX + bench_tile_radius;
+		let first_min = stack_x + bench_spacing;
+		let last_max = width / 2.0 - SIDE_MARGIN_PX - bench_tile_radius;
+		let mut deck_origin_x = 0.0;
+		if -row_span / 2.0 < first_min {
+			deck_origin_x = first_min + row_span / 2.0;
+		}
+		if deck_origin_x + row_span / 2.0 > last_max {
+			deck_origin_x = last_max - row_span / 2.0;
+		}
 
 		let arc_width = (ARC_WIDTH_UNITS * scale).max(ARC_WIDTH_MIN_PX);
 		let stripe_off = (STRIPE_OFFSET_UNITS * scale).max(2.2);
@@ -676,6 +691,8 @@ impl ViewLayout {
 			bench_spacing,
 			p1_bench_y,
 			p2_bench_y,
+			n_deck_slots,
+			deck_origin_x,
 			arc_width,
 			stripe_off,
 			stripe_off_center,
@@ -710,20 +727,20 @@ impl ViewLayout {
 			Player::One => self.p1_bench_y,
 		};
 		let total = self.bench_spacing * len.saturating_sub(1) as f32;
-		let start = -total / 2.0;
+		let start = self.deck_origin_x - total / 2.0;
 		[start + index as f32 * self.bench_spacing, y]
 	}
 
-	/// Overlapping pile just to the right of a 7-tile bench row. Index 0 is
+	/// Overlapping pile just to the left of the full-deck row. Index 0 is
 	/// the back of the stack (opening blanks); later tokens sit toward the board.
 	pub fn budget_stack_pos(&self, player: Player, index: usize, _len: usize) -> [f32; 2] {
 		let y = match player {
 			Player::Two => self.p2_bench_y,
 			Player::One => self.p1_bench_y,
 		};
-		let bench_right = self.bench_pos(player, 6, 7);
-		let max_x = self.width / 2.0 - SIDE_MARGIN_PX - self.bench_tile_radius;
-		let x = (bench_right[0] + self.bench_spacing).min(max_x);
+		let bench_left = self.bench_pos(player, 0, self.n_deck_slots);
+		let min_x = -self.width / 2.0 + SIDE_MARGIN_PX + self.bench_tile_radius;
+		let x = (bench_left[0] - self.bench_spacing).max(min_x);
 		let toward_board = match player {
 			Player::One => 1.0,
 			Player::Two => -1.0,
@@ -1740,6 +1757,7 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
+	use crate::game::DeckSlot;
 
 	#[test]
 	fn tiles_are_scaled_from_the_doubled_radius() {
@@ -1963,13 +1981,90 @@ mod tests {
 				"{w}x{h}: P1 bench overlaps help text"
 			);
 			assert!(layout.tile_radius > 8.0, "{w}x{h}: tiles too small ({})", layout.tile_radius);
-			let n = 7usize;
+			assert_eq!(layout.n_deck_slots, BAG_SIZE_DEFAULT);
+			let n = layout.n_deck_slots;
 			let half =
 				layout.bench_spacing * n.saturating_sub(1) as f32 / 2.0 + layout.bench_tile_radius;
 			assert!(
 				half + slack <= w / 2.0 - 8.0,
-				"{w}x{h}: 7-tile bench overflows width (half={half})"
+				"{w}x{h}: {n}-tile deck overflows width (half={half})"
 			);
+			for player in [Player::One, Player::Two] {
+				let bench0 = layout.bench_pos(player, 0, n);
+				let stack0 = layout.budget_stack_pos(player, 0, 7);
+				let stack_n = layout.budget_stack_pos(player, 6, 7);
+				assert!(
+					stack0[0] + layout.bench_tile_radius + slack
+						<= bench0[0] - layout.bench_tile_radius,
+					"{w}x{h}: budget stack overlaps P{player:?} deck (stack_x={} bench_x={})",
+					stack0[0],
+					bench0[0]
+				);
+				assert!(
+					stack0[0] - layout.bench_tile_radius + slack >= -w / 2.0,
+					"{w}x{h}: budget stack overflows left (x={} r={})",
+					stack0[0],
+					layout.bench_tile_radius
+				);
+				assert!(
+					stack_n[0] - layout.bench_tile_radius + slack >= -w / 2.0,
+					"{w}x{h}: stacked token overflows left"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn budget_stack_sits_on_the_left() {
+		let layout = ViewLayout::from_window(1280.0, 800.0);
+		for player in [Player::One, Player::Two] {
+			let bench0 = layout.bench_pos(player, 0, layout.n_deck_slots);
+			let stack = layout.budget_stack_pos(player, 0, 9);
+			assert!(
+				stack[0] < bench0[0],
+				"stack must sit left of the bench (stack={} bench={})",
+				stack[0],
+				bench0[0]
+			);
+			assert!(
+				stack[0] < 0.0,
+				"stack should be on the left half of the window, got {}",
+				stack[0]
+			);
+		}
+		let p1_0 = layout.budget_stack_pos(Player::One, 0, 9);
+		let p1_1 = layout.budget_stack_pos(Player::One, 1, 9);
+		assert!(p1_1[1] > p1_0[1], "P1 stack grows toward the board (+Y)");
+		let p2_0 = layout.budget_stack_pos(Player::Two, 0, 9);
+		let p2_1 = layout.budget_stack_pos(Player::Two, 1, 9);
+		assert!(p2_1[1] < p2_0[1], "P2 stack grows toward the board (-Y)");
+	}
+
+	#[test]
+	fn empty_budget_slots_are_blank_faces() {
+		let blank = BudgetToken::Blank;
+		let captured = BudgetToken::Captured(Tile::mono(1, Player::Two, TileColor::Orange, 2, 1));
+		assert!(budget_slot_is_blank_face(&blank, 0, 5), "unfilled blanks stay blank");
+		assert!(budget_slot_is_blank_face(&captured, 5, 5), "unusable surplus is a blank face");
+		assert!(budget_slot_is_blank_face(&captured, 6, 5), "tokens past usable are blank faces");
+		assert!(
+			!budget_slot_is_blank_face(&captured, 4, 5),
+			"a usable captured token keeps its tile face"
+		);
+	}
+
+	#[test]
+	fn demo_midgame_deck_keeps_placed_tiles_in_eleven_slots() {
+		let game = demo_midgame();
+		for player in [Player::One, Player::Two] {
+			let slots = game.deck_slots(player);
+			assert_eq!(slots.len(), BAG_SIZE_DEFAULT, "{player:?} deck length");
+			assert!(slots.iter().any(|s| s.is_live()), "{player:?} still has live bench tiles");
+			assert!(
+				slots.iter().any(|s| matches!(s, DeckSlot::Spent(_))),
+				"{player:?} placed tiles must stay in the deck"
+			);
+			assert_eq!(slots.iter().filter(|s| s.is_live()).count(), game.bench(player).len());
 		}
 	}
 
