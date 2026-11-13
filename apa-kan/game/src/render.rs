@@ -71,7 +71,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 				};
 				back.push((pts.clone(), rgb_of(visual::tile_rgb(color)), w));
 			}
-			ArcBody::Hitch { from, to } => {
+			ArcBody::Hitch { from, to, from_braid, to_braid } => {
 				let hitch_r = if visual::arc_touches_center(arc, board.center()) {
 					f64::from(layout.hitch_r_center)
 				} else {
@@ -84,21 +84,31 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 						visual::conflict_diamond(frame.mid, frame.tangent, frame.normal, hitch_r);
 					let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
 					let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
-					push_hitch_half(
-						&visual::diamond_from_path(&from_pts, &diamond),
-						from,
-						stripe_off,
-						width,
-						1.0,
-						&mut back,
+					let from_path = visual::diamond_from_path(&from_pts, &diamond);
+					let to_path = visual::diamond_to_path(&to_pts, &diamond);
+					let amp = visual::hitch_braid_amp(
+						if visual::arc_touches_center(arc, board.center()) {
+							f64::from(layout.braid_amp_center)
+						} else {
+							f64::from(layout.braid_amp)
+						},
+						hitch_r,
+					);
+					let turns = visual::braid_turns(arc);
+					let braid_w = width * f64::from(visual::BRAID_STRAND_WIDTH_SCALE);
+					let from_mix = visual::braid_strand_count(from_braid) >= 2;
+					let to_mix = visual::braid_strand_count(to_braid) >= 2;
+					push_hitch_braid(
+						&from_path, from_braid, amp, turns, braid_w, &mut back, &mut front,
 					);
 					push_hitch_half(
-						&visual::diamond_to_path(&to_pts, &diamond),
-						to,
-						stripe_off,
-						width,
-						-1.0,
-						&mut back,
+						&from_path, from, stripe_off, width, 1.0, from_mix, amp, braid_w, &mut back,
+					);
+					push_hitch_braid(
+						&to_path, to_braid, amp, turns, braid_w, &mut back, &mut front,
+					);
+					push_hitch_half(
+						&to_path, to, stripe_off, width, -1.0, to_mix, amp, braid_w, &mut back,
 					);
 				}
 			}
@@ -241,14 +251,26 @@ fn push_hitch_half(
 	stripe_off: f64,
 	arc_width: f64,
 	outside: f64,
+	beside_braid: bool,
+	braid_amp: f64,
+	braid_w: f64,
 	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
 ) {
 	let n = visual::packed_color_count(colors);
 	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let offsets = visual::diamond_bundle_offsets(n, stripe_off, outside);
-	let strand_w = visual::diamond_strand_width(arc_width);
+	let strand_w = if beside_braid {
+		visual::highway_strand_width(n, arc_width)
+	} else {
+		visual::diamond_strand_width(arc_width)
+	};
+	let offsets = if beside_braid {
+		let lane = visual::hitch_leftover_lane(stripe_off, braid_amp, braid_w, strand_w);
+		visual::diamond_leftover_offsets(n, lane, outside)
+	} else {
+		visual::diamond_bundle_offsets(n, stripe_off, outside)
+	};
 	let mut k = 0usize;
 	for color in colors {
 		let Some(c) = color else {
@@ -260,6 +282,30 @@ fn push_hitch_half(
 			strand_w,
 		));
 		k += 1;
+	}
+}
+
+fn push_hitch_braid(
+	pts: &[[f64; 2]],
+	colors: [Option<crate::game::TileColor>; 3],
+	amp: f64,
+	turns: f64,
+	strand_w: f64,
+	back: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+	front: &mut Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)>,
+) {
+	if visual::braid_strand_count(colors) < 2 || pts.len() < 2 {
+		return;
+	}
+	for thread in visual::braid_threads(pts, amp, turns, colors) {
+		split_braid(
+			&thread.pts,
+			&thread.phase,
+			rgb_of(visual::tile_rgb(thread.color)),
+			strand_w,
+			back,
+			front,
+		);
 	}
 }
 
@@ -656,7 +702,7 @@ mod tests {
 		use crate::game::{RingType, RuleSet, TileColor, ZagMismatchCount};
 		use crate::visual::{
 			demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair, demo_pair_with,
-			demo_typed_pair, demo_zag_tile,
+			demo_typed_pair, demo_typed_tile, demo_zag_tile,
 		};
 		let board = demo_midgame();
 		write_png_sized(
@@ -749,8 +795,32 @@ mod tests {
 				1,
 			),
 			dir.join("braid_failed_hitch.png"),
-			"failed braid still uses the highway diamond",
+			"failed braid: threaded weave mixed into the highway diamond",
 			40.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[
+					(TileColor::Orange, RingType::Braid),
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Normal),
+				],
+				1,
+				&[(TileColor::Teal, RingType::Normal)],
+				1,
+			),
+			dir.join("braid_failed_hitch_with_leftover.png"),
+			"failed braid + leftover blue vs teal: weave mixed with leftover stripes",
+			40.0,
+		);
+		write_cropped(
+			&demo_typed_tile(
+				&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+				1,
+			),
+			dir.join("braid_one_ended.png"),
+			"unconnected edge still shows the would-be braid weave",
+			28.0,
 		);
 		write_cropped(
 			&demo_pair(

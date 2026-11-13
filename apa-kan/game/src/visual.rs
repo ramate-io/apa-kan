@@ -167,14 +167,17 @@ pub enum ArcBody {
 		color: TileColor,
 		thick: bool,
 	},
-	/// Midpoint diamond joining unmatched **normal** colors. Two-ended true
-	/// conflict only (both ends have a normal ring, they share none, and no
-	/// zag mismatch is realized on this edge). One elongated diamond per
-	/// edge: each side's unmatched-color highway wraps one pair of edges as
-	/// a bundle and the halves meet at the along-arc vertices.
+	/// Midpoint diamond joining unmatched leftover **normal** colors. Two-ended
+	/// true conflict only (both ends present toward each other, they share no
+	/// normal, no zag mismatch, and no satisfied braid). One elongated diamond
+	/// per edge: leftover highways wrap one pair of edges as a bundle. An
+	/// unsatisfied braid still weaves its threads along that half's path so
+	/// the braid stays inside the conflict, mixed with leftover stripes.
 	Hitch {
 		from: [Option<TileColor>; MAX_HITCH_COLORS],
 		to: [Option<TileColor>; MAX_HITCH_COLORS],
+		from_braid: [Option<TileColor>; 3],
+		to_braid: [Option<TileColor>; 3],
 	},
 	/// Parallel highway stripes: one-ended undecided edges, or two-ended
 	/// edges that share more than one normal color. Zag overlays sit outside.
@@ -187,8 +190,9 @@ pub enum ArcBody {
 	/// No connection line in the middle. Used when a confirmed zag mismatch
 	/// occupies a two-ended edge (the zag is the only realized effect).
 	Hidden,
-	/// Satisfied braid: the old conflict weave, one thread per braid slot,
-	/// colored by that slot. Jag overlays may still sit on the same edge.
+	/// Threaded braid weave, one thread per slot, colored by that slot.
+	/// Used for a satisfied two-ended braid and for a one-ended would-be
+	/// braid (no neighbor yet). Jag overlays may still sit on the same edge.
 	Braid {
 		colors: [Option<TileColor>; 3],
 	},
@@ -223,7 +227,20 @@ impl ArcPaint {
 		from: [Option<TileColor>; MAX_HITCH_COLORS],
 		to: [Option<TileColor>; MAX_HITCH_COLORS],
 	) -> Self {
-		Self::with_sides(ArcBody::Hitch { from, to }, Self::no_zags(), Self::no_zags())
+		Self::hitch_braid(from, to, [None; 3], [None; 3])
+	}
+
+	pub fn hitch_braid(
+		from: [Option<TileColor>; MAX_HITCH_COLORS],
+		to: [Option<TileColor>; MAX_HITCH_COLORS],
+		from_braid: [Option<TileColor>; 3],
+		to_braid: [Option<TileColor>; 3],
+	) -> Self {
+		Self::with_sides(
+			ArcBody::Hitch { from, to, from_braid, to_braid },
+			Self::no_zags(),
+			Self::no_zags(),
+		)
 	}
 
 	pub fn stripes(a: TileColor, b: TileColor, zag_a: bool, zag_b: bool) -> Self {
@@ -332,18 +349,13 @@ pub fn edge_zag_strokes(
 	}
 }
 
-/// Highway colors on `tile` for a conflict diamond. Zags are omitted (they
-/// already draw as squiggles). Braid slots keep multiplicity so a failed
-/// orange+orange braid shows two orange hitch strands.
+/// Leftover unique **normal** colors on `tile` for a conflict diamond. Zags
+/// and braid slots are omitted: zags already draw as squiggles, and an
+/// unsatisfied braid weaves along the hitch half instead of becoming extra
+/// highway stripes.
 pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_HITCH_COLORS] {
 	let mut out = [None; MAX_HITCH_COLORS];
 	let mut n = 0usize;
-	for (i, &c) in tile.ring_colors().iter().enumerate() {
-		if tile.ring_type[i].is_braid() && n < MAX_HITCH_COLORS {
-			out[n] = Some(c);
-			n += 1;
-		}
-	}
 	for k in 0..tile.ring_strokes() {
 		if !tile.stroke_type(k).is_normal() {
 			continue;
@@ -355,6 +367,15 @@ pub fn unique_normals(tile: Tile) -> [Option<TileColor>; MAX_HITCH_COLORS] {
 		}
 	}
 	out
+}
+
+/// Braid threads mixed into a hitch half. Empty when this tile has no braid.
+pub fn hitch_braid_colors(tile: Tile) -> [Option<TileColor>; 3] {
+	if tile.braid_ring_count() >= 2 {
+		tile.braid_colors()
+	} else {
+		[None; 3]
+	}
 }
 
 pub fn packed_color_count(colors: [Option<TileColor>; MAX_HITCH_COLORS]) -> usize {
@@ -387,6 +408,23 @@ pub fn diamond_bundle_offsets(n: usize, stripe_off: f64, outside: f64) -> [f64; 
 		0 | 1 => [0.0, 0.0, 0.0],
 		2 => [0.0, s, 0.0],
 		_ => [0.0, s, 2.0 * s],
+	}
+}
+
+/// Spacing that keeps leftover highway stripes outside a hitch-half braid
+/// weave so both stay readable in the diamond bundle.
+pub fn hitch_leftover_lane(stripe_off: f64, braid_amp: f64, braid_w: f64, leftover_w: f64) -> f64 {
+	let need = braid_amp.abs() + braid_w.abs() * 0.5 + leftover_w.abs() * 0.5 + 0.8;
+	stripe_off.abs().max(need)
+}
+
+/// Leftover highway lanes when a braid weave occupies the diamond centerline.
+pub fn diamond_leftover_offsets(n: usize, lane: f64, outside: f64) -> [f64; MAX_HITCH_COLORS] {
+	let s = if outside < 0.0 { -lane.abs() } else { lane.abs() };
+	match n {
+		0 => [0.0, 0.0, 0.0],
+		1 => [s, 0.0, 0.0],
+		_ => [s, 2.0 * s, 0.0],
 	}
 }
 
@@ -425,9 +463,12 @@ fn two_ended(a: Tile, b: Tile, mode: ZagMismatchCount) -> ArcPaint {
 	let body = match (shared[0], shared[1]) {
 		(Some(color), None) => ArcBody::Solid { color, thick: true },
 		(Some(c1), Some(c2)) => ArcBody::Stripes { a: c1, b: c2, zag_a: false, zag_b: false },
-		(None, _) if a.present_toward(b) && b.present_toward(a) => {
-			ArcBody::Hitch { from: unique_normals(a), to: unique_normals(b) }
-		}
+		(None, _) if a.present_toward(b) && b.present_toward(a) => ArcBody::Hitch {
+			from: unique_normals(a),
+			to: unique_normals(b),
+			from_braid: hitch_braid_colors(a),
+			to_braid: hitch_braid_colors(b),
+		},
 		(None, _) => ArcBody::Neutral,
 	};
 	ArcPaint::with_sides(body, ArcPaint::no_zags(), ArcPaint::no_zags())
@@ -448,24 +489,29 @@ pub fn arc_paint_with(from: Option<Tile>, to: Option<Tile>, mode: ZagMismatchCou
 }
 
 /// One-ended edges: unique **normal** colors as a highway in the middle,
-/// and this tile's zag strokes fanned on one side.
+/// this tile's zag strokes fanned on one side, and a would-be braid as the
+/// threaded weave in the braid's ring colors.
 fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
-	let mut normals: Vec<TileColor> = Vec::new();
 	let zags = tile_zag_strokes(tile);
-	for k in 0..tile.ring_strokes() {
-		if tile.stroke_is_zag(k) {
-			continue;
+	let body = if tile.braid_ring_count() >= 2 {
+		ArcBody::Braid { colors: tile.braid_colors() }
+	} else {
+		let mut normals: Vec<TileColor> = Vec::new();
+		for k in 0..tile.ring_strokes() {
+			if tile.stroke_is_zag(k) {
+				continue;
+			}
+			let c = tile.stroke_color(k);
+			if !normals.contains(&c) {
+				normals.push(c);
+			}
 		}
-		let c = tile.stroke_color(k);
-		if !normals.contains(&c) {
-			normals.push(c);
+		match normals.as_slice() {
+			[] if zags[0].is_none() => ArcBody::Neutral,
+			[] => ArcBody::Hidden,
+			[c] => ArcBody::Solid { color: *c, thick: false },
+			[a, b, ..] => ArcBody::Stripes { a: *a, b: *b, zag_a: false, zag_b: false },
 		}
-	}
-	let body = match normals.as_slice() {
-		[] if zags[0].is_none() => ArcBody::Neutral,
-		[] => ArcBody::Hidden,
-		[c] => ArcBody::Solid { color: *c, thick: false },
-		[a, b, ..] => ArcBody::Stripes { a: *a, b: *b, zag_a: false, zag_b: false },
 	};
 	if on_from {
 		ArcPaint::with_sides(body, zags, ArcPaint::no_zags())
@@ -1019,6 +1065,17 @@ pub fn braid_turns(arc: &ArcEdge) -> f64 {
 	(arc_length(arc) / BRAID_TURN_UNITS).clamp(1.2, 3.6)
 }
 
+/// Weave amplitude on a hitch half: stay near the diamond so leftover
+/// highway stripes can pack outside the threads.
+pub fn hitch_braid_amp(full_amp: f64, hitch_r: f64) -> f64 {
+	let cap = diamond_across(hitch_r) * 1.2;
+	if cap <= 0.0 {
+		full_amp
+	} else {
+		full_amp.min(cap).max(1.0)
+	}
+}
+
 /// Integer twists around a tile rim so a closed weave meets itself.
 pub fn tile_braid_turns(radius: f64) -> f64 {
 	((2.0 * PI * radius) / (BRAID_TURN_UNITS * f64::from(PREV_SCALE)))
@@ -1499,6 +1556,19 @@ pub fn demo_typed_pair(
 		let u = game.alloc_typed_rings(Player::Two, b_parts, b_weight, 1);
 		game.place_tile(a, t);
 		game.place_tile(b, u);
+	}
+	game
+}
+
+/// One occupied node with a braid, for one-ended would-be-braid close-ups.
+pub fn demo_typed_tile(parts: &[(TileColor, RingType)], weight: u8) -> Game {
+	let mut game = Game::empty(RuleSet::default());
+	let board = game.board().clone();
+	let center = board.center();
+	let id = (0..board.node_count() as NodeId).find(|&n| n != center && !board.is_spawn(n));
+	if let Some(id) = id {
+		let tile = game.alloc_typed_rings(Player::One, parts, weight, 1);
+		game.place_tile(id, tile);
 	}
 	game
 }
@@ -2015,6 +2085,8 @@ mod tests {
 			ArcBody::Hitch {
 				from: [Some(TileColor::Blue), Some(TileColor::Green), None],
 				to: [Some(TileColor::Orange), Some(TileColor::Teal), None],
+				from_braid: [None; 3],
+				to_braid: [None; 3],
 			},
 			"diamond halves list unmatched normals only"
 		);
@@ -2028,9 +2100,11 @@ mod tests {
 		);
 		let paint = arc_paint(Some(mixed_hitch), Some(green));
 		match paint.body {
-			ArcBody::Hitch { from, to } => {
+			ArcBody::Hitch { from, to, from_braid, to_braid } => {
 				assert_eq!(from, [Some(TileColor::Blue), None, None]);
 				assert_eq!(to, [Some(TileColor::Green), None, None]);
+				assert_eq!(from_braid, [None; 3]);
+				assert_eq!(to_braid, [None; 3]);
 			}
 			other => panic!("expected hitch, got {other:?}"),
 		}
@@ -2105,15 +2179,45 @@ mod tests {
 		assert_eq!(paint.zag_count(), 0);
 		let failed = Tile::with_rings(3, Player::Two, &[TileColor::Blue], 1, 1);
 		let hitch = arc_paint(Some(braid), Some(failed));
-		assert!(
-			matches!(hitch.body, ArcBody::Hitch { .. }),
-			"unsatisfied braid uses the highway diamond"
-		);
 		match hitch.body {
-			ArcBody::Hitch { from, .. } => {
-				assert_eq!(from, [Some(TileColor::Orange), Some(TileColor::Green), None]);
+			ArcBody::Hitch { from, to, from_braid, to_braid } => {
+				assert_eq!(from, [None; 3], "braid slots are not leftover highway");
+				assert_eq!(to, [Some(TileColor::Blue), None, None]);
+				assert_eq!(
+					from_braid,
+					[Some(TileColor::Orange), Some(TileColor::Green), None],
+					"unsatisfied braid still carries its threads into the diamond"
+				);
+				assert_eq!(to_braid, [None; 3]);
 			}
 			other => panic!("expected hitch, got {other:?}"),
+		}
+		let one_ended = arc_paint(Some(braid), None);
+		assert_eq!(
+			one_ended.body,
+			ArcBody::Braid { colors: [Some(TileColor::Orange), Some(TileColor::Green), None] },
+			"unconnected edge still shows the would-be braid weave"
+		);
+		let mixed = Tile::with_typed_rings(
+			8,
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		let teal = Tile::mono(9, Player::Two, TileColor::Teal, 1, 1);
+		match arc_paint(Some(mixed), Some(teal)).body {
+			ArcBody::Hitch { from, to, from_braid, to_braid } => {
+				assert_eq!(from, [Some(TileColor::Blue), None, None]);
+				assert_eq!(to, [Some(TileColor::Teal), None, None]);
+				assert_eq!(from_braid, [Some(TileColor::Orange), Some(TileColor::Green), None]);
+				assert_eq!(to_braid, [None; 3]);
+			}
+			other => panic!("expected mixed hitch, got {other:?}"),
 		}
 		let braid_zag = Tile::with_typed_rings(
 			4,
@@ -2278,7 +2382,12 @@ mod tests {
 				ArcBody::Neutral => gray += 1,
 				ArcBody::Solid { thick: false, .. } => one += 1,
 				ArcBody::Solid { thick: true, .. } => same += 1,
-				ArcBody::Hitch { from: cols_a, to: cols_b } => {
+				ArcBody::Hitch {
+					from: cols_a,
+					to: cols_b,
+					from_braid: braid_a,
+					to_braid: braid_b,
+				} => {
 					hitch += 1;
 					assert!(from.is_some() && to.is_some(), "hitch is two-ended only");
 					if let (Some(a), Some(b)) = (from, to) {
@@ -2290,6 +2399,8 @@ mod tests {
 						);
 						assert_eq!(cols_a, unique_normals(a));
 						assert_eq!(cols_b, unique_normals(b));
+						assert_eq!(braid_a, hitch_braid_colors(a));
+						assert_eq!(braid_b, hitch_braid_colors(b));
 						if packed_color_count(cols_a) >= 2 && packed_color_count(cols_b) >= 2 {
 							multi_color_hitch += 1;
 						}
@@ -2515,6 +2626,10 @@ mod tests {
 		assert_eq!(left_off[0], 0.0, "lane 0 is the single diamond centerline");
 		assert_eq!(right_off[0], 0.0, "both halves share one diamond");
 		assert!(left_off[1] > 0.0 && right_off[1] < 0.0, "extra colors pack outside, not inward");
+		let lane = hitch_leftover_lane(0.12, 0.05, 0.04, 0.03);
+		assert!(lane > 0.05 + 0.02 + 0.015, "leftover lane clears the weave envelope");
+		let beside = diamond_leftover_offsets(1, lane, 1.0);
+		assert!(beside[0] > 0.0, "leftover beside a braid weave sits outside the centerline");
 		let a = offset_polyline(&from, left_off[0]);
 		let b = offset_polyline(&from, left_off[1]);
 		assert_eq!(a.len(), b.len());

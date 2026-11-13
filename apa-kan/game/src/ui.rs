@@ -666,7 +666,7 @@ fn spawn_arc(
 				visual::Z_ARC,
 			);
 		}
-		ArcBody::Hitch { from, to } => {
+		ArcBody::Hitch { from, to, from_braid, to_braid } => {
 			let hitch_r = if visual::arc_touches_center(arc, center) {
 				f64::from(layout.hitch_r_center)
 			} else {
@@ -679,25 +679,51 @@ fn spawn_arc(
 					visual::conflict_diamond(frame.mid, frame.tangent, frame.normal, hitch_r);
 				let from_pts = visual::shorten_polyline_end(&pts[..=frame.index], clearance);
 				let to_pts = visual::shorten_polyline_start(&pts[frame.index..], clearance);
-				spawn_hitch_half(
-					commands,
-					meshes,
-					materials,
-					&visual::diamond_from_path(&from_pts, &diamond),
-					from,
-					stripe_off,
-					f64::from(width),
-					1.0,
+				let from_path = visual::diamond_from_path(&from_pts, &diamond);
+				let to_path = visual::diamond_to_path(&to_pts, &diamond);
+				let amp = visual::hitch_braid_amp(
+					if visual::arc_touches_center(arc, center) {
+						f64::from(layout.braid_amp_center)
+					} else {
+						f64::from(layout.braid_amp)
+					},
+					hitch_r,
+				);
+				let turns = visual::braid_turns(arc);
+				let braid_w = width * visual::BRAID_STRAND_WIDTH_SCALE;
+				let from_mix = visual::braid_strand_count(from_braid) >= 2;
+				let to_mix = visual::braid_strand_count(to_braid) >= 2;
+				spawn_hitch_braid(
+					commands, meshes, materials, &from_path, from_braid, amp, turns, braid_w,
 				);
 				spawn_hitch_half(
 					commands,
 					meshes,
 					materials,
-					&visual::diamond_to_path(&to_pts, &diamond),
+					&from_path,
+					from,
+					stripe_off,
+					f64::from(width),
+					1.0,
+					from_mix,
+					amp,
+					f64::from(braid_w),
+				);
+				spawn_hitch_braid(
+					commands, meshes, materials, &to_path, to_braid, amp, turns, braid_w,
+				);
+				spawn_hitch_half(
+					commands,
+					meshes,
+					materials,
+					&to_path,
 					to,
 					stripe_off,
 					f64::from(width),
 					-1.0,
+					to_mix,
+					amp,
+					f64::from(braid_w),
 				);
 			}
 		}
@@ -863,13 +889,26 @@ fn spawn_hitch_half(
 	stripe_off: f64,
 	arc_width: f64,
 	outside: f64,
+	beside_braid: bool,
+	braid_amp: f64,
+	braid_w: f64,
 ) {
 	let n = visual::packed_color_count(colors);
 	if n == 0 || pts.len() < 2 {
 		return;
 	}
-	let offsets = visual::diamond_bundle_offsets(n, stripe_off, outside);
-	let strand_w = visual::diamond_strand_width(arc_width) as f32;
+	let strand_w = if beside_braid {
+		visual::highway_strand_width(n, arc_width)
+	} else {
+		visual::diamond_strand_width(arc_width)
+	};
+	let offsets = if beside_braid {
+		let lane = visual::hitch_leftover_lane(stripe_off, braid_amp, braid_w, strand_w);
+		visual::diamond_leftover_offsets(n, lane, outside)
+	} else {
+		visual::diamond_bundle_offsets(n, stripe_off, outside)
+	};
+	let strand_w = strand_w as f32;
 	let mut k = 0usize;
 	for color in colors {
 		let Some(c) = color else {
@@ -886,6 +925,34 @@ fn spawn_hitch_half(
 			visual::Z_ARC,
 		);
 		k += 1;
+	}
+}
+
+fn spawn_hitch_braid(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f64; 2]],
+	colors: [Option<crate::game::TileColor>; 3],
+	amp: f64,
+	turns: f64,
+	strand_w: f32,
+) {
+	if visual::braid_strand_count(colors) < 2 || pts.len() < 2 {
+		return;
+	}
+	for thread in visual::braid_threads(pts, amp, turns, colors) {
+		spawn_braid_strand(
+			commands,
+			meshes,
+			materials,
+			&thread.pts,
+			&thread.phase,
+			strand_w,
+			rgb(visual::tile_rgb(thread.color)),
+			visual::Z_ARC,
+			visual::Z_ARC_OVER,
+		);
 	}
 }
 
