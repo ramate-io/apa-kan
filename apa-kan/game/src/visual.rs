@@ -86,9 +86,13 @@ pub const TILE_BRAID_SAMPLES: u32 = 96;
 pub const BRAID_AMP_UNITS: f32 = 0.030;
 pub const BRAID_AMP_CENTER_UNITS: f32 = 0.016;
 pub const BRAID_STRAND_WIDTH_SCALE: f32 = 0.78;
-/// Board units per full braid twist. Same spatial period as a zag tooth so
-/// over/under crossings follow the ring twist cadence.
-pub const BRAID_TURN_UNITS: f64 = ZAG_TOOTH_UNITS;
+/// Board units per full braid twist. The original conflict-weave period
+/// (`arc_length / 0.42`), not the zag tooth length.
+pub const BRAID_TURN_UNITS: f64 = 0.42;
+/// Floor/ceiling on [`braid_turns`] / [`braid_turns_along`], from the original
+/// conflict braid (`(arc_length / 0.42).clamp(1.2, 3.6)`).
+pub const BRAID_TURNS_MIN: f64 = 1.2;
+pub const BRAID_TURNS_MAX: f64 = 3.6;
 
 pub const Z_ARC: f32 = 0.0;
 pub const Z_ARC_OVER: f32 = 0.08;
@@ -1082,17 +1086,17 @@ pub fn zag_teeth(arc: &ArcEdge) -> f64 {
 	(arc_length(arc) / ZAG_TOOTH_UNITS).clamp(7.0, 16.0)
 }
 
-/// Twist count along `arc`. Same spatial cadence as [`zag_teeth`].
+/// How many twists the old conflict braid makes along `arc`.
 pub fn braid_turns(arc: &ArcEdge) -> f64 {
-	zag_teeth(arc)
+	(arc_length(arc) / BRAID_TURN_UNITS).clamp(BRAID_TURNS_MIN, BRAID_TURNS_MAX)
 }
 
-/// Twist count along a pixel-space path (hitch halves), using the same
-/// board-unit period as [`zag_teeth`]. Short paths keep that wavelength
-/// instead of compressing a full-arc twist count.
+/// Twist count along a pixel-space path (hitch halves), using the original
+/// conflict-weave board-unit period. Short paths keep that wavelength instead
+/// of packing a full-arc twist count into the diamond.
 pub fn braid_turns_along(pts: &[[f64; 2]], scale: f32) -> f64 {
 	let len_board = polyline_length(pts) / f64::from(scale).max(1e-6);
-	(len_board / BRAID_TURN_UNITS).clamp(1.0, 16.0)
+	(len_board / BRAID_TURN_UNITS).clamp(BRAID_TURNS_MIN, BRAID_TURNS_MAX)
 }
 
 /// Weave amplitude on a hitch half: stay near the diamond so leftover
@@ -1107,9 +1111,12 @@ pub fn hitch_braid_amp(full_amp: f64, hitch_r: f64) -> f64 {
 }
 
 /// Integer twists around a tile rim so a closed weave meets itself.
-/// Matches [`TILE_ZAG_TEETH`] so the rim braid uses the zag twist cadence.
-pub fn tile_braid_turns(_radius: f64) -> f64 {
-	f64::from(TILE_ZAG_TEETH)
+/// Same spatial period as the original conflict braid (`BRAID_TURN_UNITS`
+/// at [`PREV_SCALE`]), not [`TILE_ZAG_TEETH`].
+pub fn tile_braid_turns(radius: f64) -> f64 {
+	((2.0 * PI * radius) / (BRAID_TURN_UNITS * f64::from(PREV_SCALE)))
+		.clamp(1.0, 3.0)
+		.round()
 }
 
 pub fn zag_lane_spacing(stripe_off: f64) -> f64 {
@@ -1957,12 +1964,18 @@ mod tests {
 		);
 		assert!((TILE_ZAG_AMP - 0.80).abs() < 1e-6, "keep low tile-zag amplitude");
 		assert_eq!(TILE_ZAG_TEETH, 16, "keep 2x squiggle frequency");
-		assert_eq!(BRAID_TURN_UNITS, ZAG_TOOTH_UNITS, "braid twist period matches a zag tooth");
+		assert!((ZAG_TOOTH_UNITS - 0.12).abs() < 1e-12, "zag tooth period is unchanged");
+		assert!((BRAID_TURN_UNITS - 0.42).abs() < 1e-12, "braid uses the original conflict period");
+		assert!(
+			(BRAID_TURN_UNITS - ZAG_TOOTH_UNITS).abs() > 1e-6,
+			"braid weave must not share the zag tooth period"
+		);
 		assert_eq!(
 			tile_braid_turns(22.0),
-			f64::from(TILE_ZAG_TEETH),
-			"tile-rim braid uses the zag tooth count"
+			((2.0 * PI * 22.0) / (0.42 * f64::from(PREV_SCALE))).clamp(1.0, 3.0).round(),
+			"tile-rim braid uses the original conflict period, not TILE_ZAG_TEETH"
 		);
+		assert_ne!(tile_braid_turns(22.0), f64::from(TILE_ZAG_TEETH));
 	}
 
 	#[test]
@@ -2408,7 +2421,7 @@ mod tests {
 	}
 
 	#[test]
-	fn braid_turns_match_zag_cadence_on_arcs_and_short_paths() {
+	fn braid_turns_use_original_conflict_period_not_zag_teeth() {
 		let arc = crate::board::ArcEdge {
 			circle: 0,
 			from: 0,
@@ -2418,15 +2431,18 @@ mod tests {
 			angle_from: 0.0,
 			angle_to: 1.2,
 		};
-		assert_eq!(braid_turns(&arc), zag_teeth(&arc));
+		let expected = (arc_length(&arc) / 0.42).clamp(1.2, 3.6);
+		assert!((braid_turns(&arc) - expected).abs() < 1e-12);
+		assert!((braid_turns(&arc) - zag_teeth(&arc)).abs() > 1.0, "braid is not zag cadence");
 		let layout = ViewLayout::from_window(1280.0, 800.0);
 		let pts: Vec<[f64; 2]> =
 			(0..20).map(|i| [i as f64 * f64::from(layout.scale) * 0.05, 0.0]).collect();
 		let turns = braid_turns_along(&pts, layout.scale);
-		let expected =
-			(polyline_length(&pts) / f64::from(layout.scale) / BRAID_TURN_UNITS).clamp(1.0, 16.0);
-		assert!((turns - expected).abs() < 1e-9);
-		assert!(turns > 3.6, "hitch/open-edge weave must be denser than the old 1.2–3.6 clamp");
+		let expected_along =
+			(polyline_length(&pts) / f64::from(layout.scale) / 0.42).clamp(1.2, 3.6);
+		assert!((turns - expected_along).abs() < 1e-9);
+		assert!(turns <= BRAID_TURNS_MAX);
+		assert!(turns >= BRAID_TURNS_MIN);
 	}
 
 	#[test]
