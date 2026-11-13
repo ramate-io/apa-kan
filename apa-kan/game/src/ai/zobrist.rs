@@ -134,8 +134,8 @@ pub fn hash(game: &Game) -> u64 {
 		h ^= z.petal_majority[player.index()][game.petal_majority(player).min(15) as usize];
 		h ^= z.control_hold[player.index()][game.control_hold(player).min(15) as usize];
 		// Physical token count, not usable budget: surplus can become usable
-		// after a later bench draw, so two empty-bench stacks of different
-		// lengths must not collide.
+		// when an unplaced deck tile remains, so two empty-deck stacks of
+		// different lengths must not collide.
 		h ^= z.budget[player.index()][game.budget_token_count(player).min(63)];
 	}
 	match game.moved_this_turn() {
@@ -176,23 +176,18 @@ mod tests {
 	use crate::game::{Action, RuleSet};
 
 	#[test]
-	fn visible_hash_ignores_remaining_bag() {
+	fn visible_hash_includes_the_public_deck() {
 		use crate::game::{Game, Player, TileColor};
 
-		let mut small = Game::empty(RuleSet::default());
-		let mut large = Game::empty(RuleSet::default());
-		let tile = small.alloc_tile(Player::One, TileColor::Green, 1, 1);
-		small.set_bench(Player::One, vec![tile]);
-		large.set_bench(Player::One, vec![tile]);
-		let leftover = small.alloc_tile(Player::One, TileColor::Blue, 2, 2);
-		small.set_bag(Player::One, vec![leftover]);
-		large.set_bag(
-			Player::One,
-			(0..20)
-				.map(|_| small.alloc_tile(Player::One, TileColor::Orange, 1, 1))
-				.collect(),
-		);
-		assert_eq!(hash(&small), hash(&large), "visible hash must not include bag remainder");
+		let mut one = Game::empty(RuleSet::default());
+		let mut two = Game::empty(RuleSet::default());
+		let shared = one.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		one.set_bench(Player::One, vec![shared]);
+		two.set_bench(Player::One, vec![shared]);
+		assert_eq!(hash(&one), hash(&two));
+		let extra = two.alloc_tile(Player::One, TileColor::Blue, 2, 2);
+		two.set_bench(Player::One, vec![shared, extra]);
+		assert_ne!(hash(&one), hash(&two), "visible hash must include every unplaced deck tile");
 	}
 
 	#[test]

@@ -287,7 +287,8 @@ impl RulesLog {
 	}
 }
 
-/// Opening deal: benches after the deal, remaining bag draw order, blank tokens.
+/// Opening deal: the public remaining deck (`p*_bench`), leftover hidden bag
+/// (empty on new games; kept so historical JSONL replays), and spawn tokens.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpeningLog {
 	pub p1_bench: Vec<TileLog>,
@@ -856,8 +857,11 @@ mod tests {
 		assert_eq!(parsed[0], log);
 		assert_eq!(parsed[0].v, SCHEMA_VERSION);
 		assert_eq!(parsed[0].rules.bag_size, 11);
+		assert!(!parsed[0].rules.capture_draw_on_move);
 		assert!(!parsed[0].opening.p1_bench.is_empty());
 		assert_eq!(parsed[0].opening.p1_bench.len(), parsed[0].opening.p2_bench.len());
+		assert!(parsed[0].opening.p1_bag.is_empty());
+		assert!(parsed[0].opening.p2_bag.is_empty());
 		assert!(!parsed[0].actions.is_empty() || parsed[0].turns == 0);
 	}
 

@@ -41,20 +41,23 @@ Each tile has:
 
 Dots are independent of ring colors. Weight is not: it is exactly the number of rings.
 
-### Bench and bag (`RuleSet` options)
+### Deck and spawn tokens (`RuleSet` options)
+
+These are two separate concepts.
+
+1. **Tiles in your deck.** Each player has a public **`bag_size`-tile deck** (default 11; CLI `--deck-size` / `--bag-size <1..27>`). Ring process × uniform dots 1–3, shuffled with a seed. Weight is the resulting ring-slot count. The old 27 unique 3-color kinds no longer fit the six-color / multi-ring space. `--deck-size 27` restores the historical full bag. **All 11 tiles start unplaced and selectable.** There is no hidden bag and no bench/bag split. On any turn you may select **any unplaced tile** from your deck to ADD.
+2. **Spawn tokens.** You spend one to ADD a deck tile to the board. Start with **`starting_bench_size` tokens** (default 7; CLI `--starting-tokens` / `--starting-bench`). Independent of deck size. Earn one per capture (opponent capture, and self-capture/sacrifice when `self_capture_budget` is on).
 
 Default:
 
-- Each player has a **bag** of **`bag_size` independently sampled tiles** (default 11; CLI `--bag-size <1..27>`). Ring process × uniform dots 1–3, shuffled with a seed. Weight is the resulting ring-slot count. The old 27 unique 3-color kinds no longer fit the six-color / multi-ring space. `bag_size` is the total deck: opening deal plus remaining capture-draws. `--bag-size 27` restores the historical full bag.
 - **`identical_bags` (default true):** both players get the same shuffle (new tile ids / owners), for fairness.
-- Opening **deal of `starting_bench_size` (default 7)** from bag onto the bench. CLI: `--starting-bench <1..27>` (must be `<= bag_size`). A deal of 7 from the default 11-tile bag leaves **4** in the bag; `--bag-size 13` leaves 6, `--bag-size 27` leaves 20. The same N is the opening **capture-budget stack** (N blank tokens). Insufficient-tiles still counts `board + bench` only, so starting at 7 begins further above the 5-tile floor.
-- **Usable budget** is `min(tokens in the stack, tiles on the bench)`. Tokens beyond the bench are still earned and still shown (the stack fades that surplus) but do not count as budget for ADD legality, lockout, low-value, or eval. A later bag draw onto the bench re-enables surplus tokens, one per drawn tile.
-- **ADD** places one concrete bench tile onto an empty spawn (not an abstract “any kind” picker). Any remaining bench tile may be chosen at any time; the only ADD gate is **usable budget > 0** (plus an empty spawn). ADD spends 1 budget token (popped from the front of the stack, so opening blanks spend first).
-- **Capture budget:** each opponent capture on your turn earns +1 token. Capturing your **own** tile (self-capture already happens under simultaneous overwhelm; it is not a new capture rule) also earns +1 when `self_capture_budget` is on (default; CLI `--self-capture-budget on|off`). The captured tile is pushed onto the budget stack only when it earns a token. Opponent tiles removed on a **MOVE** still draw one bag tile onto the bench (`capture_draw_on_move`); ADD captures still do not draw. Empty bag → the draw is skipped. Self-capture does not draw; rotating in a new tile needs a remaining bench tile (opening remainder or a later opponent-MOVE draw).
-- Remaining bag tiles do **not** keep a player alive.
-- **Scenarios** (`--scenario <name|path>`, TOML under `apa-kan/game/scenarios/`): replace the default deal with a named or file-backed deck. Builtins: `default`/`same` (`generative = true`, mirrored `bag_size`-tile sample, default 11); `independent` (each player sampled separately); `complementary` (P1 green+orange, P2 blue+orange, 18 one-ring tiles, mirrored dots order; weight is always 1); `complementary-swapped` (exclusive colors flipped). Optional per-player `colors` / `tiles` (`color` or `colors = [...]`) / `bench`. The app and `apa-kan-bench` share the loader. Generative scenarios honor `--bag-size`. TOML `weight` is accepted and ignored; tile weight is the ring-slot count.
+- **Usable budget** is `min(tokens in the stack, unplaced deck tiles)`. Tokens beyond the remaining deck are still earned and still shown (the stack uses opaque blank faces for surplus) but do not count as budget for ADD legality, lockout, low-value, or eval.
+- **ADD** places one concrete remaining-deck tile onto an empty spawn. Any unplaced tile may be chosen at any time; the only ADD gate is **usable budget > 0** (plus an empty spawn). ADD spends 1 spawn token (popped from the front of the stack, so opening blanks spend first).
+- **Spawn tokens:** each opponent capture on your turn earns +1 token. Capturing your **own** tile (self-capture already happens under simultaneous overwhelm; it is not a new capture rule) also earns +1 when `self_capture_budget` is on (default; CLI `--self-capture-budget on|off`). The captured tile is pushed onto the token stack only when it earns a token. Captures do **not** draw extra tiles. `capture_draw_on_move` remains in `RuleSet` (default **off**) so historical JSONL logs replay.
+- Remaining hidden-bag tiles (legacy logs only) do **not** keep a player alive. `is_alive` is board tiles or unplaced deck tiles.
+- **Scenarios** (`--scenario <name|path>`, TOML under `apa-kan/game/scenarios/`): replace the default deal with a named or file-backed deck. Builtins: `default`/`same` (`generative = true`, mirrored `bag_size`-tile sample, default 11); `independent` (each player sampled separately); `complementary` (P1 green+orange, P2 blue+orange, 18 one-ring tiles, mirrored dots order; weight is always 1); `complementary-swapped` (exclusive colors flipped). Optional per-player `colors` / `tiles` (`color` or `colors = [...]`) / `bench` (ordered prefix of the public deck). The app and `apa-kan-bench` share the loader. Generative scenarios honor `--deck-size` / `--bag-size`. TOML `weight` is accepted and ignored; tile weight is the ring-slot count.
 
-Options: `starting_bench_size`, `bag_size`, `self_capture_budget`, `identical_bags`, `bag_one_of_each_kind`, `capture_draw_on_move`, plus scenario files.
+Options: `starting_bench_size` (spawn tokens), `bag_size` (public deck), `self_capture_budget`, `identical_bags`, `bag_one_of_each_kind`, `capture_draw_on_move` (legacy), plus scenario files.
 
 ### Overwhelm (by color)
 
@@ -111,9 +114,9 @@ One-ended edges (the tile has no neighbor on that arc) still draw all of that ti
 
 ### Win and draw
 
-- **Win (elimination):** the opponent has **no tiles on the board and an empty bench**. A remaining bag does not save them. If both players are eliminated in the same resolution, the game is a **draw**.
+- **Win (elimination):** the opponent has **no tiles on the board and an empty remaining deck**. A leftover hidden bag (legacy logs) does not save them. If both players are eliminated in the same resolution, the game is a **draw**.
 - **Win (locked-out):** if `no_moves_loses` is on (default) and the player to move has no legal ADD and no legal MOVE, they **lose immediately**. Detected at the start of their turn (after the previous player’s turn switch) and if they would otherwise pass.
-- **Win (low-value):** if **both** players have **usable** capture budget 0 **and** both have fewer than 5 board tiles (`LOW_VALUE_BOARD_LT`), the game ends. Surplus tokens on an empty bench do not block this. Sort each player's on-board pieces ascending by value and compare pair `i` (P1's `i`-th lowest vs P2's `i`-th lowest), starting at `i = 0`. Value weights live in `PieceValueWeights` (easy to extend when new ring types appear):
+- **Win (low-value):** if **both** players have **usable** spawn budget 0 **and** both have fewer than 5 board tiles (`LOW_VALUE_BOARD_LT`), the game ends. Surplus tokens on an empty remaining deck do not block this. Sort each player's on-board pieces ascending by value and compare pair `i` (P1's `i`-th lowest vs P2's `i`-th lowest), starting at `i = 0`. Value weights live in `PieceValueWeights` (easy to extend when new ring types appear):
   1. **Primary:** `dots * 1 + normal_rings * 1 + zag_rings * 1` (every ring counts 1). Lower wins.
   2. **Tie-break:** recompute with `zag_rings * 2` (`PieceValueWeights::TIEBREAK`). Lower wins. A 1-dot/1-zag loses to a 1-dot/1-normal.
   3. Both passes tied: advance to pair `i + 1`.
@@ -152,15 +155,15 @@ Each player has a counter of consecutive **own** turns that ended with their til
 - Win is awarded at **exactly N** (the turn on which the counter becomes N).
 - The HUD shows `center hold P1 a/N P2 b/N` while this option is on.
 
-#### 3. `no_same_piece_twice` (default **WhenBenchEmpty**)
+#### 3. `no_same_piece_twice` (default **WhenDeckEmpty**)
 
-CLI: `--no-same-piece-twice <off|always|when-bench-empty>`
+CLI: `--no-same-piece-twice <off|always|when-deck-empty>` (`when-bench-empty` is still accepted)
 
 A player may not MOVE the same tile (by tile id) on two consecutive **own** turns.
 
 - `Off` — no restriction.
 - `Always` — always enforced.
-- `WhenBenchEmpty` — enforced only while that player’s bench is empty (opening ADD-heavy play is unrestricted; endgame shuffling is not).
+- `WhenDeckEmpty` — enforced only while that player’s remaining (unplaced) deck is empty (opening ADD-heavy play is unrestricted; endgame shuffling is not).
 
 **Capture exception:** a repeat MOVE **is** legal if that MOVE causes at least one opponent tile to be removed under simultaneous overwhelm (previewed before the action). Own-tile suicides do not count. ADD does not set the “last moved” tile; only a MOVE does.
 
@@ -207,12 +210,12 @@ The **control set** is the center (node 0) plus the 8 inner-ring nodes (`Board::
 
 CLI: `--insufficient-tiles-loss <off|strict|no-recapture>`
 
-A player **loses** (`EndReason::InsufficientTiles`) when they can no longer occupy 5 control-set nodes: `board tiles + bench < control_n` (default 5). Bag tiles are not in play until drawn, and bag draws happen **only** on a MOVE that captures an opponent tile.
+A player **loses** (`EndReason::InsufficientTiles`) when they can no longer occupy 5 control-set nodes: `board tiles + remaining deck < control_n` (default 5). Captures earn spawn tokens, not extra deck tiles.
 
 Checked at the **turn boundary** (end of `finish_turn`) for **both** players, after hold wins. If both are insufficient at once, the game is a **draw** (`EndReason::InsufficientTiles`).
 
-- **`strict`**: lose as soon as `board + bench < 5`, ignoring the bag and ignoring whether a capture is available.
-- **`no-recapture`**: lose when `board + bench < 5` **and** they cannot gain a tile. "Cannot gain" means the bag is empty, `capture_draw_on_move` is off, **or they have no path-legal MOVE that would remove an opponent tile in the current position** (previewed simultaneous overwhelm; same check as the capture exception, via `has_capturing_move`). The check does not require that player to be to-move, so both sides can be evaluated at the same turn boundary. A capturing MOVE with a non-empty bag saves them even if `board + bench < 5`. This is stricter than bag-empty-only: tiles left in the bag do not help if no capturing MOVE exists right now. Future captures on a later turn are not searched.
+- **`strict`**: lose as soon as `board + remaining deck < 5`.
+- **`no-recapture`**: lose when `board + remaining deck < 5` **and** they cannot gain a tile. With the public deck there is no hidden remainder, so this matches strict unless legacy `capture_draw_on_move` is on and they have a path-legal MOVE that would remove an opponent tile (previewed simultaneous overwhelm; same check as the capture exception, via `has_capturing_move`). The check does not require that player to be to-move, so both sides can be evaluated at the same turn boundary. Future captures on a later turn are not searched.
 
 #### 8. `no_repeated_edge` / `path_constraint` (default **NoEdgeRevisit**)
 
@@ -243,23 +246,23 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --screenshot PATH
         --no-moves-loses on|off
         --center-hold-win on|off --center-hold-n N
-        --no-same-piece-twice off|always|when-bench-empty
+        --no-same-piece-twice off|always|when-deck-empty
         --color-restricted-hops on|off --hop-weight-cmp lt|le
         --counted-pass-through on|off --graph-hops on|off
         --pass-through-ring-cmp ge|gt
         --petal-majority-win on|off --petal-majority-n N
         --control-win on|off --control-n K --control-hold-turns T
         --insufficient-tiles-loss off|strict|no-recapture
-        --starting-bench N --bag-size N --self-capture-budget on|off
+        --starting-tokens N --deck-size N --self-capture-budget on|off
         --max-rings 1..3 --zag-chance 0..7 --zags on|off
         --zag-mismatch sum|max
         --scenario name|path --list-scenarios
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-bench-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` on, `pass_through_ring_cmp` ge, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7 (deal and capture budget), `bag_size` 11, `self_capture_budget` on, `max_rings` 3, `zag_numer` 1 (1/7), `zag_mismatch` sum, `path_constraint` no-edge-revisit. Usable budget is `min(tokens, bench)`. Low-value uses the progressive lowest-tile pair check (missing piece = max value).
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-deck-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` on, `pass_through_ring_cmp` ge, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7 (spawn tokens), `bag_size` 11 (public deck), `self_capture_budget` on, `max_rings` 3, `zag_numer` 1 (1/7), `zag_mismatch` sum, `path_constraint` no-edge-revisit. Usable budget is `min(tokens, unplaced deck tiles)`. Low-value uses the progressive lowest-tile pair check (missing piece = max value).
 
-Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / usable-budget / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Eval and search read usable budget (`min(tokens, bench)`), not leftover surplus. Locked-out, center-hold, petal-majority, control, insufficient-tiles, and low-value terminals are wins/losses in search (a low-value equal-count full tie is a draw scored 0). Search sees the same progressive pair check as the rules, including leftover tiles beating an empty slot.
+Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / usable-budget / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Eval and search read usable budget (`min(tokens, remaining deck)`), not leftover surplus, and see every unplaced tile (the deck is public). Locked-out, center-hold, petal-majority, control, insufficient-tiles, and low-value terminals are wins/losses in search (a low-value equal-count full tie is a draw scored 0). Search sees the same progressive pair check as the rules, including leftover tiles beating an empty slot.
 
 Headless round-robin: `apa-kan-bench` (same rule flags and `--scenario`; `--bots greedy,minimax,mcts`). Logs include per-game opening benches and a Pearson correlation of a simple deck-strength measure (sum of weights, dots, color count) with outcome.
 
@@ -279,11 +282,11 @@ Headless round-robin: `apa-kan-bench` (same rule flags and `--scenario`; `--bots
 ## Alternatives considered
 
 - Unique-neighbor degree 4 for every non-center node — false for the inner ring; arc-degree 4 is the geometric fact.
-- Infinite 27-kind picker with an ADD counter — rejected; benches are still concrete tiles dealt from a bag. The capture budget is an ADD counter **on top of** that concrete hand: you pick any remaining bench tile, and usable budget (min(tokens, bench)) is the only ADD gate. Surplus tokens are kept for later draws rather than discarded.
+- Infinite 27-kind picker with an ADD counter — rejected; the deck is still concrete sampled tiles. Spawn tokens are an ADD counter **on top of** that concrete hand: you pick any remaining deck tile, and usable budget (min(tokens, unplaced tiles)) is the only ADD gate. Surplus tokens are kept until another unplaced tile remains rather than discarded.
 - MOVE “up to d” — rejected; exact `d`.
 - Overwhelm by owner — rejected; color, as in the original game.
 
 ## Open questions
 
 - Color-restricted hop weight: default is `le` (occupant `<=` mover). `lt` remains available as the stricter reading of “if the weight in your color is less than, you can traverse.”
-- Whether `WhenBenchEmpty` should look at bench emptiness at the start of the turn or at MOVE time (implemented: at MOVE time).
+- Whether `WhenDeckEmpty` should look at remaining-deck emptiness at the start of the turn or at MOVE time (implemented: at MOVE time).

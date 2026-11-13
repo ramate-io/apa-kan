@@ -133,7 +133,7 @@ impl DeckStrength {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeckSpec {
 	pub kinds: Vec<KindCount>,
-	/// If set, these kinds are dealt first (removed from the bag). Remaining
+	/// If set, these kinds are the ordered prefix of the public deck. Remaining
 	/// bag tiles follow in listed or shuffled order.
 	pub bench: Option<Vec<TileSpec>>,
 }
@@ -566,8 +566,9 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 	}
 }
 
-/// Materialize both bags (draw piles, last entry drawn first) and optional
-/// pre-dealt benches. `shuffle` uses `seed`.
+/// Materialize both decks (draw piles, last entry drawn first) and optional
+/// ordered prefix (`DeckSpec::bench`). `Game::from_scenario` then moves every
+/// remaining tile onto the public bench. `shuffle` uses `seed`.
 pub fn materialize(
 	scenario: &Scenario,
 	seed: u64,
@@ -694,10 +695,10 @@ mod tests {
 		rules.bag_size = 11;
 		let a = Game::new(rules, 7);
 		let b = Game::from_scenario(rules, 7, &Scenario::same()).unwrap();
-		assert_eq!(a.bag_len(Player::One), 4);
-		assert_eq!(b.bag_len(Player::One), 4);
-		assert_eq!(a.bench(Player::One).len(), 7);
-		assert_eq!(b.bench(Player::One).len(), 7);
+		assert_eq!(a.bag_len(Player::One), 0);
+		assert_eq!(b.bag_len(Player::One), 0);
+		assert_eq!(a.bench(Player::One).len(), 11);
+		assert_eq!(b.bench(Player::One).len(), 11);
 		let kinds = |g: &Game, p: Player| {
 			g.bench(p)
 				.iter()
@@ -729,18 +730,18 @@ mod tests {
 	fn complementary_is_mirror_aside_from_exclusive_color() {
 		let s = Scenario::complementary();
 		let game = Game::from_scenario(RuleSet::default(), 3, &s).unwrap();
-		assert_eq!(game.bench(Player::One).len(), 7);
-		assert_eq!(game.bag_len(Player::One), 11);
-		assert_eq!(game.bag_len(Player::Two), 11);
+		assert_eq!(game.bench(Player::One).len(), 18);
+		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.bag_len(Player::Two), 0);
+		assert_eq!(game.budget(Player::One), 7);
 		let seq = |p: Player| {
 			game.bench(p)
 				.iter()
-				.chain(game.bag(p).iter().rev())
 				.map(|t| (t.weight, t.dots, t.primary() == TileColor::Orange))
 				.collect::<Vec<_>>()
 		};
 		assert_eq!(seq(Player::One), seq(Player::Two), "weight/dot/shared-role sequence");
-		let all = |p: Player| game.bench(p).iter().chain(game.bag(p)).copied().collect::<Vec<_>>();
+		let all = |p: Player| game.bench(p).iter().copied().collect::<Vec<_>>();
 		let p1c = unique_colors(&all(Player::One));
 		let p2c = unique_colors(&all(Player::Two));
 		assert!(p1c.iter().all(|c| matches!(c, TileColor::Green | TileColor::Orange)));
@@ -757,7 +758,6 @@ mod tests {
 		let excl = |g: &Game, p: Player| {
 			g.bench(p)
 				.iter()
-				.chain(g.bag(p))
 				.find(|t| t.primary() != TileColor::Orange)
 				.map(|t| t.primary())
 		};
@@ -873,11 +873,12 @@ dots = 3
 		let mut rules = RuleSet::default();
 		rules.starting_bench_size = 1;
 		let game = Game::from_scenario(rules, 1, &s).unwrap();
-		assert_eq!(game.bench(Player::One).len(), 1);
+		assert_eq!(game.bench(Player::One).len(), 3);
 		assert_eq!(game.bench(Player::One)[0].weight, 1);
 		assert_eq!(game.bench(Player::One)[0].n_rings, 1);
 		assert_eq!(game.bench(Player::One)[0].dots, 3);
 		assert_eq!(game.bench(Player::Two)[0].weight, 1);
+		assert_eq!(game.budget(Player::One), 1);
 	}
 
 	#[test]

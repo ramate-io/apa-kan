@@ -64,7 +64,7 @@ fn usage() -> &'static str {
 	   --hop-weight-cmp, --counted-pass-through, --graph-hops, --pass-through-ring-cmp,\n\
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
-	   --insufficient-tiles-loss, --starting-bench, --bag-size, --self-capture-budget,\n\
+	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --zag-mismatch,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -440,7 +440,7 @@ fn run(cfg: BenchConfig) {
 		stall_turn_limit_and_rep3
 	));
 	lines.push(
-		"# Visible hash covers occupancy, tile kind, owner, benches, capture-budget token count (including surplus), side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).".into(),
+		"# Visible hash covers occupancy, tile kind, owner, the public remaining deck, spawn-token count (including surplus), side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).".into(),
 	);
 	lines.push(
 		"# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.".into(),
@@ -451,7 +451,7 @@ fn run(cfg: BenchConfig) {
 	push_deck_fairness(&mut lines, &deck_rows);
 
 	lines.push(String::new());
-	lines.push("# MCTS bag determinization: remaining bag tiles are a known multiset; each MCTS iteration shuffles both bags (samples a permutation) so capture draws are chance events. Minimax uses the live bag order of the position.".into());
+	lines.push("# MCTS: the remaining deck is public, so bag shuffle is a no-op on default rules. Legacy `capture_draw_on_move` logs still shuffle hidden remainders. Minimax searches the live position.".into());
 	lines.push("# Minimax: iterative deepening alpha-beta, Zobrist TT, TT/capture/killer/history ordering, quiescence on capture sequences.".into());
 
 	if let Some(parent) = cfg.out.parent() {

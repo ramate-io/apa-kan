@@ -87,7 +87,7 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	let mut out = Vec::new();
 	let current = game.current_player();
 	let bench = game.bench(current);
-	// `budget()` is usable ADD permission (min(tokens, bench)).
+	// `budget()` is usable ADD permission (min(tokens, remaining deck)).
 	if game.budget(current) > 0 && !bench.is_empty() {
 		let mut seen = [false; KIND_COUNT];
 		let dests: Vec<NodeId> = if game.rules().add_only_on_spawns {

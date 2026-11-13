@@ -124,20 +124,13 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	for tile in game.bench(opp) {
 		bench_score -= 28 + 10 * i32::from(tile.weight);
 	}
-	let bag = 3 * (game.bag_len(me) as i32 - game.bag_len(opp) as i32);
 	let presence = 32 * (my_board - opp_board);
 
 	let mobility = 3 * (mobility_of(game, me) - mobility_of(game, opp));
 
-	let mut score = material
-		+ bench_score
-		+ bag + presence
-		+ margin
-		+ contact
-		+ geometry
-		+ spawn_control
-		+ mobility
-		- 22 * at_risk;
+	let mut score =
+		material + bench_score + presence + margin + contact + geometry + spawn_control + mobility
+			- 22 * at_risk;
 
 	if game.rules().center_hold_win {
 		let n = i32::from(game.rules().center_hold_n.max(1));
@@ -272,22 +265,20 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	for tile in game.bench(opp) {
 		bench_score -= 28 + 10 * i32::from(tile.weight);
 	}
-	let bag = 3 * (game.bag_len(me) as i32 - game.bag_len(opp) as i32);
-	// Usable budget only (min(tokens, bench)); surplus tokens are not ADD permission.
+	// Usable budget only (min(tokens, remaining deck)); surplus tokens are not ADD permission.
 	let budget = 90 * (game.budget(me) as i32 - game.budget(opp) as i32);
 	let presence = 32 * (my_board - opp_board);
 	let mobility = 4 * (mobility_of(game, me) - mobility_of(game, opp));
 
-	let mut score = material
-		+ bench_score
-		+ bag + budget
-		+ presence
-		+ margin
-		+ contact
-		+ geometry
-		+ spawn_control
-		+ mobility
-		- 22 * at_risk;
+	let mut score =
+		material
+			+ bench_score
+			+ budget + presence
+			+ margin + contact
+			+ geometry
+			+ spawn_control
+			+ mobility
+			- 22 * at_risk;
 
 	score += race_score(game, me, opp);
 

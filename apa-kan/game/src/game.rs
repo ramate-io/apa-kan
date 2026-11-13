@@ -76,11 +76,14 @@ pub const ZAG_NUMER_DEFAULT: u8 = 1;
 /// A piece forms a braid with probability `braid_numer / BRAID_DENOM`.
 pub const BRAID_DENOM: u8 = 7;
 pub const BRAID_NUMER_DEFAULT: u8 = 1;
-/// Maximum sampled bag size (the old 27 unique 3-color kinds). CLI `--bag-size`
-/// accepts `1..=BAG_SIZE`. The default deal is [`BAG_SIZE_DEFAULT`].
+/// Maximum sampled deck size (the old 27 unique 3-color kinds). CLI `--bag-size`
+/// / `--deck-size` accept `1..=BAG_SIZE`. The default deck is [`BAG_SIZE_DEFAULT`].
 pub const BAG_SIZE: usize = 27;
-/// Default `--bag-size` / [`RuleSet::bag_size`]. A deal of 7 leaves 4 to draw.
+/// Default `--bag-size` / `--deck-size` / [`RuleSet::bag_size`]. All 11 tiles
+/// start public on the bench; spawn tokens default separately to 7.
 pub const BAG_SIZE_DEFAULT: usize = 11;
+/// Default opening spawn-token stack. Independent of [`BAG_SIZE_DEFAULT`].
+pub const STARTING_TOKENS_DEFAULT: u8 = 7;
 pub const MAX_COLOR_RINGS: u8 = 3;
 /// Per live slot: empty + (6 colors × 3 types). Kind space is this cubed.
 pub const RING_TYPE_COUNT: usize = 3;
@@ -660,11 +663,12 @@ pub enum LowValueResolution {
 /// Both players must have fewer than this many board tiles for [`EndReason::LowValue`].
 pub const LOW_VALUE_BOARD_LT: u8 = 5;
 
-/// One token in the capture-budget stack. The opening deal is [`BudgetToken::Blank`]
-/// copies; captures push [`BudgetToken::Captured`]. ADD pops from the front
-/// (blanks spend first, so captured tiles stay visible). Tokens beyond the
-/// bench are kept as surplus; only [`Game::budget`] (min of stack length and
-/// bench length) is usable ADD permission.
+/// One spawn token. The opening stack is [`BudgetToken::Blank`] copies
+/// ([`RuleSet::starting_bench_size`], default 7); captures push
+/// [`BudgetToken::Captured`]. ADD pops from the front (blanks spend first,
+/// so captured tiles stay visible). Tokens beyond the remaining deck are
+/// kept as surplus; only [`Game::budget`] (min of stack length and unplaced
+/// deck tiles) is usable ADD permission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BudgetToken {
 	Blank,
@@ -672,9 +676,10 @@ pub enum BudgetToken {
 }
 
 /// One slot in the visual full-deck row (always [`RuleSet::bag_size`] long,
-/// default 11). Tiles still in the bag are [`Self::Empty`]. Live bench tiles
-/// are [`Self::Live`]. Placed, captured, or otherwise used tiles stay in
-/// their original slot as [`Self::Spent`] instead of disappearing.
+/// default 11). Every unplaced deck tile is [`Self::Live`] and selectable.
+/// Placed or captured tiles stay in their original slot as [`Self::Spent`].
+/// [`Self::Empty`] only pads unused slots when fewer tiles were dealt than
+/// `bag_size`; there are no hidden-bag blank faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeckSlot {
 	Empty,
@@ -703,8 +708,9 @@ fn blank_budget(n: u8) -> Vec<BudgetToken> {
 	vec![BudgetToken::Blank; n as usize]
 }
 
-/// Visual deck order: live bench left-to-right, then remaining bag in draw
-/// order (next draw first). The bag is a pop-stack, so draw order is reverse.
+/// Visual deck order: unplaced tiles left-to-right, then remaining bag in
+/// draw order (next draw first). New games deal the whole bag onto the bench,
+/// so the bag tail is empty. The bag is a pop-stack, so draw order is reverse.
 fn visual_deck_order(bench: &[Tile], bag: &[Tile]) -> Vec<Tile> {
 	let mut deck = Vec::with_capacity(bench.len() + bag.len());
 	deck.extend_from_slice(bench);
@@ -803,7 +809,8 @@ pub enum EndReason {
 pub enum SamePieceTwice {
 	Off,
 	Always,
-	WhenBenchEmpty,
+	/// Enforced only while that player's remaining (unplaced) deck is empty.
+	WhenDeckEmpty,
 }
 
 impl SamePieceTwice {
@@ -811,9 +818,10 @@ impl SamePieceTwice {
 		match s.to_ascii_lowercase().as_str() {
 			"off" | "false" | "0" => Ok(Self::Off),
 			"always" | "on" | "true" => Ok(Self::Always),
-			"when-bench-empty" | "when_bench_empty" | "bench-empty" => Ok(Self::WhenBenchEmpty),
+			"when-deck-empty" | "when_deck_empty" | "deck-empty" | "when-bench-empty"
+			| "when_bench_empty" | "bench-empty" => Ok(Self::WhenDeckEmpty),
 			other => Err(format!(
-				"unknown no-same-piece-twice mode '{other}' (expected off|always|when-bench-empty)"
+				"unknown no-same-piece-twice mode '{other}' (expected off|always|when-deck-empty)"
 			)),
 		}
 	}
@@ -822,7 +830,7 @@ impl SamePieceTwice {
 		match self {
 			Self::Off => "off",
 			Self::Always => "always",
-			Self::WhenBenchEmpty => "when-bench-empty",
+			Self::WhenDeckEmpty => "when-deck-empty",
 		}
 	}
 }
@@ -986,17 +994,17 @@ impl ZagMismatchCount {
 	}
 }
 
-/// Lose when board tiles + bench cannot reach the control-set occupancy
+/// Lose when board tiles + remaining deck cannot reach the control-set occupancy
 /// threshold (`control_n`, default 5). Default [`Self::Off`].
 ///
-/// Bag draws happen only on a MOVE that captures, so "can they still get to
-/// 5?" depends on whether future draws are counted:
+/// Captures earn spawn tokens, not extra deck tiles. "Can they still get to
+/// 5?" is `board + unplaced deck`:
 ///
-/// - [`Self::Strict`]: lose as soon as `board + bench < 5`, ignoring the bag.
-/// - [`Self::NoRecapture`]: lose when `board + bench < 5` **and** they cannot
-///   gain a tile this turn: the bag is empty, capture-draw is off, or they
-///   have no legal MOVE that would remove an opponent tile (previewed
-///   overwhelm). Having a capturing MOVE with a non-empty bag saves them.
+/// - [`Self::Strict`]: lose as soon as `board + remaining deck < 5`.
+/// - [`Self::NoRecapture`]: lose when `board + remaining deck < 5` **and** they
+///   cannot gain a tile this turn. With the default public deck there is no
+///   hidden bag, so this matches strict unless `capture_draw_on_move` is on
+///   (legacy logs) and a capturing MOVE could still draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum InsufficientTilesLoss {
 	Off,
@@ -1046,27 +1054,26 @@ impl GameStatus {
 /// in `rfc/rfc-001-001-001-rosette-redesign`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
-	/// Starting tiles dealt from each bag onto the bench, and the opening
-	/// capture-budget stack (that many blank tokens). Default 7. Must be `<=`
-	/// [`Self::bag_size`]. A deal of 7 from the default 11-tile bag leaves 4
-	/// in the bag. ADD spends 1 token; each opponent capture earns 1.
-	/// Own-tile captures earn 1 iff [`Self::self_capture_budget`]. Empty bag
-	/// skips the capture-draw. Usable budget is min(tokens, bench tiles).
+	/// Opening spawn-token stack (that many blank tokens). Default 7.
+	/// Independent of [`Self::bag_size`] (the public deck). CLI:
+	/// `--starting-tokens` / `--starting-bench`. ADD spends 1 token; each
+	/// opponent capture earns 1. Own-tile captures earn 1 iff
+	/// [`Self::self_capture_budget`]. Usable budget is min(tokens, unplaced
+	/// deck tiles).
 	pub starting_bench_size: u8,
-	/// Total sampled tiles per player (opening deal plus remaining draws).
-	/// Default [`BAG_SIZE_DEFAULT`] (11). CLI: `--bag-size` (`1..=`[`BAG_SIZE`]).
-	/// The opening deal is still [`Self::starting_bench_size`] (7), so 11
-	/// leaves 4 to draw, 13 leaves 6, and 27 leaves 20.
+	/// Public deck size per player. Default [`BAG_SIZE_DEFAULT`] (11). CLI:
+	/// `--bag-size` / `--deck-size` (`1..=`[`BAG_SIZE`]). Every sampled tile
+	/// starts unplaced and selectable; there is no hidden remainder.
 	pub bag_size: u8,
 	/// If true (default), capturing your own tile on your turn earns +1
 	/// budget the same as capturing an opponent tile. False still removes
 	/// the tile (overwhelm is unchanged) but does not refund a token.
 	/// CLI: `--self-capture-budget on|off`.
 	pub self_capture_budget: bool,
-	/// Both players receive the same shuffled [`Self::bag_size`]-tile bag. Default true.
+	/// Both players receive the same shuffled [`Self::bag_size`]-tile deck. Default true.
 	pub identical_bags: bool,
-	/// Fill the bag by sampling [`Self::bag_size`] tiles (historical name: one-of-each
-	/// 27-kind). Default true. False leaves an empty bag.
+	/// Fill the deck by sampling [`Self::bag_size`] tiles (historical name: one-of-each
+	/// 27-kind). Default true. False leaves an empty deck.
 	pub bag_one_of_each_kind: bool,
 	/// Max distinct rings per tile (1–3). Default 3. `1` is the
 	/// single-ring baseline (still the six-color tree).
@@ -1078,7 +1085,9 @@ pub struct RuleSet {
 	/// (1/7, same rate as zags). `0` disables braids (`--braids off` /
 	/// `--braid-chance 0`).
 	pub braid_numer: u8,
-	/// On a MOVE, each removed opponent tile draws one bag tile onto the mover's bench.
+	/// Legacy: on a MOVE, each removed opponent tile draws one hidden bag tile
+	/// onto the bench. Default **false** (the whole deck is public; captures
+	/// earn tokens only). Kept so historical JSONL logs replay.
 	pub capture_draw_on_move: bool,
 	/// If true, a mismatch adds the neighbor's ring count instead of 1. Default false.
 	pub mismatch_uses_neighbor_weight: bool,
@@ -1103,7 +1112,7 @@ pub struct RuleSet {
 	/// Consecutive own turns holding the center required to win. Default 5.
 	pub center_hold_n: u8,
 	/// Disallow moving the same tile on two consecutive own turns, with a
-	/// capture exception. Default [`SamePieceTwice::WhenBenchEmpty`].
+	/// capture exception. Default [`SamePieceTwice::WhenDeckEmpty`].
 	pub no_same_piece_twice: SamePieceTwice,
 	/// If true, a hop may only cross tiles of the mover's color, compared with
 	/// [`Self::hop_weight_cmp`]. Default true.
@@ -1126,7 +1135,7 @@ pub struct RuleSet {
 	pub control_n: u8,
 	/// Consecutive own turns holding `control_n` control-set nodes. Default 1.
 	pub control_hold_turns: u8,
-	/// Lose when board + bench cannot reach 5 tiles (see
+	/// Lose when board + remaining deck cannot reach 5 tiles (see
 	/// [`InsufficientTilesLoss`]). Default off.
 	pub insufficient_tiles_loss: InsufficientTilesLoss,
 	/// Uniqueness constraint along a single MOVE path.
@@ -1153,7 +1162,7 @@ pub struct RuleSet {
 impl Default for RuleSet {
 	fn default() -> Self {
 		Self {
-			starting_bench_size: 7,
+			starting_bench_size: STARTING_TOKENS_DEFAULT,
 			bag_size: BAG_SIZE_DEFAULT as u8,
 			self_capture_budget: true,
 			identical_bags: true,
@@ -1161,7 +1170,7 @@ impl Default for RuleSet {
 			max_rings: MAX_COLOR_RINGS,
 			zag_numer: ZAG_NUMER_DEFAULT,
 			braid_numer: BRAID_NUMER_DEFAULT,
-			capture_draw_on_move: true,
+			capture_draw_on_move: false,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
 			turn_limit: 200,
@@ -1171,7 +1180,7 @@ impl Default for RuleSet {
 			no_moves_loses: true,
 			center_hold_win: false,
 			center_hold_n: 5,
-			no_same_piece_twice: SamePieceTwice::WhenBenchEmpty,
+			no_same_piece_twice: SamePieceTwice::WhenDeckEmpty,
 			color_restricted_hops: true,
 			hop_weight_cmp: HopWeightCmp::Le,
 			petal_majority_win: false,
@@ -1248,12 +1257,12 @@ pub struct Game {
 	petal_majority: [u8; 2],
 	/// Consecutive own turns occupying at least `control_n` control-set nodes.
 	control_hold: [u8; 2],
-	/// Capture-budget token stack. Tokens are earned and spent here; usable
-	/// ADD permission is [`Self::budget`] = min(stack length, bench length).
+	/// Spawn-token stack. Tokens are earned and spent here; usable ADD
+	/// permission is [`Self::budget`] = min(stack length, remaining deck).
 	budget_tokens: [Vec<BudgetToken>; 2],
-	/// Original deck in visual order (first-dealt first, remaining bag last),
-	/// snapshotted after the opening deal. The UI shows this many slots for
-	/// the whole game; used tiles stay here even after they leave the bench.
+	/// Original deck in visual order, snapshotted after the opening deal.
+	/// The UI shows this many slots for the whole game; used tiles stay here
+	/// even after they leave the remaining deck.
 	opening_deck: [Vec<Tile>; 2],
 }
 
@@ -1302,7 +1311,6 @@ impl Game {
 		let p2_bag = to_tiles(Player::Two, bags[1].clone(), &mut next_tile_id);
 		let p1_bench = to_tiles(Player::One, benches[0].clone(), &mut next_tile_id);
 		let p2_bench = to_tiles(Player::Two, benches[1].clone(), &mut next_tile_id);
-		let dealt = !p1_bench.is_empty() || !p2_bench.is_empty();
 		let mut game = Self {
 			board,
 			rules,
@@ -1327,9 +1335,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 		};
-		if !dealt {
-			game.deal_opening();
-		}
+		game.deal_opening();
 		game.snapshot_opening_decks();
 		Ok(game)
 	}
@@ -1398,7 +1404,7 @@ impl Game {
 		game
 	}
 
-	/// Empty board, empty benches and bags. For constructed test positions.
+	/// Empty board, empty decks. For constructed test positions.
 	pub fn empty(rules: RuleSet) -> Self {
 		Self::empty_on(Arc::new(Board::rosette_8()), rules)
 	}
@@ -1438,12 +1444,27 @@ impl Game {
 		];
 	}
 
-	fn deal_opening(&mut self) {
-		let n = self.rules.starting_bench_size as usize;
-		for p in [Player::One, Player::Two] {
-			for _ in 0..n {
-				let _ = self.draw_from_bag(p);
+	/// Fill each player's visual deck to `bag_size` from inferred live/spent
+	/// tiles so constructed fixtures have no blank bag faces.
+	pub fn remember_full_decks(&mut self) {
+		let n = self.rules.bag_size.max(1) as usize;
+		for player in [Player::One, Player::Two] {
+			let mut deck = self.inferred_opening_deck(player);
+			while deck.len() < n {
+				let color = TileColor::ALL[deck.len() % TileColor::ALL.len()];
+				deck.push(self.alloc_tile(player, color, 1, 1));
 			}
+			deck.truncate(n);
+			self.opening_deck[player.index()] = deck;
+		}
+	}
+
+	/// Move every remaining bag tile onto the public bench. New games sample
+	/// the full deck into the bag, then this empties it; scenarios that already
+	/// placed a fixed bench still receive the leftover as live tiles.
+	fn deal_opening(&mut self) {
+		for p in [Player::One, Player::Two] {
+			while self.draw_from_bag(p).is_some() {}
 		}
 	}
 
@@ -1535,7 +1556,7 @@ impl Game {
 		self.rules.control_n.max(1).min(set)
 	}
 
-	/// Board tiles + bench tiles. Bag tiles are not in play until drawn.
+	/// Board tiles + remaining (unplaced) deck tiles.
 	pub fn reachable_tiles(&self, player: Player) -> usize {
 		self.board_count(player) + self.bench(player).len()
 	}
@@ -1569,9 +1590,10 @@ impl Game {
 		&self.benches[player.index()]
 	}
 
-	/// Usable capture budget: `min(tokens in the stack, tiles on the bench)`.
-	/// Tokens beyond the bench stay on the stack (and in the UI) but cannot
-	/// be spent until a later draw puts a tile on the bench.
+	/// Usable spawn budget: `min(tokens in the stack, unplaced deck tiles)`.
+	/// Tokens beyond the remaining deck stay on the stack (and in the UI) but
+	/// cannot be spent until a later capture leaves a tile still unplaced, or
+	/// (legacy `capture_draw_on_move`) a draw puts a tile on the bench.
 	pub fn budget(&self, player: Player) -> usize {
 		self.budget_token_count(player).min(self.bench(player).len())
 	}
@@ -1581,7 +1603,7 @@ impl Game {
 		self.budget_tokens[player.index()].len()
 	}
 
-	/// Tokens that exceed the bench, so they cannot be spent yet.
+	/// Tokens that exceed the remaining deck, so they cannot be spent yet.
 	pub fn budget_surplus(&self, player: Player) -> usize {
 		self.budget_token_count(player).saturating_sub(self.budget(player))
 	}
@@ -1595,8 +1617,8 @@ impl Game {
 		self.budget_tokens[player.index()] = tokens;
 	}
 
-	/// Full visual deck, always [`RuleSet::bag_size`] slots. Used tiles keep
-	/// their original slot; tiles still in the bag are empty faces.
+	/// Full visual deck, always [`RuleSet::bag_size`] slots. Unplaced tiles
+	/// are live; placed or captured tiles keep their original slot as spent.
 	pub fn deck_slots(&self, player: Player) -> Vec<DeckSlot> {
 		let n = self.rules.bag_size.max(1) as usize;
 		let source = if self.opening_deck[player.index()].is_empty() {
@@ -1615,9 +1637,7 @@ impl Game {
 	}
 
 	fn classify_deck_tile(&self, player: Player, tile: Tile) -> DeckSlot {
-		if self.bag(player).iter().any(|t| t.id == tile.id) {
-			DeckSlot::Empty
-		} else if self.bench(player).iter().any(|t| t.id == tile.id) {
+		if self.bench(player).iter().any(|t| t.id == tile.id) {
 			DeckSlot::Live(tile)
 		} else {
 			DeckSlot::Spent(tile)
@@ -1664,8 +1684,9 @@ impl Game {
 		&self.bags[player.index()]
 	}
 
-	/// Reorder remaining bag tiles. The multiset is unchanged; capture-draw
-	/// order becomes the sampled permutation (determinization).
+	/// Reorder remaining bag tiles. New games have empty bags (the whole deck
+	/// is public). Kept so MCTS can determinize legacy `capture_draw_on_move`
+	/// positions and historical JSONL replays.
 	pub fn shuffle_bags(&mut self, rng: &mut impl rand::Rng) {
 		self.bags[0].shuffle(rng);
 		self.bags[1].shuffle(rng);
@@ -1892,7 +1913,7 @@ impl Game {
 		if self.status.is_over() {
 			return Vec::new();
 		}
-		// Usable budget is 0 when the stack is empty or the bench is empty.
+		// Usable budget is 0 when the stack is empty or the remaining deck is empty.
 		if self.budget(self.current) == 0 {
 			return Vec::new();
 		}
@@ -1954,13 +1975,13 @@ impl Game {
 		match self.rules.no_same_piece_twice {
 			SamePieceTwice::Off => false,
 			SamePieceTwice::Always => true,
-			SamePieceTwice::WhenBenchEmpty => self.benches[player.index()].is_empty(),
+			SamePieceTwice::WhenDeckEmpty => self.benches[player.index()].is_empty(),
 		}
 	}
 
 	/// True if `player` has a legal MOVE (as if it were their turn) that would
 	/// remove at least one opponent tile. Used by `no-recapture` insufficient-
-	/// tiles: a capturing MOVE is the only way to draw from the bag.
+	/// tiles when legacy `capture_draw_on_move` can still gain a tile.
 	pub fn has_capturing_move(&self, player: Player) -> bool {
 		for (node, tile) in self.tiles() {
 			if tile.owner != player {
@@ -2393,8 +2414,8 @@ impl Game {
 
 	/// Both **usable** budgets are 0 and both have fewer than
 	/// [`LOW_VALUE_BOARD_LT`] board tiles. Surplus tokens (stack longer than
-	/// the bench) do not block this. Compared after lockout: a player who
-	/// cannot act still loses by lockout even if they hold the lowest piece.
+	/// the remaining deck) do not block this. Compared after lockout: a player
+	/// who cannot act still loses by lockout even if they hold the lowest piece.
 	fn check_low_value(&mut self) {
 		if self.status.is_over() {
 			return;
@@ -2687,16 +2708,16 @@ mod tests {
 	}
 
 	#[test]
-	fn opening_deal_is_seven_from_identical_bags() {
+	fn opening_deal_is_full_public_deck_with_seven_tokens() {
 		let a = Game::new(RuleSet::default(), 7);
 		let b = Game::new(RuleSet::default(), 7);
-		assert_eq!(a.bench(Player::One).len(), 7);
-		assert_eq!(a.bench(Player::Two).len(), 7);
+		assert_eq!(a.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(a.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(a.budget(Player::One), 7);
 		assert_eq!(a.budget(Player::Two), 7);
 		assert!(a.budget_tokens(Player::One).iter().all(|t| matches!(t, BudgetToken::Blank)));
-		assert_eq!(a.bag_len(Player::One), 4);
-		assert_eq!(a.bag_len(Player::Two), 4);
+		assert_eq!(a.bag_len(Player::One), 0);
+		assert_eq!(a.bag_len(Player::Two), 0);
 		let kinds = |g: &Game, p: Player| {
 			g.bench(p)
 				.iter()
@@ -2710,17 +2731,17 @@ mod tests {
 	}
 
 	#[test]
-	fn opening_deal_respects_starting_bench_size() {
+	fn opening_tokens_are_independent_of_deck_size() {
 		let mut rules = RuleSet::default();
 		rules.starting_bench_size = 5;
 		let game = Game::new(rules, 1);
-		assert_eq!(game.bench(Player::One).len(), 5);
-		assert_eq!(game.bench(Player::Two).len(), 5);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(game.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 5);
 		assert_eq!(game.budget(Player::Two), 5);
-		assert_eq!(game.bag_len(Player::One), 6);
-		assert_eq!(game.bag_len(Player::Two), 6);
-		assert_eq!(game.legal_adds().len(), 5 * 8);
+		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.bag_len(Player::Two), 0);
+		assert_eq!(game.legal_adds().len(), BAG_SIZE_DEFAULT * 8);
 	}
 
 	#[test]
@@ -2728,18 +2749,18 @@ mod tests {
 		let mut game = Game::new(RuleSet::default(), 3);
 		let before = game.deck_slots(Player::One);
 		assert_eq!(before.len(), BAG_SIZE_DEFAULT);
-		assert_eq!(before.iter().filter(|s| s.is_live()).count(), 7);
-		assert_eq!(before.iter().filter(|s| s.shows_blank_face()).count(), 4);
+		assert_eq!(before.iter().filter(|s| s.is_live()).count(), BAG_SIZE_DEFAULT);
+		assert_eq!(before.iter().filter(|s| s.shows_blank_face()).count(), 0);
 		let action = game.legal_adds().into_iter().next().expect("opening ADD");
 		let added_id = match action {
 			Action::Add { bench_index, .. } => game.bench(Player::One)[bench_index].id,
 			other => panic!("expected ADD, got {other:?}"),
 		};
 		game.apply(action).unwrap();
-		assert_eq!(game.bench(Player::One).len(), 6);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT - 1);
 		let after = game.deck_slots(Player::One);
 		assert_eq!(after.len(), BAG_SIZE_DEFAULT);
-		assert_eq!(after.iter().filter(|s| s.is_live()).count(), 6);
+		assert_eq!(after.iter().filter(|s| s.is_live()).count(), BAG_SIZE_DEFAULT - 1);
 		assert_eq!(after.iter().filter(|s| matches!(s, DeckSlot::Spent(_))).count(), 1);
 		assert!(after.iter().any(|s| matches!(s, DeckSlot::Spent(t) if t.id == added_id)));
 		for (a, b) in before.iter().zip(&after) {
@@ -2751,13 +2772,12 @@ mod tests {
 	fn opening_deal_respects_bag_size_eleven() {
 		let game = Game::new(RuleSet::default(), 1);
 		assert_eq!(game.rules().bag_size, BAG_SIZE_DEFAULT as u8);
-		assert_eq!(game.bench(Player::One).len(), 7);
-		assert_eq!(game.bench(Player::Two).len(), 7);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(game.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 7);
-		assert_eq!(game.bag_len(Player::One), 4);
-		assert_eq!(game.bag_len(Player::Two), 4);
-		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), 11);
-		assert_eq!(game.legal_adds().len(), 7 * 8);
+		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.bag_len(Player::Two), 0);
+		assert_eq!(game.legal_adds().len(), BAG_SIZE_DEFAULT * 8);
 	}
 
 	#[test]
@@ -2765,9 +2785,9 @@ mod tests {
 		let mut rules = RuleSet::default();
 		rules.bag_size = BAG_SIZE as u8;
 		let game = Game::new(rules, 1);
-		assert_eq!(game.bench(Player::One).len(), 7);
-		assert_eq!(game.bag_len(Player::One), 20);
-		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), BAG_SIZE);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE);
+		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.budget(Player::One), 7);
 	}
 
 	#[test]
@@ -2775,15 +2795,16 @@ mod tests {
 		let mut rules = RuleSet::default();
 		rules.bag_size = 13;
 		let game = Game::new(rules, 2);
-		assert_eq!(game.bench(Player::One).len(), 7);
-		assert_eq!(game.bag_len(Player::One), 6);
-		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), 13);
+		assert_eq!(game.bench(Player::One).len(), 13);
+		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.budget(Player::One), 7);
 	}
 
 	#[test]
-	fn bag_size_equal_to_deal_leaves_empty_bag() {
+	fn tokens_can_exceed_a_small_deck() {
 		let mut rules = RuleSet::default();
 		rules.bag_size = 7;
+		rules.starting_bench_size = 7;
 		let game = Game::new(rules, 3);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bag_len(Player::One), 0);
@@ -2791,7 +2812,7 @@ mod tests {
 	}
 
 	#[test]
-	fn default_rules_are_control_win_with_bench_seven() {
+	fn default_rules_are_control_win_with_seven_tokens() {
 		let rules = RuleSet::default();
 		assert!(!rules.center_hold_win);
 		assert!(rules.control_win);
@@ -2799,6 +2820,7 @@ mod tests {
 		assert_eq!(rules.control_hold_turns, 1);
 		assert_eq!(rules.starting_bench_size, 7);
 		assert_eq!(rules.bag_size, BAG_SIZE_DEFAULT as u8);
+		assert!(!rules.capture_draw_on_move);
 		assert!(rules.self_capture_budget);
 		assert_eq!(rules.max_rings, 3);
 		assert_eq!(rules.zag_numer, ZAG_NUMER_DEFAULT);
@@ -2810,11 +2832,11 @@ mod tests {
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
 		assert!(rules.no_moves_loses);
 		let game = Game::new(rules, 1);
-		assert_eq!(game.bench(Player::One).len(), 7);
-		assert_eq!(game.bench(Player::Two).len(), 7);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(game.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 7);
-		assert_eq!(game.bag_len(Player::One), 4);
-		assert_eq!(game.legal_adds().len(), 7 * 8);
+		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.legal_adds().len(), BAG_SIZE_DEFAULT * 8);
 	}
 
 	#[test]
@@ -3320,7 +3342,7 @@ mod tests {
 	}
 
 	#[test]
-	fn capture_draws_on_move_not_on_add() {
+	fn capture_does_not_draw_on_add_or_move() {
 		let mut game = Game::empty(RuleSet::default());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
@@ -3342,12 +3364,12 @@ mod tests {
 			.unwrap();
 		let bag_before = game.bag_len(Player::One);
 		let outcome = game.apply(Action::Add { bench_index: 0, node: empty }).unwrap();
-		assert_eq!(game.bag_len(Player::One), bag_before, "ADD captures do not draw");
+		assert_eq!(game.bag_len(Player::One), bag_before, "captures do not draw from a hidden bag");
 		assert_eq!(outcome.draws, 0);
 	}
 
 	#[test]
-	fn move_capture_draws_one_per_opponent_tile() {
+	fn move_capture_earns_a_token_and_does_not_draw() {
 		let mut game = Game::empty(RuleSet::default());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
@@ -3368,6 +3390,7 @@ mod tests {
 		game.set_current(Player::One);
 		let bag_before = game.bag_len(Player::One);
 		let bench_before = game.bench(Player::One).len();
+		let tokens_before = game.budget_token_count(Player::One);
 		let (m, n) = {
 			let mut preview = game.clone();
 			preview.tiles[from as usize] = None;
@@ -3381,9 +3404,10 @@ mod tests {
 			"opponent tile should be removed: {:?}",
 			outcome.removals
 		);
-		assert_eq!(outcome.draws, 1);
-		assert_eq!(game.bag_len(Player::One), bag_before - 1);
-		assert_eq!(game.bench(Player::One).len(), bench_before + 1);
+		assert_eq!(outcome.draws, 0);
+		assert_eq!(game.bag_len(Player::One), bag_before);
+		assert_eq!(game.bench(Player::One).len(), bench_before);
+		assert_eq!(game.budget_token_count(Player::One), tokens_before + outcome.removals.len());
 	}
 
 	#[test]
@@ -3409,7 +3433,7 @@ mod tests {
 	}
 
 	#[test]
-	fn remaining_bag_does_not_keep_a_player_alive() {
+	fn hidden_bag_does_not_keep_a_player_alive() {
 		let mut game = Game::empty(RuleSet::default());
 		{
 			let _t = take(&mut game, Player::Two, TileColor::Orange, 1, 1);
@@ -3490,7 +3514,7 @@ mod tests {
 	fn new_game_has_legal_adds_on_all_spawns() {
 		let game = Game::new(RuleSet::default(), 1);
 		let adds = game.legal_adds();
-		assert_eq!(adds.len(), 7 * 8);
+		assert_eq!(adds.len(), BAG_SIZE_DEFAULT * 8);
 		assert!(game.legal_moves().is_empty());
 	}
 
@@ -3933,13 +3957,13 @@ mod tests {
 		rules.bag_size = 11;
 		rules.insufficient_tiles_loss = InsufficientTilesLoss::Strict;
 		let game = Game::new(rules, 1);
-		assert_eq!(game.reachable_tiles(Player::One), 7);
-		assert_eq!(game.bag_len(Player::One), 4, "leftover bag is not reachable");
+		assert_eq!(game.reachable_tiles(Player::One), 11);
+		assert_eq!(game.bag_len(Player::One), 0);
 		assert_eq!(game.status(), GameStatus::InProgress);
 	}
 
 	#[test]
-	fn insufficient_tiles_strict_loses_below_five_ignoring_bag() {
+	fn insufficient_tiles_strict_loses_below_five_ignoring_hidden_bag() {
 		let mut rules = RuleSet::default();
 		rules.center_hold_win = false;
 		rules.insufficient_tiles_loss = InsufficientTilesLoss::Strict;
@@ -3966,7 +3990,7 @@ mod tests {
 			.unwrap();
 		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
 		assert_eq!(game.reachable_tiles(Player::One), 4);
-		assert_eq!(game.bag_len(Player::One), 1, "bag is ignored in strict mode");
+		assert_eq!(game.bag_len(Player::One), 1, "a leftover hidden bag is ignored in strict mode");
 		assert_eq!(
 			game.status(),
 			GameStatus::Won { winner: Player::Two, reason: EndReason::InsufficientTiles }
@@ -4021,7 +4045,7 @@ mod tests {
 	}
 
 	#[test]
-	fn insufficient_no_recapture_survives_when_a_capture_can_draw() {
+	fn insufficient_no_recapture_does_not_gain_from_capture() {
 		let mut rules = RuleSet::default();
 		rules.center_hold_win = false;
 		rules.insufficient_tiles_loss = InsufficientTilesLoss::NoRecapture;
@@ -4036,7 +4060,7 @@ mod tests {
 			.iter()
 			.find(|n| **n != spawn && !nbs.contains(n))
 			.unwrap_or(&nbs[2]);
-		// Proven capture geometry from `move_capture_draws_one_per_opponent_tile`.
+		// Proven capture geometry from `move_capture_earns_a_token_and_does_not_draw`.
 		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
 		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
 		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
@@ -4064,11 +4088,60 @@ mod tests {
 		assert!(game.destinations(from).contains(&land));
 		assert!(game.move_removes_opponent(from, land));
 		assert!(game.has_capturing_move(Player::One));
-		// Turn-boundary check without playing the capture: board+bench is 4,
-		// but a capturing MOVE plus a non-empty bag keeps them alive.
+		// Turn-boundary check without playing the capture: board+deck is 4.
+		// Captures earn tokens, not tiles, so a capturing MOVE does not save them.
 		game.evaluate_insufficient_tiles_for_test();
 		assert_eq!(game.reachable_tiles(Player::One), 4);
 		assert_eq!(game.bag_len(Player::One), 1);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::InsufficientTiles }
+		);
+	}
+
+	#[test]
+	fn insufficient_no_recapture_legacy_draw_still_saves() {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.insufficient_tiles_loss = InsufficientTilesLoss::NoRecapture;
+		rules.no_same_piece_twice = SamePieceTwice::Off;
+		rules.capture_draw_on_move = true;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
+		let inner = game.board().inner_ring().to_vec();
+		let extra = inner
+			.iter()
+			.copied()
+			.find(|&n| {
+				n != spawn
+					&& n != land && n != from
+					&& n != nbs[1] && game.tile_at(n).is_none()
+					&& !game.board().neighbors(spawn).contains(&n)
+			})
+			.expect("an inner node away from the capture");
+		put(&mut game, extra, Player::One, TileColor::Green, 3, 1);
+		let bag = take(&mut game, Player::One, TileColor::Blue, 2, 1);
+		game.set_bag(Player::One, vec![bag]);
+		{
+			let t = take(&mut game, Player::One, TileColor::Green, 1, 1);
+			game.set_bench(Player::One, vec![t]);
+		}
+		stock_bench(&mut game, Player::Two, 5);
+		game.set_current(Player::One);
+		assert_eq!(game.reachable_tiles(Player::One), 4);
+		assert!(game.has_capturing_move(Player::One));
+		game.evaluate_insufficient_tiles_for_test();
 		assert_eq!(game.status(), GameStatus::InProgress);
 	}
 
@@ -4224,9 +4297,9 @@ mod tests {
 	}
 
 	#[test]
-	fn no_same_piece_twice_when_bench_empty_only() {
+	fn no_same_piece_twice_when_deck_empty_only() {
 		let mut rules = RuleSet::default();
-		rules.no_same_piece_twice = SamePieceTwice::WhenBenchEmpty;
+		rules.no_same_piece_twice = SamePieceTwice::WhenDeckEmpty;
 		let mut game = Game::empty(rules);
 		let inner = inner_ring(&game);
 		let a = inner[0];
@@ -4544,20 +4617,19 @@ mod tests {
 	}
 
 	#[test]
-	fn sampled_bags_are_mirrored_and_size_11() {
+	fn sampled_decks_are_mirrored_and_size_11() {
 		let game = Game::new(RuleSet::default(), 11);
 		assert_eq!(game.rules().bag_size as usize, BAG_SIZE_DEFAULT);
-		assert_eq!(game.bag_len(Player::One) + game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::One), 0);
 		let p1: Vec<_> = game
 			.bench(Player::One)
 			.iter()
-			.chain(game.bag(Player::One))
 			.map(|t| (t.color_mask(), t.n_rings, t.zag(), t.weight, t.dots))
 			.collect();
 		let p2: Vec<_> = game
 			.bench(Player::Two)
 			.iter()
-			.chain(game.bag(Player::Two))
 			.map(|t| (t.color_mask(), t.n_rings, t.zag(), t.weight, t.dots))
 			.collect();
 		assert_eq!(p1, p2);
@@ -5185,25 +5257,24 @@ mod tests {
 	}
 
 	#[test]
-	fn shuffle_bags_keeps_the_same_kinds() {
+	fn shuffle_bags_is_a_noop_on_the_public_deck() {
 		let mut game = Game::new(RuleSet::default(), 12);
-		let snapshot = |g: &Game, p: Player| {
-			let mut v: Vec<_> = g.bag(p).iter().map(|t| t.kind_index()).collect();
-			v.sort_unstable();
-			v
-		};
+		assert!(game.bag(Player::One).is_empty());
+		let snapshot =
+			|g: &Game, p: Player| g.bench(p).iter().map(|t| t.kind_index()).collect::<Vec<_>>();
 		let before = snapshot(&game, Player::One);
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, snapshot(&game, Player::One));
+		assert!(game.bag(Player::One).is_empty());
 	}
 
 	#[test]
-	fn shuffle_bags_determinizes_a_full_deck() {
-		let mut rules = RuleSet::default();
-		rules.bag_size = BAG_SIZE as u8;
-		let mut game = Game::new(rules, 12);
-		assert_eq!(game.bag_len(Player::One), 20);
+	fn shuffle_bags_determinizes_a_legacy_hidden_remainder() {
+		let mut game = Game::empty(RuleSet::default());
+		let leftovers: Vec<_> =
+			(0..4).map(|_| game.alloc_tile(Player::One, TileColor::Orange, 1, 1)).collect();
+		game.set_bag(Player::One, leftovers);
 		let snapshot = |g: &Game, p: Player| {
 			let mut v: Vec<_> = g.bag(p).iter().map(|t| t.kind_index()).collect();
 			v.sort_unstable();
@@ -5213,7 +5284,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, snapshot(&game, Player::One));
-		assert_eq!(game.bag_len(Player::One), 20);
+		assert_eq!(game.bag_len(Player::One), 4);
 	}
 
 	fn zero_budget(game: &mut Game) {
@@ -5238,7 +5309,7 @@ mod tests {
 		let action = game.legal_adds().into_iter().next().expect("opening ADD");
 		game.apply(action).unwrap();
 		assert_eq!(game.budget(Player::One), 6);
-		assert_eq!(game.bench(Player::One).len(), 6);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT - 1);
 	}
 
 	#[test]
@@ -5503,8 +5574,10 @@ mod tests {
 	}
 
 	#[test]
-	fn empty_bag_skips_capture_draw_on_move() {
-		let mut game = Game::empty(RuleSet::default());
+	fn empty_bag_skips_legacy_capture_draw_on_move() {
+		let mut rules = RuleSet::default();
+		rules.capture_draw_on_move = true;
+		let mut game = Game::empty(rules);
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		assert!(nbs.len() >= 3);
@@ -5950,40 +6023,16 @@ mod tests {
 	}
 
 	#[test]
-	fn capture_draw_onto_bench_re_enables_surplus_tokens() {
+	fn remaining_deck_tile_re_enables_surplus_tokens() {
 		let mut game = Game::empty(low_value_rules());
-		let spawn = game.board().spawns()[0];
-		let nbs = game.board().neighbors(spawn).to_vec();
-		assert!(nbs.len() >= 3);
-		let land = nbs[0];
-		let from = *game
-			.board()
-			.neighbors(land)
-			.iter()
-			.find(|n| **n != spawn && !nbs.contains(n))
-			.unwrap_or(&nbs[2]);
-		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
-		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
-		put(&mut game, from, Player::One, TileColor::Blue, 3, 1);
 		place_isolated_dot(&mut game, 4, Player::Two, false, 1);
-		let bag_tile = green(&mut game, Player::One, 2, 1);
-		game.set_bag(Player::One, vec![bag_tile]);
 		game.set_current(Player::One);
 		assert_eq!(game.bench(Player::One).len(), 0);
 		assert_eq!(game.budget(Player::One), 0);
 		assert_eq!(game.budget_token_count(Player::One), 7);
-		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
-		assert!(
-			outcome.removals.iter().any(|r| r.tile.owner == Player::Two),
-			"opponent tile should be removed: {:?}",
-			outcome.removals
-		);
-		assert_eq!(outcome.draws, 1);
-		assert_eq!(game.bench(Player::One).len(), 1);
+		let tile = green(&mut game, Player::One, 2, 1);
+		game.set_bench(Player::One, vec![tile]);
 		assert_eq!(game.budget(Player::One), 1);
-		assert!(game.budget_token_count(Player::One) > 1);
-		assert_eq!(game.status(), GameStatus::InProgress);
-		game.set_current(Player::One);
 		assert!(!game.legal_adds().is_empty());
 		let dest = game
 			.board()

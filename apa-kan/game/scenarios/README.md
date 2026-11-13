@@ -34,10 +34,10 @@ colors = ["green", "orange"]   # all dots kinds of each color
 #                              # omit weight/dots to expand all dots kinds of that color
 # dots = 1
 # count = 1
-# [[p1.bench]]                 # optional fixed opening bench (consumed from the bag)
+# [[p1.bench]]                 # optional ordered prefix of the public deck
 # color = "green"
 # weight = 3
 # dots = 1
 ```
 
-`default` / `same` is the current opening deal: `bag_size` sampled tiles (ring process, default 11), mirrored shuffle. `--bag-size` applies to generative scenarios (`--bag-size 27` restores the historical full bag). `independent` samples each player's bag separately. Complementary presets are still 18 one-ring tiles of the three common colors (weight = 1) and keep `starting_bench` at 7 (11 left in each bag).
+`default` / `same` is the current opening deal: `bag_size` sampled tiles (ring process, default 11), mirrored shuffle, all public. `--deck-size` / `--bag-size` applies to generative scenarios (`--bag-size 27` restores the historical full bag). `independent` samples each player's deck separately. Complementary presets are still 18 one-ring tiles of the three common colors (weight = 1), all unplaced, with 7 spawn tokens.

@@ -119,7 +119,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any bench tile to ADD (costs 1 usable budget). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both usable budgets are 0 with <5 tiles.";
+	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both usable budgets are 0 with <5 tiles.";
 
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];
@@ -138,7 +138,7 @@ pub fn budget_slot_is_blank_face(token: &BudgetToken, index: usize, usable: usiz
 	index >= usable || matches!(token, BudgetToken::Blank)
 }
 
-/// Usable budget, or `usable+surplus` when tokens exceed the bench.
+/// Usable budget, or `usable+surplus` when tokens exceed the remaining deck.
 pub fn format_budget(game: &Game, player: Player) -> String {
 	let usable = game.budget(player);
 	let surplus = game.budget_surplus(player);
@@ -1255,10 +1255,10 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 				game.current_player().label(),
 				actor_name,
 				game.bench(Player::One).len(),
-				game.bag_len(Player::One),
+				game.rules().bag_size,
 				format_budget(game, Player::One),
 				game.bench(Player::Two).len(),
-				game.bag_len(Player::Two),
+				game.rules().bag_size,
 				format_budget(game, Player::Two)
 			)
 		}
@@ -1542,16 +1542,7 @@ pub fn demo_midgame() -> Game {
 	let mut p2_tokens = game.budget_tokens(Player::Two).to_vec();
 	p2_tokens.push(BudgetToken::Captured(p2_cap));
 	game.set_budget_tokens(Player::Two, p2_tokens);
-
-	let mut bag1 = Vec::new();
-	let mut bag2 = Vec::new();
-	for i in 0..14 {
-		let color = TileColor::ALL[i % 3];
-		bag1.push(game.alloc_tile(Player::One, color, 1 + (i % 3) as u8, 1 + ((i + 1) % 3) as u8));
-		bag2.push(game.alloc_tile(Player::Two, color, 1 + ((i + 2) % 3) as u8, 1 + (i % 3) as u8));
-	}
-	game.set_bag(Player::One, bag1);
-	game.set_bag(Player::Two, bag2);
+	game.remember_full_decks();
 	game.set_current(Player::One);
 	game
 }
@@ -2695,30 +2686,30 @@ mod tests {
 	}
 
 	#[test]
-	fn opening_hud_uses_control_win_and_seven_tile_bench() {
+	fn opening_hud_uses_control_win_and_full_public_deck() {
 		let game = Game::new(RuleSet::default(), 1);
 		assert!(game.rules().control_win);
 		assert!(!game.rules().center_hold_win);
-		assert_eq!(game.bench(Player::One).len(), 7);
-		assert_eq!(game.bag_len(Player::One), 4);
+		assert_eq!(game.bench(Player::One).len(), 11);
+		assert_eq!(game.bag_len(Player::One), 0);
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("ctl P1 0/5 0/1 P2 0/5 0/1"), "{turn}");
-		assert!(turn.contains("P1 light 7/4 bud 7"), "{turn}");
-		assert!(turn.contains("P2 dark 7/4 bud 7"), "{turn}");
+		assert!(turn.contains("P1 light 11/11 bud 7"), "{turn}");
+		assert!(turn.contains("P2 dark 11/11 bud 7"), "{turn}");
 		assert!(!turn.contains("hold P1"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
 	}
 
 	#[test]
-	fn opening_hud_shows_full_bag_remainder() {
+	fn opening_hud_shows_full_public_deck() {
 		let mut rules = RuleSet::default();
 		rules.bag_size = 27;
 		let game = Game::new(rules, 1);
-		assert_eq!(game.bench(Player::One).len(), 7);
-		assert_eq!(game.bag_len(Player::One), 20);
+		assert_eq!(game.bench(Player::One).len(), 27);
+		assert_eq!(game.bag_len(Player::One), 0);
 		let turn = format_turn_line(&game, "human");
-		assert!(turn.contains("P1 light 7/20 bud 7"), "{turn}");
-		assert!(turn.contains("P2 dark 7/20 bud 7"), "{turn}");
+		assert!(turn.contains("P1 light 27/27 bud 7"), "{turn}");
+		assert!(turn.contains("P2 dark 27/27 bud 7"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
 	}
 
@@ -2730,8 +2721,8 @@ mod tests {
 		assert_eq!(game.budget(Player::Two), 5);
 		assert_eq!(game.budget_surplus(Player::Two), 3);
 		let turn = format_turn_line(&game, "human");
-		assert!(turn.contains("P1 light 5/14 bud 5+4"), "{turn}");
-		assert!(turn.contains("P2 dark 5/14 bud 5+3"), "{turn}");
+		assert!(turn.contains("P1 light 5/11 bud 5+4"), "{turn}");
+		assert!(turn.contains("P2 dark 5/11 bud 5+3"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
 	}
 
