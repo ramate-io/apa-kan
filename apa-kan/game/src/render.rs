@@ -838,7 +838,7 @@ mod tests {
 		write_png_sized(
 			&board,
 			dir.join("capture_budget_stack_1280x800.png"),
-			"left stacks, full 11-tile public decks, opaque empty tokens",
+			"left stacks, full 11-tile public decks, blank empty tokens",
 			1280,
 			800,
 		)
