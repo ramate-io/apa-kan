@@ -316,6 +316,17 @@ where
 			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
 			rules.braid_numer = if on { crate::game::BRAID_NUMER_DEFAULT } else { 0 };
 		}
+		"--bead-chance" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n > 7 {
+				return Err("invalid --bead-chance (expected 0..7, k/7)".into());
+			}
+			rules.bead_numer = n as u8;
+		}
+		"--beads" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.bead_numer = if on { crate::game::BEAD_NUMER_DEFAULT } else { 0 };
+		}
 		"--zag-mismatch" => {
 			rules.zag_mismatch = ZagMismatchCount::parse(&require_value(arg, it.next())?)?;
 		}
@@ -389,6 +400,8 @@ pub fn usage() -> &'static str {
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
+	   --bead-chance <0..7>                       Each remaining normal ring is a bead with k/7 chance (default: 1)\n\
+	   --beads <on|off>                           Alias for --bead-chance 1 or 0 (default: on)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
 	   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
@@ -526,6 +539,7 @@ mod tests {
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.braid_numer, 1);
+		assert_eq!(cfg.rules.bead_numer, 1);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 		assert!(cfg.rules.counted_pass_through);
 		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
@@ -615,6 +629,20 @@ mod tests {
 		assert_eq!(three.rules.braid_numer, 3);
 		let err = GameConfig::parse(["--braid-chance", "8"]).unwrap_err();
 		assert!(err.contains("braid-chance"));
+	}
+
+	#[test]
+	fn parses_bead_flags() {
+		let off = GameConfig::parse(["--beads", "off"]).unwrap();
+		assert_eq!(off.rules.bead_numer, 0);
+		let chance = GameConfig::parse(["--bead-chance", "0"]).unwrap();
+		assert_eq!(chance.rules.bead_numer, 0);
+		let on = GameConfig::parse(["--beads", "on"]).unwrap();
+		assert_eq!(on.rules.bead_numer, 1);
+		let three = GameConfig::parse(["--bead-chance", "3"]).unwrap();
+		assert_eq!(three.rules.bead_numer, 3);
+		let err = GameConfig::parse(["--bead-chance", "8"]).unwrap_err();
+		assert!(err.contains("bead-chance"));
 	}
 
 	#[test]

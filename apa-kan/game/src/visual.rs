@@ -66,6 +66,16 @@ pub const ZAG_LANE_SPACING_SCALE: f64 = 1.55;
 pub const MAX_TILE_ZAGS: usize = 3;
 /// Two-ended SUM can ink every hitting zag on both tiles (3 + 3).
 pub const MAX_EDGE_ZAGS: usize = MAX_TILE_ZAGS * 2;
+/// Small discs around a bead ring. Same slot count as zag overlays.
+pub const MAX_TILE_BEADS: usize = 3;
+/// Unmatched bead rings on both tiles of an edge (3 + 3).
+pub const MAX_EDGE_BEADS: usize = MAX_TILE_BEADS * 2;
+/// Dots on a tile bead ring.
+pub const TILE_BEAD_COUNT: u32 = 12;
+/// Bead disc radius in 22px-tile units.
+pub const TILE_BEAD_R: f32 = 1.15;
+/// Board-unit spacing between bead discs along an arc lane.
+pub const ARC_BEAD_SPACING_UNITS: f64 = 0.10;
 /// Packed unmatched **normal** colors on one half of a conflict diamond.
 pub const MAX_HITCH_COLORS: usize = 3;
 pub const ARC_SAMPLES: usize = 96;
@@ -141,7 +151,7 @@ pub const HELP_TEXT: &str =
 	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both have board+usable <5.";
 
 pub const SETUP_HELP_TEXT: &str =
-	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (a 3-braid uses 3 of 6). Normal uncapped.";
+	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6). Normal uncapped.";
 
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];
@@ -185,6 +195,14 @@ pub struct ArcPaint {
 	pub zags_mid: [Option<TileColor>; MAX_EDGE_ZAGS],
 	/// Braid-channel glyph. Independent of [`Self::body`].
 	pub braid: Option<BraidLane>,
+	/// Bead discs **from** the arc's `from` tile (one-ended potentials).
+	pub beads_from: [Option<TileColor>; MAX_TILE_BEADS],
+	/// Bead discs **from** the arc's `to` tile.
+	pub beads_to: [Option<TileColor>; MAX_TILE_BEADS],
+	/// Unmatched bead rings bundled on the bead lane (two-ended).
+	pub beads_mid: [Option<TileColor>; MAX_EDGE_BEADS],
+	/// Single matched-bead color when any bead on the edge is matched.
+	pub bead_match: Option<TileColor>,
 }
 
 /// Braid lane: a fulfilled (or one-ended potential) weave, or a failed braid
@@ -221,8 +239,8 @@ pub enum ArcBody {
 		zag_a: bool,
 		zag_b: bool,
 	},
-	/// No normal-channel connection line. Used when only zag and/or braid
-	/// lanes fire, or a one-ended zag-only edge.
+	/// No normal-channel connection line. Used when only zag, braid, and/or
+	/// bead lanes fire, or a one-ended special-only edge.
 	Hidden,
 }
 
@@ -235,12 +253,30 @@ impl ArcPaint {
 		[None; MAX_EDGE_ZAGS]
 	}
 
+	fn no_beads() -> [Option<TileColor>; MAX_TILE_BEADS] {
+		[None; MAX_TILE_BEADS]
+	}
+
+	fn no_bead_mid() -> [Option<TileColor>; MAX_EDGE_BEADS] {
+		[None; MAX_EDGE_BEADS]
+	}
+
 	fn with_sides(
 		body: ArcBody,
 		zags_from: [Option<TileColor>; MAX_TILE_ZAGS],
 		zags_to: [Option<TileColor>; MAX_TILE_ZAGS],
 	) -> Self {
-		Self { body, zags_from, zags_to, zags_mid: Self::no_mid(), braid: None }
+		Self {
+			body,
+			zags_from,
+			zags_to,
+			zags_mid: Self::no_mid(),
+			braid: None,
+			beads_from: Self::no_beads(),
+			beads_to: Self::no_beads(),
+			beads_mid: Self::no_bead_mid(),
+			bead_match: None,
+		}
 	}
 
 	pub fn with_braid(mut self, braid: BraidLane) -> Self {
@@ -260,12 +296,17 @@ impl ArcPaint {
 		self.braid.is_some()
 	}
 
-	/// Lane offsets in order (normal, zag, braid). Absent channels are `None`.
-	pub fn lane_offsets(self, pitch: f64) -> [Option<f64>; 3] {
+	pub fn has_bead_lane(self) -> bool {
+		self.bead_count() > 0 || self.bead_match.is_some()
+	}
+
+	/// Lane offsets in order (normal, zag, braid, bead). Absent channels are `None`.
+	pub fn lane_offsets(self, pitch: f64) -> [Option<f64>; 4] {
 		channel_lane_offsets(
 			self.has_normal_lane(),
 			self.has_zag_lane(),
 			self.has_braid_lane(),
+			self.has_bead_lane(),
 			pitch,
 		)
 	}
@@ -314,6 +355,22 @@ impl ArcPaint {
 	pub fn zag_mid_count(self) -> usize {
 		self.zags_mid.iter().filter(|z| z.is_some()).count()
 	}
+
+	pub fn bead_count(self) -> usize {
+		self.bead_from_count() + self.bead_to_count() + self.bead_mid_count()
+	}
+
+	pub fn bead_from_count(self) -> usize {
+		self.beads_from.iter().filter(|z| z.is_some()).count()
+	}
+
+	pub fn bead_to_count(self) -> usize {
+		self.beads_to.iter().filter(|z| z.is_some()).count()
+	}
+
+	pub fn bead_mid_count(self) -> usize {
+		self.beads_mid.iter().filter(|z| z.is_some()).count()
+	}
 }
 
 pub fn shared_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
@@ -348,19 +405,27 @@ pub fn side_braid_colors(tile: Tile) -> [Option<TileColor>; 3] {
 	}
 }
 
-/// Parallel-lane offsets for the fixed order normal, zag, braid.
+/// Parallel-lane offsets for the fixed order normal, zag, braid, bead.
 /// Omitted channels are `None`. One active lane sits on the centerline;
-/// two straddle it; three use `+pitch`, `0`, `−pitch`.
-pub fn channel_lane_offsets(normal: bool, zag: bool, braid: bool, pitch: f64) -> [Option<f64>; 3] {
-	let flags = [normal, zag, braid];
+/// two straddle it; three use `+pitch`, `0`, `−pitch`; four use
+/// `±1.5 pitch` and `±0.5 pitch`. Quiet beads leave the 1–3 layout unchanged.
+pub fn channel_lane_offsets(
+	normal: bool,
+	zag: bool,
+	braid: bool,
+	bead: bool,
+	pitch: f64,
+) -> [Option<f64>; 4] {
+	let flags = [normal, zag, braid, bead];
 	let n = flags.iter().filter(|on| **on).count();
 	let slots = match n {
-		2 => [pitch, -pitch, 0.0],
-		3 => [pitch, 0.0, -pitch],
-		_ => [0.0, 0.0, 0.0],
+		2 => [pitch, -pitch, 0.0, 0.0],
+		3 => [pitch, 0.0, -pitch, 0.0],
+		4 => [1.5 * pitch, 0.5 * pitch, -0.5 * pitch, -1.5 * pitch],
+		_ => [0.0, 0.0, 0.0, 0.0],
 	};
 	let mut i = 0usize;
-	let mut out = [None; 3];
+	let mut out = [None; 4];
 	for (k, on) in flags.iter().enumerate() {
 		if *on {
 			out[k] = Some(slots[i]);
@@ -421,6 +486,64 @@ fn pack_edge_zags(
 		n += 1;
 	}
 	out
+}
+
+fn pack_beads(colors: impl IntoIterator<Item = TileColor>) -> [Option<TileColor>; MAX_TILE_BEADS] {
+	let mut out = [None; MAX_TILE_BEADS];
+	let mut n = 0usize;
+	for c in colors {
+		if n >= MAX_TILE_BEADS {
+			break;
+		}
+		out[n] = Some(c);
+		n += 1;
+	}
+	out
+}
+
+fn pack_edge_beads(
+	colors: impl IntoIterator<Item = TileColor>,
+) -> [Option<TileColor>; MAX_EDGE_BEADS] {
+	let mut out = [None; MAX_EDGE_BEADS];
+	let mut n = 0usize;
+	for c in colors {
+		if n >= MAX_EDGE_BEADS {
+			break;
+		}
+		out[n] = Some(c);
+		n += 1;
+	}
+	out
+}
+
+/// Bead strokes on a single tile, one color per bead ring (one-ended potential).
+pub fn tile_bead_strokes(tile: Tile) -> [Option<TileColor>; MAX_TILE_BEADS] {
+	pack_beads(
+		(0..tile.ring_strokes())
+			.filter(|&k| tile.stroke_is_bead(k))
+			.map(|k| tile.stroke_color(k)),
+	)
+}
+
+fn unmatched_bead_colors(tile: Tile, other: Tile) -> impl Iterator<Item = TileColor> {
+	(0..tile.ring_strokes()).filter_map(move |k| {
+		if tile.stroke_is_bead(k) && !other.has_color(tile.stroke_color(k)) {
+			Some(tile.stroke_color(k))
+		} else {
+			None
+		}
+	})
+}
+
+fn first_matched_bead_color(a: Tile, b: Tile) -> Option<TileColor> {
+	for (src, dst) in [(a, b), (b, a)] {
+		for k in 0..src.ring_strokes() {
+			if src.stroke_is_bead(k) && dst.has_color(src.stroke_color(k)) {
+				return Some(src.stroke_color(k));
+			}
+		}
+	}
+	None
 }
 
 /// Realized zag strokes inked on the center line for an undirected edge count.
@@ -523,8 +646,13 @@ fn two_ended(a: Tile, b: Tile, mode: ZagMismatchCount) -> ArcPaint {
 		ArcPaint::no_mid()
 	};
 	let normal_fires = a.normal_ring_count() > 0 || b.normal_ring_count() > 0;
+	let bead_fires = a.bead_ring_count() > 0 || b.bead_ring_count() > 0;
 	let body = if !normal_fires {
-		if zag_mid[0].is_some() || a.braid_ring_count() >= 2 || b.braid_ring_count() >= 2 {
+		if zag_mid[0].is_some()
+			|| a.braid_ring_count() >= 2
+			|| b.braid_ring_count() >= 2
+			|| bead_fires
+		{
 			ArcBody::Hidden
 		} else {
 			ArcBody::Neutral
@@ -545,12 +673,22 @@ fn two_ended(a: Tile, b: Tile, mode: ZagMismatchCount) -> ArcPaint {
 	} else {
 		None
 	};
+	let beads_mid = if bead_fires {
+		pack_edge_beads(unmatched_bead_colors(a, b).chain(unmatched_bead_colors(b, a)))
+	} else {
+		ArcPaint::no_bead_mid()
+	};
+	let bead_match = if bead_fires { first_matched_bead_color(a, b) } else { None };
 	ArcPaint {
 		body,
 		zags_from: ArcPaint::no_zags(),
 		zags_to: ArcPaint::no_zags(),
 		zags_mid: zag_mid,
 		braid,
+		beads_from: ArcPaint::no_beads(),
+		beads_to: ArcPaint::no_beads(),
+		beads_mid,
+		bead_match,
 	}
 }
 
@@ -569,7 +707,8 @@ pub fn arc_paint_with(from: Option<Tile>, to: Option<Tile>, mode: ZagMismatchCou
 }
 
 /// One-ended edges: unique **normal** colors as a highway, this tile's zag
-/// strokes as a zag lane, and a would-be braid as the threaded weave.
+/// strokes as a zag lane, a would-be braid as the threaded weave, and beads
+/// as dotted discs.
 fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
 	let zags = tile_zag_strokes(tile);
 	let mut normals: Vec<TileColor> = Vec::new();
@@ -582,8 +721,11 @@ fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
 			normals.push(c);
 		}
 	}
+	let beads = tile_bead_strokes(tile);
 	let body = match normals.as_slice() {
-		[] if zags[0].is_none() && tile.braid_ring_count() < 2 => ArcBody::Neutral,
+		[] if zags[0].is_none() && tile.braid_ring_count() < 2 && beads[0].is_none() => {
+			ArcBody::Neutral
+		}
 		[] => ArcBody::Hidden,
 		[c] => ArcBody::Solid { color: *c, thick: false },
 		[a, b, ..] => ArcBody::Stripes { a: *a, b: *b, zag_a: false, zag_b: false },
@@ -599,6 +741,11 @@ fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
 		ArcPaint::with_sides(body, ArcPaint::no_zags(), zags)
 	};
 	paint.braid = braid;
+	if on_from {
+		paint.beads_from = beads;
+	} else {
+		paint.beads_to = beads;
+	}
 	paint
 }
 
@@ -617,6 +764,8 @@ pub struct TileRingDraw {
 	pub braid_amp: f32,
 	pub braid_stroke: f32,
 	pub braid_samples: u32,
+	pub bead_r: f32,
+	pub bead_count: u32,
 	pub dot_r: f32,
 	pub dot_spread: f32,
 }
@@ -636,6 +785,8 @@ impl TileRingDraw {
 			braid_amp: (TILE_BRAID_AMP * scale).max(0.4),
 			braid_stroke: (TILE_BRAID_STROKE * scale).max(0.28),
 			braid_samples: TILE_BRAID_SAMPLES,
+			bead_r: (TILE_BEAD_R * scale).max(0.7),
+			bead_count: TILE_BEAD_COUNT,
 			dot_r: (2.6 * scale).max(1.8),
 			dot_spread: 7.0 * scale,
 		}
@@ -1150,6 +1301,43 @@ pub fn for_braid_segments(
 	}
 }
 
+/// Centers of the small discs that make a bead ring on a tile.
+pub fn bead_ring_centers(center: [f64; 2], radius: f64, n: u32) -> Vec<[f64; 2]> {
+	let n = n.max(3);
+	(0..n)
+		.map(|i| {
+			let ang = f64::from(i) / f64::from(n) * 2.0 * PI;
+			[center[0] + radius * ang.cos(), center[1] + radius * ang.sin()]
+		})
+		.collect()
+}
+
+/// Bead disc centers along a polyline, spaced by `spacing` (board or pixel units).
+pub fn bead_centers_along(pts: &[[f64; 2]], spacing: f64) -> Vec<[f64; 2]> {
+	if pts.len() < 2 || spacing <= 1e-9 {
+		return Vec::new();
+	}
+	let mut out = Vec::new();
+	let mut acc = 0.0;
+	let mut next = 0.0;
+	out.push(pts[0]);
+	for w in pts.windows(2) {
+		let dx = w[1][0] - w[0][0];
+		let dy = w[1][1] - w[0][1];
+		let seg = (dx * dx + dy * dy).sqrt();
+		if seg <= 1e-12 {
+			continue;
+		}
+		while next + spacing <= acc + seg + 1e-12 {
+			next += spacing;
+			let t = ((next - acc) / seg).clamp(0.0, 1.0);
+			out.push([w[0][0] + dx * t, w[0][1] + dy * t]);
+		}
+		acc += seg;
+	}
+	out
+}
+
 pub fn zigzag_circle(
 	center: [f64; 2],
 	radius: f64,
@@ -1309,10 +1497,12 @@ pub fn format_header(bot1: &str, bot2: &str, turn: &str) -> String {
 
 pub fn format_setup_cap(tiles: &[crate::game::Tile]) -> String {
 	format!(
-		"zag {}/{} braid {}/{}",
+		"zag {}/{} braid {}/{} bead {}/{}",
 		crate::deck::zag_ring_count(tiles),
 		crate::deck::RING_TYPE_CAP,
 		crate::deck::braid_ring_count(tiles),
+		crate::deck::RING_TYPE_CAP,
+		crate::deck::bead_ring_count(tiles),
 		crate::deck::RING_TYPE_CAP
 	)
 }
@@ -1582,6 +1772,15 @@ pub fn demo_midgame() -> Game {
 			Player::Two,
 			&[(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)],
 			3,
+			1,
+		);
+		game.place_tile(n, tile);
+	}
+	if let Some(n) = outer.iter().copied().find(|&id| game.tile_at(id).is_none()) {
+		let tile = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Bead), (TileColor::Orange, RingType::Bead)],
+			1,
 			1,
 		);
 		game.place_tile(n, tile);
@@ -2054,15 +2253,25 @@ mod tests {
 	#[test]
 	fn channel_lanes_omit_quiet_channels_and_order_normal_zag_braid() {
 		let pitch = 4.0;
-		assert_eq!(channel_lane_offsets(true, false, false, pitch), [Some(0.0), None, None]);
-		assert_eq!(channel_lane_offsets(false, true, false, pitch), [None, Some(0.0), None]);
 		assert_eq!(
-			channel_lane_offsets(true, true, false, pitch),
-			[Some(pitch), Some(-pitch), None]
+			channel_lane_offsets(true, false, false, false, pitch),
+			[Some(0.0), None, None, None]
 		);
 		assert_eq!(
-			channel_lane_offsets(true, true, true, pitch),
-			[Some(pitch), Some(0.0), Some(-pitch)]
+			channel_lane_offsets(false, true, false, false, pitch),
+			[None, Some(0.0), None, None]
+		);
+		assert_eq!(
+			channel_lane_offsets(true, true, false, false, pitch),
+			[Some(pitch), Some(-pitch), None, None]
+		);
+		assert_eq!(
+			channel_lane_offsets(true, true, true, false, pitch),
+			[Some(pitch), Some(0.0), Some(-pitch), None]
+		);
+		assert_eq!(
+			channel_lane_offsets(true, true, true, true, pitch),
+			[Some(1.5 * pitch), Some(0.5 * pitch), Some(-0.5 * pitch), Some(-1.5 * pitch)]
 		);
 		let braid = Tile::with_typed_rings(
 			1,
@@ -2087,7 +2296,32 @@ mod tests {
 		assert!(paint.has_zag_lane());
 		assert!(matches!(paint.braid, Some(BraidLane::Weave { .. })));
 		let offs = paint.lane_offsets(pitch);
-		assert_eq!(offs, [Some(pitch), Some(0.0), Some(-pitch)]);
+		assert_eq!(offs, [Some(pitch), Some(0.0), Some(-pitch), None]);
+	}
+
+	#[test]
+	fn bead_lane_is_fourth_and_quiet_when_absent() {
+		let pitch = 4.0;
+		let bead =
+			Tile::with_typed_rings(1, Player::One, &[(TileColor::Orange, RingType::Bead)], 1, 1);
+		let miss = Tile::with_rings(2, Player::Two, &[TileColor::Blue], 1, 1);
+		let paint = arc_paint(Some(bead), Some(miss));
+		assert!(paint.has_normal_lane());
+		assert!(paint.has_bead_lane());
+		assert!(!paint.has_zag_lane());
+		assert!(!paint.has_braid_lane());
+		let offs = paint.lane_offsets(pitch);
+		assert_eq!(offs, [Some(pitch), None, None, Some(-pitch)]);
+		assert!(paint.bead_match.is_none());
+		assert!(paint.bead_mid_count() >= 1);
+		let hit = Tile::with_rings(3, Player::Two, &[TileColor::Orange], 1, 1);
+		let matched = arc_paint(Some(bead), Some(hit));
+		assert_eq!(matched.bead_match, Some(TileColor::Orange));
+		assert_eq!(matched.bead_mid_count(), 0);
+		let one_ended = arc_paint(Some(bead), None);
+		assert!(one_ended.has_bead_lane());
+		assert_eq!(one_ended.bead_from_count(), 1);
+		assert_eq!(one_ended.bead_to_count(), 0);
 	}
 
 	#[test]
@@ -2982,6 +3216,8 @@ mod tests {
 		assert!(is_hud_safe(&cap), "{cap}");
 		assert!(cap.contains("braid 3/6"), "{cap}");
 		assert!(cap.contains("zag 0/6"), "{cap}");
+		assert!(cap.contains("bead 0/6"), "{cap}");
+		assert!(SETUP_HELP_TEXT.contains("bead"), "{SETUP_HELP_TEXT}");
 		assert!(!header.contains('·'));
 		assert!(!turn.contains('·'));
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
