@@ -1,6 +1,6 @@
 //! Heuristic evaluation. Positive is good for `me`.
 
-use crate::game::{Game, GameStatus, Player};
+use crate::game::{Game, GameStatus, LowValueResolution, Player};
 
 pub const WIN: i32 = 50_000;
 
@@ -8,12 +8,11 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 	match game.status() {
 		GameStatus::InProgress => {
 			if game.rules().no_moves_loses && !game.has_add_or_move() {
-				let ply = game.turn_count() as i32;
-				if game.current_player() == me {
-					Some(-WIN + ply)
-				} else {
-					Some(WIN - ply)
-				}
+				Some(lockout_terminal(game, me))
+			} else if game.low_value_applies() {
+				// `finish_turn` already records this; search also sees constructed
+				// leaves where both sides' possible-on-board counts are below 5.
+				Some(low_value_terminal(game, me))
 			} else {
 				None
 			}
@@ -26,9 +25,32 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 				Some(-WIN + ply)
 			}
 		}
-		// Turn-limit and other draws are 0 so a side that is ahead will not
-		// turtle into the 200-turn cap.
+		// Turn-limit and low-value (equal-count full tie) draws are 0 so a
+		// side that is ahead will not turtle into the 200-turn cap.
 		GameStatus::Draw { .. } => Some(0),
+	}
+}
+
+fn lockout_terminal(game: &Game, me: Player) -> i32 {
+	let ply = game.turn_count() as i32;
+	if game.current_player() == me {
+		-WIN + ply
+	} else {
+		WIN - ply
+	}
+}
+
+fn low_value_terminal(game: &Game, me: Player) -> i32 {
+	let ply = game.turn_count() as i32;
+	match game.low_value_resolution() {
+		LowValueResolution::Draw => 0,
+		LowValueResolution::Win { winner, .. } => {
+			if winner == me {
+				WIN - ply
+			} else {
+				-WIN + ply
+			}
+		}
 	}
 }
 
@@ -124,20 +146,13 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	for tile in game.bench(opp) {
 		bench_score -= 28 + 10 * i32::from(tile.weight);
 	}
-	let bag = 3 * (game.bag_len(me) as i32 - game.bag_len(opp) as i32);
 	let presence = 32 * (my_board - opp_board);
 
 	let mobility = 3 * (mobility_of(game, me) - mobility_of(game, opp));
 
-	let mut score = material
-		+ bench_score
-		+ bag + presence
-		+ margin
-		+ contact
-		+ geometry
-		+ spawn_control
-		+ mobility
-		- 22 * at_risk;
+	let mut score =
+		material + bench_score + presence + margin + contact + geometry + spawn_control + mobility
+			- 22 * at_risk;
 
 	if game.rules().center_hold_win {
 		let n = i32::from(game.rules().center_hold_n.max(1));
@@ -272,19 +287,20 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	for tile in game.bench(opp) {
 		bench_score -= 28 + 10 * i32::from(tile.weight);
 	}
-	let bag = 3 * (game.bag_len(me) as i32 - game.bag_len(opp) as i32);
+	// Usable budget only (min(tokens, remaining deck)); surplus tokens are not ADD permission.
+	let budget = 90 * (game.budget(me) as i32 - game.budget(opp) as i32);
 	let presence = 32 * (my_board - opp_board);
 	let mobility = 4 * (mobility_of(game, me) - mobility_of(game, opp));
 
-	let mut score = material
-		+ bench_score
-		+ bag + presence
-		+ margin
-		+ contact
-		+ geometry
-		+ spawn_control
-		+ mobility
-		- 22 * at_risk;
+	let mut score =
+		material
+			+ bench_score
+			+ budget + presence
+			+ margin + contact
+			+ geometry
+			+ spawn_control
+			+ mobility
+			- 22 * at_risk;
 
 	score += race_score(game, me, opp);
 
@@ -430,7 +446,7 @@ fn mobility_of(game: &Game, player: Player) -> i32 {
 			}
 		}
 	}
-	if !game.bench(player).is_empty() {
+	if game.budget(player) > 0 && !game.bench(player).is_empty() {
 		m += game.board().spawns().iter().filter(|&&s| game.tile_at(s).is_none()).count() as i32;
 	}
 	m
@@ -473,6 +489,7 @@ mod tests {
 		let spawn = game.board().spawns()[0];
 		let tile = game.alloc_tile(Player::One, crate::game::TileColor::Green, 3, 1);
 		game.place_tile(spawn, tile);
+		game.pad_above_low_value();
 		let base = evaluate(&game, Player::One, 1);
 		let penalized = evaluate(&game, Player::One, 3);
 		assert!(penalized < base);
@@ -549,6 +566,8 @@ mod tests {
 		let tile = off.alloc_tile(Player::One, crate::game::TileColor::Blue, 3, 1);
 		off.place_tile(center, tile);
 		on.place_tile(center, tile);
+		off.pad_above_low_value();
+		on.pad_above_low_value();
 		assert!(evaluate(&on, Player::One, 0) > evaluate(&off, Player::One, 0));
 	}
 
@@ -567,6 +586,8 @@ mod tests {
 		quiet.place_tile(spawn, p1);
 		threat.place_tile(center, tile);
 		threat.place_tile(spawn, p1);
+		quiet.pad_above_low_value();
+		threat.pad_above_low_value();
 		threat.set_center_hold(Player::Two, 4);
 		assert!(evaluate(&threat, Player::One, 0) < evaluate(&quiet, Player::One, 0) - 5_000);
 	}
@@ -602,6 +623,127 @@ mod tests {
 	}
 
 	#[test]
+	fn low_value_win_is_near_mate() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Won { winner: Player::One, reason: EndReason::LowValue });
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s > WIN / 2);
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+		assert_eq!(terminal_score(&game, Player::One), Some(WIN));
+	}
+
+	#[test]
+	fn low_value_draw_scores_zero() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Draw { reason: EndReason::LowValue });
+		assert_eq!(evaluate(&game, Player::One, 0), 0);
+		assert_eq!(terminal_score(&game, Player::Two), Some(0));
+	}
+
+	#[test]
+	fn pending_low_value_is_a_search_terminal() {
+		use crate::game::{BudgetToken, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		let mut game = Game::empty(rules);
+		let p1_node = game.board().spawns()[0];
+		let p2_node = game.board().spawns()[4];
+		let p1 = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		let p2 = game.alloc_tile(Player::Two, TileColor::Orange, 1, 2);
+		game.place_tile(p1_node, p1);
+		game.place_tile(p2_node, p2);
+		game.set_bench(Player::One, Vec::new());
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 5]);
+		let p2_deck = vec![
+			game.alloc_tile(Player::Two, TileColor::Green, 1, 1),
+			game.alloc_tile(Player::Two, TileColor::Blue, 1, 1),
+			game.alloc_tile(Player::Two, TileColor::Orange, 1, 1),
+		];
+		game.set_bench(Player::Two, p2_deck);
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert!(game.low_value_applies());
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s > WIN / 2, "P1's lower on-board piece should be a near-mate, got {s}");
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+		assert_eq!(terminal_score(&game, Player::One), Some(WIN));
+	}
+
+	#[test]
+	fn low_value_pair_and_piece_count_terminals_match_status() {
+		use crate::game::TileColor;
+
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+
+		let place = |game: &mut Game, spawn_idx: usize, player: Player, dots: u8| {
+			let spawn = game.board().spawns()[spawn_idx];
+			let tile = game.alloc_tile(player, TileColor::Green, 1, dots);
+			game.place_tile(spawn, tile);
+		};
+
+		let mut pair = Game::empty(rules);
+		place(&mut pair, 0, Player::One, 1);
+		place(&mut pair, 1, Player::One, 2);
+		place(&mut pair, 4, Player::Two, 1);
+		place(&mut pair, 5, Player::Two, 3);
+		pair.set_budget_tokens(Player::One, Vec::new());
+		pair.set_budget_tokens(Player::Two, Vec::new());
+		pair.evaluate_low_value_for_test();
+		assert_eq!(
+			pair.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+		let pair_p1 = terminal_score(&pair, Player::One).unwrap();
+		assert!(pair_p1 > WIN / 2);
+		assert_eq!(terminal_score(&pair, Player::Two), Some(-pair_p1));
+
+		let mut count = Game::empty(rules);
+		place(&mut count, 0, Player::One, 1);
+		place(&mut count, 1, Player::One, 3);
+		place(&mut count, 4, Player::Two, 1);
+		count.set_budget_tokens(Player::One, Vec::new());
+		count.set_budget_tokens(Player::Two, Vec::new());
+		count.evaluate_low_value_for_test();
+		assert_eq!(
+			count.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+		let count_p1 = terminal_score(&count, Player::One).unwrap();
+		assert!(count_p1 > WIN / 2);
+		assert_eq!(terminal_score(&count, Player::Two), Some(-count_p1));
+	}
+
+	#[test]
+	fn evaluate_ignores_surplus_tokens_beyond_the_bench() {
+		use crate::game::{BudgetToken, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		let mut surplus = Game::empty(rules);
+		let mut none = Game::empty(rules);
+		let spawn = surplus.board().spawns()[0];
+		let other = surplus.board().spawns()[4];
+		let p1 = surplus.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		let p2 = surplus.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+		surplus.place_tile(spawn, p1);
+		surplus.place_tile(other, p2);
+		none.place_tile(spawn, p1);
+		none.place_tile(other, p2);
+		surplus.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 5]);
+		surplus.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; 5]);
+		none.set_budget_tokens(Player::One, Vec::new());
+		none.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(surplus.budget(Player::One), 0);
+		assert_eq!(evaluate(&surplus, Player::One, 0), evaluate(&none, Player::One, 0));
+	}
+
+	#[test]
 	fn control_occupancy_is_scored_when_control_win_is_on() {
 		let mut off_rules = RuleSet::default();
 		off_rules.center_hold_win = false;
@@ -616,6 +758,8 @@ mod tests {
 			off.place_tile(node, tile);
 			on.place_tile(node, tile);
 		}
+		off.pad_above_low_value();
+		on.pad_above_low_value();
 		assert!(evaluate(&on, Player::One, 0) > evaluate(&off, Player::One, 0));
 	}
 }

@@ -1,0 +1,7 @@
+# Independent generative bags: each player is sampled separately, so opening
+# benches can differ. Contrast with `same` / the default mirrored deal.
+name = "independent"
+description = "Two independent generative 27-tile shuffles; opening benches can differ."
+generative = true
+mirror = false
+shuffle = true

@@ -6,7 +6,11 @@ use std::process;
 use std::time::Duration;
 
 use crate::ai::Actor;
-use crate::game::{HopWeightCmp, InsufficientTilesLoss, PathConstraint, RuleSet, SamePieceTwice};
+use crate::game::{
+	BraidFailMismatch, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint,
+	RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE, BAG_SIZE_DEFAULT,
+};
+use crate::scenario::Scenario;
 
 #[derive(Clone, Debug)]
 pub struct GameConfig {
@@ -16,9 +20,13 @@ pub struct GameConfig {
 	pub think: Duration,
 	pub delay: Duration,
 	pub screenshot: Option<PathBuf>,
+	/// When set with `--screenshot`, capture `Game::start` (opening deal)
+	/// instead of the mid-game fixture.
+	pub screenshot_from_start: bool,
 	pub width: u32,
 	pub height: u32,
 	pub rules: RuleSet,
+	pub scenario: Option<Scenario>,
 }
 
 impl Default for GameConfig {
@@ -30,9 +38,11 @@ impl Default for GameConfig {
 			think: Duration::from_millis(80),
 			delay: Duration::from_millis(350),
 			screenshot: None,
+			screenshot_from_start: false,
 			width: 1280,
 			height: 900,
 			rules: RuleSet::default(),
+			scenario: None,
 		}
 	}
 }
@@ -89,6 +99,16 @@ impl GameConfig {
 				"--screenshot" => {
 					cfg.screenshot = Some(PathBuf::from(require_value("--screenshot", it.next())?));
 				}
+				"--from-start" => {
+					cfg.screenshot_from_start = true;
+				}
+				"--scenario" => {
+					cfg.scenario = Some(Scenario::load(&require_value("--scenario", it.next())?)?);
+				}
+				"--list-scenarios" => {
+					print!("{}", Scenario::list_text());
+					process::exit(0);
+				}
 				"--width" => {
 					cfg.width = parse_u32("--width", &require_value("--width", it.next())?)?;
 				}
@@ -117,6 +137,7 @@ impl GameConfig {
 				}
 			}
 		}
+		validate_rule_flags(&cfg.rules)?;
 		Ok(cfg)
 	}
 
@@ -181,6 +202,16 @@ where
 		"--color-restricted-hops" => {
 			rules.color_restricted_hops = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--counted-pass-through" => {
+			rules.counted_pass_through = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--graph-hops" => {
+			rules.counted_pass_through = !parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--pass-through-ring-cmp" => {
+			rules.pass_through_ring_cmp =
+				PassThroughRingCmp::parse(&require_value(arg, it.next())?)?;
+		}
 		"--hop-weight-cmp" => {
 			rules.hop_weight_cmp = HopWeightCmp::parse(&require_value(arg, it.next())?)?;
 		}
@@ -215,12 +246,61 @@ where
 			rules.insufficient_tiles_loss =
 				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
 		}
-		"--starting-bench" => {
+		"--starting-bench" | "--starting-tokens" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
-			if n == 0 || n > 27 {
-				return Err("invalid --starting-bench (expected 1..27, bag has 27 kinds)".into());
+			if n == 0 || n > BAG_SIZE as u64 {
+				return Err(format!(
+					"invalid {arg} (expected 1..{BAG_SIZE} spawn tokens, independent of deck size)"
+				));
 			}
 			rules.starting_bench_size = n as u8;
+		}
+		"--bag-size" | "--deck-size" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > BAG_SIZE as u64 {
+				return Err(format!(
+					"invalid {arg} (expected 1..{BAG_SIZE}, default {BAG_SIZE_DEFAULT})"
+				));
+			}
+			rules.bag_size = n as u8;
+		}
+		"--self-capture-budget" => {
+			rules.self_capture_budget = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--max-rings" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > 3 {
+				return Err("invalid --max-rings (expected 1..3)".into());
+			}
+			rules.max_rings = n as u8;
+		}
+		"--zag-chance" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n > 7 {
+				return Err("invalid --zag-chance (expected 0..7, k/7)".into());
+			}
+			rules.zag_numer = n as u8;
+		}
+		"--zags" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.zag_numer = if on { crate::game::ZAG_NUMER_DEFAULT } else { 0 };
+		}
+		"--braid-chance" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n > 7 {
+				return Err("invalid --braid-chance (expected 0..7, k/7)".into());
+			}
+			rules.braid_numer = n as u8;
+		}
+		"--braids" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.braid_numer = if on { crate::game::BRAID_NUMER_DEFAULT } else { 0 };
+		}
+		"--zag-mismatch" => {
+			rules.zag_mismatch = ZagMismatchCount::parse(&require_value(arg, it.next())?)?;
+		}
+		"--braid-fail-mismatch" => {
+			rules.braid_fail_mismatch = BraidFailMismatch::parse(&require_value(arg, it.next())?)?;
 		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
@@ -239,6 +319,11 @@ where
 	Ok(true)
 }
 
+/// Cross-field RuleSet checks that cannot run inside a single flag parse.
+pub fn validate_rule_flags(_rules: &RuleSet) -> Result<(), String> {
+	Ok(())
+}
+
 pub fn usage() -> &'static str {
 	"Usage: apa-kan [OPTIONS]\n\
 	 \n\
@@ -253,13 +338,19 @@ pub fn usage() -> &'static str {
 	   --width <px>                               Window width (default: 1280)\n\
 	   --height <px>                              Window height (default: 900)\n\
 	   --screenshot <path>                        Capture a mid-game board PNG and exit\n\
+	   --from-start                               With --screenshot, capture the opening deal\n\
+	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
+	   --list-scenarios                           Print builtin deck scenarios\n\
 	   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)\n\
 	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
-	   --no-same-piece-twice <off|always|when-bench-empty>\n\
-	                                              Repeat-piece rule (default: when-bench-empty)\n\
-	   --color-restricted-hops <on|off>           Hop only own color (default: on)\n\
+	   --no-same-piece-twice <off|always|when-deck-empty>\n\
+	                                              Repeat-piece rule (default: off)\n\
+	   --color-restricted-hops <on|off>           Hop only own color (default: on; hops off by default)\n\
 	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
+	   --counted-pass-through <on|off>            Pass through occupied tiles at 1/step (default: on)\n\
+	   --graph-hops <on|off>                      Restore graph hops (alias: counted-pass-through off)\n\
+	   --pass-through-ring-cmp <ge|gt>            Pass-through ring gate (default: ge)\n\
 	   --petal-majority-win <on|off>              Inner-ring majority win (default: off)\n\
 	   --petal-majority-n <1..64>                 Turns to hold majority (default: 1)\n\
 	   --control-win <on|off>                     Center+inner-ring control win (default: on)\n\
@@ -267,7 +358,16 @@ pub fn usage() -> &'static str {
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
-	   --starting-bench <1..27>                   Opening deal from the 27-kind bag (default: 7)\n\
+	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
+	   --deck-size <1..27>                        Public deck size per player (default: 11; alias --bag-size)\n\
+	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
+	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
+	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
+	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
+	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
+	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
+	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
+	   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -293,6 +393,14 @@ mod tests {
 	fn unknown_arg_is_an_error() {
 		let err = GameConfig::parse(["--bot3", "human"]).unwrap_err();
 		assert!(err.contains("unknown argument"));
+	}
+
+	#[test]
+	fn parses_screenshot_from_start() {
+		let cfg = GameConfig::parse(["--screenshot", "out.png", "--from-start"]).unwrap();
+		assert_eq!(cfg.screenshot.as_deref(), Some(std::path::Path::new("out.png")));
+		assert!(cfg.screenshot_from_start);
+		assert!(!GameConfig::parse(["--screenshot", "out.png"]).unwrap().screenshot_from_start);
 	}
 
 	#[test]
@@ -376,7 +484,7 @@ mod tests {
 		assert!(cfg.rules.no_moves_loses);
 		assert!(!cfg.rules.center_hold_win);
 		assert_eq!(cfg.rules.center_hold_n, 5);
-		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::WhenBenchEmpty);
+		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::Off);
 		assert!(cfg.rules.color_restricted_hops);
 		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
 		assert!(!cfg.rules.petal_majority_win);
@@ -386,7 +494,100 @@ mod tests {
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
+		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);
+		assert!(cfg.rules.self_capture_budget);
+		assert_eq!(cfg.rules.max_rings, 3);
+		assert_eq!(cfg.rules.zag_numer, 1);
+		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
+		assert!(cfg.rules.counted_pass_through);
+		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
+		assert_eq!(cfg.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
+		assert_eq!(cfg.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::One);
+	}
+
+	#[test]
+	fn parses_zag_mismatch() {
+		let sum = GameConfig::parse(["--zag-mismatch", "sum"]).unwrap();
+		assert_eq!(sum.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
+		let max = GameConfig::parse(["--zag-mismatch", "max"]).unwrap();
+		assert_eq!(max.rules.zag_mismatch, crate::game::ZagMismatchCount::Max);
+		let err = GameConfig::parse(["--zag-mismatch", "collapsed"]).unwrap_err();
+		assert!(err.contains("zag-mismatch"));
+		let err = GameConfig::parse(["--zag-mismatch", "directional"]).unwrap_err();
+		assert!(err.contains("zag-mismatch"));
+	}
+
+	#[test]
+	fn parses_braid_fail_mismatch() {
+		let one = GameConfig::parse(["--braid-fail-mismatch", "one"]).unwrap();
+		assert_eq!(one.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::One);
+		let weight = GameConfig::parse(["--braid-fail-mismatch", "weight"]).unwrap();
+		assert_eq!(weight.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::Weight);
+		let sum = GameConfig::parse(["--braid-fail-mismatch", "sum"]).unwrap();
+		assert_eq!(sum.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::Sum);
+		let err = GameConfig::parse(["--braid-fail-mismatch", "product"]).unwrap_err();
+		assert!(err.contains("braid-fail-mismatch"));
+	}
+
+	#[test]
+	fn parses_counted_pass_through() {
+		let on = GameConfig::parse(["--counted-pass-through", "on"]).unwrap();
+		assert!(on.rules.counted_pass_through);
+		let off = GameConfig::parse(["--counted-pass-through", "off"]).unwrap();
+		assert!(!off.rules.counted_pass_through);
+	}
+
+	#[test]
+	fn parses_graph_hops() {
+		let on = GameConfig::parse(["--graph-hops", "on"]).unwrap();
+		assert!(!on.rules.counted_pass_through);
+		let off = GameConfig::parse(["--graph-hops", "off"]).unwrap();
+		assert!(off.rules.counted_pass_through);
+	}
+
+	#[test]
+	fn parses_pass_through_ring_cmp() {
+		let ge = GameConfig::parse(["--pass-through-ring-cmp", "ge"]).unwrap();
+		assert_eq!(ge.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
+		let gt = GameConfig::parse(["--pass-through-ring-cmp", "gt"]).unwrap();
+		assert_eq!(gt.rules.pass_through_ring_cmp, PassThroughRingCmp::Gt);
+		let err = GameConfig::parse(["--pass-through-ring-cmp", "le"]).unwrap_err();
+		assert!(err.contains("pass-through-ring-cmp"));
+	}
+
+	#[test]
+	fn parses_max_rings() {
+		let cfg = GameConfig::parse(["--max-rings", "1"]).unwrap();
+		assert_eq!(cfg.rules.max_rings, 1);
+		let err = GameConfig::parse(["--max-rings", "4"]).unwrap_err();
+		assert!(err.contains("max-rings"));
+	}
+
+	#[test]
+	fn parses_zag_flags() {
+		let off = GameConfig::parse(["--zags", "off"]).unwrap();
+		assert_eq!(off.rules.zag_numer, 0);
+		let chance = GameConfig::parse(["--zag-chance", "0"]).unwrap();
+		assert_eq!(chance.rules.zag_numer, 0);
+		let on = GameConfig::parse(["--zags", "on"]).unwrap();
+		assert_eq!(on.rules.zag_numer, 1);
+		let err = GameConfig::parse(["--zag-chance", "8"]).unwrap_err();
+		assert!(err.contains("zag-chance"));
+	}
+
+	#[test]
+	fn parses_braid_flags() {
+		let off = GameConfig::parse(["--braids", "off"]).unwrap();
+		assert_eq!(off.rules.braid_numer, 0);
+		let chance = GameConfig::parse(["--braid-chance", "0"]).unwrap();
+		assert_eq!(chance.rules.braid_numer, 0);
+		let on = GameConfig::parse(["--braids", "on"]).unwrap();
+		assert_eq!(on.rules.braid_numer, 1);
+		let three = GameConfig::parse(["--braid-chance", "3"]).unwrap();
+		assert_eq!(three.rules.braid_numer, 3);
+		let err = GameConfig::parse(["--braid-chance", "8"]).unwrap_err();
+		assert!(err.contains("braid-chance"));
 	}
 
 	#[test]
@@ -398,9 +599,66 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_bag_size() {
+		let default = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(default.rules.bag_size, BAG_SIZE_DEFAULT as u8);
+		let eleven = GameConfig::parse(["--bag-size", "11"]).unwrap();
+		assert_eq!(eleven.rules.bag_size, 11);
+		assert_eq!(eleven.rules.starting_bench_size, 7);
+		let full = GameConfig::parse(["--bag-size", "27"]).unwrap();
+		assert_eq!(full.rules.bag_size, BAG_SIZE as u8);
+		let err = GameConfig::parse(["--bag-size", "28"]).unwrap_err();
+		assert!(err.contains("bag-size"));
+		assert!(err.contains("default 11"), "{err}");
+		let err = GameConfig::parse(["--bag-size", "0"]).unwrap_err();
+		assert!(err.contains("bag-size"));
+	}
+
+	#[test]
+	fn tokens_are_independent_of_deck_size() {
+		let small = GameConfig::parse(["--bag-size", "5"]).unwrap();
+		assert_eq!(small.rules.bag_size, 5);
+		assert_eq!(small.rules.starting_bench_size, 7);
+		let extra = GameConfig::parse(["--deck-size", "11", "--starting-tokens", "12"]).unwrap();
+		assert_eq!(extra.rules.bag_size, 11);
+		assert_eq!(extra.rules.starting_bench_size, 12);
+		let ok = GameConfig::parse(["--bag-size", "11", "--starting-bench", "7"]).unwrap();
+		assert_eq!(ok.rules.bag_size, 11);
+		assert_eq!(ok.rules.starting_bench_size, 7);
+		let dealt = GameConfig::parse(["--bag-size", "7", "--starting-bench", "7"]).unwrap();
+		assert_eq!(dealt.rules.bag_size, 7);
+	}
+
+	#[test]
+	fn parses_starting_tokens_and_deck_size_aliases() {
+		let tokens = GameConfig::parse(["--starting-tokens", "5"]).unwrap();
+		assert_eq!(tokens.rules.starting_bench_size, 5);
+		let deck = GameConfig::parse(["--deck-size", "13"]).unwrap();
+		assert_eq!(deck.rules.bag_size, 13);
+	}
+
+	#[test]
+	fn parses_self_capture_budget() {
+		let on = GameConfig::parse(["--self-capture-budget", "on"]).unwrap();
+		assert!(on.rules.self_capture_budget);
+		let off = GameConfig::parse(["--self-capture-budget", "off"]).unwrap();
+		assert!(!off.rules.self_capture_budget);
+	}
+
+	#[test]
 	fn parses_window_size() {
 		let cfg = GameConfig::parse(["--width", "1920", "--height", "1080"]).unwrap();
 		assert_eq!(cfg.width, 1920);
 		assert_eq!(cfg.height, 1080);
+	}
+
+	#[test]
+	fn parses_scenario() {
+		let cfg = GameConfig::parse(["--scenario", "complementary"]).unwrap();
+		let s = cfg.scenario.expect("scenario");
+		assert_eq!(s.name, "complementary");
+		assert!(s.complementary.is_some());
+		let err = GameConfig::parse(["--scenario", "nope"]).unwrap_err();
+		assert!(err.contains("unknown scenario"), "{err}");
 	}
 }

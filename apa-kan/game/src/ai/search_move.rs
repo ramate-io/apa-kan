@@ -1,12 +1,19 @@
 //! Search-facing actions. ADD is keyed by kind so transpositions are stable.
 
 use crate::board::NodeId;
-use crate::game::{Action, Game, KIND_COUNT};
+use crate::game::{Action, Game, KIND_COUNT, KIND_DOTS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchMove {
-	Add { kind: u8, node: NodeId },
-	Move { from: NodeId, to: NodeId },
+	/// `kind` is [`crate::game::Tile::kind_index`] (color-state × dots).
+	Add {
+		kind: u16,
+		node: NodeId,
+	},
+	Move {
+		from: NodeId,
+		to: NodeId,
+	},
 	Pass,
 }
 
@@ -17,7 +24,7 @@ impl SearchMove {
 				let kind = game
 					.bench(game.current_player())
 					.get(bench_index)
-					.map(|t| t.kind_index() as u8)
+					.map(|t| t.kind_index() as u16)
 					.unwrap_or(0);
 				SearchMove::Add { kind, node }
 			}
@@ -32,7 +39,7 @@ impl SearchMove {
 				let idx = game
 					.bench(game.current_player())
 					.iter()
-					.position(|t| t.kind_index() as u8 == kind)?;
+					.position(|t| t.kind_index() as u16 == kind)?;
 				Some(Action::Add { bench_index: idx, node })
 			}
 			SearchMove::Move { from, to } => Some(Action::Move { from, to }),
@@ -40,19 +47,33 @@ impl SearchMove {
 		}
 	}
 
-	pub fn pack(self) -> (u8, u8, u8) {
+	/// Packed TT key: 0 = MOVE, u16::MAX = PASS, 1..=COLOR_STATES = ADD color-state.
+	pub fn pack(self) -> (u16, u8, u8) {
 		match self {
-			SearchMove::Add { kind, node } => (kind, node, 0),
-			SearchMove::Move { from, to } => (27, from, to),
-			SearchMove::Pass => (255, 0, 0),
+			SearchMove::Add { kind, node } => {
+				let dots_n = KIND_DOTS as u16;
+				let state = kind / dots_n + 1;
+				let dots = (kind % dots_n) as u8;
+				(state, node, dots)
+			}
+			SearchMove::Move { from, to } => (0, from, to),
+			SearchMove::Pass => (u16::MAX, 0, 0),
 		}
 	}
 
-	pub fn unpack(kind: u8, a: u8, b: u8) -> Option<Self> {
+	pub fn unpack(kind: u16, a: u8, b: u8) -> Option<Self> {
 		match kind {
-			255 => Some(SearchMove::Pass),
-			27 => Some(SearchMove::Move { from: a, to: b }),
-			k if (k as usize) < KIND_COUNT => Some(SearchMove::Add { kind: k, node: a }),
+			u16::MAX => Some(SearchMove::Pass),
+			0 => Some(SearchMove::Move { from: a, to: b }),
+			state
+				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
+					&& b < KIND_DOTS as u8 =>
+			{
+				Some(SearchMove::Add {
+					kind: (state - 1) * KIND_DOTS as u16 + u16::from(b),
+					node: a,
+				})
+			}
 			_ => None,
 		}
 	}
@@ -66,7 +87,8 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	let mut out = Vec::new();
 	let current = game.current_player();
 	let bench = game.bench(current);
-	if !bench.is_empty() {
+	// `budget()` is usable ADD permission (min(tokens, remaining deck)).
+	if game.budget(current) > 0 && !bench.is_empty() {
 		let mut seen = [false; KIND_COUNT];
 		let dests: Vec<NodeId> = if game.rules().add_only_on_spawns {
 			game.board()
@@ -87,7 +109,7 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 			}
 			seen[k] = true;
 			for &node in &dests {
-				out.push(SearchMove::Add { kind: k as u8, node });
+				out.push(SearchMove::Add { kind: k as u16, node });
 			}
 		}
 	}
@@ -105,9 +127,10 @@ pub fn apply_move(game: &mut Game, mv: SearchMove) -> Result<crate::game::Action
 	game.apply(action)
 }
 
-/// True when the action removed at least one opponent tile (capture / overwhelm).
-pub fn is_capture(outcome: &crate::game::ActionOutcome, mover: crate::game::Player) -> bool {
-	outcome.removals.iter().any(|r| r.tile.owner != mover) || outcome.draws > 0
+/// True when the action removed at least one tile (capture / overwhelm).
+/// Own-tile removals count: they earn capture budget the same as opponent tiles.
+pub fn is_capture(outcome: &crate::game::ActionOutcome, _mover: crate::game::Player) -> bool {
+	!outcome.removals.is_empty() || outcome.draws > 0
 }
 
 /// Cheap move-ordering key (higher is searched first). Callers add TT/killer/history.
@@ -130,15 +153,18 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 				};
 			}
 			if let Some(tile) = game.tile_at(from) {
-				for &nb in game.board().neighbors(to) {
+				for nb in game.board().incident_others(to) {
 					if let Some(other) = game.tile_at(nb) {
 						if other.owner != tile.owner {
 							s += 35;
 						}
-						if other.color != tile.color {
-							s += 12;
-						} else {
+						let (matched, mismatches) = game.edge_score(tile, other);
+						if matched > 0 {
 							s += 8;
+						} else if mismatches > 0 {
+							s += 18;
+						} else if tile.present_toward(other) && other.present_toward(tile) {
+							s += 12;
 						}
 					}
 				}
@@ -147,16 +173,30 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 		}
 		SearchMove::Add { kind, node } => {
 			let mut s = 12;
-			let color_w_d = kind as usize;
-			let color = color_w_d / 9;
-			for &nb in game.board().neighbors(node) {
+			let view = crate::game::decode_color_state((kind / KIND_DOTS as u16) as usize);
+			let add_all = view.normal | view.zag | view.braid;
+			for nb in game.board().incident_others(node) {
 				if let Some(other) = game.tile_at(nb) {
 					if other.owner == game.current_player() {
 						s += 10;
 					}
-					if other.color as usize == color {
+					let braid_hit = view.braid_size >= 2
+						&& (0..6).all(|i| other.color_counts()[i] >= view.braid_counts[i]);
+					if braid_hit {
+						s += 14 + i32::from(view.braid_size);
+					} else if other.normal_mask() & view.normal != 0 {
 						s += 16;
-					} else {
+					} else if other.color_mask() & view.zag != 0
+						|| other
+							.ring_colors()
+							.iter()
+							.enumerate()
+							.any(|(i, c)| other.ring_is_zag(i) && add_all & c.bit() != 0)
+					{
+						s += 18;
+					} else if (view.normal != 0 || view.braid_size >= 2)
+						&& (other.normal_mask() != 0 || other.braid_ring_count() >= 2)
+					{
 						s += 6;
 					}
 				}
@@ -189,6 +229,66 @@ mod tests {
 		let mv = legal_search_moves(&game)[0];
 		let action = mv.to_action(&game).unwrap();
 		assert_eq!(SearchMove::from_action(&game, action), mv);
+	}
+
+	#[test]
+	fn pack_round_trip_add_and_move() {
+		let add = SearchMove::Add { kind: KIND_DOTS as u16 + 1, node: 3 };
+		let (k, a, b) = add.pack();
+		assert_eq!(SearchMove::unpack(k, a, b), Some(add));
+		let zag_add = SearchMove::Add { kind: 20 * KIND_DOTS as u16 + 2, node: 5 };
+		let packed = zag_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(zag_add));
+		let braid = crate::game::Tile::with_typed_rings(
+			0,
+			crate::game::Player::One,
+			&[
+				(crate::game::TileColor::Orange, crate::game::RingType::Braid),
+				(crate::game::TileColor::Green, crate::game::RingType::Braid),
+			],
+			1,
+			1,
+		);
+		let braid_add = SearchMove::Add { kind: braid.kind_index() as u16, node: 4 };
+		let packed = braid_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(braid_add));
+		let mv = SearchMove::Move { from: 2, to: 7 };
+		let (k, a, b) = mv.pack();
+		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));
+	}
+
+	#[test]
+	fn cheap_order_prefers_a_fulfilled_braid_add() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let cover = game.alloc_rings(
+			crate::game::Player::Two,
+			&[crate::game::TileColor::Orange, crate::game::TileColor::Green],
+			1,
+			1,
+		);
+		game.place_tile(nbs[0], cover);
+		let braid = crate::game::Tile::with_typed_rings(
+			9,
+			crate::game::Player::One,
+			&[
+				(crate::game::TileColor::Orange, crate::game::RingType::Braid),
+				(crate::game::TileColor::Green, crate::game::RingType::Braid),
+			],
+			1,
+			1,
+		);
+		let miss = crate::game::Tile::mono(
+			10,
+			crate::game::Player::One,
+			crate::game::TileColor::Blue,
+			1,
+			1,
+		);
+		let hit = SearchMove::Add { kind: braid.kind_index() as u16, node: spawn };
+		let miss_mv = SearchMove::Add { kind: miss.kind_index() as u16, node: spawn };
+		assert!(cheap_order(&game, hit) > cheap_order(&game, miss_mv));
 	}
 
 	#[test]

@@ -1,0 +1,8 @@
+# Both players get the same sampled tiles (ring process + dots; weight = rings) in
+# the same order. Only seat and play differ. This is also the current default
+# deal (`identical_bags`).
+name = "same"
+description = "Mirrored generative 27-tile bags; shuffle with the game seed."
+generative = true
+mirror = true
+shuffle = true

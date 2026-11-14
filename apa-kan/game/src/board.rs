@@ -226,6 +226,24 @@ impl Board {
 		&self.neighbors[id as usize]
 	}
 
+	/// Other endpoint of every incident generating-circle arc.
+	///
+	/// Unique [`Self::neighbors`] collapses the two inner↔center petals into
+	/// one adjacency. Scoring, capture, and lane paint walk this iterator so
+	/// each petal is a separate edge (the inner node appears twice from the
+	/// origin; the origin appears twice from an inner-ring node).
+	pub fn incident_others(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+		let arcs = self.arcs.as_slice();
+		self.incident_arcs[id as usize].iter().map(move |&idx| {
+			let arc = &arcs[idx];
+			if arc.from == id {
+				arc.to
+			} else {
+				arc.from
+			}
+		})
+	}
+
 	pub fn incident_arc_count(&self, id: NodeId) -> usize {
 		self.incident_arcs[id as usize].len()
 	}
@@ -264,6 +282,15 @@ impl Board {
 		self.arcs.iter().position(|arc| {
 			arc.circle == circle
 				&& ((arc.from == a && arc.to == b) || (arc.from == b && arc.to == a))
+		})
+	}
+
+	/// Every generating-circle arc whose endpoints are `a` and `b` (either
+	/// direction). Inner↔center has two; most neighbor pairs have one.
+	pub fn connecting_arc_indices(&self, a: NodeId, b: NodeId) -> impl Iterator<Item = usize> + '_ {
+		self.incident_arcs[a as usize].iter().copied().filter(move |&idx| {
+			let arc = &self.arcs[idx];
+			(arc.from == a && arc.to == b) || (arc.from == b && arc.to == a)
 		})
 	}
 
@@ -454,6 +481,19 @@ mod tests {
 				b.radius_of(id)
 			);
 		}
+	}
+
+	#[test]
+	fn incident_others_repeats_the_inner_center_pair() {
+		let b = board();
+		let center = b.center();
+		let inner_hits: Vec<NodeId> = b.incident_others(center).collect();
+		assert_eq!(inner_hits.len(), 16);
+		assert_eq!(inner_hits.iter().copied().collect::<std::collections::BTreeSet<_>>().len(), 8);
+		let inner = b.inner_ring()[0];
+		let from_inner: Vec<NodeId> = b.incident_others(inner).collect();
+		assert_eq!(from_inner.len(), 4);
+		assert_eq!(from_inner.iter().filter(|&&n| n == center).count(), 2);
 	}
 
 	#[test]

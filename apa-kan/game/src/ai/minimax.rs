@@ -9,7 +9,12 @@ use crate::game::{Action, Game, Player};
 use super::eval::{evaluate, evaluate_legacy, terminal_score, WIN};
 use super::search_move::{apply_move, cheap_order, is_capture, legal_search_moves, SearchMove};
 use super::zobrist;
-use super::{count_repeats, HistoryTable, SearchStats};
+use super::{count_repeats, HistoryTable, SearchLimit, SearchStats};
+
+enum Stop {
+	Time(Instant),
+	Nodes(u64),
+}
 
 pub const MAX_PLY: usize = 48;
 const TT_MASK: usize = (1 << 18) - 1;
@@ -28,7 +33,7 @@ struct TTEntry {
 	score: i32,
 	depth: u8,
 	flag: u8,
-	kind: u8,
+	kind: u16,
 	a: u8,
 	b: u8,
 }
@@ -57,7 +62,7 @@ impl TranspositionTable {
 		if cur.hash == hash && cur.depth > depth {
 			return;
 		}
-		let (kind, a, b) = best.map(SearchMove::pack).unwrap_or((254, 0, 0));
+		let (kind, a, b) = best.map(SearchMove::pack).unwrap_or((u16::MAX - 1, 0, 0));
 		self.entries[slot] = TTEntry { hash, score, depth, flag: flag as u8, kind, a, b };
 	}
 }
@@ -89,7 +94,7 @@ impl MinimaxState {
 }
 
 struct Ctx<'a> {
-	deadline: Instant,
+	stop: Stop,
 	abort: bool,
 	nodes: u64,
 	tt: &'a mut TranspositionTable,
@@ -103,9 +108,26 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-	fn timed_out(&mut self) -> bool {
+	fn over_budget(&self) -> bool {
+		if self.abort {
+			return true;
+		}
+		match self.stop {
+			Stop::Time(deadline) => Instant::now() >= deadline,
+			Stop::Nodes(max) => self.nodes >= max,
+		}
+	}
+
+	fn exhausted(&mut self) -> bool {
 		self.nodes += 1;
-		if self.nodes % 64 == 0 && Instant::now() >= self.deadline {
+		if self.abort {
+			return true;
+		}
+		let hit = match self.stop {
+			Stop::Time(deadline) => self.nodes % 64 == 0 && Instant::now() >= deadline,
+			Stop::Nodes(max) => self.nodes >= max,
+		};
+		if hit {
 			self.abort = true;
 		}
 		self.abort
@@ -117,7 +139,7 @@ pub fn search(
 	game: &Game,
 	played: &[u64],
 	rng: &mut impl Rng,
-	deadline: Instant,
+	limit: SearchLimit,
 ) -> (Action, SearchStats) {
 	let legal = legal_search_moves(game);
 	let fallback = legal
@@ -129,8 +151,12 @@ pub fn search(
 		return (Action::Pass, SearchStats::default());
 	}
 
+	let stop = match limit {
+		SearchLimit::Time(d) => Stop::Time(Instant::now() + d),
+		SearchLimit::Work { nodes, .. } => Stop::Nodes(nodes),
+	};
 	let mut ctx = Ctx {
-		deadline,
+		stop,
 		abort: false,
 		nodes: 0,
 		tt: &mut state.tt,
@@ -148,7 +174,7 @@ pub fn search(
 	let mut completed_depth = 0u8;
 
 	for depth in 1..=16u8 {
-		if Instant::now() >= deadline {
+		if ctx.over_budget() {
 			break;
 		}
 		ctx.abort = false;
@@ -168,7 +194,7 @@ pub fn search(
 		let mut pick = best_move;
 		let mut completed = true;
 		for &mv in &ordered {
-			if ctx.timed_out() {
+			if ctx.exhausted() {
 				completed = false;
 				break;
 			}
@@ -229,7 +255,7 @@ fn negamax(
 	ply: usize,
 	ctx: &mut Ctx<'_>,
 ) -> i32 {
-	if ctx.timed_out() {
+	if ctx.exhausted() {
 		return eval_now(game, ctx);
 	}
 	let me = game.current_player();
@@ -277,7 +303,7 @@ fn negamax(
 	let mut best_mv = moves[0];
 	let original_alpha = alpha;
 	for &mv in &moves {
-		if ctx.timed_out() {
+		if ctx.exhausted() {
 			break;
 		}
 		let Some(mut child) = child_pos(game, mv) else {
@@ -327,7 +353,7 @@ fn quiesce(
 	ply: usize,
 	ctx: &mut Ctx<'_>,
 ) -> i32 {
-	if ctx.timed_out() || ply >= MAX_PLY - 1 {
+	if ctx.exhausted() || ply >= MAX_PLY - 1 {
 		return eval_now(game, ctx);
 	}
 	let me = game.current_player();
@@ -363,7 +389,7 @@ fn quiesce(
 		captures.truncate(8);
 	}
 	for (_, _, mut child) in captures {
-		if ctx.timed_out() {
+		if ctx.exhausted() {
 			break;
 		}
 		ctx.path.push(zobrist::hash(&child));

@@ -1,10 +1,12 @@
 //! Apa Kan — 8-petal rosette redesign.
 
 pub mod ai;
+pub mod bench_log;
 pub mod board;
 pub mod config;
 pub mod game;
 pub mod render;
+pub mod scenario;
 #[cfg(feature = "desktop")]
 pub mod ui;
 pub mod visual;
