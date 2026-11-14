@@ -63,7 +63,7 @@ Options: `starting_bench_size` (spawn tokens), `bag_size` (public deck), `self_c
 
 Evaluated **board-wide, simultaneously**, after every action.
 
-**Independent channels** (see [`rfc-001-001-002-independent-channels`](../rfc-001-001-002-independent-channels/README.md)) replace the earlier cross-type overrides. Core: every ring has weight 1; `effective_weight = mismatch − match` summed over edges; overwhelmed iff `effective_weight >= ring_weight`. Per edge, normal / zag / braid each score on their own and **add**. A zag vs a same-color normal nets 0; a fulfilled braid stacks with a normal match. Failed braid **accepted default** is +1 (`--braid-fail-mismatch one`). `weight` and `sum` stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39). Doubles are **allowed** by default (`--no-same-piece-twice off`).
+**Independent channels** (see [`rfc-001-001-002-independent-channels`](../rfc-001-001-002-independent-channels/README.md)) replace the earlier cross-type overrides. Core: every ring has weight 1; `effective_weight = mismatch − match` summed over edges; overwhelmed iff `effective_weight >= ring_weight`. Per edge, normal / zag / braid each score on their own and **add**. A zag vs a same-color normal nets 0; a fulfilled braid stacks with a normal match. Failed braid **accepted default** is +1 (`--braid-fail-mismatch one`). `weight` and `sum` stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39). Doubles are **allowed** by default (`--no-same-piece-twice off`); that is the locked default and the only H2H-benchmarked configuration.
 
 - A neighbor **matches** on the **normal** channel if some normal-ring color of either tile is in the other tile's color multiset (including zag and braid colors). Zags never produce a zag-channel match.
 - Zag mismatches are an **edge** event (`RuleSet::zag_mismatch`, CLI `--zag-mismatch`): a zag on either tile whose color the other holds (normal or zag) counts. Both tiles take the same number. The zag channel no longer suppresses the normal lane.
@@ -165,9 +165,9 @@ CLI: `--no-same-piece-twice <off|always|when-deck-empty>` (`when-bench-empty` is
 
 A player may not MOVE the same tile (by tile id) on two consecutive **own** turns.
 
-- `Off` — no restriction (**accepted default**; doubles allowed).
-- `Always` — always enforced (non-default variant).
-- `WhenDeckEmpty` — enforced only while that player’s remaining (unplaced) deck is empty (opening ADD-heavy play is unrestricted; endgame shuffling is not). Non-default variant.
+- `Off` — no restriction (**locked default**; doubles allowed). This is the **only H2H-benchmarked** configuration.
+- `Always` — always enforced (non-default CLI variant; not benchmarked).
+- `WhenDeckEmpty` — enforced only while that player’s remaining (unplaced) deck is empty (opening ADD-heavy play is unrestricted; endgame shuffling is not). Non-default CLI variant; not benchmarked.
 
 **Capture exception:** a repeat MOVE **is** legal if that MOVE causes at least one opponent tile to be removed under simultaneous overwhelm (previewed before the action). Own-tile suicides do not count. ADD does not set the “last moved” tile; only a MOVE does.
 

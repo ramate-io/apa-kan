@@ -70,6 +70,8 @@ fn usage() -> &'static str {
 	   --label <text>       Header label written into the log\n\
 	   --scenario <name|path> Opening deck preset or TOML file\n\
 	   --list-scenarios     Print builtin deck scenarios\n\
+	   Doubles allowed (--no-same-piece-twice off) is the locked default and the only\n\
+	   H2H-benchmarked configuration. Other --no-same-piece-twice values remain as CLI variants.\n\
 	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
 	   --hop-weight-cmp, --counted-pass-through, --graph-hops, --pass-through-ring-cmp,\n\
