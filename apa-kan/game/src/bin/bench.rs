@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use apa_kan::ai::{self, Actor, BranchingReport, Searcher};
+use apa_kan::ai::{
+	self, Actor, BranchingReport, SearchLimit, Searcher, CALIBRATED_ITERS_PER_MOVE,
+	CALIBRATED_NODES_PER_MOVE,
+};
 use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::game::{
@@ -29,7 +32,8 @@ fn main() {
 
 struct BenchConfig {
 	games: u32,
-	think: Duration,
+	limit: SearchLimit,
+	jobs: usize,
 	seed: u64,
 	out: PathBuf,
 	record: PathBuf,
@@ -40,6 +44,7 @@ struct BenchConfig {
 	label: String,
 	depth_probe: bool,
 	scenario: Option<Scenario>,
+	calibrate: bool,
 }
 
 fn usage() -> &'static str {
@@ -47,7 +52,13 @@ fn usage() -> &'static str {
 	 \n\
 	 Options:\n\
 	   --games <n>          Games per pairing per seat (default: 6)\n\
-	   --think-ms <n>       Bot think time in ms (default: 1000)\n\
+	   --budget <spec>      Work budget: nodes:N,iters:M (default: calibrated 1000 ms)\n\
+	                        nodes caps minimax nodes/move; iters caps MCTS iterations/move.\n\
+	                        Pass `calibrated` for the documented 1000 ms single-thread means.\n\
+	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
+	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
+	                        Each search stays single-threaded.\n\
+	   --calibrate          Measure nodes/iters per move at --think-ms (default 1000), jobs=1, then exit\n\
 	   --seed <u64>         Base seed (default: 1)\n\
 	   --bots <list>        Comma-separated actors (default: greedy,minimax,mcts)\n\
 	   --depth-probe        Also time minimax ID depth at 1000 ms and 3000 ms\n\
@@ -79,9 +90,15 @@ where
 	let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmark_results");
 	let default_out = root.join("search_h2h.txt");
 	let mut games_log_set = false;
+	let mut think_ms_set = false;
+	let mut budget_set = false;
+	let mut think = Duration::from_millis(1000);
+	let mut budget_nodes = CALIBRATED_NODES_PER_MOVE;
+	let mut budget_iters = CALIBRATED_ITERS_PER_MOVE;
 	let mut cfg = BenchConfig {
 		games: 6,
-		think: Duration::from_millis(1000),
+		limit: SearchLimit::calibrated(),
+		jobs: default_jobs(),
 		seed: 1,
 		out: default_out.clone(),
 		record: root.join("minimax_vs_mcts_game.txt"),
@@ -92,6 +109,7 @@ where
 		label: "search head-to-head".into(),
 		depth_probe: true,
 		scenario: None,
+		calibrate: false,
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -105,11 +123,31 @@ where
 				cfg.games = parse_u64("--games", &need("--games", it.next())?)? as u32;
 			}
 			"--think-ms" => {
-				cfg.think = Duration::from_millis(parse_u64(
+				think_ms_set = true;
+				think = Duration::from_millis(parse_u64(
 					"--think-ms",
 					&need("--think-ms", it.next())?,
 				)?);
 			}
+			"--budget" => {
+				budget_set = true;
+				let spec = need("--budget", it.next())?;
+				let (nodes, iters) = parse_budget(&spec)?;
+				if let Some(n) = nodes {
+					budget_nodes = n;
+				}
+				if let Some(i) = iters {
+					budget_iters = i;
+				}
+			}
+			"--jobs" => {
+				let n = parse_u64("--jobs", &need("--jobs", it.next())?)?;
+				if n == 0 {
+					return Err("invalid --jobs (expected >= 1)".into());
+				}
+				cfg.jobs = n as usize;
+			}
+			"--calibrate" => cfg.calibrate = true,
 			"--seed" => cfg.seed = parse_u64("--seed", &need("--seed", it.next())?)?,
 			"--measure-games" => {
 				cfg.measure_games =
@@ -162,8 +200,105 @@ where
 	if cfg.bots.is_empty() {
 		return Err("--bots must name at least one actor".into());
 	}
+	if think_ms_set && budget_set {
+		return Err("use either --think-ms or --budget, not both".into());
+	}
+	if cfg.calibrate && budget_set {
+		return Err("--calibrate measures wall-clock --think-ms; do not pass --budget".into());
+	}
+	cfg.limit = if think_ms_set || cfg.calibrate {
+		SearchLimit::Time(think)
+	} else {
+		SearchLimit::work(budget_nodes, budget_iters)
+	};
 	validate_rule_flags(&cfg.rules)?;
 	Ok(cfg)
+}
+
+fn default_jobs() -> usize {
+	std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+fn parse_budget(spec: &str) -> Result<(Option<u64>, Option<u32>), String> {
+	let spec = spec.trim();
+	if spec.is_empty() || spec == "calibrated" || spec == "default" {
+		return Ok((Some(CALIBRATED_NODES_PER_MOVE), Some(CALIBRATED_ITERS_PER_MOVE)));
+	}
+	let mut nodes = None;
+	let mut iters = None;
+	for part in spec.split(',') {
+		let part = part.trim();
+		if part.is_empty() {
+			continue;
+		}
+		let (key, val) = part.split_once(':').ok_or_else(|| {
+			format!("invalid --budget '{spec}' (expected nodes:N,iters:M or calibrated)")
+		})?;
+		match key.trim() {
+			"nodes" | "node" => {
+				let n: u64 =
+					val.trim().parse().map_err(|_| format!("invalid --budget nodes '{val}'"))?;
+				if n == 0 {
+					return Err("invalid --budget nodes (expected >= 1)".into());
+				}
+				nodes = Some(n);
+			}
+			"iters" | "iter" | "iterations" => {
+				let n: u32 =
+					val.trim().parse().map_err(|_| format!("invalid --budget iters '{val}'"))?;
+				if n == 0 {
+					return Err("invalid --budget iters (expected >= 1)".into());
+				}
+				iters = Some(n);
+			}
+			other => {
+				return Err(format!("unknown --budget key '{other}' (expected nodes or iters)"));
+			}
+		}
+	}
+	if nodes.is_none() && iters.is_none() {
+		return Err(format!("invalid --budget '{spec}' (expected nodes:N and/or iters:M)"));
+	}
+	Ok((nodes, iters))
+}
+
+fn run_parallel<T, R, F>(jobs: usize, items: Vec<T>, f: F) -> Vec<R>
+where
+	T: Send,
+	R: Send,
+	F: Fn(T) -> R + Sync,
+{
+	let n = items.len();
+	if n == 0 {
+		return Vec::new();
+	}
+	let jobs = jobs.max(1).min(n);
+	if jobs == 1 {
+		return items.into_iter().map(f).collect();
+	}
+	let queue = Mutex::new(items.into_iter().enumerate().collect::<Vec<(usize, T)>>());
+	let slots: Vec<Mutex<Option<R>>> = (0..n).map(|_| Mutex::new(None)).collect();
+	std::thread::scope(|scope| {
+		for _ in 0..jobs {
+			scope.spawn(|| loop {
+				let next = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
+				let Some((i, item)) = next else {
+					break;
+				};
+				let r = f(item);
+				*slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+			});
+		}
+	});
+	slots
+		.into_iter()
+		.map(|slot| {
+			slot.into_inner().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(|| {
+				eprintln!("parallel job produced no result");
+				std::process::exit(1);
+			})
+		})
+		.collect()
 }
 
 fn parse_bots(s: &str) -> Result<Vec<Actor>, String> {
@@ -241,6 +376,10 @@ fn on_off(v: bool) -> &'static str {
 }
 
 fn run(cfg: BenchConfig) {
+	if cfg.calibrate {
+		run_calibrate(&cfg);
+		return;
+	}
 	let started = Instant::now();
 	let rules = cfg.rules;
 	let mut lines: Vec<String> = Vec::new();
@@ -259,13 +398,7 @@ fn run(cfg: BenchConfig) {
 
 	lines.push(String::new());
 	lines.push(format!("# {}", cfg.label));
-	lines.push(format!(
-		"# think_ms={} games_per_pairing_per_seat={} seed_base={} turn_limit={}",
-		cfg.think.as_millis(),
-		cfg.games,
-		cfg.seed,
-		rules.turn_limit
-	));
+	lines.push(limit_header(&cfg, rules.turn_limit));
 	lines.push(format!(
 		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
@@ -303,53 +436,94 @@ fn run(cfg: BenchConfig) {
 		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
 	);
 
-	let record_holder: Mutex<Option<GameRecord>> = Mutex::new(None);
-	let deck_holder: Mutex<Vec<DeckRow>> = Mutex::new(Vec::new());
-	let logs_holder: Mutex<Vec<GameLog>> = Mutex::new(Vec::new());
 	let keep_log = cfg.games_log.is_some();
-	let mut pairing_results: Vec<(usize, SeatStats, String)> = Vec::new();
 	let pairs = pairings(&cfg.bots);
-
-	std::thread::scope(|scope| {
-		let mut handles = Vec::new();
-		for (pi, &(p1, p2)) in pairs.iter().enumerate() {
-			let think = cfg.think;
-			let games = cfg.games;
-			let seed_base = cfg.seed;
-			let rec = &record_holder;
-			let decks = &deck_holder;
-			let logs = &logs_holder;
-			let scenario = cfg.scenario.clone();
-			handles.push(scope.spawn(move || {
-				let (stats, line) = run_pairing(
-					pi,
-					p1,
-					p2,
-					games,
-					think,
-					seed_base,
-					rules,
-					scenario.as_ref(),
-					rec,
-					decks,
-					keep_log,
-					logs,
-				);
-				(pi, stats, line)
-			}));
+	let stdout = Mutex::new(());
+	let mut jobs = Vec::new();
+	for (pi, &(p1, p2)) in pairs.iter().enumerate() {
+		for g in 0..cfg.games {
+			let seed = cfg
+				.seed
+				.wrapping_add((pi as u64).wrapping_mul(10_000))
+				.wrapping_add(u64::from(g));
+			jobs.push(GameJob {
+				pi,
+				g,
+				p1,
+				p2,
+				seed,
+				want_record: p1 == Actor::Minimax && p2 == Actor::Mcts && g == 0,
+			});
 		}
-		for h in handles {
-			match h.join() {
-				Ok(row) => pairing_results.push(row),
-				Err(_) => {
-					eprintln!("pairing thread panicked");
-					std::process::exit(1);
-				}
-			}
+	}
+	println!(
+		"running {} games across {} pairings with --jobs {} ({})...",
+		jobs.len(),
+		pairs.len(),
+		cfg.jobs,
+		cfg.limit.label()
+	);
+	let scenario = cfg.scenario.clone();
+	let limit = cfg.limit;
+	let outs = run_parallel(cfg.jobs, jobs, |job| {
+		let result = play_game(
+			rules,
+			job.seed,
+			job.p1,
+			job.p2,
+			limit,
+			job.want_record,
+			keep_log,
+			scenario.as_ref(),
+		);
+		{
+			let _g = stdout.lock().unwrap_or_else(|e| e.into_inner());
+			println!(
+				"  {} vs {} game {} -> {:?} turns={} max_rep={} depth={:.1} iters={:.0}",
+				job.p1.name(),
+				job.p2.name(),
+				job.g + 1,
+				result.status,
+				result.turns,
+				result.max_repeat,
+				if result.depth_n == 0 {
+					0.0
+				} else {
+					result.depth_sum / f64::from(result.depth_n)
+				},
+				if result.iter_n == 0 { 0.0 } else { result.iter_sum / f64::from(result.iter_n) }
+			);
 		}
+		JobOut { job, result }
 	});
 
-	pairing_results.sort_by_key(|r| r.0);
+	let mut by_pair: Vec<Vec<PlayResult>> = (0..pairs.len()).map(|_| Vec::new()).collect();
+	let mut record: Option<GameRecord> = None;
+	let mut deck_rows: Vec<DeckRow> = Vec::new();
+	let mut logs: Vec<GameLog> = Vec::new();
+	for mut out in outs {
+		if out.job.want_record {
+			record = out.result.record.clone();
+		}
+		if let Some(mut log) = out.result.log.take() {
+			log.game = out.job.g + 1;
+			log.pairing = format!("{} vs {}", out.job.p1.name(), out.job.p2.name());
+			log.p1 = out.job.p1.name().to_string();
+			log.p2 = out.job.p2.name().to_string();
+			logs.push(log);
+		}
+		let mut row = out.result.deck.clone();
+		row.pairing = format!("{} vs {}", out.job.p1.name(), out.job.p2.name());
+		row.game = out.job.g + 1;
+		deck_rows.push(row);
+		by_pair[out.job.pi].push(out.result);
+	}
+
+	let mut pairing_results: Vec<(usize, SeatStats, String)> = Vec::new();
+	for (pi, &(p1, p2)) in pairs.iter().enumerate() {
+		let (stats, line) = summarize_pairing(p1, p2, cfg.games, &by_pair[pi]);
+		pairing_results.push((pi, stats, line));
+	}
 	let mut stall_games = 0u32;
 	let mut stall_rep2 = 0u32;
 	let mut stall_rep3 = 0u32;
@@ -459,7 +633,6 @@ fn run(cfg: BenchConfig) {
 		"# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.".into(),
 	);
 
-	let deck_rows = deck_holder.lock().unwrap_or_else(|e| e.into_inner()).clone();
 	push_observed_rings(&mut lines, &deck_rows);
 	push_deck_fairness(&mut lines, &deck_rows);
 
@@ -471,7 +644,6 @@ fn run(cfg: BenchConfig) {
 		let _ = fs::create_dir_all(parent);
 	}
 
-	let record = record_holder.lock().unwrap_or_else(|e| e.into_inner());
 	if let Some(rec) = record.as_ref() {
 		if let Err(err) = fs::write(&cfg.record, rec.render()) {
 			eprintln!("failed to write {}: {err}", cfg.record.display());
@@ -484,7 +656,6 @@ fn run(cfg: BenchConfig) {
 	}
 
 	if let Some(path) = cfg.games_log.as_ref() {
-		let mut logs = logs_holder.lock().unwrap_or_else(|e| e.into_inner());
 		logs.sort_by(|a, b| a.pairing.cmp(&b.pairing).then(a.game.cmp(&b.game)));
 		if let Err(err) = write_games_log(path, &logs) {
 			eprintln!("failed to write {}: {err}", path.display());
@@ -503,6 +674,114 @@ fn run(cfg: BenchConfig) {
 	println!("wrote {}", cfg.out.display());
 }
 
+fn run_calibrate(cfg: &BenchConfig) {
+	let think = match cfg.limit {
+		SearchLimit::Time(d) => d,
+		SearchLimit::Work { .. } => Duration::from_millis(1000),
+	};
+	let seeds = [cfg.seed, cfg.seed.wrapping_add(17), cfg.seed.wrapping_add(41)];
+	let moves_per = 16u32;
+	println!(
+		"calibrating single-thread {} ms/move ({} games × {moves_per} moves, minimax vs mcts)...",
+		think.as_millis(),
+		seeds.len()
+	);
+	let mut node_sum = 0u64;
+	let mut node_n = 0u32;
+	let mut node_min = u64::MAX;
+	let mut node_max = 0u64;
+	let mut iter_sum = 0u64;
+	let mut iter_n = 0u32;
+	let mut iter_min = u32::MAX;
+	let mut iter_max = 0u32;
+	let mut depth_sum = 0.0;
+	for &seed in &seeds {
+		let mut game = Game::start(cfg.rules, seed, cfg.scenario.as_ref()).unwrap_or_else(|e| {
+			eprintln!("{e}");
+			std::process::exit(1);
+		});
+		let mut rng = StdRng::seed_from_u64(bench_log::search_rng_seed(seed));
+		let mut s1 = Searcher::new();
+		let mut s2 = Searcher::new();
+		for _ in 0..moves_per {
+			if game.status().is_over() {
+				break;
+			}
+			let actor = match game.current_player() {
+				Player::One => Actor::Minimax,
+				Player::Two => Actor::Mcts,
+			};
+			let searcher = match game.current_player() {
+				Player::One => &mut s1,
+				Player::Two => &mut s2,
+			};
+			let action = searcher.choose(&game, actor, &mut rng, think);
+			let st = searcher.stats();
+			match actor {
+				Actor::Minimax => {
+					node_sum += st.nodes;
+					node_n += 1;
+					node_min = node_min.min(st.nodes);
+					node_max = node_max.max(st.nodes);
+					depth_sum += f64::from(st.depth);
+					println!("  seed={seed} minimax depth={} nodes={}", st.depth, st.nodes);
+				}
+				Actor::Mcts => {
+					iter_sum += u64::from(st.iterations);
+					iter_n += 1;
+					iter_min = iter_min.min(st.iterations);
+					iter_max = iter_max.max(st.iterations);
+					println!("  seed={seed} mcts iters={}", st.iterations);
+				}
+				_ => {}
+			}
+			if game.apply(action).is_err() {
+				break;
+			}
+			s1.advance(&game);
+			s2.advance(&game);
+		}
+	}
+	let mean_nodes = if node_n == 0 { 0.0 } else { node_sum as f64 / f64::from(node_n) };
+	let mean_iters = if iter_n == 0 { 0.0 } else { iter_sum as f64 / f64::from(iter_n) };
+	let mean_depth = if node_n == 0 { 0.0 } else { depth_sum / f64::from(node_n) };
+	let rec_nodes = round_calibrated_nodes(mean_nodes);
+	let rec_iters = round_calibrated_iters(mean_iters);
+	println!(
+		"# calibrate think_ms={} games={} moves_per={moves_per} jobs=1",
+		think.as_millis(),
+		seeds.len()
+	);
+	println!("# minimax_nodes n={node_n} mean={mean_nodes:.0} min={node_min} max={node_max} mean_depth={mean_depth:.2}");
+	println!("# mcts_iters n={iter_n} mean={mean_iters:.0} min={iter_min} max={iter_max}");
+	println!("# recommended --budget nodes:{rec_nodes},iters:{rec_iters}");
+	println!(
+		"# current constants CALIBRATED_NODES_PER_MOVE={CALIBRATED_NODES_PER_MOVE} CALIBRATED_ITERS_PER_MOVE={CALIBRATED_ITERS_PER_MOVE}"
+	);
+}
+
+fn round_calibrated_nodes(mean: f64) -> u64 {
+	if mean < 1.0 {
+		return 1;
+	}
+	let step = if mean >= 10_000.0 {
+		1_000.0
+	} else if mean >= 1_000.0 {
+		100.0
+	} else {
+		10.0
+	};
+	((mean / step).round() as u64).saturating_mul(step as u64).max(1)
+}
+
+fn round_calibrated_iters(mean: f64) -> u32 {
+	if mean < 1.0 {
+		return 1;
+	}
+	let step = if mean >= 1_000.0 { 100.0 } else { 10.0 };
+	((mean / step).round() as u32).saturating_mul(step as u32).max(1)
+}
+
 fn push_branching(
 	lines: &mut Vec<String>,
 	cfg: &BenchConfig,
@@ -510,13 +789,7 @@ fn push_branching(
 	turn_limit: u32,
 ) {
 	lines.push("# apa-kan search benchmark".into());
-	lines.push(format!(
-		"# think_ms={} games_per_pairing_per_seat={} seed_base={} turn_limit={}",
-		cfg.think.as_millis(),
-		cfg.games,
-		cfg.seed,
-		turn_limit
-	));
+	lines.push(limit_header(cfg, turn_limit));
 	lines.push(String::new());
 	lines.push("# branching factor (legal actions per position, from greedy/random games)".into());
 	lines.push(format!(
@@ -562,41 +835,40 @@ fn games_log_size(path: &Path) -> String {
 	}
 }
 
-fn run_pairing(
+#[derive(Clone, Copy)]
+struct GameJob {
 	pi: usize,
+	g: u32,
+	p1: Actor,
+	p2: Actor,
+	seed: u64,
+	want_record: bool,
+}
+
+struct JobOut {
+	job: GameJob,
+	result: PlayResult,
+}
+
+fn limit_header(cfg: &BenchConfig, turn_limit: u32) -> String {
+	format!(
+		"# {} jobs={} games_per_pairing_per_seat={} seed_base={} turn_limit={}",
+		cfg.limit.label(),
+		cfg.jobs,
+		cfg.games,
+		cfg.seed,
+		turn_limit
+	)
+}
+
+fn summarize_pairing(
 	p1: Actor,
 	p2: Actor,
 	games: u32,
-	think: Duration,
-	seed_base: u64,
-	rules: RuleSet,
-	scenario: Option<&Scenario>,
-	record_holder: &Mutex<Option<GameRecord>>,
-	deck_holder: &Mutex<Vec<DeckRow>>,
-	keep_log: bool,
-	logs_holder: &Mutex<Vec<GameLog>>,
+	results: &[PlayResult],
 ) -> (SeatStats, String) {
 	let mut stats = SeatStats::default();
-	for g in 0..games {
-		let seed = seed_base
-			.wrapping_add((pi as u64).wrapping_mul(10_000))
-			.wrapping_add(u64::from(g));
-		let want_record = p1 == Actor::Minimax && p2 == Actor::Mcts && g == 0;
-		let result = play_game(rules, seed, p1, p2, think, want_record, keep_log, scenario);
-		if want_record {
-			if let Ok(mut guard) = record_holder.lock() {
-				*guard = result.record.clone();
-			}
-		}
-		if let Some(mut log) = result.log {
-			log.game = g + 1;
-			log.pairing = format!("{} vs {}", p1.name(), p2.name());
-			log.p1 = p1.name().to_string();
-			log.p2 = p2.name().to_string();
-			if let Ok(mut guard) = logs_holder.lock() {
-				guard.push(log);
-			}
-		}
+	for result in results {
 		stats.turns += result.turns;
 		stats.depth_sum += result.depth_sum;
 		stats.depth_n += result.depth_n;
@@ -636,23 +908,6 @@ fn run_pairing(
 			}
 		}
 		tally_low_value(&mut stats, result.low_value);
-		println!(
-			"  {} vs {} game {} -> {:?} turns={} max_rep={} depth={:.1} iters={:.0}",
-			p1.name(),
-			p2.name(),
-			g + 1,
-			result.status,
-			result.turns,
-			result.max_repeat,
-			if result.depth_n == 0 { 0.0 } else { result.depth_sum / f64::from(result.depth_n) },
-			if result.iter_n == 0 { 0.0 } else { result.iter_sum / f64::from(result.iter_n) }
-		);
-		if let Ok(mut guard) = deck_holder.lock() {
-			let mut row = result.deck;
-			row.pairing = format!("{} vs {}", p1.name(), p2.name());
-			row.game = g + 1;
-			guard.push(row);
-		}
 	}
 	let n = games.max(1);
 	let avg = f64::from(stats.turns) / f64::from(n);
@@ -749,7 +1004,7 @@ struct GameRecord {
 	p1: Actor,
 	p2: Actor,
 	seed: u64,
-	think_ms: u128,
+	limit: SearchLimit,
 	lines: Vec<String>,
 	status: GameStatus,
 	turns: u32,
@@ -759,9 +1014,9 @@ impl GameRecord {
 	fn render(&self) -> String {
 		let mut out = Vec::new();
 		out.push(format!(
-			"# minimax vs mcts full game  seed={} think_ms={} P1={} P2={}",
+			"# minimax vs mcts full game  seed={} {} P1={} P2={}",
 			self.seed,
-			self.think_ms,
+			self.limit.label(),
 			self.p1.name(),
 			self.p2.name()
 		));
@@ -821,7 +1076,7 @@ fn play_game(
 	seed: u64,
 	p1: Actor,
 	p2: Actor,
-	think: Duration,
+	limit: SearchLimit,
 	keep_record: bool,
 	keep_log: bool,
 	scenario: Option<&Scenario>,
@@ -854,15 +1109,18 @@ fn play_game(
 	let mut iter_n = 0u32;
 	let mut record_lines = Vec::new();
 	let mut game_log = keep_log.then(|| {
-		GameLog::begin(
+		let mut log = GameLog::begin(
 			0,
 			String::new(),
 			p1.name(),
 			p2.name(),
-			think.as_millis() as u64,
+			limit.think_ms(),
 			scenario.map(|s| s.name.as_str()).unwrap_or("default"),
 			&game,
-		)
+		);
+		log.budget_nodes = limit.nodes();
+		log.budget_iters = limit.iters();
+		log
 	});
 	let mut captures = 0u32;
 	let mut self_captures = 0u32;
@@ -914,7 +1172,7 @@ fn play_game(
 			Player::One => &mut s1,
 			Player::Two => &mut s2,
 		};
-		let action = searcher.choose(&game, actor, &mut rng, think);
+		let action = searcher.choose_with(&game, actor, &mut rng, limit);
 		let piece = bench_log::piece_for_action(&game, action);
 		let st = searcher.stats();
 		if actor == Actor::Minimax {
@@ -997,7 +1255,7 @@ fn play_game(
 			p1,
 			p2,
 			seed,
-			think_ms: think.as_millis(),
+			limit,
 			lines: record_lines,
 			status: game.status(),
 			turns: game.turn_count(),
@@ -1357,5 +1615,134 @@ fn push_deck_fairness(lines: &mut Vec<String>, rows: &[DeckRow]) {
 			oc,
 			r.turns
 		));
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+	use super::*;
+	use apa_kan::bench_log::{decode_jsonl_gz, replay};
+
+	fn tmp_dir(tag: &str) -> PathBuf {
+		let p = std::env::temp_dir().join(format!(
+			"apa-kan-h2h-{}-{}-{}",
+			tag,
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		fs::create_dir_all(&p).unwrap();
+		p
+	}
+
+	fn summary_fingerprint(txt: &str) -> String {
+		txt.lines()
+			.filter(|line| {
+				line.contains(" vs ") && line.contains(" P1 ")
+					|| line.starts_with("# seat_totals")
+					|| line.starts_with("# end_reasons")
+					|| line.starts_with("# low_value_pairs")
+					|| line.starts_with("# captures")
+					|| line.starts_with("# center_captures")
+			})
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
+	fn run_to_dir(dir: &Path, jobs: usize) -> (String, Vec<u8>) {
+		let out = dir.join("h2h.txt");
+		let games_log = dir.join("h2h.jsonl.gz");
+		let record = dir.join("h2h_record.txt");
+		let cfg = parse(vec![
+			"--games".to_string(),
+			"1".to_string(),
+			"--measure-games".to_string(),
+			"1".to_string(),
+			"--no-depth-probe".to_string(),
+			"--seed".to_string(),
+			"9".to_string(),
+			"--budget".to_string(),
+			"nodes:64,iters:6".to_string(),
+			"--jobs".to_string(),
+			jobs.to_string(),
+			"--bots".to_string(),
+			"greedy,minimax,mcts".to_string(),
+			"--out".to_string(),
+			out.display().to_string(),
+			"--games-log".to_string(),
+			games_log.display().to_string(),
+			"--record".to_string(),
+			record.display().to_string(),
+			"--label".to_string(),
+			"jobs-determinism".to_string(),
+		])
+		.unwrap();
+		run(cfg);
+		let txt = fs::read_to_string(&out).unwrap();
+		let gz = fs::read(&games_log).unwrap();
+		(txt, gz)
+	}
+
+	#[test]
+	fn parse_budget_nodes_and_iters() {
+		assert_eq!(
+			parse_budget("calibrated").unwrap(),
+			(Some(CALIBRATED_NODES_PER_MOVE), Some(CALIBRATED_ITERS_PER_MOVE))
+		);
+		assert_eq!(parse_budget("nodes:50000,iters:2200").unwrap(), (Some(50_000), Some(2_200)));
+		assert_eq!(parse_budget("iters:8").unwrap(), (None, Some(8)));
+		assert!(parse_budget("nodes:0").is_err());
+		assert!(parse_budget("foo:1").is_err());
+	}
+
+	#[test]
+	fn think_ms_and_budget_are_mutually_exclusive() {
+		let err = match parse(vec![
+			"--think-ms".to_string(),
+			"1000".to_string(),
+			"--budget".to_string(),
+			"nodes:10,iters:2".to_string(),
+		]) {
+			Ok(_) => panic!("expected --think-ms/--budget to conflict"),
+			Err(e) => e,
+		};
+		assert!(err.contains("--think-ms") && err.contains("--budget"));
+	}
+
+	#[test]
+	fn default_limit_is_calibrated_work() {
+		let cfg = parse(Vec::<String>::new()).unwrap();
+		assert_eq!(cfg.limit, SearchLimit::calibrated());
+		assert!(cfg.jobs >= 1);
+	}
+
+	#[test]
+	fn work_budget_jobs_1_and_4_match_and_replay() {
+		let dir1 = tmp_dir("j1");
+		let dir4 = tmp_dir("j4");
+		let (txt1, gz1) = run_to_dir(&dir1, 1);
+		let (txt4, gz4) = run_to_dir(&dir4, 4);
+		assert_eq!(summary_fingerprint(&txt1), summary_fingerprint(&txt4));
+		let logs1 = decode_jsonl_gz(&gz1).unwrap();
+		let logs4 = decode_jsonl_gz(&gz4).unwrap();
+		assert_eq!(logs1.len(), 9);
+		assert_eq!(
+			bench_log::encode_jsonl(&logs1).unwrap(),
+			bench_log::encode_jsonl(&logs4).unwrap()
+		);
+		for (i, log) in logs1.iter().enumerate() {
+			assert_eq!(log.budget_nodes, Some(64));
+			assert_eq!(log.budget_iters, Some(6));
+			assert_eq!(log.think_ms, 0);
+			let replayed = replay(log).unwrap_or_else(|e| panic!("replay game {}: {e}", i + 1));
+			assert_eq!(replayed.status(), log.end.to_status().unwrap());
+			assert_eq!(replayed.turn_count(), log.turns);
+		}
+		let _ = fs::remove_dir_all(dir1);
+		let _ = fs::remove_dir_all(dir4);
 	}
 }

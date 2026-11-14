@@ -6,7 +6,7 @@ mod minimax;
 mod search_move;
 mod zobrist;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rand::Rng;
 
@@ -15,6 +15,71 @@ use crate::game::{Action, Game, Player, RuleSet};
 pub use eval::{evaluate, terminal_score, WIN};
 pub use search_move::legal_search_moves;
 pub use zobrist::{hash as visible_hash, occupancy_hash};
+
+/// Mean minimax nodes per move at 1000 ms, single-threaded, release, this VM.
+///
+/// Measured 2026-11-14 with `apa-kan-bench --calibrate --think-ms 1000 --seed 1`
+/// (3 games × 16 moves, minimax vs MCTS): n=24, mean=131781, min=46720,
+/// max=248256, mean completed ID depth=3.58. Rounded to 132000.
+/// Documented in `apa-kan/game/benchmark_results/README.md`.
+pub const CALIBRATED_NODES_PER_MOVE: u64 = 132_000;
+
+/// Mean MCTS iterations per move at 1000 ms, single-threaded, release, this VM.
+/// Same calibrate run: n=24, mean=2635, min=1327, max=3961. Rounded to 2600.
+pub const CALIBRATED_ITERS_PER_MOVE: u32 = 2_600;
+
+/// How a search is bounded. Work budgets replay identically; time budgets do not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchLimit {
+	Time(Duration),
+	Work { nodes: u64, iters: u32 },
+}
+
+impl SearchLimit {
+	pub fn time_ms(ms: u64) -> Self {
+		Self::Time(Duration::from_millis(ms))
+	}
+
+	pub fn work(nodes: u64, iters: u32) -> Self {
+		Self::Work { nodes, iters }
+	}
+
+	pub fn calibrated() -> Self {
+		Self::Work { nodes: CALIBRATED_NODES_PER_MOVE, iters: CALIBRATED_ITERS_PER_MOVE }
+	}
+
+	pub fn is_work(self) -> bool {
+		matches!(self, Self::Work { .. })
+	}
+
+	pub fn think_ms(self) -> u64 {
+		match self {
+			Self::Time(d) => d.as_millis() as u64,
+			Self::Work { .. } => 0,
+		}
+	}
+
+	pub fn nodes(self) -> Option<u64> {
+		match self {
+			Self::Work { nodes, .. } => Some(nodes),
+			Self::Time(_) => None,
+		}
+	}
+
+	pub fn iters(self) -> Option<u32> {
+		match self {
+			Self::Work { iters, .. } => Some(iters),
+			Self::Time(_) => None,
+		}
+	}
+
+	pub fn label(self) -> String {
+		match self {
+			Self::Time(d) => format!("think_ms={}", d.as_millis()),
+			Self::Work { nodes, iters } => format!("budget=nodes:{nodes},iters:{iters}"),
+		}
+	}
+}
 
 use eval::evaluate as eval_pos;
 use search_move::{apply_move, legal_search_moves as search_moves, SearchMove};
@@ -155,6 +220,16 @@ impl Searcher {
 		rng: &mut impl Rng,
 		think: Duration,
 	) -> Action {
+		self.choose_with(game, actor, rng, SearchLimit::Time(think))
+	}
+
+	pub fn choose_with(
+		&mut self,
+		game: &Game,
+		actor: Actor,
+		rng: &mut impl Rng,
+		limit: SearchLimit,
+	) -> Action {
 		self.observe(game);
 		self.stats = SearchStats::default();
 		let legal = game.legal_actions();
@@ -167,21 +242,19 @@ impl Searcher {
 			Actor::Greedy => greedy(game, rng, &self.played_hashes),
 			Actor::Minimax | Actor::MinimaxLegacy => {
 				self.minimax.legacy = actor == Actor::MinimaxLegacy;
-				let deadline = Instant::now() + think;
 				let (action, stats) =
-					minimax::search(&mut self.minimax, game, &self.played_hashes, rng, deadline);
+					minimax::search(&mut self.minimax, game, &self.played_hashes, rng, limit);
 				self.stats = stats;
 				action
 			}
 			Actor::Mcts => {
-				let deadline = Instant::now() + think;
 				let (action, stats) = mcts::search(
 					&mut self.mcts,
 					game,
 					&self.played_hashes,
 					self.minimax.last_move,
 					rng,
-					deadline,
+					limit,
 				);
 				self.stats = stats;
 				action
@@ -199,6 +272,11 @@ impl Searcher {
 pub fn choose(game: &Game, actor: Actor, rng: &mut impl Rng, think: Duration) -> Action {
 	let mut searcher = Searcher::new();
 	searcher.choose(game, actor, rng, think)
+}
+
+pub fn choose_with(game: &Game, actor: Actor, rng: &mut impl Rng, limit: SearchLimit) -> Action {
+	let mut searcher = Searcher::new();
+	searcher.choose_with(game, actor, rng, limit)
 }
 
 fn greedy(game: &Game, rng: &mut impl Rng, played: &[u64]) -> Action {
@@ -566,6 +644,37 @@ mod tests {
 	fn actor_parse_rejects_unknown() {
 		assert!(Actor::parse("ologbon").is_err());
 		assert_eq!(Actor::parse("MINIMAX").unwrap(), Actor::Minimax);
+	}
+
+	#[test]
+	fn work_budget_replays_the_same_minimax_move() {
+		let game = Game::new(RuleSet::default(), 11);
+		let limit = SearchLimit::work(240, 8);
+		let mut a = Searcher::new();
+		let mut b = Searcher::new();
+		let mut rng_a = StdRng::seed_from_u64(11);
+		let mut rng_b = StdRng::seed_from_u64(11);
+		let ma = a.choose_with(&game, Actor::Minimax, &mut rng_a, limit);
+		let mb = b.choose_with(&game, Actor::Minimax, &mut rng_b, limit);
+		assert_eq!(ma, mb);
+		assert_eq!(a.stats().nodes, b.stats().nodes);
+		assert_eq!(a.stats().depth, b.stats().depth);
+		assert!(a.stats().nodes <= 240);
+	}
+
+	#[test]
+	fn work_budget_replays_the_same_mcts_move() {
+		let game = Game::new(RuleSet::default(), 12);
+		let limit = SearchLimit::work(80, 12);
+		let mut a = Searcher::new();
+		let mut b = Searcher::new();
+		let mut rng_a = StdRng::seed_from_u64(12);
+		let mut rng_b = StdRng::seed_from_u64(12);
+		let ma = a.choose_with(&game, Actor::Mcts, &mut rng_a, limit);
+		let mb = b.choose_with(&game, Actor::Mcts, &mut rng_b, limit);
+		assert_eq!(ma, mb);
+		assert_eq!(a.stats().iterations, b.stats().iterations);
+		assert_eq!(a.stats().iterations, 12);
 	}
 
 	#[test]

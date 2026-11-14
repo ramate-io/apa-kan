@@ -10,7 +10,7 @@ use crate::game::{Action, Game, Player};
 use super::eval::{eval_unit, evaluate, terminal_score};
 use super::search_move::{apply_move, cheap_order, legal_search_moves, SearchMove};
 use super::zobrist;
-use super::{count_repeats, SearchStats};
+use super::{count_repeats, SearchLimit, SearchStats};
 
 const C_PUCT: f64 = 1.6;
 const RAVE_EQ: f64 = 300.0;
@@ -93,7 +93,7 @@ pub fn search(
 	played: &[u64],
 	last_move: Option<SearchMove>,
 	rng: &mut impl Rng,
-	deadline: Instant,
+	limit: SearchLimit,
 ) -> (Action, SearchStats) {
 	let legal = legal_search_moves(game);
 	let fallback = legal.first().and_then(|m| m.to_action(game)).unwrap_or(Action::Pass);
@@ -106,11 +106,22 @@ pub fn search(
 
 	let mut iterations = 0u32;
 	const MAX_ITERS: u32 = 8_000;
-	while Instant::now() < deadline && iterations < MAX_ITERS {
-		iterations += 1;
-		iterate(t, game, played, last_move, rng);
-		if iterations % 8 == 0 && Instant::now() >= deadline {
-			break;
+	match limit {
+		SearchLimit::Time(think) => {
+			let deadline = Instant::now() + think;
+			while Instant::now() < deadline && iterations < MAX_ITERS {
+				iterations += 1;
+				iterate(t, game, played, last_move, rng);
+				if iterations % 8 == 0 && Instant::now() >= deadline {
+					break;
+				}
+			}
+		}
+		SearchLimit::Work { iters, .. } => {
+			while iterations < iters {
+				iterations += 1;
+				iterate(t, game, played, last_move, rng);
+			}
 		}
 	}
 

@@ -588,6 +588,10 @@ pub struct GameLog {
 	pub seed: u64,
 	pub search_rng_seed: u64,
 	pub think_ms: u64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub budget_nodes: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub budget_iters: Option<u32>,
 	pub scenario: String,
 	pub rules: RulesLog,
 	pub opening: OpeningLog,
@@ -617,6 +621,8 @@ impl GameLog {
 			seed: live.seed(),
 			search_rng_seed: search_rng_seed(live.seed()),
 			think_ms,
+			budget_nodes: None,
+			budget_iters: None,
 			scenario: scenario.into(),
 			rules: RulesLog::from_rules(*live.rules()),
 			opening: OpeningLog::from_game(live),
@@ -1164,6 +1170,20 @@ mod tests {
 	fn committed_center_double_edge_doubles_disallowed_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays(
 			"benchmark_results/center_double_edge_doubles_disallowed/h2h.jsonl.gz",
+		);
+	}
+
+	#[test]
+	fn committed_work_budget_doubles_allowed_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays(
+			"benchmark_results/work_budget_doubles_allowed/h2h.jsonl.gz",
+		);
+	}
+
+	#[test]
+	fn committed_work_budget_doubles_disallowed_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays(
+			"benchmark_results/work_budget_doubles_disallowed/h2h.jsonl.gz",
 		);
 	}
 

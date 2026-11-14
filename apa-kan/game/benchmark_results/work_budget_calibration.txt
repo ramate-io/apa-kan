@@ -1,0 +1,68 @@
+# apa-kan-bench --calibrate --think-ms 1000 --seed 1 --no-depth-probe
+# release, --no-default-features, jobs=1 (this process only)
+# VM: 4 physical cores, Intel Xeon, 2026-11-14
+#
+# Command:
+#   cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- \
+#     --calibrate --think-ms 1000 --seed 1 --no-depth-probe
+#
+# Method: 3 games (seeds 1, 18, 42) × 16 moves, P1=minimax P2=mcts,
+# wall-clock 1000 ms/move, single-threaded. Nodes are minimax search
+# visits (ID + quiescence). Iters are MCTS iterations this move.
+
+calibrating single-thread 1000 ms/move (3 games × 16 moves, minimax vs mcts)...
+  seed=1 minimax depth=3 nodes=73024
+  seed=1 mcts iters=3154
+  seed=1 minimax depth=3 nodes=113920
+  seed=1 mcts iters=2968
+  seed=1 minimax depth=3 nodes=104256
+  seed=1 mcts iters=3142
+  seed=1 minimax depth=3 nodes=134784
+  seed=1 mcts iters=3216
+  seed=1 minimax depth=4 nodes=182528
+  seed=1 mcts iters=3051
+  seed=1 minimax depth=4 nodes=128512
+  seed=1 mcts iters=3183
+  seed=1 minimax depth=5 nodes=248256
+  seed=1 mcts iters=3646
+  seed=1 minimax depth=4 nodes=150272
+  seed=1 mcts iters=3961
+  seed=18 minimax depth=3 nodes=128832
+  seed=18 mcts iters=1843
+  seed=18 minimax depth=3 nodes=86336
+  seed=18 mcts iters=2219
+  seed=18 minimax depth=4 nodes=122688
+  seed=18 mcts iters=1874
+  seed=18 minimax depth=3 nodes=70272
+  seed=18 mcts iters=1685
+  seed=18 minimax depth=3 nodes=59072
+  seed=18 mcts iters=1563
+  seed=18 minimax depth=3 nodes=75392
+  seed=18 mcts iters=1327
+  seed=18 minimax depth=3 nodes=46720
+  seed=18 mcts iters=1504
+  seed=18 minimax depth=3 nodes=54976
+  seed=18 mcts iters=1580
+  seed=42 minimax depth=3 nodes=104768
+  seed=42 mcts iters=3263
+  seed=42 minimax depth=4 nodes=161536
+  seed=42 mcts iters=3252
+  seed=42 minimax depth=3 nodes=139008
+  seed=42 mcts iters=2988
+  seed=42 minimax depth=4 nodes=155904
+  seed=42 mcts iters=2731
+  seed=42 minimax depth=4 nodes=163328
+  seed=42 mcts iters=2782
+  seed=42 minimax depth=4 nodes=239040
+  seed=42 mcts iters=2854
+  seed=42 minimax depth=5 nodes=227264
+  seed=42 mcts iters=2768
+  seed=42 minimax depth=5 nodes=192064
+  seed=42 mcts iters=2684
+# calibrate think_ms=1000 games=3 moves_per=16 jobs=1
+# minimax_nodes n=24 mean=131781 min=46720 max=248256 mean_depth=3.58
+# mcts_iters n=24 mean=2635 min=1327 max=3961
+# recommended --budget nodes:132000,iters:2600
+
+CALIBRATED_NODES_PER_MOVE=132000
+CALIBRATED_ITERS_PER_MOVE=2600

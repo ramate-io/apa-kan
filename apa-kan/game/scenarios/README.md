@@ -5,7 +5,7 @@ TOML files that replace the default generative deal (`RuleSet::bag_size`, defaul
 ```bash
 cargo run -p apa-kan -- --scenario complementary
 cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- \
-  --scenario same --games 12 --think-ms 1000 --no-depth-probe
+  --scenario same --games 12 --no-depth-probe
 ```
 
 `--scenario` takes a builtin name (`default`, `same`, `independent`, `complementary`, `complementary-swapped`) or a path to a `.toml` file. `--list-scenarios` prints the builtins.

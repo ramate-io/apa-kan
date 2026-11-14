@@ -1,8 +1,19 @@
 # Search H2H logs
 
-Release `apa-kan-bench`, 12 games per pairing per seat, 1000 ms, seed 1, `--no-depth-probe`, 108 games, zag mismatch SUM. Mean avg turns is the unweighted mean of the nine pairing `avg_turns` columns.
+Release `apa-kan-bench`, 12 games per pairing per seat, seed 1, `--no-depth-probe`, 108 games, zag mismatch SUM. Mean avg turns is the unweighted mean of the nine pairing `avg_turns` columns.
 
-## Center double-edge scoring + new low-value (current)
+## Work budget (reproducible default)
+
+`--budget nodes:132000,iters:2600` is the default. It is the rounded mean of a **single-threaded** 1000 ms/move calibrate on this VM (4 physical cores), so the same seed replays regardless of load. `--jobs` defaults to `available_parallelism` (4 here); each search stays single-threaded; JSONL is written in pairing-then-game order.
+
+Calibrate log: [`work_budget_calibration.txt`](work_budget_calibration.txt). Command: `apa-kan-bench --calibrate --think-ms 1000 --seed 1` (3 games × 16 moves, minimax vs MCTS). Minimax nodes/move: n=24, mean=131781, min=46720, max=248256, mean completed ID depth=3.58. MCTS iters/move: n=24, mean=2635, min=1327, max=3961. `--think-ms` remains for wall-clock search (not reproducible).
+
+| Dir | Rules | Notes |
+|---|---|---|
+| [`work_budget_doubles_allowed/`](work_budget_doubles_allowed/) | independent channels, `--braid-fail-mismatch one`, `--no-same-piece-twice off` | accepted default, work budget |
+| [`work_budget_doubles_disallowed/`](work_budget_doubles_disallowed/) | same, `--no-same-piece-twice when-deck-empty` | comparison, work budget |
+
+## Center double-edge scoring + new low-value (time-based, historical)
 
 Inner↔center is two generating-circle petals, so scoring walks `Board::incident_others`. Low-value fires when both players have `board + usable budget < 5` (usable need not be 0). These runs were recorded **after** both of those changes.
 

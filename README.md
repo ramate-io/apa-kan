@@ -82,10 +82,12 @@ Headless screenshot (Bevy window under xvfb, or the PNG renderer without `deskto
 cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png --width 1280 --height 800
 ```
 
-Search head-to-head (branching factor, stalling, minimax/MCTS/greedy):
+Search head-to-head (branching factor, stalling, minimax/MCTS/greedy). Default search is a work budget (`--budget nodes:132000,iters:2600`, calibrated to 1000 ms single-threaded) so the same seed replays. `--jobs` runs independent games in parallel (default: available cores); `--think-ms` is the older wall-clock bound.
 
 ```bash
-cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- --games 6 --think-ms 1000
+cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- --games 6
+cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- \
+  --games 12 --seed 1 --no-depth-probe
 cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- \
   --games 12 --think-ms 1000 --seed 1 --no-depth-probe
 cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- \
