@@ -145,6 +145,8 @@ fn iterate(
 	rng: &mut impl Rng,
 ) {
 	let mut state = game.clone();
+	// No-op on the public deck. Legacy `capture_draw_on_move` positions still
+	// sample a permutation of any hidden remainder.
 	state.shuffle_bags(rng);
 
 	let mut idx = tree.root;

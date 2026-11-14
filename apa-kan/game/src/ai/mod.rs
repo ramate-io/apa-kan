@@ -595,26 +595,33 @@ mod tests {
 	}
 
 	#[test]
-	fn shuffle_bags_preserves_kind_multiset() {
+	fn shuffle_bags_is_noop_when_the_deck_is_public() {
 		let mut game = Game::new(RuleSet::default(), 1);
-		let kinds = |g: &Game, p: Player| {
-			let mut v: Vec<_> = g.bag(p).iter().map(|t| t.kind_index()).collect();
-			v.sort_unstable();
-			v
-		};
+		assert!(game.bag(Player::One).is_empty());
+		let kinds =
+			|g: &Game, p: Player| g.bench(p).iter().map(|t| t.kind_index()).collect::<Vec<_>>();
 		let before = kinds(&game, Player::One);
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, kinds(&game, Player::One));
-		assert_eq!(before, kinds(&game, Player::Two));
+		assert!(game.bag(Player::One).is_empty());
 	}
 
 	#[test]
-	fn shuffle_bags_preserves_full_deck_multiset() {
-		let mut rules = RuleSet::default();
-		rules.bag_size = crate::game::BAG_SIZE as u8;
-		let mut game = Game::new(rules, 1);
-		assert_eq!(game.bag_len(Player::One), 20);
+	fn shuffle_bags_preserves_legacy_hidden_remainder() {
+		use crate::game::TileColor;
+		let mut game = Game::empty(RuleSet::default());
+		let leftovers: Vec<_> = (0..6)
+			.map(|i| {
+				game.alloc_tile(
+					Player::One,
+					if i % 2 == 0 { TileColor::Green } else { TileColor::Orange },
+					1,
+					1,
+				)
+			})
+			.collect();
+		game.set_bag(Player::One, leftovers);
 		let kinds = |g: &Game, p: Player| {
 			let mut v: Vec<_> = g.bag(p).iter().map(|t| t.kind_index()).collect();
 			v.sort_unstable();
@@ -624,7 +631,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, kinds(&game, Player::One));
-		assert_eq!(game.bag_len(Player::One), 20);
+		assert_eq!(game.bag_len(Player::One), 6);
 	}
 
 	#[test]

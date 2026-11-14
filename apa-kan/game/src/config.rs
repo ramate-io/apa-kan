@@ -239,20 +239,20 @@ where
 			rules.insufficient_tiles_loss =
 				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
 		}
-		"--starting-bench" => {
+		"--starting-bench" | "--starting-tokens" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n == 0 || n > BAG_SIZE as u64 {
 				return Err(format!(
-					"invalid --starting-bench (expected 1..{BAG_SIZE}, at most bag size)"
+					"invalid {arg} (expected 1..{BAG_SIZE} spawn tokens, independent of deck size)"
 				));
 			}
 			rules.starting_bench_size = n as u8;
 		}
-		"--bag-size" => {
+		"--bag-size" | "--deck-size" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n == 0 || n > BAG_SIZE as u64 {
 				return Err(format!(
-					"invalid --bag-size (expected 1..{BAG_SIZE}, default {BAG_SIZE_DEFAULT})"
+					"invalid {arg} (expected 1..{BAG_SIZE}, default {BAG_SIZE_DEFAULT})"
 				));
 			}
 			rules.bag_size = n as u8;
@@ -310,13 +310,7 @@ where
 }
 
 /// Cross-field RuleSet checks that cannot run inside a single flag parse.
-pub fn validate_rule_flags(rules: &RuleSet) -> Result<(), String> {
-	if rules.starting_bench_size > rules.bag_size {
-		return Err(format!(
-			"starting bench {} exceeds bag size {} (deal cannot exceed the bag)",
-			rules.starting_bench_size, rules.bag_size
-		));
-	}
+pub fn validate_rule_flags(_rules: &RuleSet) -> Result<(), String> {
 	Ok(())
 }
 
@@ -339,8 +333,8 @@ pub fn usage() -> &'static str {
 	   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)\n\
 	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
-	   --no-same-piece-twice <off|always|when-bench-empty>\n\
-	                                              Repeat-piece rule (default: when-bench-empty)\n\
+	   --no-same-piece-twice <off|always|when-deck-empty>\n\
+	                                              Repeat-piece rule (default: when-deck-empty)\n\
 	   --color-restricted-hops <on|off>           Hop only own color (default: on; hops off by default)\n\
 	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
 	   --counted-pass-through <on|off>            Pass through occupied tiles at 1/step (default: on)\n\
@@ -353,8 +347,8 @@ pub fn usage() -> &'static str {
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
-	   --starting-bench <1..27>                   Opening deal and capture budget (default: 7)\n\
-	   --bag-size <1..27>                         Total sampled tiles per player (default: 11)\n\
+	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
+	   --deck-size <1..27>                        Public deck size per player (default: 11; alias --bag-size)\n\
 	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
@@ -470,7 +464,7 @@ mod tests {
 		assert!(cfg.rules.no_moves_loses);
 		assert!(!cfg.rules.center_hold_win);
 		assert_eq!(cfg.rules.center_hold_n, 5);
-		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::WhenBenchEmpty);
+		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::WhenDeckEmpty);
 		assert!(cfg.rules.color_restricted_hops);
 		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
 		assert!(!cfg.rules.petal_majority_win);
@@ -588,17 +582,26 @@ mod tests {
 	}
 
 	#[test]
-	fn bag_size_must_cover_starting_bench() {
-		let err = GameConfig::parse(["--bag-size", "5"]).unwrap_err();
-		assert!(err.contains("starting bench"), "{err}");
-		assert!(err.contains("bag size"), "{err}");
-		let err = GameConfig::parse(["--bag-size", "11", "--starting-bench", "12"]).unwrap_err();
-		assert!(err.contains("starting bench"), "{err}");
+	fn tokens_are_independent_of_deck_size() {
+		let small = GameConfig::parse(["--bag-size", "5"]).unwrap();
+		assert_eq!(small.rules.bag_size, 5);
+		assert_eq!(small.rules.starting_bench_size, 7);
+		let extra = GameConfig::parse(["--deck-size", "11", "--starting-tokens", "12"]).unwrap();
+		assert_eq!(extra.rules.bag_size, 11);
+		assert_eq!(extra.rules.starting_bench_size, 12);
 		let ok = GameConfig::parse(["--bag-size", "11", "--starting-bench", "7"]).unwrap();
 		assert_eq!(ok.rules.bag_size, 11);
 		assert_eq!(ok.rules.starting_bench_size, 7);
 		let dealt = GameConfig::parse(["--bag-size", "7", "--starting-bench", "7"]).unwrap();
 		assert_eq!(dealt.rules.bag_size, 7);
+	}
+
+	#[test]
+	fn parses_starting_tokens_and_deck_size_aliases() {
+		let tokens = GameConfig::parse(["--starting-tokens", "5"]).unwrap();
+		assert_eq!(tokens.rules.starting_bench_size, 5);
+		let deck = GameConfig::parse(["--deck-size", "13"]).unwrap();
+		assert_eq!(deck.rules.bag_size, 13);
 	}
 
 	#[test]

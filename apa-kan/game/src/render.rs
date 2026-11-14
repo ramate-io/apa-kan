@@ -672,14 +672,14 @@ mod tests {
 	use crate::game::{Game, RuleSet};
 
 	#[test]
-	fn opening_deck_paints_empty_bag_slots_as_opaque_blanks() {
+	fn opening_deck_paints_every_unplaced_tile() {
 		use crate::game::Player;
 		use crate::visual::{self, ViewLayout};
 		let game = Game::new(RuleSet::default(), 1);
 		let slots = game.deck_slots(Player::One);
 		assert_eq!(slots.len(), 11);
-		assert_eq!(slots.iter().filter(|s| s.is_live()).count(), 7);
-		assert!(slots[7].shows_blank_face() && slots[10].shows_blank_face());
+		assert_eq!(slots.iter().filter(|s| s.is_live()).count(), 11);
+		assert_eq!(slots.iter().filter(|s| s.shows_blank_face()).count(), 0);
 		let w = 1280u32;
 		let h = 800u32;
 		let path = std::env::temp_dir().join("apa-kan-opening-deck.png");
@@ -690,10 +690,10 @@ mod tests {
 		let px = img.get_pixel(p[0] as u32, p[1] as u32);
 		let fill = visual::rgb8(visual::owner_fill_rgb(Player::One));
 		assert!(
-			channel_near(px[0], fill[0], 18)
-				&& channel_near(px[1], fill[1], 18)
-				&& channel_near(px[2], fill[2], 18),
-			"unfilled bag slot should be an opaque blank face, got {px:?}"
+			!channel_near(px[0], fill[0], 18)
+				|| !channel_near(px[1], fill[1], 18)
+				|| !channel_near(px[2], fill[2], 18),
+			"last deck slot should be a live tile, not a blank face, got {px:?}"
 		);
 	}
 
@@ -838,7 +838,7 @@ mod tests {
 		write_png_sized(
 			&board,
 			dir.join("capture_budget_stack_1280x800.png"),
-			"left stacks, full 11-tile decks, opaque empty faces",
+			"left stacks, full 11-tile public decks, blank empty tokens",
 			1280,
 			800,
 		)
@@ -854,7 +854,7 @@ mod tests {
 		write_png_sized(
 			&Game::new(RuleSet::default(), 1),
 			dir.join("opening_deck_1280x800.png"),
-			"opening: 11-slot decks, 4 empty bag faces, stacks on the left",
+			"opening: 11 live deck tiles, spawn-token stacks on the left",
 			1280,
 			800,
 		)

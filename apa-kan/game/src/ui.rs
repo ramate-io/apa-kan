@@ -1,4 +1,4 @@
-//! Bevy 0.19 desktop UI: both benches, ADD/MOVE targeting, last-action log.
+//! Bevy 0.19 desktop UI: both public decks, ADD/MOVE targeting, last-action log.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -352,7 +352,7 @@ fn update_add_warning(play: &mut PlayState) {
 				.map(|t| t.kind_label())
 				.collect();
 			if killers.is_empty() {
-				play.warning = format!("Spawn {node}: pick a bench tile to ADD.");
+				play.warning = format!("Spawn {node}: pick an unplaced deck tile to ADD.");
 			} else {
 				play.warning = format!(
 					"Warning: spawn {node} would immediately overwhelm: {}",
