@@ -858,8 +858,8 @@ mod tests {
 		}
 		use crate::game::{RingType, RuleSet, TileColor, ZagMismatchCount};
 		use crate::visual::{
-			demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair, demo_pair_with,
-			demo_typed_pair, demo_typed_tile, demo_zag_tile,
+			demo_center_inner_pair, demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair,
+			demo_pair_with, demo_typed_pair, demo_typed_tile, demo_zag_tile,
 		};
 		let board = demo_midgame();
 		write_png_sized(
@@ -1285,6 +1285,32 @@ mod tests {
 			"failed braid plus normal match and zag lanes",
 			48.0,
 		);
+		write_png_sized(
+			&demo_center_inner_pair(
+				&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+				1,
+				&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+				1,
+			),
+			dir.join("center_petal_both_failed_braids.png"),
+			"both inner↔center petals paint the failed-braid lane",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_png_sized(
+			&demo_center_inner_pair(
+				&[(TileColor::Orange, RingType::Normal)],
+				1,
+				&[(TileColor::Orange, RingType::Normal)],
+				1,
+			),
+			dir.join("center_petal_both_normal_match.png"),
+			"both inner↔center petals paint the match highway",
+			1280,
+			800,
+		)
+		.unwrap();
 	}
 
 	fn write_cropped(game: &Game, path: impl AsRef<std::path::Path>, caption: &str, pad: f32) {

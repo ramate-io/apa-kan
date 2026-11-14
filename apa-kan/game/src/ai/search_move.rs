@@ -153,7 +153,7 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 				};
 			}
 			if let Some(tile) = game.tile_at(from) {
-				for &nb in game.board().neighbors(to) {
+				for nb in game.board().incident_others(to) {
 					if let Some(other) = game.tile_at(nb) {
 						if other.owner != tile.owner {
 							s += 35;
@@ -175,7 +175,7 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 			let mut s = 12;
 			let view = crate::game::decode_color_state((kind / KIND_DOTS as u16) as usize);
 			let add_all = view.normal | view.zag | view.braid;
-			for &nb in game.board().neighbors(node) {
+			for nb in game.board().incident_others(node) {
 				if let Some(other) = game.tile_at(nb) {
 					if other.owner == game.current_player() {
 						s += 10;

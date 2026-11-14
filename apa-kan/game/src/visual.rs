@@ -1636,6 +1636,24 @@ pub fn demo_pair_with(
 	game
 }
 
+/// Occupied origin plus one inner-ring node, so both generating-circle
+/// petals between them are live for scoring and paint.
+pub fn demo_center_inner_pair(
+	a_parts: &[(TileColor, RingType)],
+	a_weight: u8,
+	b_parts: &[(TileColor, RingType)],
+	b_weight: u8,
+) -> Game {
+	let mut game = Game::empty(RuleSet::default());
+	let center = game.board().center();
+	let inner = game.board().inner_ring()[0];
+	let t = game.alloc_typed_rings(Player::One, a_parts, a_weight, 1);
+	let u = game.alloc_typed_rings(Player::Two, b_parts, b_weight, 1);
+	game.place_tile(center, t);
+	game.place_tile(inner, u);
+	game
+}
+
 pub fn demo_typed_pair(
 	a_parts: &[(TileColor, RingType)],
 	a_weight: u8,
@@ -2199,6 +2217,57 @@ mod tests {
 				"{player:?} placed tiles must leave the deck row"
 			);
 		}
+	}
+
+	#[test]
+	fn both_center_petal_arcs_paint_failed_braid_and_match() {
+		let failed = demo_center_inner_pair(
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+			1,
+		);
+		let center = failed.board().center();
+		let inner = failed.board().inner_ring()[0];
+		let mut failed_paints = 0;
+		for arc in failed.board().arcs() {
+			let ends_pair =
+				(arc.from == center && arc.to == inner) || (arc.from == inner && arc.to == center);
+			if !ends_pair {
+				continue;
+			}
+			let paint = arc_paint(failed.tile_at(arc.from), failed.tile_at(arc.to));
+			assert!(
+				matches!(paint.braid, Some(BraidLane::Failed { .. })),
+				"each center-petal arc paints the failed-braid lane"
+			);
+			failed_paints += 1;
+		}
+		assert_eq!(failed_paints, 2, "both generating-circle petals are drawn");
+
+		let matched = demo_center_inner_pair(
+			&[(TileColor::Orange, RingType::Normal)],
+			1,
+			&[(TileColor::Orange, RingType::Normal)],
+			1,
+		);
+		let mut match_paints = 0;
+		for arc in matched.board().arcs() {
+			let ends_pair =
+				(arc.from == center && arc.to == inner) || (arc.from == inner && arc.to == center);
+			if !ends_pair {
+				continue;
+			}
+			let paint = arc_paint(matched.tile_at(arc.from), matched.tile_at(arc.to));
+			assert_eq!(
+				paint.body,
+				ArcBody::Solid { color: TileColor::Orange, thick: true },
+				"each center-petal arc paints the match highway"
+			);
+			assert!(paint.braid.is_none());
+			match_paints += 1;
+		}
+		assert_eq!(match_paints, 2);
 	}
 
 	#[test]

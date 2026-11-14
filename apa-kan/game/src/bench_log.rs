@@ -215,6 +215,11 @@ pub struct RulesLog {
 	/// logs is skipped because capture outcomes used the old overrides.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub braid_fail_mismatch: Option<String>,
+	/// Present (`true`) once scoring walks generating-circle arcs, so the
+	/// two inner↔center petals each count. Older independent-channel logs
+	/// omit it (unique-neighbor scoring); full replay of those is skipped.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub score_incident_arcs: Option<bool>,
 }
 
 impl RulesLog {
@@ -252,6 +257,7 @@ impl RulesLog {
 			pass_through_ring_cmp: r.pass_through_ring_cmp.name().into(),
 			zag_mismatch: r.zag_mismatch.name().into(),
 			braid_fail_mismatch: Some(r.braid_fail_mismatch.name().into()),
+			score_incident_arcs: Some(true),
 		}
 	}
 
@@ -1039,6 +1045,8 @@ mod tests {
 		assert_eq!(logs.len(), 108, "standard H2H is 9 pairings × 12 games");
 		let derived_weight = logs.iter().all(opening_weight_equals_rings);
 		let independent_channels = logs.iter().all(|log| log.rules.braid_fail_mismatch.is_some());
+		let incident_arc_scoring =
+			logs.iter().all(|log| log.rules.score_incident_arcs == Some(true));
 		for (i, log) in logs.iter().enumerate() {
 			assert_eq!(log.v, SCHEMA_VERSION);
 			assert_eq!(log.rules.bag_size, 11, "{rel}");
@@ -1046,7 +1054,7 @@ mod tests {
 			assert_eq!(log.search_rng_seed, search_rng_seed(log.seed));
 			assert!(!log.opening.p1_bench.is_empty());
 			assert!(!log.actions.is_empty() || log.turns == 0);
-			if !derived_weight || !independent_channels {
+			if !derived_weight || !independent_channels || !incident_arc_scoring {
 				continue;
 			}
 			let replayed =

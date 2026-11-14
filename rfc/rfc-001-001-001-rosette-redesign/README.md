@@ -71,7 +71,8 @@ Evaluated **board-wide, simultaneously**, after every action.
   - **`max`:** for each color, the edge count for that color is the **max**, over the two tiles, of how many of that tile's zag strokes of that color hit the other (the other holds that color on any ring). The edge total is the sum of those per-color maxima. Orange zag vs orange zag = 1. 3 blue vs 3 blue = 3. 2 orange vs 1 orange = 2. A 2 orange zags (B holds orange) + B 1 green zag (A holds green) = 3.
 - Example: blue normal + orange zag vs the same → 1 blue **normal** match and **2** zag mismatches under `sum` (both orange zags hit), or **1** under `max`. Two orange zags on U vs T carrying orange → 2 under both `sum` and `max`.
 - Blue-normal vs orange-normal + green-zag is a mismatch on the **normal** channel (blue vs orange); the green zag does not hit blue. Green-zag vs orange-normal + two green normals is a one-sided zag hit (both tiles take 1) plus a **normal** match (green). Blue-normal + orange-zag vs green-normal + orange-normal is a **normal** match (orange) **and** a zag hit of 1 — they add; the zag no longer replaces the ordinary hitch.
-- `matches = own ring count + (number of matching adjacent tiles, either owner)`
+- `matches = own ring count + (sum of match-weight over incident generating-circle arcs)`
+- Inner↔center is **two** such arcs (two petals). Unique neighbor-sets are for occupancy (petal majority); overwhelm walks arcs, same as MOVE.
 - Removed iff `mismatches >= matches`
 - A one-ring zag is inert in isolation. On contact with a tile that carries that color it never matches, so a 1-ring zag is captured under the ordinary rule; a 3-ring color-carrier takes the zag hit and may survive.
 

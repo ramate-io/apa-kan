@@ -53,20 +53,27 @@ A braid is fulfilled when the other tile's color multiset covers the braid's col
 
 **Accepted default:** `--braid-fail-mismatch one` (flat +1 for the edge). `weight` (largest braid's slots) and `sum` (every braid's slots on both sides; 2+3 = +5) stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
 
-### Center adjacency (scoring vs geometry)
+### Center adjacency (two petals, two scoring edges)
 
-The origin has **8 unique neighbors** (inner ring) and **16 incident arcs**. Each inner↔center pair is two generating-circle arcs — two petals through the same two nodes — but **one scoring edge**. Overwhelm walks unique neighbors, not arcs. Failed-braid `one` charges **+1 once for that pair**. Both tiles take that same +1 (undirected); it is not +1 per side and not +1 per visual arc.
+The origin has **8 unique neighbors** (inner ring) and **16 incident generating-circle arcs**. Each inner↔center pair shares **two petals** — two undirected arcs on different circles through the same two nodes. Unique `neighbors()` collapses those to one adjacency; **scoring, capture, and lane paint iterate incident arcs**, so each petal is a separate edge. Failed-braid `one` is +1 **per petal**. Both tiles take that same +1 on each petal (undirected; not +1 per side of a collapsed pair). Inner-ring nodes are not adjacent to each other.
 
-Worked example under the accepted default: a 2-slot orange+green braid at the center against two inner 2-slot blue+teal braids (neither braid covers the other). Inner-ring nodes are not adjacent to each other.
+Worked example under the accepted default: a 2-slot orange+green braid at the center against two inner 2-slot blue+teal braids (neither braid covers the other).
 
-| Tile | `ring_weight` | occupied edges | signed `mismatch − match` | overwhelmed? (`>= ring_weight`) |
+One petal occupied:
+
+| Tile | `ring_weight` | occupied petals | signed | overwhelmed? |
 |---|---|---|---|---|
 | center | 2 | +1 + +1 | **+2** | **yes** (2 ≥ 2) |
-| each neighbor | 2 | +1 (only the center) | **+1** | **no** (1 < 2) |
+| that petal | 2 | +1 + +1 | **+2** | **yes** (2 ≥ 2) |
 
-Capture is simultaneous: `collect_removals` scores every occupied node on the current board, then `apply` clears all of those nodes. Neighbors are evaluated; they simply are not overwhelmed. Popping the center first and re-scoring is not how it works, and in this position it would not change the neighbors anyway.
+Two petals occupied (the reported position):
 
-"Hit for two, both pop" is `--braid-fail-mismatch weight` (a failed 2-braid costs 2, so each neighbor would also pop) or counting the two inner↔center arcs twice. Neither is the accepted default. `game::tests::failed_double_braid_at_center_pops_only_the_center` locks this.
+| Tile | `ring_weight` | occupied petals | signed | overwhelmed? |
+|---|---|---|---|---|
+| center | 2 | +1 × 4 | **+4** | **yes** |
+| each petal | 2 | +1 + +1 | **+2** | **yes** |
+
+Capture is simultaneous: `collect_removals` scores every occupied node on the current board, then `apply` clears all of those nodes. Neighbors are evaluated from that pre-removal state. `game::tests::failed_double_braid_at_center_pops_center_and_both_petals` and `visual::tests::both_center_petal_arcs_paint_failed_braid_and_match` lock this.
 
 ### Plain English
 
@@ -121,9 +128,10 @@ Tile-rim weave period is unchanged (`TILE_BRAID_TURN_UNITS = 0.21`). Tile-rim br
 ## Implementation
 
 - `EdgeChannels` / `Game::edge_channels` in `apa-kan/game/src/game.rs`
+- Overwhelm, `tile_score`, and `would_overwhelm_add` walk `Board::incident_others` (generating-circle arcs). Unique `neighbors()` is occupancy only. Inner↔center is two scoring edges.
 - `BraidFailMismatch` on `RuleSet` (`--braid-fail-mismatch one|weight|sum`)
-- `ArcPaint.braid: Option<BraidLane>` plus lane offsets in `visual.rs`; renderers in `render.rs` / `ui.rs`
-- JSONL writes `braid_fail_mismatch`. Historical logs omit it; full replay of those games is skipped because captures used the old overrides.
+- `ArcPaint.braid: Option<BraidLane>` plus lane offsets in `visual.rs`; renderers in `render.rs` / `ui.rs` already iterate `board.arcs()`, so both center-petal petals paint
+- JSONL writes `braid_fail_mismatch` and `score_incident_arcs`. Historical logs omit those fields; full replay of those games is skipped because captures used old overrides or unique-neighbor scoring
 
 ## Alternatives considered
 
