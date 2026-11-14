@@ -138,7 +138,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both usable budgets are 0 with <5 tiles.";
+	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both have board+usable <5.";
 
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];
@@ -2929,6 +2929,7 @@ mod tests {
 		assert!(is_hud_safe(&log), "{log}");
 		assert!(is_hud_safe(HELP_TEXT), "{HELP_TEXT}");
 		assert!(HELP_TEXT.contains("5 of 9"));
+		assert!(HELP_TEXT.contains("board+usable"), "{HELP_TEXT}");
 		assert!(!header.contains('·'));
 		assert!(!turn.contains('·'));
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");

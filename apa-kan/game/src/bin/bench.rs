@@ -218,6 +218,8 @@ struct SeatStats {
 	iter_n: u32,
 	captures: u32,
 	self_captures: u32,
+	center_captures: u32,
+	center_self_captures: u32,
 }
 
 fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
@@ -372,6 +374,8 @@ fn run(cfg: BenchConfig) {
 	let mut end_pass = 0u32;
 	let mut captures = 0u32;
 	let mut self_captures = 0u32;
+	let mut center_captures = 0u32;
+	let mut center_self_captures = 0u32;
 	for (_, stats, line) in &pairing_results {
 		println!("{line}");
 		lines.push(line.clone());
@@ -394,6 +398,8 @@ fn run(cfg: BenchConfig) {
 		end_pass += stats.double_pass;
 		captures += stats.captures;
 		self_captures += stats.self_captures;
+		center_captures += stats.center_captures;
+		center_self_captures += stats.center_self_captures;
 		stall_games += cfg.games;
 		stall_rep2 += stats.games_repeat_ge2;
 		stall_rep3 += stats.games_repeat_ge3;
@@ -423,8 +429,14 @@ fn run(cfg: BenchConfig) {
 	let games_n = p1_w + p1_d + p1_l;
 	let avg_cap = if games_n == 0 { 0.0 } else { f64::from(captures) / f64::from(games_n) };
 	let avg_self = if games_n == 0 { 0.0 } else { f64::from(self_captures) / f64::from(games_n) };
+	let avg_center =
+		if games_n == 0 { 0.0 } else { f64::from(center_captures) / f64::from(games_n) };
+	let avg_center_self =
+		if games_n == 0 { 0.0 } else { f64::from(center_self_captures) / f64::from(games_n) };
 	lines.push(format!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}"));
+	lines.push(format!("# center_captures  opponent_tiles_removed={center_captures}  avg_per_game={avg_center:.2}  self_captures={center_self_captures}  self_avg_per_game={avg_center_self:.2}"));
 	println!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}");
+	println!("# center_captures  opponent_tiles_removed={center_captures}  avg_per_game={avg_center:.2}  self_captures={center_self_captures}  self_avg_per_game={avg_center_self:.2}");
 	println!(
 		"# seat_totals  P1 {p1_w}-{p1_d}-{p1_l}  P2 {p1_l}-{p1_d}-{p1_w}  games={}",
 		p1_w + p1_d + p1_l
@@ -603,6 +615,8 @@ fn run_pairing(
 		stats.sum_max_occ_repeat += result.max_occ_repeat;
 		stats.captures += result.captures;
 		stats.self_captures += result.self_captures;
+		stats.center_captures += result.center_captures;
+		stats.center_self_captures += result.center_self_captures;
 		match result.status {
 			GameStatus::Won { winner, reason } => {
 				if winner == Player::One {
@@ -770,6 +784,8 @@ struct PlayResult {
 	iter_n: u32,
 	captures: u32,
 	self_captures: u32,
+	center_captures: u32,
+	center_self_captures: u32,
 	record: Option<GameRecord>,
 	log: Option<GameLog>,
 	deck: DeckRow,
@@ -850,6 +866,9 @@ fn play_game(
 	});
 	let mut captures = 0u32;
 	let mut self_captures = 0u32;
+	let mut center_captures = 0u32;
+	let mut center_self_captures = 0u32;
+	let center = game.board().center();
 	let mut guard = 0u32;
 	let mut add_rings = [0u32; 4];
 	let mut move_rings = [0u32; 4];
@@ -927,6 +946,16 @@ fn play_game(
 				self_captures +=
 					outcome.removals.iter().filter(|r| r.tile.owner == outcome.player).count()
 						as u32;
+				center_captures += outcome
+					.removals
+					.iter()
+					.filter(|r| r.node == center && r.tile.owner != outcome.player)
+					.count() as u32;
+				center_self_captures += outcome
+					.removals
+					.iter()
+					.filter(|r| r.node == center && r.tile.owner == outcome.player)
+					.count() as u32;
 				if keep_record {
 					record_lines.push(format!(
 						"{:>3}. {}   [depth={} iters={}]",
@@ -1011,6 +1040,8 @@ fn play_game(
 		iter_n,
 		captures,
 		self_captures,
+		center_captures,
+		center_self_captures,
 		record,
 		log: game_log,
 		deck: DeckRow {

@@ -387,6 +387,7 @@ mod tests {
 		game.place_tile(from, mover);
 		let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
 		game.set_bench(Player::Two, vec![opp]);
+		game.pad_above_low_value();
 		game.set_current(Player::One);
 		assert!(game.legal_destinations(from).contains(&center));
 		let mut rng = StdRng::seed_from_u64(1);
@@ -409,6 +410,7 @@ mod tests {
 		game.place_tile(from, mover);
 		let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
 		game.set_bench(Player::Two, vec![opp]);
+		game.pad_above_low_value();
 		game.set_current(Player::One);
 		let mut rng = StdRng::seed_from_u64(1);
 		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
@@ -431,6 +433,7 @@ mod tests {
 		game.set_bench(Player::One, vec![extra]);
 		let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
 		game.set_bench(Player::Two, vec![opp]);
+		game.pad_above_low_value();
 		game.set_center_hold(Player::One, 4);
 		game.set_current(Player::One);
 		let mut rng = StdRng::seed_from_u64(1);
@@ -531,6 +534,7 @@ mod tests {
 		game.set_bench(Player::One, vec![extra]);
 		let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
 		game.set_bench(Player::Two, vec![opp]);
+		game.pad_above_low_value();
 		game.set_current(Player::One);
 		let mut rng = StdRng::seed_from_u64(1);
 		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));

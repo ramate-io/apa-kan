@@ -1,6 +1,6 @@
 //! Heuristic evaluation. Positive is good for `me`.
 
-use crate::game::{Game, GameStatus, Player};
+use crate::game::{Game, GameStatus, LowValueResolution, Player};
 
 pub const WIN: i32 = 50_000;
 
@@ -8,12 +8,11 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 	match game.status() {
 		GameStatus::InProgress => {
 			if game.rules().no_moves_loses && !game.has_add_or_move() {
-				let ply = game.turn_count() as i32;
-				if game.current_player() == me {
-					Some(-WIN + ply)
-				} else {
-					Some(WIN - ply)
-				}
+				Some(lockout_terminal(game, me))
+			} else if game.low_value_applies() {
+				// `finish_turn` already records this; search also sees constructed
+				// leaves where both sides' possible-on-board counts are below 5.
+				Some(low_value_terminal(game, me))
 			} else {
 				None
 			}
@@ -29,6 +28,29 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 		// Turn-limit and low-value (equal-count full tie) draws are 0 so a
 		// side that is ahead will not turtle into the 200-turn cap.
 		GameStatus::Draw { .. } => Some(0),
+	}
+}
+
+fn lockout_terminal(game: &Game, me: Player) -> i32 {
+	let ply = game.turn_count() as i32;
+	if game.current_player() == me {
+		-WIN + ply
+	} else {
+		WIN - ply
+	}
+}
+
+fn low_value_terminal(game: &Game, me: Player) -> i32 {
+	let ply = game.turn_count() as i32;
+	match game.low_value_resolution() {
+		LowValueResolution::Draw => 0,
+		LowValueResolution::Win { winner, .. } => {
+			if winner == me {
+				WIN - ply
+			} else {
+				-WIN + ply
+			}
+		}
 	}
 }
 
@@ -467,6 +489,7 @@ mod tests {
 		let spawn = game.board().spawns()[0];
 		let tile = game.alloc_tile(Player::One, crate::game::TileColor::Green, 3, 1);
 		game.place_tile(spawn, tile);
+		game.pad_above_low_value();
 		let base = evaluate(&game, Player::One, 1);
 		let penalized = evaluate(&game, Player::One, 3);
 		assert!(penalized < base);
@@ -543,6 +566,8 @@ mod tests {
 		let tile = off.alloc_tile(Player::One, crate::game::TileColor::Blue, 3, 1);
 		off.place_tile(center, tile);
 		on.place_tile(center, tile);
+		off.pad_above_low_value();
+		on.pad_above_low_value();
 		assert!(evaluate(&on, Player::One, 0) > evaluate(&off, Player::One, 0));
 	}
 
@@ -561,6 +586,8 @@ mod tests {
 		quiet.place_tile(spawn, p1);
 		threat.place_tile(center, tile);
 		threat.place_tile(spawn, p1);
+		quiet.pad_above_low_value();
+		threat.pad_above_low_value();
 		threat.set_center_hold(Player::Two, 4);
 		assert!(evaluate(&threat, Player::One, 0) < evaluate(&quiet, Player::One, 0) - 5_000);
 	}
@@ -611,6 +638,37 @@ mod tests {
 		game.set_status(GameStatus::Draw { reason: EndReason::LowValue });
 		assert_eq!(evaluate(&game, Player::One, 0), 0);
 		assert_eq!(terminal_score(&game, Player::Two), Some(0));
+	}
+
+	#[test]
+	fn pending_low_value_is_a_search_terminal() {
+		use crate::game::{BudgetToken, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		let mut game = Game::empty(rules);
+		let p1_node = game.board().spawns()[0];
+		let p2_node = game.board().spawns()[4];
+		let p1 = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		let p2 = game.alloc_tile(Player::Two, TileColor::Orange, 1, 2);
+		game.place_tile(p1_node, p1);
+		game.place_tile(p2_node, p2);
+		game.set_bench(Player::One, Vec::new());
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 5]);
+		let p2_deck = vec![
+			game.alloc_tile(Player::Two, TileColor::Green, 1, 1),
+			game.alloc_tile(Player::Two, TileColor::Blue, 1, 1),
+			game.alloc_tile(Player::Two, TileColor::Orange, 1, 1),
+		];
+		game.set_bench(Player::Two, p2_deck);
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert!(game.low_value_applies());
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s > WIN / 2, "P1's lower on-board piece should be a near-mate, got {s}");
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+		assert_eq!(terminal_score(&game, Player::One), Some(WIN));
 	}
 
 	#[test]
@@ -700,6 +758,8 @@ mod tests {
 			off.place_tile(node, tile);
 			on.place_tile(node, tile);
 		}
+		off.pad_above_low_value();
+		on.pad_above_low_value();
 		assert!(evaluate(&on, Player::One, 0) > evaluate(&off, Player::One, 0));
 	}
 }

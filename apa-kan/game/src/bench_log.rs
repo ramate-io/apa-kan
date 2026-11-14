@@ -654,6 +654,14 @@ pub fn low_value_of(game: &Game) -> Option<LowValueResolution> {
 
 /// Rebuild a game from a log's opening deal, bags, rules, and action list.
 pub fn replay(log: &GameLog) -> Result<Game, String> {
+	Ok(replay_center_captures(log)?.0)
+}
+
+/// Replay `log`, counting opponent and self-captures at the origin.
+///
+/// Returns `(replayed game, opponent tiles popped at center, own tiles popped
+/// at center)`.
+pub fn replay_center_captures(log: &GameLog) -> Result<(Game, u32, u32), String> {
 	if log.v != SCHEMA_VERSION {
 		return Err(format!("unsupported log schema v={}", log.v));
 	}
@@ -666,11 +674,25 @@ pub fn replay(log: &GameLog) -> Result<Game, String> {
 	game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; log.opening.p1_tokens]);
 	game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; log.opening.p2_tokens]);
 	game.set_current(Player::One);
+	let center = game.board().center();
+	let mut opp = 0u32;
+	let mut slf = 0u32;
 	for (i, act) in log.actions.iter().enumerate() {
 		let action = act.to_action().map_err(|e| format!("action {i}: {e}"))?;
-		game.apply(action).map_err(|e| format!("action {i} apply: {e}"))?;
+		let player = game.current_player();
+		let outcome = game.apply(action).map_err(|e| format!("action {i} apply: {e}"))?;
+		for rem in &outcome.removals {
+			if rem.node != center {
+				continue;
+			}
+			if rem.tile.owner != player {
+				opp += 1;
+			} else {
+				slf += 1;
+			}
+		}
 	}
-	Ok(game)
+	Ok((game, opp, slf))
 }
 
 /// Compare terminal physics: status, turns, board, benches, bags, token stacks.
@@ -1129,6 +1151,20 @@ mod tests {
 	#[test]
 	fn committed_doubles_allowed_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays("benchmark_results/doubles_allowed.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_center_double_edge_doubles_allowed_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays(
+			"benchmark_results/center_double_edge_doubles_allowed/h2h.jsonl.gz",
+		);
+	}
+
+	#[test]
+	fn committed_center_double_edge_doubles_disallowed_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays(
+			"benchmark_results/center_double_edge_doubles_disallowed/h2h.jsonl.gz",
+		);
 	}
 
 	#[test]

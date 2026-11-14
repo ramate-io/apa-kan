@@ -681,7 +681,8 @@ pub enum LowValueResolution {
 	Win { winner: Player, pair: usize, by_piece_count: bool },
 }
 
-/// Both players must have fewer than this many board tiles for [`EndReason::LowValue`].
+/// Both players must have `board tiles + usable budget` strictly below this
+/// for [`EndReason::LowValue`]. Usable budget is [`Game::budget`].
 pub const LOW_VALUE_BOARD_LT: u8 = 5;
 
 /// One spawn token. The opening stack is [`BudgetToken::Blank`] copies
@@ -817,11 +818,11 @@ pub enum EndReason {
 	Control,
 	/// Could no longer occupy 5 control-set nodes (`insufficient_tiles_loss`).
 	InsufficientTiles,
-	/// Both players have zero **usable** capture budget and fewer than
-	/// [`LOW_VALUE_BOARD_LT`] board tiles. Sorted lowest-tile pairs decide
-	/// (primary, then zag/braid-weighted tiebreak). A missing piece is maximum
-	/// value, so more surviving tiles win; a draw only if the counts match
-	/// and every pair ties on both passes.
+	/// Both players have `board tiles + usable budget` strictly below
+	/// [`LOW_VALUE_BOARD_LT`] (usable = min(tokens, unplaced deck tiles)).
+	/// Sorted lowest-tile pairs decide (primary, then zag/braid-weighted
+	/// tiebreak). A missing piece is maximum value, so more surviving tiles
+	/// win; a draw only if the counts match and every pair ties on both passes.
 	LowValue,
 }
 
@@ -1798,6 +1799,76 @@ impl Game {
 			.count()
 	}
 
+	/// Pieces that can still reach the board: on-board tiles plus usable
+	/// ADD budget (`min(tokens, unplaced deck tiles)`). Surplus tokens on an
+	/// empty remaining deck do not count.
+	pub fn possible_board_tiles(&self, player: Player) -> usize {
+		self.board_count(player) + self.budget(player)
+	}
+
+	/// True when both players have [`Self::possible_board_tiles`] strictly
+	/// below [`LOW_VALUE_BOARD_LT`]. Does not require usable budget to be 0.
+	pub fn low_value_applies(&self) -> bool {
+		let cap = usize::from(LOW_VALUE_BOARD_LT);
+		self.possible_board_tiles(Player::One) < cap && self.possible_board_tiles(Player::Two) < cap
+	}
+
+	/// Give each side enough remaining pieces that low-value does not already
+	/// fire. Fixtures that are not about low-value should call this after
+	/// placing their real tiles. `keep_empty` players are padded on the board
+	/// (spawns / inner / center left alone) so their remaining deck can stay
+	/// empty.
+	#[cfg(test)]
+	pub(crate) fn pad_above_low_value(&mut self) {
+		self.pad_above_low_value_keeping_empty_deck(&[]);
+	}
+
+	#[cfg(test)]
+	pub(crate) fn pad_above_low_value_keeping_empty_deck(&mut self, keep_empty: &[Player]) {
+		let cap = usize::from(LOW_VALUE_BOARD_LT);
+		let inner = self.board().inner_ring().to_vec();
+		let center = self.board().center();
+		let n = self.board().node_count() as NodeId;
+		for player in [Player::One, Player::Two] {
+			if keep_empty.contains(&player) {
+				for id in 0..n {
+					if self.possible_board_tiles(player) >= cap {
+						break;
+					}
+					if id == center
+						|| inner.contains(&id)
+						|| self.board().is_spawn(id)
+						|| self.tile_at(id).is_some()
+					{
+						continue;
+					}
+					let tile = self.alloc_rings(
+						player,
+						&[TileColor::Green, TileColor::Blue, TileColor::Orange],
+						3,
+						1,
+					);
+					self.place_tile(id, tile);
+				}
+			} else {
+				while self.possible_board_tiles(player) < cap {
+					let mut bench = self.bench(player).to_vec();
+					bench.push(self.alloc_tile(player, TileColor::Green, 1, 1));
+					self.set_bench(player, bench);
+				}
+				let need = self.bench(player).len();
+				if self.budget_token_count(player) < need {
+					self.set_budget_tokens(player, vec![BudgetToken::Blank; need]);
+				}
+			}
+			assert!(
+				self.possible_board_tiles(player) >= cap,
+				"{:?} still under the low-value cap after pad",
+				player
+			);
+		}
+	}
+
 	pub fn is_alive(&self, player: Player) -> bool {
 		self.board_count(player) > 0 || !self.benches[player.index()].is_empty()
 	}
@@ -2535,19 +2606,17 @@ impl Game {
 		self.check_insufficient_tiles();
 	}
 
-	/// Both **usable** budgets are 0 and both have fewer than
-	/// [`LOW_VALUE_BOARD_LT`] board tiles. Surplus tokens (stack longer than
-	/// the remaining deck) do not block this. Compared after lockout: a player
-	/// who cannot act still loses by lockout even if they hold the lowest piece.
+	/// Both players have `board + usable budget` strictly below [`LOW_VALUE_BOARD_LT`].
+	/// Usable budget need not be 0: a side with 1 on the board and 3 unplaced
+	/// tiles (usable 3) is already below 5. Surplus tokens on an empty
+	/// remaining deck do not count toward possible pieces. Compared after
+	/// lockout: a player who cannot act still loses by lockout even if they
+	/// hold the lowest piece.
 	fn check_low_value(&mut self) {
 		if self.status.is_over() {
 			return;
 		}
-		if self.budget(Player::One) != 0 || self.budget(Player::Two) != 0 {
-			return;
-		}
-		let cap = usize::from(LOW_VALUE_BOARD_LT);
-		if self.board_count(Player::One) >= cap || self.board_count(Player::Two) >= cap {
+		if !self.low_value_applies() {
 			return;
 		}
 		self.status = match self.low_value_resolution() {
@@ -3714,6 +3783,7 @@ mod tests {
 			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
 			game.set_bench(Player::Two, vec![t]);
 		}
+		game.pad_above_low_value();
 		game.set_current(Player::One);
 		assert!(game.destinations(from).contains(&center));
 		game.apply(Action::Move { from, to: center }).unwrap();
@@ -3778,6 +3848,7 @@ mod tests {
 			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
 			game.set_bench(Player::Two, vec![t]);
 		}
+		game.pad_above_low_value();
 		game.set_current(Player::One);
 		game.apply(Action::Move { from, to: center }).unwrap();
 		assert_eq!(game.center_hold(Player::One), 1);
@@ -3946,6 +4017,7 @@ mod tests {
 			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
 			game.set_bench(Player::Two, vec![t]);
 		}
+		game.pad_above_low_value();
 		game.set_current(Player::One);
 		let spawn = game
 			.board()
@@ -4303,6 +4375,7 @@ mod tests {
 			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
 			game.set_bench(Player::Two, vec![t]);
 		}
+		game.pad_above_low_value_keeping_empty_deck(&[Player::One]);
 		game.set_current(Player::One);
 		game.apply(Action::Move { from: a, to: center }).unwrap();
 		let p2_spawn = game.board().spawns()[0];
@@ -4338,6 +4411,7 @@ mod tests {
 			);
 			game.set_bench(Player::Two, vec![t]);
 		}
+		game.pad_above_low_value();
 		game.set_current(Player::One);
 		assert!(game.destinations(a).contains(&center));
 		let tile_id = game.tile_at(a).unwrap().id;
@@ -4398,6 +4472,7 @@ mod tests {
 			);
 			game.set_bench(Player::Two, vec![t]);
 		}
+		game.pad_above_low_value();
 		game.set_current(Player::One);
 		let parking = game
 			.destinations(from)
@@ -4459,6 +4534,7 @@ mod tests {
 			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
 			game.set_bench(Player::Two, vec![t]);
 		}
+		game.pad_above_low_value();
 		game.set_current(Player::One);
 		game.apply(Action::Move { from: a, to: center }).unwrap();
 		let p2_spawn = game.board().spawns()[0];
@@ -6646,6 +6722,66 @@ mod tests {
 			game.status(),
 			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
 		);
+	}
+
+	#[test]
+	fn low_value_fires_when_both_possible_on_board_are_below_five() {
+		// User position: P1 1 board + 0 usable (5 surplus, empty remaining
+		// deck); P2 1 board + 3 usable. Neither can field 5 pieces, so the
+		// game ends even though P2 still has budget to ADD.
+		let mut game = Game::empty(low_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 1);
+		place_isolated_dot(&mut game, 4, Player::Two, false, 2);
+		game.set_bench(Player::One, Vec::new());
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 5]);
+		let p2_deck = vec![
+			green(&mut game, Player::Two, 1, 1),
+			green(&mut game, Player::Two, 1, 1),
+			green(&mut game, Player::Two, 1, 1),
+		];
+		game.set_bench(Player::Two, p2_deck);
+		assert_eq!(game.board_count(Player::One), 1);
+		assert_eq!(game.budget(Player::One), 0);
+		assert_eq!(game.budget_surplus(Player::One), 5);
+		assert_eq!(game.bench(Player::One).len(), 0);
+		assert_eq!(game.board_count(Player::Two), 1);
+		assert_eq!(game.bench(Player::Two).len(), 3);
+		assert_eq!(game.budget(Player::Two), 3);
+		assert_eq!(game.possible_board_tiles(Player::One), 1);
+		assert_eq!(game.possible_board_tiles(Player::Two), 4);
+		assert!(game.low_value_applies());
+		game.set_current(Player::One);
+		let from = game.board().spawns()[0];
+		let to = game.destinations(from).into_iter().next().expect("P1 can step");
+		game.apply(Action::Move { from, to }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+	}
+
+	#[test]
+	fn low_value_does_not_fire_when_one_side_can_still_field_five() {
+		let mut game = Game::empty(low_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 1);
+		place_isolated_dot(&mut game, 4, Player::Two, false, 2);
+		game.set_bench(Player::One, Vec::new());
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 5]);
+		let p2_deck = vec![
+			green(&mut game, Player::Two, 1, 1),
+			green(&mut game, Player::Two, 1, 1),
+			green(&mut game, Player::Two, 1, 1),
+			green(&mut game, Player::Two, 1, 1),
+		];
+		game.set_bench(Player::Two, p2_deck);
+		assert_eq!(game.possible_board_tiles(Player::One), 1);
+		assert_eq!(game.possible_board_tiles(Player::Two), 5);
+		assert!(!game.low_value_applies());
+		game.set_current(Player::One);
+		let from = game.board().spawns()[0];
+		let to = game.destinations(from).into_iter().next().expect("P1 can step");
+		game.apply(Action::Move { from, to }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
 	}
 
 	#[test]
