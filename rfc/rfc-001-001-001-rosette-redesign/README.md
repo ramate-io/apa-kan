@@ -111,7 +111,7 @@ Two-ended edges (both nodes occupied) draw **one lane per firing channel**, in o
 - **Braid** → the max fulfilled weave, or a failed per-side weave that meets at a midpoint diamond (each tile uses only its own braid colors; a one-sided fail reaches the diamond from that side only). Unconnected edges still show the would-be braid.
 - Nothing firing → grey base arc.
 
-Tile-rim braid weave is unchanged (`TILE_BRAID_TURN_UNITS = 0.21`, stroke 0.70). Mobile crowding of stacked lanes is acceptable for now.
+Tile-rim braid weave period is unchanged (`TILE_BRAID_TURN_UNITS = 0.21`). Tile-rim braid threads and zag rings are 1.3× thicker than the previous 0.70 / 0.90 strokes; arc strokes are unchanged. Mobile crowding of stacked lanes is acceptable for now.
 
 One-ended edges (the tile has no neighbor on that arc) still draw all of that tile's **potential** effects: a would-be braid as the threaded weave in the braid's ring colors, leftover normal colors as a highway, and every zag, so it is clear what would be in play if another tile landed there.
 

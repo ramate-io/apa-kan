@@ -16,9 +16,10 @@ use crate::game::{
 pub const PREV_TILE_RADIUS_PX: f32 = 22.0;
 pub const PREV_SCALE: f32 = 210.0;
 
-/// Doubled tile radius in board units (`2 * 22 / 210`), the size from before
-/// the 1.5× / 1.35× enlargements. Closest inner-ring nodes are ~0.5858 apart.
-pub const TILE_SIZE_SCALE: f32 = 1.0;
+/// Doubled tile radius in board units (`2 * 22 / 210`), then 1.1× so tiles
+/// read larger on the board and in the deck without overlapping neighbors.
+/// Closest inner-ring nodes are ~0.5858 apart.
+pub const TILE_SIZE_SCALE: f32 = 1.1;
 pub const TILE_RADIUS_UNITS: f32 = (PREV_TILE_RADIUS_PX / PREV_SCALE) * 2.0 * TILE_SIZE_SCALE;
 
 /// Empty-node radius in board units; not doubled, so tiles stay the focus.
@@ -72,15 +73,16 @@ pub const ARC_SAMPLES: usize = 96;
 pub const TILE_RING_INSET: f32 = 1.7;
 pub const TILE_RING_GAP: f32 = 3.3;
 pub const TILE_ZAG_AMP: f32 = 0.80;
-/// Tile zag stroke in 22px-tile units; 1.5× the previous 0.60, still thinner
+/// Tile zag stroke in 22px-tile units; 1.3× the previous 0.90, still thinner
 /// than a normal ring so concentric zags keep air inside the rim.
-pub const TILE_ZAG_STROKE: f32 = 0.90;
+pub const TILE_ZAG_STROKE: f32 = 0.90 * 1.3;
 pub const TILE_ZAG_TEETH: u32 = 16;
 pub const TILE_ZAG_SAMPLES: u32 = 96;
 /// Tile-rim braid: the old conflict weave, one thread per braid slot.
 pub const TILE_BRAID_AMP: f32 = 1.6;
 /// Thinner than a zag ring so over/under threads keep visible air between them.
-pub const TILE_BRAID_STROKE: f32 = 0.70;
+/// 1.3× the previous 0.70. Arc braid stroke is unchanged.
+pub const TILE_BRAID_STROKE: f32 = 0.70 * 1.3;
 pub const TILE_BRAID_SAMPLES: u32 = 128;
 /// Tile-rim weave period: half the arc conflict period (~2× frequency).
 pub const TILE_BRAID_TURN_UNITS: f64 = BRAID_TURN_UNITS * 0.5;
@@ -1830,13 +1832,12 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
-	use crate::game::DeckSlot;
 
 	#[test]
 	fn tiles_are_scaled_from_the_doubled_radius() {
 		let prev = (PREV_TILE_RADIUS_PX / PREV_SCALE) * 2.0;
 		assert!((TILE_RADIUS_UNITS - prev * TILE_SIZE_SCALE).abs() < 1e-6);
-		assert!((TILE_SIZE_SCALE - 1.0).abs() < 1e-6);
+		assert!((TILE_SIZE_SCALE - 1.1).abs() < 1e-6);
 	}
 
 	#[test]
@@ -1862,7 +1863,7 @@ mod tests {
 			d.gap
 		);
 		assert_eq!(d.zag_teeth, 16, "zag rings should double the underline frequency");
-		assert!(d.zag_stroke * 2.0 < d.stroke, "zag rings should be noticeably finer than normals");
+		assert!(d.zag_stroke < d.stroke, "zag rings should stay finer than normals");
 		assert!(
 			d.gap - d.zag_stroke > d.zag_stroke,
 			"air between concentric zags should stay wider than the stroke (stroke={} gap={})",
@@ -2065,7 +2066,7 @@ mod tests {
 		);
 		assert!((TILE_BRAID_TURN_UNITS - BRAID_TURN_UNITS * 0.5).abs() < 1e-12);
 		assert!(
-			(TILE_BRAID_STROKE - 0.70).abs() < 1e-6,
+			(TILE_BRAID_STROKE - 0.70 * 1.3).abs() < 1e-6,
 			"tile-rim braid threads stay thinner than a zag ring"
 		);
 		assert!(TILE_BRAID_STROKE < TILE_ZAG_STROKE);
@@ -2182,22 +2183,21 @@ mod tests {
 		assert!(budget_slot_is_blank_face(&captured, 6, 5), "tokens past usable are blank faces");
 		assert!(
 			!budget_slot_is_blank_face(&captured, 4, 5),
-			"a usable captured token keeps its tile face"
+			"a usable captured token is a filled disc, not a blank surplus face"
 		);
 	}
 
 	#[test]
-	fn demo_midgame_deck_keeps_placed_tiles_in_eleven_slots() {
+	fn demo_midgame_deck_shows_only_unplaced_tiles() {
 		let game = demo_midgame();
 		for player in [Player::One, Player::Two] {
 			let slots = game.deck_slots(player);
-			assert_eq!(slots.len(), BAG_SIZE_DEFAULT, "{player:?} deck length");
-			assert!(slots.iter().any(|s| s.is_live()), "{player:?} still has live bench tiles");
+			assert!(slots.iter().all(|s| s.is_live()), "{player:?} deck is unplaced tiles only");
+			assert_eq!(slots.len(), game.bench(player).len(), "{player:?} deck length");
 			assert!(
-				slots.iter().any(|s| matches!(s, DeckSlot::Spent(_))),
-				"{player:?} placed tiles must stay in the deck"
+				slots.len() < BAG_SIZE_DEFAULT,
+				"{player:?} placed tiles must leave the deck row"
 			);
-			assert_eq!(slots.iter().filter(|s| s.is_live()).count(), game.bench(player).len());
 		}
 	}
 

@@ -563,7 +563,7 @@ fn refresh_view(
 		for (i, slot) in deck.iter().enumerate() {
 			let p = layout.bench_pos(player, i, n);
 			match slot {
-				DeckSlot::Empty => spawn_blank_token(
+				DeckSlot::Empty => spawn_solid_token(
 					&mut commands,
 					&mut meshes,
 					&mut materials,
@@ -587,42 +587,20 @@ fn refresh_view(
 						layout.bench_tile_radius,
 					);
 				}
-				DeckSlot::Spent(tile) => spawn_tile_at(
-					&mut commands,
-					&mut meshes,
-					&mut materials,
-					Vec2::new(p[0], p[1]),
-					*tile,
-					false,
-					layout.bench_tile_radius,
-				),
+				DeckSlot::Spent(_) => {}
 			}
 		}
-		let tokens = play.game.budget_tokens(player).to_vec();
-		let n = tokens.len();
-		let usable = play.game.budget(player);
-		for (i, token) in tokens.iter().enumerate() {
+		let n = play.game.budget_tokens(player).len();
+		for i in 0..n {
 			let p = layout.budget_stack_pos(player, i, n);
-			if visual::budget_slot_is_blank_face(token, i, usable) {
-				spawn_blank_token(
-					&mut commands,
-					&mut meshes,
-					&mut materials,
-					Vec2::new(p[0], p[1]),
-					player,
-					layout.bench_tile_radius,
-				);
-			} else if let BudgetToken::Captured(tile) = token {
-				spawn_tile_at(
-					&mut commands,
-					&mut meshes,
-					&mut materials,
-					Vec2::new(p[0], p[1]),
-					*tile,
-					false,
-					layout.bench_tile_radius,
-				);
-			}
+			spawn_solid_token(
+				&mut commands,
+				&mut meshes,
+				&mut materials,
+				Vec2::new(p[0], p[1]),
+				player,
+				layout.bench_tile_radius,
+			);
 		}
 	}
 }
@@ -1154,7 +1132,7 @@ fn spawn_ring(
 	));
 }
 
-fn spawn_blank_token(
+fn spawn_solid_token(
 	commands: &mut Commands,
 	meshes: &mut Assets<Mesh>,
 	materials: &mut Assets<ColorMaterial>,

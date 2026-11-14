@@ -696,11 +696,11 @@ pub enum BudgetToken {
 	Captured(Tile),
 }
 
-/// One slot in the visual full-deck row (always [`RuleSet::bag_size`] long,
-/// default 11). Every unplaced deck tile is [`Self::Live`] and selectable.
-/// Placed or captured tiles stay in their original slot as [`Self::Spent`].
-/// [`Self::Empty`] only pads unused slots when fewer tiles were dealt than
-/// `bag_size`; there are no hidden-bag blank faces.
+/// One slot in the visual deck row. Every unplaced deck tile is [`Self::Live`]
+/// and selectable. [`Game::deck_slots`] returns only live tiles, so a placed
+/// tile leaves the row (opening deals still show all [`RuleSet::bag_size`]
+/// tiles, default 11). [`Self::Spent`] / [`Self::Empty`] remain for fixtures
+/// and historical classification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeckSlot {
 	Empty,
@@ -1716,8 +1716,8 @@ impl Game {
 		self.budget_tokens[player.index()] = tokens;
 	}
 
-	/// Full visual deck, always [`RuleSet::bag_size`] slots. Unplaced tiles
-	/// are live; placed or captured tiles keep their original slot as spent.
+	/// Unplaced deck tiles in opening order. Placed tiles leave the row;
+	/// the opening deal still shows all [`RuleSet::bag_size`] tiles (default 11).
 	pub fn deck_slots(&self, player: Player) -> Vec<DeckSlot> {
 		let n = self.rules.bag_size.max(1) as usize;
 		let source = if self.opening_deck[player.index()].is_empty() {
@@ -1725,14 +1725,14 @@ impl Game {
 		} else {
 			self.opening_deck[player.index()].clone()
 		};
-		let mut slots = Vec::with_capacity(n);
-		for tile in source.into_iter().take(n) {
-			slots.push(self.classify_deck_tile(player, tile));
-		}
-		while slots.len() < n {
-			slots.push(DeckSlot::Empty);
-		}
-		slots
+		source
+			.into_iter()
+			.take(n)
+			.filter_map(|tile| match self.classify_deck_tile(player, tile) {
+				DeckSlot::Live(tile) => Some(DeckSlot::Live(tile)),
+				DeckSlot::Spent(_) | DeckSlot::Empty => None,
+			})
+			.collect()
 	}
 
 	fn classify_deck_tile(&self, player: Player, tile: Tile) -> DeckSlot {
@@ -2865,7 +2865,7 @@ mod tests {
 	}
 
 	#[test]
-	fn visual_deck_always_shows_eleven_slots_and_keeps_used_tiles() {
+	fn visual_deck_shows_only_unplaced_tiles() {
 		let mut game = Game::new(RuleSet::default(), 3);
 		let before = game.deck_slots(Player::One);
 		assert_eq!(before.len(), BAG_SIZE_DEFAULT);
@@ -2879,13 +2879,10 @@ mod tests {
 		game.apply(action).unwrap();
 		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT - 1);
 		let after = game.deck_slots(Player::One);
-		assert_eq!(after.len(), BAG_SIZE_DEFAULT);
-		assert_eq!(after.iter().filter(|s| s.is_live()).count(), BAG_SIZE_DEFAULT - 1);
-		assert_eq!(after.iter().filter(|s| matches!(s, DeckSlot::Spent(_))).count(), 1);
-		assert!(after.iter().any(|s| matches!(s, DeckSlot::Spent(t) if t.id == added_id)));
-		for (a, b) in before.iter().zip(&after) {
-			assert_eq!(a.tile().map(|t| t.id), b.tile().map(|t| t.id), "deck slot identity moved");
-		}
+		assert_eq!(after.len(), BAG_SIZE_DEFAULT - 1);
+		assert!(after.iter().all(|s| s.is_live()));
+		assert!(!after.iter().any(|s| s.tile().is_some_and(|t| t.id == added_id)));
+		assert_eq!(after.iter().filter(|s| matches!(s, DeckSlot::Spent(_))).count(), 0);
 	}
 
 	#[test]

@@ -101,7 +101,7 @@ Lane offsets, given pitch `≈ 2.4 ×` highway stripe offset:
 - Failed: like the normal mismatch. From each tile, **that tile's own** braid weave reaches the middle (its threads only) and the two meet at a diamond. If only one side has a braid, only that side reaches in, up to the diamond.
 - Unconnected edges still show the would-be braid (potential weave, no diamond).
 
-Tile rims are unchanged: `TILE_BRAID_TURN_UNITS = 0.21`, stroke `0.70`. Mobile crowding of stacked lanes is acceptable for now.
+Tile-rim weave period is unchanged (`TILE_BRAID_TURN_UNITS = 0.21`). Tile-rim braid threads and zag rings are 1.3× thicker than the previous 0.70 / 0.90 strokes; arc braid/zag strokes are unchanged. Mobile crowding of stacked lanes is acceptable for now.
 
 ## Implementation
 

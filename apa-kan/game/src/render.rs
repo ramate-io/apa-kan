@@ -4,7 +4,7 @@ use std::path::Path;
 
 use image::{Rgba, RgbaImage};
 
-use crate::game::{BudgetToken, DeckSlot, Game, Player, Tile};
+use crate::game::{DeckSlot, Game, Player, Tile};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
 pub fn write_png(game: &Game, path: impl AsRef<Path>, caption: &str) -> Result<(), String> {
@@ -440,23 +440,19 @@ fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let c = (f64::from(q[0]), f64::from(q[1]));
 			let r = f64::from(layout.bench_tile_radius);
 			match slot {
-				DeckSlot::Empty => draw_blank_token(img, c, r, player),
-				DeckSlot::Live(tile) | DeckSlot::Spent(tile) => draw_tile(img, c, r, *tile),
+				DeckSlot::Empty => draw_solid_token(img, c, r, player),
+				DeckSlot::Live(tile) => draw_tile(img, c, r, *tile),
+				DeckSlot::Spent(_) => {}
 			}
 		}
 		let tokens = game.budget_tokens(player);
 		let n = tokens.len();
-		let usable = game.budget(player);
-		for (i, token) in tokens.iter().enumerate() {
+		for i in 0..n {
 			let p = layout.budget_stack_pos(player, i, n);
 			let q = layout.world_to_image(p);
 			let c = (f64::from(q[0]), f64::from(q[1]));
 			let r = f64::from(layout.bench_tile_radius);
-			if visual::budget_slot_is_blank_face(token, i, usable) {
-				draw_blank_token(img, c, r, player);
-			} else if let BudgetToken::Captured(tile) = token {
-				draw_tile(img, c, r, *tile);
-			}
+			draw_solid_token(img, c, r, player);
 		}
 	}
 }
@@ -472,7 +468,7 @@ fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str
 	draw_text(img, 16, (layout.height - 22.0) as u32, visual::HELP_TEXT, lo);
 }
 
-fn draw_blank_token(img: &mut RgbaImage, c: (f64, f64), r: f64, player: Player) {
+fn draw_solid_token(img: &mut RgbaImage, c: (f64, f64), r: f64, player: Player) {
 	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(player)));
 	stroke_circle(img, c, r, rgb_of(visual::BLANK_TOKEN_RIM_RGB), (r * 0.10).max(1.4));
 }
@@ -780,7 +776,8 @@ mod tests {
 			let usable = game.budget(player);
 			let n = tokens.len();
 			let deck_n = game.deck_slots(player).len();
-			assert_eq!(deck_n, game.rules().bag_size as usize);
+			assert_eq!(deck_n, game.bench(player).len());
+			assert!(deck_n < game.rules().bag_size as usize);
 			let bench0 = layout.world_to_image(layout.bench_pos(player, 0, deck_n));
 			let stack0 = layout.world_to_image(layout.budget_stack_pos(player, 0, n));
 			assert!(
@@ -813,7 +810,7 @@ mod tests {
 	}
 
 	#[test]
-	fn usable_captured_budget_token_keeps_tile_graphics() {
+	fn usable_captured_budget_token_is_a_solid_disc() {
 		use crate::game::{BudgetToken, Player, TileColor};
 		use crate::visual::{self, ViewLayout};
 		let mut game = Game::empty(RuleSet::default());
@@ -831,27 +828,22 @@ mod tests {
 		let layout =
 			ViewLayout::from_window_with_deck(w as f32, h as f32, game.rules().bag_size as usize);
 		let p = layout.world_to_image(layout.budget_stack_pos(Player::One, 0, 2));
-		let draw = visual::TileRingDraw::for_radius(layout.bench_tile_radius);
-		let rr = f64::from(draw.ring_radius(layout.bench_tile_radius, 0));
-		let orange = visual::rgb8(visual::tile_rgb(TileColor::Orange));
-		let mut found = false;
-		for a in 0..24 {
-			let th = f64::from(a) * std::f64::consts::TAU / 24.0;
-			let x = (f64::from(p[0]) + rr * th.cos()).round() as u32;
-			let y = (f64::from(p[1]) + rr * th.sin()).round() as u32;
-			if x >= img.width() || y >= img.height() {
-				continue;
-			}
-			let px = img.get_pixel(x, y);
-			if channel_near(px[0], orange[0], 50)
-				&& channel_near(px[1], orange[1], 60)
-				&& px[0] > px[2]
-			{
-				found = true;
-				break;
-			}
-		}
-		assert!(found, "usable captured token should keep its orange ring");
+		let px = img.get_pixel(p[0] as u32, p[1] as u32);
+		let fill = visual::rgb8(visual::owner_fill_rgb(Player::One));
+		assert!(
+			channel_near(px[0], fill[0], 18)
+				&& channel_near(px[1], fill[1], 18)
+				&& channel_near(px[2], fill[2], 18),
+			"usable captured token center should be a solid owner fill {fill:?}, got {px:?}"
+		);
+		let r = layout.bench_tile_radius * 0.35;
+		let ring_px = img.get_pixel((p[0] + r) as u32, p[1] as u32);
+		assert!(
+			channel_near(ring_px[0], fill[0], 40)
+				&& channel_near(ring_px[1], fill[1], 40)
+				&& channel_near(ring_px[2], fill[2], 40),
+			"captured token must not show tile rings, got {ring_px:?} vs fill {fill:?}"
+		);
 	}
 
 	fn channel_near(got: u8, want: u8, tol: u8) -> bool {
@@ -881,7 +873,7 @@ mod tests {
 		write_png_sized(
 			&board,
 			dir.join("capture_budget_stack_1280x800.png"),
-			"left stacks, full 11-tile public decks, blank empty tokens",
+			"left stacks, unplaced-only decks, solid token discs",
 			1280,
 			800,
 		)
@@ -898,6 +890,43 @@ mod tests {
 			&Game::new(RuleSet::default(), 1),
 			dir.join("opening_deck_1280x800.png"),
 			"opening: 11 live deck tiles, spawn-token stacks on the left",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_png_sized(
+			&Game::new(RuleSet::default(), 1),
+			dir.join("bigger_tiles_opening.png"),
+			"1.1x tiles, solid token discs, full 11-tile opening deck",
+			1280,
+			800,
+		)
+		.unwrap();
+		{
+			let mut after = Game::new(RuleSet::default(), 1);
+			let add = after.legal_adds().into_iter().next().expect("opening ADD");
+			after.apply(add).unwrap();
+			write_png_sized(
+				&after,
+				dir.join("deck_after_add_placed_removed.png"),
+				"placed tile leaves the deck row",
+				1280,
+				800,
+			)
+			.unwrap();
+		}
+		write_png_sized(
+			&board,
+			dir.join("thicker_rim_braid_zag.png"),
+			"1.3x thicker tile-rim braids and zags; solid token discs",
+			1280,
+			800,
+		)
+		.unwrap();
+		write_png_sized(
+			&board,
+			dir.join("solid_token_discs.png"),
+			"token stacks as solid filled discs",
 			1280,
 			800,
 		)
