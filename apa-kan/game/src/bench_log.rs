@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::deck::PickStrategy;
 use crate::game::{
 	Action, ActionOutcome, BraidFailMismatch, BudgetToken, EndReason, Game, GameStatus,
 	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
@@ -181,6 +182,10 @@ impl PieceRef {
 pub struct RulesLog {
 	pub starting_bench: u8,
 	pub bag_size: u8,
+	/// Full collection size. Absent/0 on logs from before deck-building;
+	/// replay then uses `bag_size`.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub deck_size: u8,
 	pub self_capture_budget: bool,
 	pub identical_bags: bool,
 	pub bag_one_of_each_kind: bool,
@@ -227,6 +232,7 @@ impl RulesLog {
 		Self {
 			starting_bench: r.starting_bench_size,
 			bag_size: r.bag_size,
+			deck_size: r.deck_size,
 			self_capture_budget: r.self_capture_budget,
 			identical_bags: r.identical_bags,
 			bag_one_of_each_kind: r.bag_one_of_each_kind,
@@ -265,6 +271,7 @@ impl RulesLog {
 		Ok(RuleSet {
 			starting_bench_size: self.starting_bench,
 			bag_size: self.bag_size,
+			deck_size: if self.deck_size == 0 { self.bag_size } else { self.deck_size },
 			self_capture_budget: self.self_capture_budget,
 			identical_bags: self.identical_bags,
 			bag_one_of_each_kind: self.bag_one_of_each_kind,
@@ -302,8 +309,8 @@ impl RulesLog {
 	}
 }
 
-/// Opening deal: the public remaining deck (`p*_bench`), leftover hidden bag
-/// (empty on new games; kept so historical JSONL replays), and spawn tokens.
+/// Opening deal: the public 11-tile bench (`p*_bench`), leftover **reserves**
+/// (`p*_bag`; never usable in play), and spawn tokens.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpeningLog {
 	pub p1_bench: Vec<TileLog>,
@@ -312,6 +319,53 @@ pub struct OpeningLog {
 	pub p2_bag: Vec<TileLog>,
 	pub p1_tokens: usize,
 	pub p2_tokens: usize,
+}
+
+/// Full collection, revealed 7-picks, and +4 extensions. Absent on logs from
+/// before deck-building; those games already stored the public bench in
+/// [`OpeningLog`].
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetupLog {
+	pub deck_seed: u64,
+	pub deck_noise: u8,
+	pub pick: String,
+	pub p1_deck: Vec<TileLog>,
+	pub p2_deck: Vec<TileLog>,
+	pub p1_pick7: Vec<TileLog>,
+	pub p2_pick7: Vec<TileLog>,
+	pub p1_extend: Vec<TileLog>,
+	pub p2_extend: Vec<TileLog>,
+}
+
+impl SetupLog {
+	pub fn from_record(rec: &crate::deck::SetupRecord) -> Self {
+		Self {
+			deck_seed: rec.deck_seed,
+			deck_noise: rec.deck_noise,
+			pick: rec.strategy.name().into(),
+			p1_deck: tiles_to_log(&rec.decks[0]),
+			p2_deck: tiles_to_log(&rec.decks[1]),
+			p1_pick7: tiles_to_log(&rec.pick7[0]),
+			p2_pick7: tiles_to_log(&rec.pick7[1]),
+			p1_extend: tiles_to_log(&rec.extend[0]),
+			p2_extend: tiles_to_log(&rec.extend[1]),
+		}
+	}
+
+	pub fn from_game(game: &Game) -> Option<Self> {
+		game.setup_record().map(Self::from_record)
+	}
+
+	pub fn to_record(&self) -> Result<crate::deck::SetupRecord, String> {
+		Ok(crate::deck::SetupRecord {
+			decks: [tiles_from_log(&self.p1_deck)?, tiles_from_log(&self.p2_deck)?],
+			pick7: [tiles_from_log(&self.p1_pick7)?, tiles_from_log(&self.p2_pick7)?],
+			extend: [tiles_from_log(&self.p1_extend)?, tiles_from_log(&self.p2_extend)?],
+			strategy: PickStrategy::parse(&self.pick).unwrap_or(PickStrategy::Heuristic),
+			deck_seed: self.deck_seed,
+			deck_noise: self.deck_noise,
+		})
+	}
 }
 
 impl OpeningLog {
@@ -595,6 +649,8 @@ pub struct GameLog {
 	pub scenario: String,
 	pub rules: RulesLog,
 	pub opening: OpeningLog,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub setup: Option<SetupLog>,
 	pub turns: u32,
 	pub end: EndLog,
 	pub actions: Vec<ActionLog>,
@@ -626,6 +682,7 @@ impl GameLog {
 			scenario: scenario.into(),
 			rules: RulesLog::from_rules(*live.rules()),
 			opening: OpeningLog::from_game(live),
+			setup: SetupLog::from_game(live),
 			turns: 0,
 			end: EndLog::from_status(GameStatus::InProgress, None),
 			actions: Vec::new(),
@@ -672,11 +729,16 @@ pub fn replay_center_captures(log: &GameLog) -> Result<(Game, u32, u32), String>
 		return Err(format!("unsupported log schema v={}", log.v));
 	}
 	let rules = log.rules.to_rules()?;
-	let mut game = Game::empty(rules);
-	game.set_bag(Player::One, tiles_from_log(&log.opening.p1_bag)?);
-	game.set_bag(Player::Two, tiles_from_log(&log.opening.p2_bag)?);
-	game.set_bench(Player::One, tiles_from_log(&log.opening.p1_bench)?);
-	game.set_bench(Player::Two, tiles_from_log(&log.opening.p2_bench)?);
+	let mut game = if let Some(setup) = &log.setup {
+		Game::from_setup_record(rules, log.seed, setup.to_record()?)
+	} else {
+		let mut game = Game::empty(rules);
+		game.set_bag(Player::One, tiles_from_log(&log.opening.p1_bag)?);
+		game.set_bag(Player::Two, tiles_from_log(&log.opening.p2_bag)?);
+		game.set_bench(Player::One, tiles_from_log(&log.opening.p1_bench)?);
+		game.set_bench(Player::Two, tiles_from_log(&log.opening.p2_bench)?);
+		game
+	};
 	game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; log.opening.p1_tokens]);
 	game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; log.opening.p2_tokens]);
 	game.set_current(Player::One);
@@ -877,6 +939,7 @@ mod tests {
 			"scenario",
 			"rules",
 			"opening",
+			"setup",
 			"turns",
 			"end",
 			"actions",
@@ -900,11 +963,16 @@ mod tests {
 		assert_eq!(parsed[0], log);
 		assert_eq!(parsed[0].v, SCHEMA_VERSION);
 		assert_eq!(parsed[0].rules.bag_size, 11);
+		assert_eq!(parsed[0].rules.deck_size, crate::game::BAG_SIZE as u8);
 		assert!(!parsed[0].rules.capture_draw_on_move);
-		assert!(!parsed[0].opening.p1_bench.is_empty());
+		assert_eq!(parsed[0].opening.p1_bench.len(), 11);
 		assert_eq!(parsed[0].opening.p1_bench.len(), parsed[0].opening.p2_bench.len());
-		assert!(parsed[0].opening.p1_bag.is_empty());
-		assert!(parsed[0].opening.p2_bag.is_empty());
+		assert_eq!(parsed[0].opening.p1_bag.len(), 16);
+		assert_eq!(parsed[0].opening.p2_bag.len(), 16);
+		let setup = parsed[0].setup.as_ref().expect("setup log");
+		assert_eq!(setup.p1_deck.len(), 27);
+		assert_eq!(setup.p1_pick7.len(), 7);
+		assert_eq!(setup.p1_extend.len(), 4);
 		assert!(!parsed[0].actions.is_empty() || parsed[0].turns == 0);
 	}
 

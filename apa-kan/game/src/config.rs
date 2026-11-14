@@ -6,9 +6,10 @@ use std::process;
 use std::time::Duration;
 
 use crate::ai::Actor;
+use crate::deck::{PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	BraidFailMismatch, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint,
-	RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE, BAG_SIZE_DEFAULT,
+	RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -27,6 +28,7 @@ pub struct GameConfig {
 	pub height: u32,
 	pub rules: RuleSet,
 	pub scenario: Option<Scenario>,
+	pub setup: SetupConfig,
 }
 
 impl Default for GameConfig {
@@ -43,6 +45,7 @@ impl Default for GameConfig {
 			height: 900,
 			rules: RuleSet::default(),
 			scenario: None,
+			setup: SetupConfig::default(),
 		}
 	}
 }
@@ -87,6 +90,20 @@ impl GameConfig {
 				}
 				"--seed" => {
 					cfg.seed = parse_u64("--seed", &require_value("--seed", it.next())?)?;
+				}
+				"--deck-seed" => {
+					cfg.setup.deck_seed =
+						Some(parse_u64("--deck-seed", &require_value("--deck-seed", it.next())?)?);
+				}
+				"--deck-noise" => {
+					let n = parse_u64("--deck-noise", &require_value("--deck-noise", it.next())?)?;
+					if n > 100 {
+						return Err("invalid --deck-noise (expected 0..100 percent)".into());
+					}
+					cfg.setup.deck_noise = n as u8;
+				}
+				"--pick" => {
+					cfg.setup.pick = PickStrategy::parse(&require_value("--pick", it.next())?)?;
 				}
 				"--think-ms" => {
 					let ms = parse_u64("--think-ms", &require_value("--think-ms", it.next())?)?;
@@ -138,6 +155,9 @@ impl GameConfig {
 			}
 		}
 		validate_rule_flags(&cfg.rules)?;
+		if cfg.setup.deck_seed.is_none() {
+			cfg.setup.deck_seed = Some(cfg.seed);
+		}
 		Ok(cfg)
 	}
 
@@ -257,12 +277,12 @@ where
 		}
 		"--bag-size" | "--deck-size" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
-			if n == 0 || n > BAG_SIZE as u64 {
+			if n == 0 || n > DECK_SIZE_MAX as u64 {
 				return Err(format!(
-					"invalid {arg} (expected 1..{BAG_SIZE}, default {BAG_SIZE_DEFAULT})"
+					"invalid {arg} (expected 1..{DECK_SIZE_MAX} collection tiles, default {DECK_SIZE_DEFAULT})"
 				));
 			}
-			rules.bag_size = n as u8;
+			rules.deck_size = n as u8;
 		}
 		"--self-capture-budget" => {
 			rules.self_capture_budget = parse_bool(arg, &require_value(arg, it.next())?)?;
@@ -331,6 +351,9 @@ pub fn usage() -> &'static str {
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
+	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
+	   --deck-noise <0..100>                      Resample that percent of a mirrored collection (default: 0)\n\
+	   --pick <heuristic|search|greedy>           Bench 7+4 picker (default: heuristic)\n\
 	   --think-ms <n>                             Bot think time in ms (default: 80)\n\
 	   --delay-ms <n>                             Delay between bot moves (default: 350)\n\
 	   --actions <1..8>                           Actions per turn (default: 1)\n\
@@ -359,7 +382,7 @@ pub fn usage() -> &'static str {
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
-	   --deck-size <1..27>                        Public deck size per player (default: 11; alias --bag-size)\n\
+	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
 	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
@@ -379,6 +402,7 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
+	use crate::game::BAG_SIZE_DEFAULT;
 
 	#[test]
 	fn parses_bot_flags() {
@@ -495,6 +519,9 @@ mod tests {
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);
+		assert_eq!(cfg.rules.deck_size, DECK_SIZE_DEFAULT as u8);
+		assert_eq!(cfg.setup.pick, PickStrategy::Heuristic);
+		assert_eq!(cfg.setup.deck_noise, 0);
 		assert!(cfg.rules.self_capture_budget);
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
@@ -602,14 +629,17 @@ mod tests {
 	fn parses_bag_size() {
 		let default = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(default.rules.bag_size, BAG_SIZE_DEFAULT as u8);
+		assert_eq!(default.rules.deck_size, DECK_SIZE_DEFAULT as u8);
 		let eleven = GameConfig::parse(["--bag-size", "11"]).unwrap();
-		assert_eq!(eleven.rules.bag_size, 11);
+		assert_eq!(eleven.rules.deck_size, 11);
+		assert_eq!(eleven.rules.bag_size, BAG_SIZE_DEFAULT as u8);
 		assert_eq!(eleven.rules.starting_bench_size, 7);
 		let full = GameConfig::parse(["--bag-size", "27"]).unwrap();
-		assert_eq!(full.rules.bag_size, BAG_SIZE as u8);
+		assert_eq!(full.rules.deck_size, BAG_SIZE as u8);
+		assert_eq!(full.rules.bag_size, BAG_SIZE_DEFAULT as u8);
 		let err = GameConfig::parse(["--bag-size", "28"]).unwrap_err();
 		assert!(err.contains("bag-size"));
-		assert!(err.contains("default 11"), "{err}");
+		assert!(err.contains("default 27"), "{err}");
 		let err = GameConfig::parse(["--bag-size", "0"]).unwrap_err();
 		assert!(err.contains("bag-size"));
 	}
@@ -617,16 +647,16 @@ mod tests {
 	#[test]
 	fn tokens_are_independent_of_deck_size() {
 		let small = GameConfig::parse(["--bag-size", "5"]).unwrap();
-		assert_eq!(small.rules.bag_size, 5);
+		assert_eq!(small.rules.deck_size, 5);
 		assert_eq!(small.rules.starting_bench_size, 7);
 		let extra = GameConfig::parse(["--deck-size", "11", "--starting-tokens", "12"]).unwrap();
-		assert_eq!(extra.rules.bag_size, 11);
+		assert_eq!(extra.rules.deck_size, 11);
 		assert_eq!(extra.rules.starting_bench_size, 12);
 		let ok = GameConfig::parse(["--bag-size", "11", "--starting-bench", "7"]).unwrap();
-		assert_eq!(ok.rules.bag_size, 11);
+		assert_eq!(ok.rules.deck_size, 11);
 		assert_eq!(ok.rules.starting_bench_size, 7);
 		let dealt = GameConfig::parse(["--bag-size", "7", "--starting-bench", "7"]).unwrap();
-		assert_eq!(dealt.rules.bag_size, 7);
+		assert_eq!(dealt.rules.deck_size, 7);
 	}
 
 	#[test]
@@ -634,7 +664,33 @@ mod tests {
 		let tokens = GameConfig::parse(["--starting-tokens", "5"]).unwrap();
 		assert_eq!(tokens.rules.starting_bench_size, 5);
 		let deck = GameConfig::parse(["--deck-size", "13"]).unwrap();
-		assert_eq!(deck.rules.bag_size, 13);
+		assert_eq!(deck.rules.deck_size, 13);
+		assert_eq!(deck.rules.bag_size, BAG_SIZE_DEFAULT as u8);
+	}
+
+	#[test]
+	fn parses_deck_seed_noise_and_pick() {
+		let cfg = GameConfig::parse([
+			"--seed",
+			"3",
+			"--deck-seed",
+			"99",
+			"--deck-noise",
+			"40",
+			"--pick",
+			"search",
+		])
+		.unwrap();
+		assert_eq!(cfg.seed, 3);
+		assert_eq!(cfg.setup.deck_seed, Some(99));
+		assert_eq!(cfg.setup.deck_noise, 40);
+		assert_eq!(cfg.setup.pick, PickStrategy::Search);
+		let inherit = GameConfig::parse(["--seed", "8"]).unwrap();
+		assert_eq!(inherit.setup.deck_seed, Some(8));
+		let err = GameConfig::parse(["--pick", "random"]).unwrap_err();
+		assert!(err.contains("--pick") || err.contains("unknown"));
+		let err = GameConfig::parse(["--deck-noise", "101"]).unwrap_err();
+		assert!(err.contains("deck-noise"));
 	}
 
 	#[test]

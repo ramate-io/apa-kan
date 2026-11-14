@@ -12,6 +12,7 @@ use apa_kan::ai::{
 };
 use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
+use apa_kan::deck::{PickStrategy, SetupConfig};
 use apa_kan::game::{
 	sample_tile, Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet, Tile,
 	TileColor,
@@ -45,6 +46,7 @@ struct BenchConfig {
 	depth_probe: bool,
 	scenario: Option<Scenario>,
 	calibrate: bool,
+	setup: SetupConfig,
 }
 
 fn usage() -> &'static str {
@@ -60,6 +62,9 @@ fn usage() -> &'static str {
 	                        Each search stays single-threaded.\n\
 	   --calibrate          Measure nodes/iters per move at --think-ms (default 1000), jobs=1, then exit\n\
 	   --seed <u64>         Base seed (default: 1)\n\
+	   --deck-seed <u64>    Collection generation seed (default: --seed)\n\
+	   --deck-noise <0..100> Resample that percent of a mirrored collection (default: 0)\n\
+	   --pick <heuristic|search|greedy>  Bench 7+4 picker (default: heuristic)\n\
 	   --bots <list>        Comma-separated actors (default: greedy,minimax,mcts)\n\
 	   --depth-probe        Also time minimax ID depth at 1000 ms and 3000 ms\n\
 	   --measure-games <n>  Games for branching sample (default: 12)\n\
@@ -112,6 +117,7 @@ where
 		depth_probe: true,
 		scenario: None,
 		calibrate: false,
+		setup: SetupConfig::default(),
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -151,6 +157,20 @@ where
 			}
 			"--calibrate" => cfg.calibrate = true,
 			"--seed" => cfg.seed = parse_u64("--seed", &need("--seed", it.next())?)?,
+			"--deck-seed" => {
+				cfg.setup.deck_seed =
+					Some(parse_u64("--deck-seed", &need("--deck-seed", it.next())?)?);
+			}
+			"--deck-noise" => {
+				let n = parse_u64("--deck-noise", &need("--deck-noise", it.next())?)?;
+				if n > 100 {
+					return Err("invalid --deck-noise (expected 0..100 percent)".into());
+				}
+				cfg.setup.deck_noise = n as u8;
+			}
+			"--pick" => {
+				cfg.setup.pick = PickStrategy::parse(&need("--pick", it.next())?)?;
+			}
 			"--measure-games" => {
 				cfg.measure_games =
 					parse_u64("--measure-games", &need("--measure-games", it.next())?)? as u32;
@@ -213,6 +233,7 @@ where
 	} else {
 		SearchLimit::work(budget_nodes, budget_iters)
 	};
+	cfg.setup.limit = cfg.limit;
 	validate_rule_flags(&cfg.rules)?;
 	Ok(cfg)
 }
@@ -395,14 +416,14 @@ fn run(cfg: BenchConfig) {
 	);
 	push_branching(&mut lines, &cfg, &branching, rules.turn_limit);
 	if cfg.depth_probe {
-		probe_minimax_depths(&mut lines, rules, cfg.seed, cfg.scenario.as_ref());
+		probe_minimax_depths(&mut lines, rules, cfg.seed, cfg.scenario.as_ref(), cfg.setup);
 	}
 
 	lines.push(String::new());
 	lines.push(format!("# {}", cfg.label));
 	lines.push(limit_header(&cfg, rules.turn_limit));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -419,6 +440,9 @@ fn run(cfg: BenchConfig) {
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
 		rules.bag_size,
+		rules.deck_size,
+		cfg.setup.pick.name(),
+		cfg.setup.deck_noise,
 		on_off(rules.self_capture_budget),
 		rules.max_rings,
 		rules.zag_numer,
@@ -467,6 +491,7 @@ fn run(cfg: BenchConfig) {
 	);
 	let scenario = cfg.scenario.clone();
 	let limit = cfg.limit;
+	let setup = cfg.setup;
 	let outs = run_parallel(cfg.jobs, jobs, |job| {
 		let result = play_game(
 			rules,
@@ -477,6 +502,7 @@ fn run(cfg: BenchConfig) {
 			job.want_record,
 			keep_log,
 			scenario.as_ref(),
+			setup,
 		);
 		{
 			let _g = stdout.lock().unwrap_or_else(|e| e.into_inner());
@@ -698,10 +724,11 @@ fn run_calibrate(cfg: &BenchConfig) {
 	let mut iter_max = 0u32;
 	let mut depth_sum = 0.0;
 	for &seed in &seeds {
-		let mut game = Game::start(cfg.rules, seed, cfg.scenario.as_ref()).unwrap_or_else(|e| {
-			eprintln!("{e}");
-			std::process::exit(1);
-		});
+		let mut game = Game::start_with(cfg.rules, seed, cfg.scenario.as_ref(), cfg.setup)
+			.unwrap_or_else(|e| {
+				eprintln!("{e}");
+				std::process::exit(1);
+			});
 		let mut rng = StdRng::seed_from_u64(bench_log::search_rng_seed(seed));
 		let mut s1 = Searcher::new();
 		let mut s2 = Searcher::new();
@@ -982,11 +1009,12 @@ fn probe_minimax_depths(
 	rules: RuleSet,
 	seed: u64,
 	scenario: Option<&Scenario>,
+	setup: SetupConfig,
 ) {
 	use apa_kan::ai::Searcher;
 	lines.push(String::new());
 	lines.push("# minimax iterative-deepening depth probe (opening position)".into());
-	let game = Game::start(rules, seed, scenario).unwrap_or_else(|e| {
+	let game = Game::start_with(rules, seed, scenario, setup).unwrap_or_else(|e| {
 		eprintln!("{e}");
 		std::process::exit(1);
 	});
@@ -1082,8 +1110,9 @@ fn play_game(
 	keep_record: bool,
 	keep_log: bool,
 	scenario: Option<&Scenario>,
+	setup: SetupConfig,
 ) -> PlayResult {
-	let mut game = Game::start(rules, seed, scenario).unwrap_or_else(|e| {
+	let mut game = Game::start_with(rules, seed, scenario, setup).unwrap_or_else(|e| {
 		eprintln!("{e}");
 		std::process::exit(1);
 	});
