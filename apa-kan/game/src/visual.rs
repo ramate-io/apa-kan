@@ -140,6 +140,9 @@ pub const HUD_SEP: &str = " | ";
 pub const HELP_TEXT: &str =
 	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both have board+usable <5.";
 
+pub const SETUP_HELP_TEXT: &str =
+	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (a 3-braid uses 3 of 6). Normal uncapped.";
+
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];
 pub const P1_FILL_RGB: [f32; 3] = [0.91, 0.89, 0.82];
@@ -806,6 +809,28 @@ impl ViewLayout {
 		self.world_to_image(self.board_to_world(p))
 	}
 
+	/// Grid for the 27-tile collection (or remaining reserves) during setup.
+	pub fn setup_grid_pos(&self, index: usize, len: usize) -> [f32; 2] {
+		let n = len.max(1);
+		let cols = 9.min(n).max(1);
+		let rows = n.div_ceil(cols);
+		let r = self.bench_tile_radius;
+		let gap = (r * 0.35).max(6.0);
+		let step = 2.0 * r + gap;
+		let row = index / cols;
+		let col = index % cols;
+		let row_n = if row + 1 == rows { n - row * cols } else { cols };
+		let total_w = step * row_n.saturating_sub(1) as f32;
+		let total_h = step * rows.saturating_sub(1) as f32;
+		let x = self.origin_x - total_w / 2.0 + col as f32 * step;
+		let y = self.origin_y + total_h / 2.0 - row as f32 * step;
+		[x, y]
+	}
+
+	pub fn setup_confirm_pos(&self) -> [f32; 2] {
+		[self.origin_x, self.p1_bench_y + (self.origin_y - self.p1_bench_y) * 0.22]
+	}
+
 	pub fn bench_pos(&self, player: Player, index: usize, len: usize) -> [f32; 2] {
 		let y = match player {
 			Player::Two => self.p2_bench_y,
@@ -1280,6 +1305,16 @@ pub fn format_title(bot1: &str, bot2: &str) -> String {
 
 pub fn format_header(bot1: &str, bot2: &str, turn: &str) -> String {
 	format!("{}{}{}", format_title(bot1, bot2), HUD_SEP, turn)
+}
+
+pub fn format_setup_cap(tiles: &[crate::game::Tile]) -> String {
+	format!(
+		"zag {}/{} braid {}/{}",
+		crate::deck::zag_ring_count(tiles),
+		crate::deck::RING_TYPE_CAP,
+		crate::deck::braid_ring_count(tiles),
+		crate::deck::RING_TYPE_CAP
+	)
 }
 
 pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
@@ -2928,8 +2963,25 @@ mod tests {
 		assert!(is_hud_safe(&turn), "{turn}");
 		assert!(is_hud_safe(&log), "{log}");
 		assert!(is_hud_safe(HELP_TEXT), "{HELP_TEXT}");
+		assert!(is_hud_safe(SETUP_HELP_TEXT), "{SETUP_HELP_TEXT}");
 		assert!(HELP_TEXT.contains("5 of 9"));
 		assert!(HELP_TEXT.contains("board+usable"), "{HELP_TEXT}");
+		assert!(SETUP_HELP_TEXT.contains("3-braid uses 3 of 6"), "{SETUP_HELP_TEXT}");
+		let braid = Tile::with_typed_rings(
+			1,
+			Player::One,
+			&[
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Blue, RingType::Braid),
+				(TileColor::Orange, RingType::Braid),
+			],
+			3,
+			1,
+		);
+		let cap = format_setup_cap(&[braid]);
+		assert!(is_hud_safe(&cap), "{cap}");
+		assert!(cap.contains("braid 3/6"), "{cap}");
+		assert!(cap.contains("zag 0/6"), "{cap}");
 		assert!(!header.contains('·'));
 		assert!(!turn.contains('·'));
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
@@ -2942,7 +2994,7 @@ mod tests {
 		assert!(game.rules().control_win);
 		assert!(!game.rules().center_hold_win);
 		assert_eq!(game.bench(Player::One).len(), 11);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.bag_len(Player::One), 16);
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("ctl P1 0/5 0/1 P2 0/5 0/1"), "{turn}");
 		assert!(turn.contains("P1 light 11/11 bud 7"), "{turn}");
@@ -2952,15 +3004,16 @@ mod tests {
 	}
 
 	#[test]
-	fn opening_hud_shows_full_public_deck() {
+	fn opening_hud_shows_the_11_tile_bench() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 27;
+		rules.deck_size = 27;
 		let game = Game::new(rules, 1);
-		assert_eq!(game.bench(Player::One).len(), 27);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.collection(Player::One).len(), 27);
+		assert_eq!(game.bench(Player::One).len(), 11);
+		assert_eq!(game.bag_len(Player::One), 16);
 		let turn = format_turn_line(&game, "human");
-		assert!(turn.contains("P1 light 27/27 bud 7"), "{turn}");
-		assert!(turn.contains("P2 dark 27/27 bud 7"), "{turn}");
+		assert!(turn.contains("P1 light 11/11 bud 7"), "{turn}");
+		assert!(turn.contains("P2 dark 11/11 bud 7"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
 	}
 

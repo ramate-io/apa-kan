@@ -159,9 +159,9 @@ pub struct Scenario {
 	pub shuffle: bool,
 	/// Copy P1's kind sequence onto P2 (new tile ids / owner).
 	pub mirror: bool,
-	/// Sample [`crate::game::RuleSet::bag_size`] tiles from the ring/color
-	/// process (same as `Game::new`, default [`crate::game::BAG_SIZE_DEFAULT`])
-	/// instead of expanding `p1`/`p2` kinds.
+	/// Sample [`crate::game::RuleSet::deck_size`] tiles from the ring/color
+	/// process (same as `Game::new`, default 27) instead of expanding `p1`/`p2`
+	/// kinds, then draft a 7+4 public bench.
 	pub generative: bool,
 	pub p1: DeckSpec,
 	pub p2: DeckSpec,
@@ -692,11 +692,13 @@ mod tests {
 	#[test]
 	fn generative_scenario_respects_bag_size() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 11;
+		rules.deck_size = 27;
 		let a = Game::new(rules, 7);
 		let b = Game::from_scenario(rules, 7, &Scenario::same()).unwrap();
-		assert_eq!(a.bag_len(Player::One), 0);
-		assert_eq!(b.bag_len(Player::One), 0);
+		assert_eq!(a.collection(Player::One).len(), 27);
+		assert_eq!(b.collection(Player::One).len(), 27);
+		assert_eq!(a.bag_len(Player::One), 16);
+		assert_eq!(b.bag_len(Player::One), 16);
 		assert_eq!(a.bench(Player::One).len(), 11);
 		assert_eq!(b.bench(Player::One).len(), 11);
 		let kinds = |g: &Game, p: Player| {
@@ -730,18 +732,19 @@ mod tests {
 	fn complementary_is_mirror_aside_from_exclusive_color() {
 		let s = Scenario::complementary();
 		let game = Game::from_scenario(RuleSet::default(), 3, &s).unwrap();
-		assert_eq!(game.bench(Player::One).len(), 18);
-		assert_eq!(game.bag_len(Player::One), 0);
-		assert_eq!(game.bag_len(Player::Two), 0);
+		assert_eq!(game.collection(Player::One).len(), 18);
+		assert_eq!(game.bench(Player::One).len(), 11);
+		assert_eq!(game.bag_len(Player::One), 7);
+		assert_eq!(game.bag_len(Player::Two), 7);
 		assert_eq!(game.budget(Player::One), 7);
 		let seq = |p: Player| {
-			game.bench(p)
+			game.collection(p)
 				.iter()
 				.map(|t| (t.weight, t.dots, t.primary() == TileColor::Orange))
 				.collect::<Vec<_>>()
 		};
 		assert_eq!(seq(Player::One), seq(Player::Two), "weight/dot/shared-role sequence");
-		let all = |p: Player| game.bench(p).iter().copied().collect::<Vec<_>>();
+		let all = |p: Player| game.collection(p).to_vec();
 		let p1c = unique_colors(&all(Player::One));
 		let p2c = unique_colors(&all(Player::Two));
 		assert!(p1c.iter().all(|c| matches!(c, TileColor::Green | TileColor::Orange)));
@@ -756,7 +759,7 @@ mod tests {
 		let b =
 			Game::from_scenario(RuleSet::default(), 5, &Scenario::complementary_swapped()).unwrap();
 		let excl = |g: &Game, p: Player| {
-			g.bench(p)
+			g.collection(p)
 				.iter()
 				.find(|t| t.primary() != TileColor::Orange)
 				.map(|t| t.primary())

@@ -11,17 +11,29 @@ use rand::SeedableRng;
 use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
+use crate::deck::{
+	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
+};
 use crate::game::{Action, BudgetToken, DeckSlot, Game, Player, Tile, ZagMismatchCount};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
 	let screenshot = cfg.screenshot.clone();
 	let from_start = cfg.screenshot_from_start;
-	let game = if screenshot.is_some() && !from_start {
-		visual::demo_midgame()
+	let interactive_setup = cfg.bot1.is_human() || cfg.bot2.is_human();
+	let (game, setup_session) = if screenshot.is_some() && !from_start {
+		(visual::demo_midgame(), None)
+	} else if screenshot.is_some() || !interactive_setup {
+		match Game::start_with(cfg.rules, cfg.seed, cfg.scenario.as_ref(), cfg.setup) {
+			Ok(g) => (g, None),
+			Err(err) => {
+				eprintln!("{err}");
+				std::process::exit(1);
+			}
+		}
 	} else {
-		match Game::start(cfg.rules, cfg.seed, cfg.scenario.as_ref()) {
-			Ok(g) => g,
+		match SetupSession::begin(&cfg) {
+			Ok(session) => (Game::empty(cfg.rules), Some(session)),
 			Err(err) => {
 				eprintln!("{err}");
 				std::process::exit(1);
@@ -47,6 +59,7 @@ pub fn run_app(cfg: GameConfig) {
 		.insert_resource(ConfigRes(cfg))
 		.insert_resource(PlayState {
 			game,
+			setup: setup_session,
 			selection: Selection::None,
 			log: if screenshot.is_some() && !from_start {
 				"P1 ADD orange w2 d2 at center".into()
@@ -101,11 +114,329 @@ impl std::ops::Deref for UiLayout {
 #[derive(Resource)]
 struct PlayState {
 	game: Game,
+	setup: Option<SetupSession>,
 	selection: Selection,
 	log: String,
 	warning: String,
 	last_removals: String,
 	fingerprint: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SetupStage {
+	Opening(Player),
+	Reveal,
+	Extend(Player),
+	Done,
+}
+
+#[derive(Clone)]
+struct SetupSession {
+	rules: crate::game::RuleSet,
+	seed: u64,
+	cfg: SetupConfig,
+	decks: [Vec<Tile>; 2],
+	pick7: [Vec<usize>; 2],
+	extend: [Vec<usize>; 2],
+	selected: Vec<usize>,
+	stage: SetupStage,
+}
+
+impl SetupSession {
+	fn begin(cfg: &GameConfig) -> Result<Self, String> {
+		let mut next_id = 1u32;
+		let mut rules = cfg.rules;
+		if let Some(s) = cfg.scenario.as_ref() {
+			if s.generative {
+				rules.identical_bags = s.mirror;
+			}
+		}
+		let decks = if let Some(s) = cfg.scenario.as_ref() {
+			if s.generative {
+				deck::generate_both_collections(&rules, &cfg.setup, cfg.seed, &mut next_id)
+			} else {
+				let game = Game::from_scenario_with(rules, cfg.seed, s, cfg.setup)?;
+				let rec = game.setup_record().cloned().ok_or("scenario produced no setup")?;
+				return Ok(Self {
+					rules,
+					seed: cfg.seed,
+					cfg: cfg.setup,
+					decks: rec.decks,
+					pick7: [Vec::new(), Vec::new()],
+					extend: [Vec::new(), Vec::new()],
+					selected: Vec::new(),
+					stage: SetupStage::Opening(Player::One),
+				});
+			}
+		} else {
+			deck::generate_both_collections(&rules, &cfg.setup, cfg.seed, &mut next_id)
+		};
+		Ok(Self {
+			rules,
+			seed: cfg.seed,
+			cfg: cfg.setup,
+			decks,
+			pick7: [Vec::new(), Vec::new()],
+			extend: [Vec::new(), Vec::new()],
+			selected: Vec::new(),
+			stage: SetupStage::Opening(Player::One),
+		})
+	}
+
+	fn actor_player(&self) -> Option<Player> {
+		match self.stage {
+			SetupStage::Opening(p) | SetupStage::Extend(p) => Some(p),
+			SetupStage::Reveal | SetupStage::Done => None,
+		}
+	}
+
+	fn need(&self) -> usize {
+		match self.stage {
+			SetupStage::Opening(p) => pick_plan(self.decks[p.index()].len()).0,
+			SetupStage::Extend(p) => pick_plan(self.decks[p.index()].len()).1,
+			SetupStage::Reveal | SetupStage::Done => 0,
+		}
+	}
+
+	fn reserve_tiles(&self, p: Player) -> Vec<Tile> {
+		let used = self.picked_tiles(p, true);
+		self.decks[p.index()]
+			.iter()
+			.copied()
+			.filter(|t| !used.iter().any(|u| u.id == t.id))
+			.collect()
+	}
+
+	fn picked_tiles(&self, p: Player, opening_only: bool) -> Vec<Tile> {
+		let deck = &self.decks[p.index()];
+		let mut out: Vec<Tile> =
+			self.pick7[p.index()].iter().filter_map(|&i| deck.get(i).copied()).collect();
+		if !opening_only {
+			out.extend(self.extend[p.index()].iter().filter_map(|&i| deck.get(i).copied()));
+		}
+		out
+	}
+
+	fn committed_tiles(&self, p: Player) -> Vec<Tile> {
+		match self.stage {
+			SetupStage::Opening(_) => Vec::new(),
+			SetupStage::Extend(_) | SetupStage::Reveal | SetupStage::Done => {
+				self.picked_tiles(p, true)
+			}
+		}
+	}
+
+	fn pool_tiles(&self) -> Vec<Tile> {
+		match self.stage {
+			SetupStage::Opening(p) => self.decks[p.index()].clone(),
+			SetupStage::Extend(p) => self.reserve_tiles(p),
+			SetupStage::Reveal | SetupStage::Done => Vec::new(),
+		}
+	}
+
+	fn candidate_tiles(&self, p: Player) -> Vec<Tile> {
+		let mut cur = self.committed_tiles(p);
+		let pool = self.pool_tiles();
+		for &i in &self.selected {
+			if let Some(t) = pool.get(i) {
+				cur.push(*t);
+			}
+		}
+		cur
+	}
+
+	fn can_confirm(&self) -> bool {
+		match self.stage {
+			SetupStage::Reveal | SetupStage::Done => true,
+			SetupStage::Opening(p) | SetupStage::Extend(p) => {
+				self.selected.len() == self.need() && respects_type_cap(&self.candidate_tiles(p))
+			}
+		}
+	}
+
+	fn toggle(&mut self, index: usize) -> Result<(), String> {
+		let Some(p) = self.actor_player() else {
+			return Ok(());
+		};
+		if let Some(pos) = self.selected.iter().position(|&i| i == index) {
+			self.selected.remove(pos);
+			return Ok(());
+		}
+		if self.selected.len() >= self.need() {
+			return Err(format!("already picked {} tiles", self.need()));
+		}
+		let pool = self.pool_tiles();
+		let Some(tile) = pool.get(index).copied() else {
+			return Err("no tile there".into());
+		};
+		let mut cur = self.committed_tiles(p);
+		for &i in &self.selected {
+			if let Some(t) = pool.get(i) {
+				cur.push(*t);
+			}
+		}
+		if !would_respect_cap(&cur, tile) {
+			cur.push(tile);
+			return Err(format!(
+				"illegal: exceeds the 6-ring-per-type cap ({})",
+				visual::format_setup_cap(&cur)
+			));
+		}
+		self.selected.push(index);
+		Ok(())
+	}
+
+	fn visible_bench(&self, p: Player) -> Vec<Tile> {
+		match self.stage {
+			SetupStage::Opening(cur) if cur == p => self.candidate_tiles(p),
+			SetupStage::Opening(_) => Vec::new(),
+			SetupStage::Extend(cur) if cur == p => self.candidate_tiles(p),
+			SetupStage::Reveal | SetupStage::Extend(_) | SetupStage::Done => {
+				self.picked_tiles(p, true)
+			}
+		}
+	}
+
+	fn auto_pick(&mut self, p: Player) {
+		let (opening, ext) = pick_plan(self.decks[p.index()].len());
+		match self.stage {
+			SetupStage::Opening(cur) if cur == p => {
+				let tiles = pick_from_pool(
+					&self.decks[p.index()],
+					opening,
+					&[],
+					&[],
+					ext,
+					p,
+					&self.rules,
+					self.cfg.pick,
+					self.cfg.limit,
+					self.cfg.deck_seed(self.seed) ^ 0x0707,
+				);
+				self.pick7[p.index()] = indices_of(&self.decks[p.index()], &tiles);
+				self.selected.clear();
+				self.stage = next_after_opening(p);
+			}
+			SetupStage::Extend(cur) if cur == p => {
+				let mine7 = self.picked_tiles(p, true);
+				let opp7 = self.picked_tiles(p.other(), true);
+				let reserves = self.reserve_tiles(p);
+				let tiles = pick_from_pool(
+					&reserves,
+					ext,
+					&mine7,
+					&opp7,
+					0,
+					p,
+					&self.rules,
+					self.cfg.pick,
+					self.cfg.limit,
+					self.cfg.deck_seed(self.seed) ^ 0xE4E4,
+				);
+				self.extend[p.index()] = indices_of(&self.decks[p.index()], &tiles);
+				self.selected.clear();
+				self.stage = next_after_extend(p);
+			}
+			_ => {}
+		}
+	}
+
+	fn confirm_human(&mut self) -> Result<(), String> {
+		match self.stage {
+			SetupStage::Reveal => {
+				self.stage = SetupStage::Extend(Player::One);
+				self.selected.clear();
+				return Ok(());
+			}
+			SetupStage::Done => return Ok(()),
+			SetupStage::Opening(_) | SetupStage::Extend(_) => {}
+		}
+		let Some(p) = self.actor_player() else {
+			return Ok(());
+		};
+		if !self.can_confirm() {
+			return Err(
+				"pick a legal set under the 6-ring-per-type cap (braids count by slots)".into()
+			);
+		}
+		match self.stage {
+			SetupStage::Opening(_) => {
+				self.pick7[p.index()] = self.selected.clone();
+				self.selected.clear();
+				self.stage = next_after_opening(p);
+			}
+			SetupStage::Extend(_) => {
+				let reserves = self.reserve_tiles(p);
+				let chosen: Vec<Tile> =
+					self.selected.iter().filter_map(|&i| reserves.get(i).copied()).collect();
+				self.extend[p.index()] = indices_of(&self.decks[p.index()], &chosen);
+				self.selected.clear();
+				self.stage = next_after_extend(p);
+			}
+			SetupStage::Reveal | SetupStage::Done => {}
+		}
+		Ok(())
+	}
+
+	fn is_ready(&self) -> bool {
+		matches!(self.stage, SetupStage::Done)
+	}
+
+	fn finish(self) -> SetupRecord {
+		let tiles = |deck: &[Tile], idx: &[usize]| {
+			idx.iter().filter_map(|&i| deck.get(i).copied()).collect::<Vec<_>>()
+		};
+		SetupRecord {
+			decks: self.decks.clone(),
+			pick7: [tiles(&self.decks[0], &self.pick7[0]), tiles(&self.decks[1], &self.pick7[1])],
+			extend: [
+				tiles(&self.decks[0], &self.extend[0]),
+				tiles(&self.decks[1], &self.extend[1]),
+			],
+			strategy: self.cfg.pick,
+			deck_seed: self.cfg.deck_seed(self.seed),
+			deck_noise: self.cfg.deck_noise,
+		}
+	}
+
+	fn prompt(&self) -> String {
+		match self.stage {
+			SetupStage::Opening(p) => format!(
+				"{}: pick {} tiles for your bench ({})",
+				p.label(),
+				self.need(),
+				visual::format_setup_cap(&self.candidate_tiles(p))
+			),
+			SetupStage::Reveal => {
+				"Both 7-tile benches are public. Click confirm to pick 4 from reserves.".into()
+			}
+			SetupStage::Done => "Starting...".into(),
+			SetupStage::Extend(p) => format!(
+				"{}: pick {} from reserves ({})",
+				p.label(),
+				self.need(),
+				visual::format_setup_cap(&self.candidate_tiles(p))
+			),
+		}
+	}
+}
+
+fn next_after_opening(p: Player) -> SetupStage {
+	match p {
+		Player::One => SetupStage::Opening(Player::Two),
+		Player::Two => SetupStage::Reveal,
+	}
+}
+
+fn next_after_extend(p: Player) -> SetupStage {
+	match p {
+		Player::One => SetupStage::Extend(Player::Two),
+		Player::Two => SetupStage::Done,
+	}
+}
+
+fn indices_of(deck: &[Tile], chosen: &[Tile]) -> Vec<usize> {
+	chosen.iter().filter_map(|t| deck.iter().position(|d| d.id == t.id)).collect()
 }
 
 #[derive(Resource)]
@@ -228,6 +559,9 @@ fn handle_click(
 	layout: Res<UiLayout>,
 ) {
 	if keys.just_pressed(KeyCode::Escape) {
+		if let Some(session) = play.setup.as_mut() {
+			session.selected.clear();
+		}
 		play.selection = Selection::None;
 		play.warning.clear();
 		return;
@@ -238,9 +572,19 @@ fn handle_click(
 	if play.game.status().is_over() {
 		return;
 	}
-	let actor = cfg.actor(play.game.current_player());
-	if !actor.is_human() {
+	let allow_setup = match play.setup.as_ref().map(|s| s.stage) {
+		Some(SetupStage::Reveal | SetupStage::Done) => true,
+		Some(SetupStage::Opening(p) | SetupStage::Extend(p)) => cfg.actor(p).is_human(),
+		None => false,
+	};
+	if play.setup.is_some() && !allow_setup {
 		return;
+	}
+	if play.setup.is_none() {
+		let actor = cfg.actor(play.game.current_player());
+		if !actor.is_human() {
+			return;
+		}
 	}
 	let Some(window) = windows.iter().next() else {
 		return;
@@ -255,7 +599,76 @@ fn handle_click(
 		Ok(p) => p,
 		Err(_) => return,
 	};
+	if play.setup.is_some() {
+		try_click_setup(&mut play, &layout.0, world_pos);
+		complete_setup_if_ready(&mut play);
+		return;
+	}
 	try_click(&mut play, &layout.0, world_pos);
+}
+
+fn try_click_setup(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
+	let Some(session) = play.setup.as_mut() else {
+		return;
+	};
+	if hit_setup_confirm(layout, pos) {
+		match session.confirm_human() {
+			Ok(()) => {
+				play.warning.clear();
+				play.log = session.prompt();
+			}
+			Err(err) => play.warning = err,
+		}
+		return;
+	}
+	let pool_len = session.pool_tiles().len();
+	if let Some(i) = hit_setup_grid(pool_len, layout, pos) {
+		match session.toggle(i) {
+			Ok(()) => {
+				play.warning.clear();
+				play.log = session.prompt();
+			}
+			Err(err) => play.warning = err,
+		}
+	}
+}
+
+fn hit_setup_confirm(layout: &ViewLayout, pos: Vec2) -> bool {
+	let p = layout.setup_confirm_pos();
+	pos.distance_squared(Vec2::new(p[0], p[1])) <= 52.0 * 52.0
+}
+
+fn hit_setup_grid(len: usize, layout: &ViewLayout, pos: Vec2) -> Option<usize> {
+	let r = layout.bench_tile_radius + 8.0;
+	let mut best = None;
+	let mut best_d = r * r;
+	for i in 0..len {
+		let p = layout.setup_grid_pos(i, len);
+		let d = pos.distance_squared(Vec2::new(p[0], p[1]));
+		if d <= best_d {
+			best_d = d;
+			best = Some(i);
+		}
+	}
+	best
+}
+
+fn complete_setup_if_ready(play: &mut PlayState) {
+	let Some(session) = play.setup.take() else {
+		return;
+	};
+	if !session.is_ready() {
+		play.setup = Some(session);
+		return;
+	}
+	let rules = session.rules;
+	let seed = session.seed;
+	let rec = session.finish();
+	play.game = Game::from_setup_record(rules, seed, rec);
+	play.log = "Setup complete. 11-tile benches are public.".into();
+	play.warning.clear();
+	play.selection = Selection::None;
+	play.fingerprint = 0;
 }
 
 fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
@@ -436,10 +849,46 @@ fn bot_turn(
 	mut play: ResMut<PlayState>,
 	mut rng: ResMut<RngRes>,
 ) {
-	if play.game.status().is_over() {
+	if cfg.screenshot.is_some() {
 		return;
 	}
-	if cfg.screenshot.is_some() {
+	if play.setup.is_some() {
+		complete_setup_if_ready(&mut play);
+		let human_waiting = match play.setup.as_ref().map(|s| s.stage) {
+			Some(SetupStage::Opening(p) | SetupStage::Extend(p)) => cfg.actor(p).is_human(),
+			Some(SetupStage::Reveal | SetupStage::Done) => false,
+			None => false,
+		};
+		if human_waiting {
+			clock.wait = cfg.delay.as_secs_f32();
+			return;
+		}
+		if play.setup.is_none() {
+			return;
+		}
+		clock.wait -= time.delta().as_secs_f32();
+		if clock.wait > 0.0 {
+			return;
+		}
+		clock.wait = cfg.delay.as_secs_f32();
+		if let Some(session) = play.setup.as_mut() {
+			match session.stage {
+				SetupStage::Reveal => {
+					let _ = session.confirm_human();
+				}
+				SetupStage::Opening(p) | SetupStage::Extend(p) => {
+					session.auto_pick(p);
+				}
+				SetupStage::Done => {}
+			}
+		}
+		let prompt = play.setup.as_ref().map(|s| s.prompt()).unwrap_or_default();
+		play.log = prompt;
+		play.warning.clear();
+		complete_setup_if_ready(&mut play);
+		return;
+	}
+	if play.game.status().is_over() {
 		return;
 	}
 	let actor = cfg.actor(play.game.current_player());
@@ -537,6 +986,17 @@ fn refresh_view(
 		}
 	}
 
+	if play.setup.is_some() {
+		draw_setup_view(
+			&mut commands,
+			&mut meshes,
+			&mut materials,
+			layout,
+			play.setup.as_ref().unwrap(),
+		);
+		return;
+	}
+
 	for id in 0..board.node_count() as NodeId {
 		if let Some(tile) = play.game.tile_at(id) {
 			spawn_tile_at(
@@ -603,6 +1063,63 @@ fn refresh_view(
 				player,
 				layout.bench_tile_radius,
 				i,
+			);
+		}
+	}
+}
+
+fn draw_setup_view(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	layout: &ViewLayout,
+	session: &SetupSession,
+) {
+	let pool = session.pool_tiles();
+	let n = pool.len();
+	for (i, tile) in pool.iter().enumerate() {
+		let p = layout.setup_grid_pos(i, n);
+		let selected = session.selected.contains(&i);
+		spawn_tile_at(
+			commands,
+			meshes,
+			materials,
+			Vec2::new(p[0], p[1]),
+			*tile,
+			selected,
+			layout.bench_tile_radius,
+		);
+	}
+	for player in [Player::Two, Player::One] {
+		let bench = session.visible_bench(player);
+		let n = bench.len();
+		for (i, tile) in bench.iter().enumerate() {
+			let p = layout.bench_pos(player, i, n.max(1));
+			spawn_tile_at(
+				commands,
+				meshes,
+				materials,
+				Vec2::new(p[0], p[1]),
+				*tile,
+				false,
+				layout.bench_tile_radius,
+			);
+		}
+	}
+	if !matches!(session.stage, SetupStage::Done) {
+		let p = layout.setup_confirm_pos();
+		let label = if session.can_confirm() { "CONFIRM" } else { "pick" };
+		spawn_label(commands, Vec2::new(p[0], p[1]), label);
+		if session.can_confirm() {
+			spawn_ring(
+				commands,
+				meshes,
+				materials,
+				Vec2::new(p[0], p[1]),
+				layout.bench_tile_radius + 4.0,
+				layout.bench_tile_radius + 8.0,
+				rgb(visual::HIGHLIGHT_RGB),
+				visual::Z_HIGHLIGHT,
 			);
 		}
 	}
@@ -1311,6 +1828,10 @@ fn update_hud(
 		&mut Text,
 		(With<WarnHud>, Without<StatusHud>, Without<TurnHud>, Without<LogHud>, Without<HelpHud>),
 	>,
+	mut help: Query<
+		&mut Text,
+		(With<HelpHud>, Without<StatusHud>, Without<TurnHud>, Without<LogHud>, Without<WarnHud>),
+	>,
 ) {
 	let g = &play.game;
 	let a1 = cfg.bot1.name();
@@ -1319,13 +1840,28 @@ fn update_hud(
 		*t = Text::new(visual::format_title(a1, a2));
 	}
 	if let Some(mut t) = turn.iter_mut().next() {
-		*t = Text::new(visual::format_turn_line(g, cfg.actor(g.current_player()).name()));
+		*t = Text::new(if let Some(session) = play.setup.as_ref() {
+			session.prompt()
+		} else {
+			visual::format_turn_line(g, cfg.actor(g.current_player()).name())
+		});
 	}
 	if let Some(mut t) = log.iter_mut().next() {
-		*t = Text::new(visual::format_log_line(&play.log, &play.last_removals));
+		*t = Text::new(if play.setup.is_some() {
+			play.log.clone()
+		} else {
+			visual::format_log_line(&play.log, &play.last_removals)
+		});
 	}
 	if let Some(mut t) = warn.iter_mut().next() {
 		*t = Text::new(play.warning.clone());
+	}
+	if let Some(mut t) = help.iter_mut().next() {
+		*t = Text::new(if play.setup.is_some() {
+			visual::SETUP_HELP_TEXT
+		} else {
+			visual::HELP_TEXT
+		});
 	}
 }
 
@@ -1394,6 +1930,15 @@ fn view_fingerprint(play: &PlayState, layout: &ViewLayout) -> u64 {
 				}
 			}
 		}
+	}
+	if let Some(session) = &play.setup {
+		1u8.hash(&mut h);
+		session.stage.hash(&mut h);
+		session.selected.hash(&mut h);
+		session.pick7.hash(&mut h);
+		session.extend.hash(&mut h);
+	} else {
+		0u8.hash(&mut h);
 	}
 	h.finish()
 }

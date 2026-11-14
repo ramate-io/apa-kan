@@ -3,9 +3,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng};
+use rand::Rng;
 
 use crate::board::{Board, NodeId};
 
@@ -76,11 +75,12 @@ pub const ZAG_NUMER_DEFAULT: u8 = 1;
 /// A piece forms a braid with probability `braid_numer / BRAID_DENOM`.
 pub const BRAID_DENOM: u8 = 7;
 pub const BRAID_NUMER_DEFAULT: u8 = 1;
-/// Maximum sampled deck size (the old 27 unique 3-color kinds). CLI `--bag-size`
-/// / `--deck-size` accept `1..=BAG_SIZE`. The default deck is [`BAG_SIZE_DEFAULT`].
+/// Maximum collection size (the old 27 unique 3-color kinds). CLI `--deck-size`
+/// / `--bag-size` accept `1..=BAG_SIZE`. The default collection is [`BAG_SIZE`].
 pub const BAG_SIZE: usize = 27;
-/// Default `--bag-size` / `--deck-size` / [`RuleSet::bag_size`]. All 11 tiles
-/// start public on the bench; spawn tokens default separately to 7.
+/// Public in-game bench after the 7+4 draft ([`crate::deck::BENCH_SIZE`]).
+/// Spawn tokens default separately to 7. CLI `--deck-size` is the 27-tile
+/// collection, not this field.
 pub const BAG_SIZE_DEFAULT: usize = 11;
 /// Default opening spawn-token stack. Independent of [`BAG_SIZE_DEFAULT`].
 pub const STARTING_TOKENS_DEFAULT: u8 = 7;
@@ -730,14 +730,10 @@ fn blank_budget(n: u8) -> Vec<BudgetToken> {
 	vec![BudgetToken::Blank; n as usize]
 }
 
-/// Visual deck order: unplaced tiles left-to-right, then remaining bag in
-/// draw order (next draw first). New games deal the whole bag onto the bench,
-/// so the bag tail is empty. The bag is a pop-stack, so draw order is reverse.
-fn visual_deck_order(bench: &[Tile], bag: &[Tile]) -> Vec<Tile> {
-	let mut deck = Vec::with_capacity(bench.len() + bag.len());
-	deck.extend_from_slice(bench);
-	deck.extend(bag.iter().rev().copied());
-	deck
+/// Visual deck order: unplaced **bench** tiles left-to-right. Reserves (the
+/// leftover collection) never appear in the row and are never usable in play.
+fn visual_deck_order(bench: &[Tile], _bag: &[Tile]) -> Vec<Tile> {
+	bench.to_vec()
 }
 
 pub fn slot_code(color: TileColor, typ: RingType) -> usize {
@@ -1147,25 +1143,29 @@ impl GameStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
 	/// Opening spawn-token stack (that many blank tokens). Default 7.
-	/// Independent of [`Self::bag_size`] (the public deck). CLI:
+	/// Independent of [`Self::bag_size`] (the public 11-tile bench). CLI:
 	/// `--starting-tokens` / `--starting-bench`. ADD spends 1 token; each
 	/// opponent capture earns 1. Own-tile captures earn 1 iff
 	/// [`Self::self_capture_budget`]. Usable budget is min(tokens, unplaced
-	/// deck tiles).
+	/// bench tiles).
 	pub starting_bench_size: u8,
-	/// Public deck size per player. Default [`BAG_SIZE_DEFAULT`] (11). CLI:
-	/// `--bag-size` / `--deck-size` (`1..=`[`BAG_SIZE`]). Every sampled tile
-	/// starts unplaced and selectable; there is no hidden remainder.
+	/// Public in-game bench size (unplaced tiles that can be ADDed). Default
+	/// [`BAG_SIZE_DEFAULT`] (11): the 7+4 draft. Reserves are not this field.
 	pub bag_size: u8,
+	/// Full collection size per player. Default [`BAG_SIZE`] (27). CLI:
+	/// `--deck-size` / `--bag-size` (`1..=`[`BAG_SIZE`]). Each player drafts
+	/// a 7-tile bench then 4 more from reserves; leftover tiles stay in
+	/// reserve and are never usable in play.
+	pub deck_size: u8,
 	/// If true (default), capturing your own tile on your turn earns +1
 	/// budget the same as capturing an opponent tile. False still removes
 	/// the tile (overwhelm is unchanged) but does not refund a token.
 	/// CLI: `--self-capture-budget on|off`.
 	pub self_capture_budget: bool,
-	/// Both players receive the same shuffled [`Self::bag_size`]-tile deck. Default true.
+	/// Both players receive the same shuffled [`Self::deck_size`]-tile collection. Default true.
 	pub identical_bags: bool,
-	/// Fill the deck by sampling [`Self::bag_size`] tiles (historical name: one-of-each
-	/// 27-kind). Default true. False leaves an empty deck.
+	/// Fill the collection by sampling [`Self::deck_size`] tiles (historical name: one-of-each
+	/// 27-kind). Default true. False leaves an empty collection.
 	pub bag_one_of_each_kind: bool,
 	/// Max distinct rings per tile (1–3). Default 3. `1` is the
 	/// single-ring baseline (still the six-color tree).
@@ -1263,6 +1263,7 @@ impl Default for RuleSet {
 		Self {
 			starting_bench_size: STARTING_TOKENS_DEFAULT,
 			bag_size: BAG_SIZE_DEFAULT as u8,
+			deck_size: BAG_SIZE as u8,
 			self_capture_budget: true,
 			identical_bags: true,
 			bag_one_of_each_kind: true,
@@ -1364,11 +1365,18 @@ pub struct Game {
 	/// The UI shows this many slots for the whole game; used tiles stay here
 	/// even after they leave the remaining deck.
 	opening_deck: [Vec<Tile>; 2],
+	/// Reconstructible 27-tile collections and 7+4 picks. `None` on
+	/// constructed [`Self::empty`] fixtures.
+	setup: Option<crate::deck::SetupRecord>,
 }
 
 impl Game {
 	pub fn new(rules: RuleSet, seed: u64) -> Self {
-		Self::new_on(Arc::new(Board::rosette_8()), rules, seed)
+		Self::new_with_setup(rules, seed, crate::deck::SetupConfig::for_seed(seed))
+	}
+
+	pub fn new_with_setup(rules: RuleSet, seed: u64, setup: crate::deck::SetupConfig) -> Self {
+		Self::new_on(Arc::new(Board::rosette_8()), rules, seed, setup)
 	}
 
 	pub fn start(
@@ -1376,9 +1384,18 @@ impl Game {
 		seed: u64,
 		scenario: Option<&crate::scenario::Scenario>,
 	) -> Result<Self, String> {
+		Self::start_with(rules, seed, scenario, crate::deck::SetupConfig::for_seed(seed))
+	}
+
+	pub fn start_with(
+		rules: RuleSet,
+		seed: u64,
+		scenario: Option<&crate::scenario::Scenario>,
+		setup: crate::deck::SetupConfig,
+	) -> Result<Self, String> {
 		match scenario {
-			Some(s) => Self::from_scenario(rules, seed, s),
-			None => Ok(Self::new(rules, seed)),
+			Some(s) => Self::from_scenario_with(rules, seed, s, setup),
+			None => Ok(Self::new_with_setup(rules, seed, setup)),
 		}
 	}
 
@@ -1388,10 +1405,19 @@ impl Game {
 		seed: u64,
 		scenario: &crate::scenario::Scenario,
 	) -> Result<Self, String> {
+		Self::from_scenario_with(rules, seed, scenario, crate::deck::SetupConfig::for_seed(seed))
+	}
+
+	pub fn from_scenario_with(
+		rules: RuleSet,
+		seed: u64,
+		scenario: &crate::scenario::Scenario,
+		setup: crate::deck::SetupConfig,
+	) -> Result<Self, String> {
 		if scenario.generative {
 			let mut rules = rules;
 			rules.identical_bags = scenario.mirror;
-			return Ok(Self::new(rules, seed));
+			return Ok(Self::new_with_setup(rules, seed, setup));
 		}
 		let board = Arc::new(Board::rosette_8());
 		let n = board.node_count();
@@ -1411,12 +1437,20 @@ impl Game {
 		let p2_bag = to_tiles(Player::Two, bags[1].clone(), &mut next_tile_id);
 		let p1_bench = to_tiles(Player::One, benches[0].clone(), &mut next_tile_id);
 		let p2_bench = to_tiles(Player::Two, benches[1].clone(), &mut next_tile_id);
+		let mut p1_col = p1_bench;
+		p1_col.extend(p1_bag);
+		let mut p2_col = p2_bench;
+		p2_col.extend(p2_bag);
+		if p1_col.is_empty() || p2_col.is_empty() {
+			return Err("scenario produced an empty collection".into());
+		}
+		let record = crate::deck::pick_from_collections([p1_col, p2_col], &rules, &setup, seed);
 		let mut game = Self {
 			board,
 			rules,
 			tiles: vec![None; n],
-			benches: [p1_bench, p2_bench],
-			bags: [p1_bag, p2_bag],
+			benches: [record.bench(Player::One), record.bench(Player::Two)],
+			bags: [record.reserves(Player::One), record.reserves(Player::Two)],
 			current: Player::One,
 			status: GameStatus::InProgress,
 			turn_count: 0,
@@ -1434,53 +1468,39 @@ impl Game {
 				blank_budget(rules.starting_bench_size),
 			],
 			opening_deck: [Vec::new(), Vec::new()],
+			setup: Some(record),
 		};
-		game.deal_opening();
+		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
 		Ok(game)
 	}
 
-	pub fn new_on(board: Arc<Board>, rules: RuleSet, seed: u64) -> Self {
+	pub fn new_on(
+		board: Arc<Board>,
+		rules: RuleSet,
+		seed: u64,
+		setup: crate::deck::SetupConfig,
+	) -> Self {
 		let n = board.node_count();
 		let mut next_tile_id = 1u32;
-		let mut rng = StdRng::seed_from_u64(seed);
-		let p1_bag = build_bag(
-			Player::One,
-			rules.bag_one_of_each_kind,
-			rules.bag_size as usize,
-			rules.max_rings,
-			rules.zag_numer,
-			rules.braid_numer,
-			&mut next_tile_id,
-			&mut rng,
-		);
-		let p2_bag = if rules.identical_bags {
-			p1_bag
-				.iter()
-				.map(|t| {
-					let id = next_tile_id;
-					next_tile_id += 1;
-					Tile { id, owner: Player::Two, ..*t }
-				})
-				.collect()
+		let record = if rules.bag_one_of_each_kind {
+			crate::deck::deal_and_pick(&rules, &setup, seed, &mut next_tile_id)
 		} else {
-			build_bag(
-				Player::Two,
-				rules.bag_one_of_each_kind,
-				rules.bag_size as usize,
-				rules.max_rings,
-				rules.zag_numer,
-				rules.braid_numer,
-				&mut next_tile_id,
-				&mut rng,
-			)
+			crate::deck::SetupRecord {
+				decks: [Vec::new(), Vec::new()],
+				pick7: [Vec::new(), Vec::new()],
+				extend: [Vec::new(), Vec::new()],
+				strategy: setup.pick,
+				deck_seed: setup.deck_seed(seed),
+				deck_noise: setup.deck_noise,
+			}
 		};
 		let mut game = Self {
 			board,
 			rules,
 			tiles: vec![None; n],
-			benches: [Vec::new(), Vec::new()],
-			bags: [p1_bag, p2_bag],
+			benches: [record.bench(Player::One), record.bench(Player::Two)],
+			bags: [record.reserves(Player::One), record.reserves(Player::Two)],
 			current: Player::One,
 			status: GameStatus::InProgress,
 			turn_count: 0,
@@ -1498,8 +1518,9 @@ impl Game {
 				blank_budget(rules.starting_bench_size),
 			],
 			opening_deck: [Vec::new(), Vec::new()],
+			setup: Some(record),
 		};
-		game.deal_opening();
+		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
 		game
 	}
@@ -1507,6 +1528,23 @@ impl Game {
 	/// Empty board, empty decks. For constructed test positions.
 	pub fn empty(rules: RuleSet) -> Self {
 		Self::empty_on(Arc::new(Board::rosette_8()), rules)
+	}
+
+	/// Install a completed 7+4 draft. Reserves stay in `bags` and are never usable.
+	pub fn from_setup_record(rules: RuleSet, seed: u64, record: crate::deck::SetupRecord) -> Self {
+		let mut game = Self::empty(rules);
+		game.seed = seed;
+		let mut max_id = 0u32;
+		for t in record.decks[0].iter().chain(record.decks[1].iter()) {
+			max_id = max_id.max(t.id);
+		}
+		game.next_tile_id = max_id.saturating_add(1).max(1);
+		game.benches = [record.bench(Player::One), record.bench(Player::Two)];
+		game.bags = [record.reserves(Player::One), record.reserves(Player::Two)];
+		game.setup = Some(record);
+		game.sync_public_bench_size();
+		game.snapshot_opening_decks();
+		game
 	}
 
 	pub fn empty_on(board: Arc<Board>, rules: RuleSet) -> Self {
@@ -1534,6 +1572,14 @@ impl Game {
 				blank_budget(rules.starting_bench_size),
 			],
 			opening_deck: [Vec::new(), Vec::new()],
+			setup: None,
+		}
+	}
+
+	fn sync_public_bench_size(&mut self) {
+		let n = self.benches[0].len().max(self.benches[1].len());
+		if n > 0 {
+			self.rules.bag_size = n as u8;
 		}
 	}
 
@@ -1556,15 +1602,6 @@ impl Game {
 			}
 			deck.truncate(n);
 			self.opening_deck[player.index()] = deck;
-		}
-	}
-
-	/// Move every remaining bag tile onto the public bench. New games sample
-	/// the full deck into the bag, then this empties it; scenarios that already
-	/// placed a fixed bench still receive the leftover as live tiles.
-	fn deal_opening(&mut self) {
-		for p in [Player::One, Player::Two] {
-			while self.draw_from_bag(p).is_some() {}
 		}
 	}
 
@@ -1690,6 +1727,16 @@ impl Game {
 		&self.benches[player.index()]
 	}
 
+	/// Original 27-tile (or scenario) collection. Empty on constructed fixtures.
+	pub fn collection(&self, player: Player) -> &[Tile] {
+		self.setup.as_ref().map(|s| s.decks[player.index()].as_slice()).unwrap_or(&[])
+	}
+
+	/// Reconstructible 7+4 draft. `None` on constructed [`Self::empty`] fixtures.
+	pub fn setup_record(&self) -> Option<&crate::deck::SetupRecord> {
+		self.setup.as_ref()
+	}
+
 	/// Usable spawn budget: `min(tokens in the stack, unplaced deck tiles)`.
 	/// Tokens beyond the remaining deck stay on the stack (and in the UI) but
 	/// cannot be spent until a later capture leaves a tile still unplaced, or
@@ -1784,9 +1831,9 @@ impl Game {
 		&self.bags[player.index()]
 	}
 
-	/// Reorder remaining bag tiles. New games have empty bags (the whole deck
-	/// is public). Kept so MCTS can determinize legacy `capture_draw_on_move`
-	/// positions and historical JSONL replays.
+	/// Reorder remaining reserve tiles. New games keep reserves unusable;
+	/// they are never drawn. Kept so MCTS can determinize legacy
+	/// `capture_draw_on_move` positions and historical JSONL replays.
 	pub fn shuffle_bags(&mut self, rng: &mut impl rand::Rng) {
 		self.bags[0].shuffle(rng);
 		self.bags[1].shuffle(rng);
@@ -2784,27 +2831,6 @@ pub fn sample_tile(
 	Tile { id, owner, rings, n_rings, ring_type, weight, dots }
 }
 
-fn build_bag(
-	owner: Player,
-	fill: bool,
-	size: usize,
-	max_rings: u8,
-	zag_numer: u8,
-	braid_numer: u8,
-	next_id: &mut u32,
-	rng: &mut StdRng,
-) -> Vec<Tile> {
-	if !fill {
-		return Vec::new();
-	}
-	let mut bag = Vec::with_capacity(size);
-	for _ in 0..size {
-		bag.push(sample_tile(owner, max_rings, zag_numer, braid_numer, next_id, rng));
-	}
-	bag.shuffle(rng);
-	bag
-}
-
 fn format_log(
 	player: Player,
 	action: Action,
@@ -2908,8 +2934,9 @@ mod tests {
 		assert_eq!(a.budget(Player::One), 7);
 		assert_eq!(a.budget(Player::Two), 7);
 		assert!(a.budget_tokens(Player::One).iter().all(|t| matches!(t, BudgetToken::Blank)));
-		assert_eq!(a.bag_len(Player::One), 0);
-		assert_eq!(a.bag_len(Player::Two), 0);
+		assert_eq!(a.collection(Player::One).len(), BAG_SIZE);
+		assert_eq!(a.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
+		assert_eq!(a.bag_len(Player::Two), BAG_SIZE - BAG_SIZE_DEFAULT);
 		let kinds = |g: &Game, p: Player| {
 			g.bench(p)
 				.iter()
@@ -2920,6 +2947,7 @@ mod tests {
 		assert_eq!(kinds(&a, Player::One), kinds(&a, Player::Two));
 		assert!(a.bench(Player::One).iter().all(|t| t.owner == Player::One));
 		assert!(a.bench(Player::Two).iter().all(|t| t.owner == Player::Two));
+		assert!(crate::deck::respects_type_cap(a.bench(Player::One)));
 	}
 
 	#[test]
@@ -2931,8 +2959,8 @@ mod tests {
 		assert_eq!(game.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 5);
 		assert_eq!(game.budget(Player::Two), 5);
-		assert_eq!(game.bag_len(Player::One), 0);
-		assert_eq!(game.bag_len(Player::Two), 0);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::Two), BAG_SIZE - BAG_SIZE_DEFAULT);
 		assert_eq!(game.legal_adds().len(), BAG_SIZE_DEFAULT * 8);
 	}
 
@@ -2961,40 +2989,44 @@ mod tests {
 	fn opening_deal_respects_bag_size_eleven() {
 		let game = Game::new(RuleSet::default(), 1);
 		assert_eq!(game.rules().bag_size, BAG_SIZE_DEFAULT as u8);
+		assert_eq!(game.rules().deck_size, BAG_SIZE as u8);
 		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 7);
-		assert_eq!(game.bag_len(Player::One), 0);
-		assert_eq!(game.bag_len(Player::Two), 0);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::Two), BAG_SIZE - BAG_SIZE_DEFAULT);
 		assert_eq!(game.legal_adds().len(), BAG_SIZE_DEFAULT * 8);
 	}
 
 	#[test]
-	fn opening_deal_respects_bag_size_twenty_seven() {
+	fn opening_deal_respects_deck_size_twenty_seven() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = BAG_SIZE as u8;
+		rules.deck_size = BAG_SIZE as u8;
 		let game = Game::new(rules, 1);
-		assert_eq!(game.bench(Player::One).len(), BAG_SIZE);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.collection(Player::One).len(), BAG_SIZE);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 7);
 	}
 
 	#[test]
-	fn opening_deal_respects_bag_size_thirteen() {
+	fn opening_deal_respects_deck_size_thirteen() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 13;
+		rules.deck_size = 13;
 		let game = Game::new(rules, 2);
-		assert_eq!(game.bench(Player::One).len(), 13);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.collection(Player::One).len(), 13);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::One), 2);
 		assert_eq!(game.budget(Player::One), 7);
 	}
 
 	#[test]
 	fn tokens_can_exceed_a_small_deck() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 7;
+		rules.deck_size = 7;
 		rules.starting_bench_size = 7;
 		let game = Game::new(rules, 3);
+		assert_eq!(game.collection(Player::One).len(), 7);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bag_len(Player::One), 0);
 		assert_eq!(game.budget(Player::One), 7);
@@ -3009,6 +3041,7 @@ mod tests {
 		assert_eq!(rules.control_hold_turns, 1);
 		assert_eq!(rules.starting_bench_size, 7);
 		assert_eq!(rules.bag_size, BAG_SIZE_DEFAULT as u8);
+		assert_eq!(rules.deck_size, BAG_SIZE as u8);
 		assert!(!rules.capture_draw_on_move);
 		assert!(rules.self_capture_budget);
 		assert_eq!(rules.max_rings, 3);
@@ -3026,8 +3059,39 @@ mod tests {
 		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 7);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 		assert_eq!(game.legal_adds().len(), BAG_SIZE_DEFAULT * 8);
+	}
+
+	#[test]
+	fn reserves_are_never_legal_adds() {
+		let game = Game::new(RuleSet::default(), 4);
+		let reserve_ids: Vec<u32> = game.bag(Player::One).iter().map(|t| t.id).collect();
+		assert_eq!(reserve_ids.len(), BAG_SIZE - BAG_SIZE_DEFAULT);
+		for action in game.legal_adds() {
+			let Action::Add { bench_index, .. } = action else {
+				panic!("expected ADD");
+			};
+			let id = game.bench(Player::One)[bench_index].id;
+			assert!(!reserve_ids.contains(&id), "reserve {id} must not be ADD-able");
+		}
+		assert!(crate::deck::respects_type_cap(game.bench(Player::One)));
+		assert!(crate::deck::respects_type_cap(game.setup_record().unwrap().pick7[0].as_slice()));
+	}
+
+	#[test]
+	fn from_setup_record_installs_the_draft() {
+		let rec = crate::deck::deal_and_pick(
+			&RuleSet::default(),
+			&crate::deck::SetupConfig::for_seed(11),
+			11,
+			&mut 1u32,
+		);
+		let game = Game::from_setup_record(RuleSet::default(), 11, rec.clone());
+		assert_eq!(game.bench(Player::One), rec.bench(Player::One));
+		assert_eq!(game.bag(Player::One), rec.reserves(Player::One));
+		assert_eq!(game.collection(Player::One).len(), BAG_SIZE);
+		assert_eq!(game.deck_slots(Player::One).len(), BAG_SIZE_DEFAULT);
 	}
 
 	#[test]
@@ -4148,10 +4212,11 @@ mod tests {
 	#[test]
 	fn small_deck_opening_stays_above_insufficient_floor() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 11;
+		rules.deck_size = 11;
 		rules.insufficient_tiles_loss = InsufficientTilesLoss::Strict;
 		let game = Game::new(rules, 1);
 		assert_eq!(game.reachable_tiles(Player::One), 11);
+		assert_eq!(game.bench(Player::One).len(), 11);
 		assert_eq!(game.bag_len(Player::One), 0);
 		assert_eq!(game.status(), GameStatus::InProgress);
 	}
@@ -4842,8 +4907,9 @@ mod tests {
 	fn sampled_decks_are_mirrored_and_size_11() {
 		let game = Game::new(RuleSet::default(), 11);
 		assert_eq!(game.rules().bag_size as usize, BAG_SIZE_DEFAULT);
+		assert_eq!(game.collection(Player::One).len(), BAG_SIZE);
 		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 		let p1: Vec<_> = game
 			.bench(Player::One)
 			.iter()
@@ -5506,16 +5572,16 @@ mod tests {
 	}
 
 	#[test]
-	fn shuffle_bags_is_a_noop_on_the_public_deck() {
+	fn shuffle_bags_does_not_touch_the_public_bench() {
 		let mut game = Game::new(RuleSet::default(), 12);
-		assert!(game.bag(Player::One).is_empty());
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 		let snapshot =
 			|g: &Game, p: Player| g.bench(p).iter().map(|t| t.kind_index()).collect::<Vec<_>>();
 		let before = snapshot(&game, Player::One);
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, snapshot(&game, Player::One));
-		assert!(game.bag(Player::One).is_empty());
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 	}
 
 	#[test]

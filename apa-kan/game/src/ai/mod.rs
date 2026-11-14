@@ -708,16 +708,22 @@ mod tests {
 	}
 
 	#[test]
-	fn shuffle_bags_is_noop_when_the_deck_is_public() {
+	fn shuffle_bags_does_not_touch_the_public_bench() {
 		let mut game = Game::new(RuleSet::default(), 1);
-		assert!(game.bag(Player::One).is_empty());
+		assert_eq!(
+			game.bag_len(Player::One),
+			crate::game::BAG_SIZE - crate::game::BAG_SIZE_DEFAULT
+		);
 		let kinds =
 			|g: &Game, p: Player| g.bench(p).iter().map(|t| t.kind_index()).collect::<Vec<_>>();
 		let before = kinds(&game, Player::One);
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, kinds(&game, Player::One));
-		assert!(game.bag(Player::One).is_empty());
+		assert_eq!(
+			game.bag_len(Player::One),
+			crate::game::BAG_SIZE - crate::game::BAG_SIZE_DEFAULT
+		);
 	}
 
 	#[test]
