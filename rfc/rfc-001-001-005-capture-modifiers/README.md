@@ -67,4 +67,8 @@ JSONL: each tile has `capture` (`dot`/`triangle`; absent on older logs = triangl
 
 1. **Move length.** `dots` is 1–3 exact MOVE steps. Preserved: number of marks = move length, shape = dest.
 2. **Bench overflow.** Captured tiles may exceed 11 and the 6-per-type cap. Usable budget and low-value use the live bench.
-3. **Simultaneous snapshot.** Unchanged. One dest per action.
+3. **Simultaneous snapshot.** Unchanged. One dest per action. Captured-to-bench tiles change `owner` to the mover.
+
+## H2H
+
+Committed [`capture_modifiers`](../../apa-kan/game/benchmark_results/capture_modifiers) (release, `--budget nodes:132000,iters:2600`, `--jobs 4`, 12/pairing/seat, seed 1, `--no-depth-probe`, `--pick search`, 27-tile collections). P1 **49-7-52**, ends 41/18/2/47/0, mean avg turns **39.63**. Vs PR #40 [`work_budget_doubles_allowed`](../../apa-kan/game/benchmark_results/work_budget_doubles_allowed) (**45-17-46**, 38/7/14/49/0, **60.29**). Capture dest 507 bench / 632 tokens. Picker mostly 5 dots of 11 (46-7-45); 6-dot openings 1-0-5.

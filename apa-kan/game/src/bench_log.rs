@@ -1364,6 +1364,11 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_capture_modifiers_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/capture_modifiers/h2h.jsonl.gz");
+	}
+
+	#[test]
 	fn committed_work_budget_doubles_disallowed_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays(
 			"benchmark_results/work_budget_doubles_disallowed/h2h.jsonl.gz",
