@@ -377,7 +377,11 @@ impl CaptureMark {
 	}
 
 	pub fn from_bit(bit: u8) -> Self {
-		if bit == 0 { Self::Triangle } else { Self::Dot }
+		if bit == 0 {
+			Self::Triangle
+		} else {
+			Self::Dot
+		}
 	}
 
 	pub fn parse(s: &str) -> Result<Self, String> {
@@ -7363,20 +7367,8 @@ mod tests {
 	fn overwhelm_neighbors(game: &mut Game, node: NodeId, owner: Player) {
 		let nbs = game.board().neighbors(node).to_vec();
 		assert!(nbs.len() >= 2);
-		put_rings(
-			game,
-			nbs[0],
-			owner,
-			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
-			1,
-		);
-		put_rings(
-			game,
-			nbs[1],
-			owner,
-			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
-			1,
-		);
+		put_rings(game, nbs[0], owner, &[TileColor::Orange, TileColor::Teal, TileColor::Maroon], 1);
+		put_rings(game, nbs[1], owner, &[TileColor::Orange, TileColor::Teal, TileColor::Maroon], 1);
 	}
 
 	#[test]
@@ -7440,7 +7432,9 @@ mod tests {
 		assert_eq!(game.bench(Player::One).len(), bench_n + outcome.removals.len());
 		for rem in &outcome.removals {
 			assert!(
-				game.bench(Player::One).iter().any(|t| t.id == rem.tile.id && t.owner == Player::One),
+				game.bench(Player::One)
+					.iter()
+					.any(|t| t.id == rem.tile.id && t.owner == Player::One),
 				"captured tile {} must join mover bench with mover owner",
 				rem.tile.id
 			);
@@ -7456,15 +7450,7 @@ mod tests {
 		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
 		assert!(game.is_overwhelmed(spawn));
 		let from = game.board().spawns()[4];
-		put_capture(
-			&mut game,
-			from,
-			Player::One,
-			TileColor::Blue,
-			3,
-			1,
-			CaptureMark::Dot,
-		);
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Dot);
 		game.set_current(Player::One);
 		let tokens = game.budget_token_count(Player::One);
 		let bench_n = game.bench(Player::One).len();
@@ -7494,7 +7480,9 @@ mod tests {
 		let opp = nbs.get(2).copied().unwrap_or(game.board().spawns()[1]);
 		if game.tile_at(opp).is_none() {
 			let opp_nbs = game.board().neighbors(opp).to_vec();
-			if opp_nbs.len() >= 2 && game.tile_at(opp_nbs[0]).is_none() && game.tile_at(opp_nbs[1]).is_none()
+			if opp_nbs.len() >= 2
+				&& game.tile_at(opp_nbs[0]).is_none()
+				&& game.tile_at(opp_nbs[1]).is_none()
 			{
 				overwhelm_neighbors(&mut game, opp, Player::One);
 				put(&mut game, opp, Player::Two, TileColor::Green, 1, 1);
@@ -7557,7 +7545,8 @@ mod tests {
 			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
 			1,
 		);
-		let mover = take(&mut game, Player::One, TileColor::Blue, 3, 1).with_capture(CaptureMark::Dot);
+		let mover =
+			take(&mut game, Player::One, TileColor::Blue, 3, 1).with_capture(CaptureMark::Dot);
 		game.place_tile(from, mover);
 		game.set_current(Player::One);
 		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
@@ -7577,26 +7566,15 @@ mod tests {
 		let n = 20_000u32;
 		let mut dots = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(
-				Player::One,
-				3,
-				0,
-				0,
-				0,
-				DOT_PERCENT_DEFAULT,
-				&mut next_id,
-				&mut rng,
-			);
+			let t =
+				sample_tile(Player::One, 3, 0, 0, 0, DOT_PERCENT_DEFAULT, &mut next_id, &mut rng);
 			assert_ne!(t.capture.bit(), 2);
 			if t.capture.is_dot() {
 				dots += 1;
 			}
 		}
 		let rate = f64::from(dots) / f64::from(n);
-		assert!(
-			(0.47..0.53).contains(&rate),
-			"dot rate={rate:.4} (expected ~0.50)"
-		);
+		assert!((0.47..0.53).contains(&rate), "dot rate={rate:.4} (expected ~0.50)");
 	}
 
 	#[test]

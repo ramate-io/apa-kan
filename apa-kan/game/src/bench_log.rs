@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::deck::PickStrategy;
 use crate::game::{
-	Action, ActionOutcome, BraidFailMismatch, BudgetToken, CaptureMark, EndReason, Game, GameStatus,
-	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
-	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
+	Action, ActionOutcome, BraidFailMismatch, BudgetToken, CaptureMark, EndReason, Game,
+	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
+	PathConstraint, Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
 	DOT_PERCENT_DEFAULT,
 };
 

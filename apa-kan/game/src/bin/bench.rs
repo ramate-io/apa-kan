@@ -660,16 +660,10 @@ fn run(cfg: BenchConfig) {
 		if games_n == 0 { 0.0 } else { f64::from(bench_captures) / f64::from(games_n) };
 	let avg_token_cap =
 		if games_n == 0 { 0.0 } else { f64::from(token_captures) / f64::from(games_n) };
-	let mean_tokens = if snapshots == 0 {
-		0.0
-	} else {
-		token_sum as f64 / f64::from(snapshots) / 2.0
-	};
-	let mean_bench = if snapshots == 0 {
-		0.0
-	} else {
-		bench_len_sum as f64 / f64::from(snapshots) / 2.0
-	};
+	let mean_tokens =
+		if snapshots == 0 { 0.0 } else { token_sum as f64 / f64::from(snapshots) / 2.0 };
+	let mean_bench =
+		if snapshots == 0 { 0.0 } else { bench_len_sum as f64 / f64::from(snapshots) / 2.0 };
 	lines.push(format!(
 		"# capture_dest  bench={bench_captures} avg_per_game={avg_bench_cap:.2}  tokens={token_captures} avg_per_game={avg_token_cap:.2}"
 	));
@@ -692,12 +686,7 @@ fn run(cfg: BenchConfig) {
 	}
 	let pick_bits: Vec<String> = (0..12)
 		.filter(|&i| pick_w[i] + pick_d[i] + pick_l[i] > 0)
-		.map(|i| {
-			format!(
-				"dots{}={}-{}-{}",
-				i, pick_w[i], pick_d[i], pick_l[i]
-			)
-		})
+		.map(|i| format!("dots{}={}-{}-{}", i, pick_w[i], pick_d[i], pick_l[i]))
 		.collect();
 	lines.push(format!("# pick_dot_ratio  P1_opening_dots W-D-L  {}", pick_bits.join("  ")));
 	println!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}");
@@ -1246,8 +1235,7 @@ fn play_game(
 	let mut token_sum = 0u64;
 	let mut bench_len_sum = 0u64;
 	let mut snapshots = 0u32;
-	let p1_open_dots =
-		game.bench(Player::One).iter().filter(|t| t.capture.is_dot()).count() as u32;
+	let p1_open_dots = game.bench(Player::One).iter().filter(|t| t.capture.is_dot()).count() as u32;
 	let p1_open_n = game.bench(Player::One).len() as u32;
 	let center = game.board().center();
 	let mut guard = 0u32;
@@ -1274,7 +1262,8 @@ fn play_game(
 		snapshots += 1;
 		token_sum += game.budget_token_count(Player::One) as u64
 			+ game.budget_token_count(Player::Two) as u64;
-		bench_len_sum += game.bench(Player::One).len() as u64 + game.bench(Player::Two).len() as u64;
+		bench_len_sum +=
+			game.bench(Player::One).len() as u64 + game.bench(Player::Two).len() as u64;
 		for (_, t) in game.tiles() {
 			board_tiles += 1;
 			board_rings += u64::from(t.n_rings);

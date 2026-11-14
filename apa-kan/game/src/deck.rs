@@ -404,13 +404,7 @@ pub fn generate_both_collections(
 }
 
 fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3], u8) {
-	(
-		t.n_rings,
-		t.dots,
-		t.rings.map(|c| c as u8),
-		t.ring_type.map(|r| r as u8),
-		t.capture.bit(),
-	)
+	(t.n_rings, t.dots, t.rings.map(|c| c as u8), t.ring_type.map(|r| r as u8), t.capture.bit())
 }
 
 fn tile_score(tile: Tile) -> i32 {
@@ -1103,8 +1097,11 @@ mod tests {
 	fn picker_scores_mixed_capture_marks_above_all_dots() {
 		let mixed: Vec<Tile> = (0..11)
 			.map(|i| {
-				normal_tile(i + 1, TileColor::ALL[i as usize % 6])
-					.with_capture(if i < 5 { CaptureMark::Dot } else { CaptureMark::Triangle })
+				normal_tile(i + 1, TileColor::ALL[i as usize % 6]).with_capture(if i < 5 {
+					CaptureMark::Dot
+				} else {
+					CaptureMark::Triangle
+				})
 			})
 			.collect();
 		let all_dot: Vec<Tile> = (0..11)
@@ -1112,9 +1109,8 @@ mod tests {
 				normal_tile(i + 21, TileColor::ALL[i as usize % 6]).with_capture(CaptureMark::Dot)
 			})
 			.collect();
-		let all_tri: Vec<Tile> = (0..11)
-			.map(|i| normal_tile(i + 41, TileColor::ALL[i as usize % 6]))
-			.collect();
+		let all_tri: Vec<Tile> =
+			(0..11).map(|i| normal_tile(i + 41, TileColor::ALL[i as usize % 6])).collect();
 		assert!(set_score(&mixed, &[]) > set_score(&all_dot, &[]));
 		assert!(set_score(&mixed, &[]) > set_score(&all_tri, &[]));
 	}

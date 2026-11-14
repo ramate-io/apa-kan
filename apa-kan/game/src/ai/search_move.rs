@@ -79,8 +79,7 @@ impl SearchMove {
 				let capture = b >> 2;
 				Some(SearchMove::Add {
 					kind: u32::from(state - 1) * KIND_DOTS as u32
-						+ u32::from(dots)
-						+ (u32::from(capture) << 16),
+						+ u32::from(dots) + (u32::from(capture) << 16),
 					node: a,
 				})
 			}

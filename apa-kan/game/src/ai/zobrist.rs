@@ -252,9 +252,12 @@ mod tests {
 		let mut dots = Game::empty(RuleSet::default());
 		let mut tris = Game::empty(RuleSet::default());
 		let spawn = dots.board().spawns()[0];
-		let d = dots.alloc_tile(Player::One, TileColor::Green, 1, 1).with_capture(CaptureMark::Dot);
-		let t =
-			tris.alloc_tile(Player::One, TileColor::Green, 1, 1).with_capture(CaptureMark::Triangle);
+		let d = dots
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_capture(CaptureMark::Dot);
+		let t = tris
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_capture(CaptureMark::Triangle);
 		dots.place_tile(spawn, d);
 		tris.place_tile(spawn, t);
 		assert_ne!(hash(&dots), hash(&tris));
