@@ -8,10 +8,16 @@ Release `apa-kan-bench`, 12 games per pairing per seat, seed 1, `--no-depth-prob
 
 Calibrate log: [`work_budget_calibration.txt`](work_budget_calibration.txt). Command: `apa-kan-bench --calibrate --think-ms 1000 --seed 1` (3 games × 16 moves, minimax vs MCTS). Minimax nodes/move: n=24, mean=131781, min=46720, max=248256, mean completed ID depth=3.58. MCTS iters/move: n=24, mean=2635, min=1327, max=3961. `--think-ms` remains for wall-clock search (not reproducible).
 
-| Dir | Rules | Notes |
-|---|---|---|
-| [`work_budget_doubles_allowed/`](work_budget_doubles_allowed/) | independent channels, `--braid-fail-mismatch one`, `--no-same-piece-twice off` | accepted default, work budget |
-| [`work_budget_doubles_disallowed/`](work_budget_doubles_disallowed/) | same, `--no-same-piece-twice when-deck-empty` | comparison, work budget |
+Release `apa-kan-bench`, 12/pairing/seat, seed 1, `--no-depth-probe`, 108 games, zags on, `--jobs 4`. Wall-clock: allowed **1796.2 s** (~30 min), disallowed **2032.8 s** (~34 min), both **3829 s** (~64 min). Time-based pair on this VM was 1048.4 + 1050.5 s (~35 min).
+
+| Dir | P1 W-D-L | Ends (control/lockout/TL/LV/elim) | Mean avg turns | Opp / self /game | Center opp / self | Log |
+|---|---|---|---|---|---|---|
+| [`work_budget_doubles_allowed/`](work_budget_doubles_allowed/) | **45-17-46** | 38 / 7 / 14 / 49 (wins 46, draws 3) / 0 | **60.29** | 5.15 (556) / 5.06 (546) | 0.59 (64) / 0.16 (17) | work budget, doubles allowed |
+| [`work_budget_doubles_disallowed/`](work_budget_doubles_disallowed/) | **50-15-43** | 37 / 10 / 11 / 50 (wins 46, draws 4) / 0 | **57.03** | 5.12 (553) / 5.13 (554) | 0.58 (63) / 0.19 (21) | `--no-same-piece-twice when-deck-empty` |
+| [`center_double_edge_doubles_allowed/`](center_double_edge_doubles_allowed/) | **53-8-47** | 38 / 9 / 5 / 56 (wins 53, draws 3) / 0 | **47.47** | 5.42 (585) / 5.04 (544) | 0.58 (63) / 0.11 (12) | time-based 1000 ms |
+| [`center_double_edge_doubles_disallowed/`](center_double_edge_doubles_disallowed/) | **55-12-41** | 34 / 9 / 8 / 57 (wins 53, draws 4) / 0 | **51.45** | 5.38 (581) / 5.30 (572) | 0.58 (63) / 0.14 (15) | time-based 1000 ms |
+
+Work-budget games run longer (more turn-limits and draws) than the time-based pair: that 1000 ms was 9 pairing threads on 4 cores, so each search got less than a full second of CPU. The work budget is a full single-thread 1000 ms. Captures and center pops stay in the same band. P1 W-D-L shifts toward more draws (8→17 allowed, 12→15 disallowed).
 
 ## Center double-edge scoring + new low-value (time-based, historical)
 
