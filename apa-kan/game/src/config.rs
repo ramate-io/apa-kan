@@ -20,6 +20,9 @@ pub struct GameConfig {
 	pub think: Duration,
 	pub delay: Duration,
 	pub screenshot: Option<PathBuf>,
+	/// When set with `--screenshot`, capture `Game::start` (opening deal)
+	/// instead of the mid-game fixture.
+	pub screenshot_from_start: bool,
 	pub width: u32,
 	pub height: u32,
 	pub rules: RuleSet,
@@ -35,6 +38,7 @@ impl Default for GameConfig {
 			think: Duration::from_millis(80),
 			delay: Duration::from_millis(350),
 			screenshot: None,
+			screenshot_from_start: false,
 			width: 1280,
 			height: 900,
 			rules: RuleSet::default(),
@@ -94,6 +98,9 @@ impl GameConfig {
 				}
 				"--screenshot" => {
 					cfg.screenshot = Some(PathBuf::from(require_value("--screenshot", it.next())?));
+				}
+				"--from-start" => {
+					cfg.screenshot_from_start = true;
 				}
 				"--scenario" => {
 					cfg.scenario = Some(Scenario::load(&require_value("--scenario", it.next())?)?);
@@ -331,6 +338,7 @@ pub fn usage() -> &'static str {
 	   --width <px>                               Window width (default: 1280)\n\
 	   --height <px>                              Window height (default: 900)\n\
 	   --screenshot <path>                        Capture a mid-game board PNG and exit\n\
+	   --from-start                               With --screenshot, capture the opening deal\n\
 	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
 	   --list-scenarios                           Print builtin deck scenarios\n\
 	   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)\n\
@@ -385,6 +393,14 @@ mod tests {
 	fn unknown_arg_is_an_error() {
 		let err = GameConfig::parse(["--bot3", "human"]).unwrap_err();
 		assert!(err.contains("unknown argument"));
+	}
+
+	#[test]
+	fn parses_screenshot_from_start() {
+		let cfg = GameConfig::parse(["--screenshot", "out.png", "--from-start"]).unwrap();
+		assert_eq!(cfg.screenshot.as_deref(), Some(std::path::Path::new("out.png")));
+		assert!(cfg.screenshot_from_start);
+		assert!(!GameConfig::parse(["--screenshot", "out.png"]).unwrap().screenshot_from_start);
 	}
 
 	#[test]

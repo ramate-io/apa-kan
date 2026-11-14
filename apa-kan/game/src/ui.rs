@@ -16,7 +16,8 @@ use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
 	let screenshot = cfg.screenshot.clone();
-	let game = if screenshot.is_some() {
+	let from_start = cfg.screenshot_from_start;
+	let game = if screenshot.is_some() && !from_start {
 		visual::demo_midgame()
 	} else {
 		match Game::start(cfg.rules, cfg.seed, cfg.scenario.as_ref()) {
@@ -47,7 +48,7 @@ pub fn run_app(cfg: GameConfig) {
 		.insert_resource(PlayState {
 			game,
 			selection: Selection::None,
-			log: if screenshot.is_some() {
+			log: if screenshot.is_some() && !from_start {
 				"P1 ADD orange w2 d2 at center".into()
 			} else {
 				String::new()
@@ -570,6 +571,7 @@ fn refresh_view(
 					Vec2::new(p[0], p[1]),
 					player,
 					layout.bench_tile_radius,
+					0,
 				),
 				DeckSlot::Live(tile) => {
 					let bench_i = play.game.bench(player).iter().position(|t| t.id == tile.id);
@@ -600,6 +602,7 @@ fn refresh_view(
 				Vec2::new(p[0], p[1]),
 				player,
 				layout.bench_tile_radius,
+				i,
 			);
 		}
 	}
@@ -1139,12 +1142,18 @@ fn spawn_solid_token(
 	pos: Vec2,
 	player: Player,
 	radius: f32,
+	stack_index: usize,
 ) {
+	let fill_z = visual::token_stack_fill_z(stack_index);
+	let rim_z = visual::token_stack_rim_z(stack_index);
+	let fill = rgb(visual::owner_fill_rgb(player));
+	// Color::srgb is alpha 1, so From<Color> already picks Opaque. Named
+	// here so a later tint cannot silently flip the stack back to Blend.
 	commands.spawn((
 		DynamicView,
 		Mesh2d(meshes.add(Circle::new(radius))),
-		MeshMaterial2d(materials.add(ColorMaterial::from(rgb(visual::owner_fill_rgb(player))))),
-		Transform::from_translation(pos.extend(visual::Z_TILE)),
+		MeshMaterial2d(materials.add(ColorMaterial::from(fill))),
+		Transform::from_translation(pos.extend(fill_z)),
 	));
 	let rim = (radius * 0.10).max(1.4);
 	spawn_ring(
@@ -1155,7 +1164,7 @@ fn spawn_solid_token(
 		(radius - rim).max(1.0),
 		radius,
 		rgb(visual::BLANK_TOKEN_RIM_RGB),
-		visual::Z_TILE_RING,
+		rim_z,
 	);
 }
 

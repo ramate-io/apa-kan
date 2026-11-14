@@ -447,6 +447,9 @@ fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		}
 		let tokens = game.budget_tokens(player);
 		let n = tokens.len();
+		// Painter's algorithm matches Bevy `token_stack_*_z`: index 0 is the
+		// back of the pile; each later disc's opaque fill covers the previous
+		// rim so stacked edges show, not rims shining through the front face.
 		for i in 0..n {
 			let p = layout.budget_stack_pos(player, i, n);
 			let q = layout.world_to_image(p);
@@ -805,6 +808,49 @@ mod tests {
 					&& channel_near(ring_px[1], fill[1], 40)
 					&& channel_near(ring_px[2], fill[2], 40),
 				"{player:?}: empty slot must not show rings/dots, got {ring_px:?} vs fill {fill:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn budget_stack_front_disc_occludes_rear_rims() {
+		use crate::game::Player;
+		use crate::visual::{self, ViewLayout};
+		let game = Game::new(RuleSet::default(), 1);
+		let w = 1280u32;
+		let h = 800u32;
+		let path = std::env::temp_dir().join("apa-kan-budget-stack-occlude.png");
+		write_png_sized(&game, &path, "opening token stacks", w, h).unwrap();
+		let img = image::open(&path).unwrap().to_rgba8();
+		let layout =
+			ViewLayout::from_window_with_deck(w as f32, h as f32, game.rules().bag_size as usize);
+		let rim = visual::rgb8(visual::BLANK_TOKEN_RIM_RGB);
+		for player in [Player::One, Player::Two] {
+			let n = game.budget_tokens(player).len();
+			assert!(n >= 2, "{player:?}: need a stack to test occlusion");
+			let fill = visual::rgb8(visual::owner_fill_rgb(player));
+			let back = layout.world_to_image(layout.budget_stack_pos(player, n - 2, n));
+			let front = layout.world_to_image(layout.budget_stack_pos(player, n - 1, n));
+			let dx = front[0] - back[0];
+			let dy = front[1] - back[1];
+			let dist = (dx * dx + dy * dy).sqrt();
+			assert!(dist > 1.0, "{player:?}: stacked discs should be offset");
+			let r = layout.bench_tile_radius;
+			let t = r / dist;
+			let on_back_rim = [back[0] + dx * t, back[1] + dy * t];
+			let px = img.get_pixel(on_back_rim[0] as u32, on_back_rim[1] as u32);
+			assert!(
+				channel_near(px[0], fill[0], 24)
+					&& channel_near(px[1], fill[1], 24)
+					&& channel_near(px[2], fill[2], 24),
+				"{player:?}: front disc must hide the rear rim at {on_back_rim:?}; want fill {fill:?}, not rim {rim:?}, got {px:?}"
+			);
+			let front_c = img.get_pixel(front[0] as u32, front[1] as u32);
+			assert!(
+				channel_near(front_c[0], fill[0], 18)
+					&& channel_near(front_c[1], fill[1], 18)
+					&& channel_near(front_c[2], fill[2], 18),
+				"{player:?}: front face should be opaque owner fill {fill:?}, got {front_c:?}"
 			);
 		}
 	}

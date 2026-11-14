@@ -107,6 +107,23 @@ pub const Z_TILE_RING: f32 = 2.15;
 pub const Z_TILE_DOT: f32 = 2.3;
 pub const Z_HIGHLIGHT: f32 = 3.0;
 pub const Z_MARKER: f32 = 4.0;
+/// Budget-token stack sits above tile rims. Later discs (higher index, toward
+/// the board) must have fill **and** rim above the previous disc, or Bevy's
+/// z-sort draws every rim on top of every fill and the pile looks like
+/// transparent outlined rings.
+pub const Z_TOKEN: f32 = 2.40;
+pub const Z_TOKEN_STEP: f32 = 0.025;
+pub const Z_TOKEN_RIM_EPS: f32 = 0.008;
+
+/// Fill z for budget-token stack index `i` (0 = back of the pile).
+pub fn token_stack_fill_z(index: usize) -> f32 {
+	Z_TOKEN + index as f32 * Z_TOKEN_STEP
+}
+
+/// Rim z for the same disc: above its fill, below the next disc's fill.
+pub fn token_stack_rim_z(index: usize) -> f32 {
+	token_stack_fill_z(index) + Z_TOKEN_RIM_EPS
+}
 
 /// Top HUD band (title, turn, last action, warning) in window pixels.
 pub const HUD_TOP_PX: f32 = 112.0;
@@ -2190,6 +2207,29 @@ mod tests {
 		let p2_0 = layout.budget_stack_pos(Player::Two, 0, 9);
 		let p2_1 = layout.budget_stack_pos(Player::Two, 1, 9);
 		assert!(p2_1[1] < p2_0[1], "P2 stack grows toward the board (-Y)");
+	}
+
+	#[test]
+	fn token_stack_later_fill_covers_earlier_rim() {
+		for i in 0..24 {
+			assert!(
+				token_stack_rim_z(i) > token_stack_fill_z(i),
+				"rim must sit above its own fill"
+			);
+			assert!(
+				token_stack_fill_z(i + 1) > token_stack_rim_z(i),
+				"disc {} fill z {} must cover disc {} rim z {}",
+				i + 1,
+				token_stack_fill_z(i + 1),
+				i,
+				token_stack_rim_z(i)
+			);
+			assert!(
+				token_stack_rim_z(i) < Z_HIGHLIGHT,
+				"token stack must stay below highlights, rim[{i}]={}",
+				token_stack_rim_z(i)
+			);
+		}
 	}
 
 	#[test]
