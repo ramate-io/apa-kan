@@ -1933,7 +1933,10 @@ impl Game {
 		(ch.match_weight(), ch.mismatch_weight())
 	}
 
-	/// Sum of per-edge `mismatch − match` against this tile's neighbors.
+	/// Sum of per-edge `mismatch − match` against this tile's **unique**
+	/// neighbors. Inner↔center has two generating-circle arcs (two petals
+	/// through the same two nodes) but is one scoring edge; both tiles take
+	/// the same undirected channel total, not +1 per side and not +1 per arc.
 	pub fn tile_effective_weight(&self, node: NodeId) -> Option<i32> {
 		let tile = self.tile_at(node)?;
 		let mut effective = 0i32;
@@ -5823,6 +5826,21 @@ mod tests {
 		)
 	}
 
+	fn blue_teal_braid(game: &mut Game, owner: Player) -> Tile {
+		game.alloc_typed_rings(
+			owner,
+			&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+			1,
+			1,
+		)
+	}
+
+	fn two_inner_neighbors(game: &Game) -> (NodeId, NodeId) {
+		let inner = game.board().inner_ring();
+		assert!(inner.len() >= 2, "center has an 8-node inner ring");
+		(inner[0], inner[1])
+	}
+
 	#[test]
 	fn braid_satisfied_when_neighbor_covers_color_counts() {
 		let mut game = Game::empty(RuleSet::default());
@@ -6128,6 +6146,163 @@ mod tests {
 			assert_eq!(x, row.want_mismatch, "{} tile mismatches", row.name);
 			assert_eq!(x >= m, game.is_overwhelmed(spawn), "{} tile_score vs overwhelm", row.name);
 		}
+	}
+
+	#[test]
+	fn center_inner_is_one_scoring_edge_despite_two_arcs() {
+		let mut game = Game::empty(RuleSet::default());
+		let board = game.board();
+		let center = board.center();
+		assert_eq!(board.neighbors(center).len(), 8);
+		assert_eq!(board.incident_arc_count(center), 16);
+		let inner = board.inner_ring()[0];
+		assert_eq!(board.connecting_arc_indices(center, inner).count(), 2);
+		assert_eq!(
+			board.neighbors(inner).iter().filter(|&&n| n == center).count(),
+			1,
+			"unique-neighbor list keeps the center once"
+		);
+		assert!(
+			!board.inner_ring().iter().any(|&a| {
+				board.inner_ring().iter().any(|&b| a != b && board.neighbors(a).contains(&b))
+			}),
+			"inner-ring nodes are not adjacent to each other"
+		);
+
+		let a = orange_green_braid(&mut game, Player::One);
+		let b = blue_teal_braid(&mut game, Player::Two);
+		assert_eq!(a.weight, 2);
+		assert_eq!(b.weight, 2);
+		assert_eq!(game.edge_score(a, b), (0, 1), "failed braid is +1 for the pair, not per side");
+		assert_eq!(game.edge_score(b, a), (0, 1));
+
+		game.place_tile(center, a);
+		game.place_tile(inner, b);
+		assert_eq!(game.tile_effective_weight(center), Some(1), "two visual arcs still score once");
+		assert_eq!(game.tile_effective_weight(inner), Some(1));
+		assert!(!game.is_overwhelmed(center), "one failed 2-braid edge is +1 < ring_weight 2");
+		assert!(!game.is_overwhelmed(inner));
+		assert!(game.collect_removals().is_empty());
+	}
+
+	#[test]
+	fn failed_double_braid_at_center_pops_only_the_center() {
+		// User report: 2-braid in the center against two mismatching 2-braids.
+		// Accepted `one`: each failed edge is +1. Center +1+1 = 2 >= 2 pops;
+		// each neighbor +1 < 2 stays. Capture is simultaneous — neighbors are
+		// scored, they just are not overwhelmed.
+		let mut rules = RuleSet::default();
+		rules.add_only_on_spawns = false;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let (n0, n1) = two_inner_neighbors(&game);
+		assert_ne!(n0, n1);
+		assert!(!game.board().neighbors(n0).contains(&n1));
+
+		let placed = orange_green_braid(&mut game, Player::One);
+		let nb0 = blue_teal_braid(&mut game, Player::Two);
+		let nb1 = blue_teal_braid(&mut game, Player::Two);
+		assert_eq!(game.edge_channels(placed, nb0).braid_mismatch, 1);
+		assert_eq!(game.edge_channels(placed, nb1).braid_mismatch, 1);
+
+		game.place_tile(n0, nb0);
+		game.place_tile(n1, nb1);
+		game.set_bench(Player::One, vec![placed]);
+
+		assert!(game.would_overwhelm_add(placed, center));
+		let outcome = game
+			.apply(Action::Add { bench_index: 0, node: center })
+			.expect("ADD to the empty center");
+
+		assert_eq!(outcome.removals.len(), 1, "only the placed 2-braid is overwhelmed");
+		assert_eq!(outcome.removals[0].node, center);
+		assert_eq!(outcome.removals[0].tile.id, placed.id);
+		assert_eq!(outcome.removals[0].matches, 2, "ring_weight 2 + match 0");
+		assert_eq!(outcome.removals[0].mismatches, 2, "+1 from each failed-braid neighbor");
+		assert!(game.tile_at(center).is_none());
+		assert_eq!(game.tile_at(n0).map(|t| t.id), Some(nb0.id), "neighbor 0 stays");
+		assert_eq!(game.tile_at(n1).map(|t| t.id), Some(nb1.id), "neighbor 1 stays");
+		assert!(!game.is_overwhelmed(n0));
+		assert!(!game.is_overwhelmed(n1));
+	}
+
+	#[test]
+	fn failed_double_braid_weight_variant_pops_center_and_both_neighbors() {
+		// The reported "hit for two, both pop" is `--braid-fail-mismatch weight`,
+		// not the accepted `one` default.
+		let mut rules = RuleSet::default();
+		rules.add_only_on_spawns = false;
+		rules.braid_fail_mismatch = BraidFailMismatch::Weight;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let (n0, n1) = two_inner_neighbors(&game);
+		let placed = orange_green_braid(&mut game, Player::One);
+		let nb0 = blue_teal_braid(&mut game, Player::Two);
+		let nb1 = blue_teal_braid(&mut game, Player::Two);
+		assert_eq!(game.edge_channels(placed, nb0).braid_mismatch, 2);
+
+		game.place_tile(n0, nb0);
+		game.place_tile(n1, nb1);
+		game.set_bench(Player::One, vec![placed]);
+		let outcome = game
+			.apply(Action::Add { bench_index: 0, node: center })
+			.expect("ADD to the empty center");
+
+		let mut nodes: Vec<NodeId> = outcome.removals.iter().map(|r| r.node).collect();
+		nodes.sort();
+		let mut want = vec![center, n0, n1];
+		want.sort();
+		assert_eq!(nodes, want, "weight variant pops the placed tile and both neighbors");
+		assert!(game.tile_at(center).is_none());
+		assert!(game.tile_at(n0).is_none());
+		assert!(game.tile_at(n1).is_none());
+	}
+
+	#[test]
+	fn capture_scores_neighbors_simultaneously_with_the_placed_tile() {
+		// 1-ring non-hitting zags next to a failed 2-braid: each edge is +1.
+		// Center 2 >= 2 pops; each 1-ring neighbor 1 >= 1 pops. If capture
+		// popped the center first and re-scored, the neighbors would survive
+		// (pressure gone). We evaluate everyone on the pre-removal board.
+		let mut rules = RuleSet::default();
+		rules.add_only_on_spawns = false;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let (n0, n1) = two_inner_neighbors(&game);
+		let placed = orange_green_braid(&mut game, Player::One);
+		let z0 = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		let z1 = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		assert_eq!(z0.weight, 1);
+		assert_eq!(game.edge_score(placed, z0), (0, 1));
+
+		game.place_tile(n0, z0);
+		game.place_tile(n1, z1);
+		game.place_tile(center, placed);
+		let before = game.collect_removals();
+		let mut before_nodes: Vec<NodeId> = before.iter().map(|r| r.node).collect();
+		before_nodes.sort();
+		let mut want = vec![center, n0, n1];
+		want.sort();
+		assert_eq!(before_nodes, want, "neighbors are in the simultaneous removal set");
+		assert!(game.is_overwhelmed(center));
+		assert!(game.is_overwhelmed(n0));
+		assert!(game.is_overwhelmed(n1));
+
+		game.clear_tile(center);
+		assert!(
+			game.collect_removals().is_empty(),
+			"popping the placed tile first would have saved the neighbors; we do not do that"
+		);
+		game.set_bench(Player::One, vec![placed]);
+		let outcome = game
+			.apply(Action::Add { bench_index: 0, node: center })
+			.expect("ADD to the empty center");
+		let mut nodes: Vec<NodeId> = outcome.removals.iter().map(|r| r.node).collect();
+		nodes.sort();
+		assert_eq!(nodes, want);
+		assert!(game.tile_at(center).is_none());
+		assert!(game.tile_at(n0).is_none());
+		assert!(game.tile_at(n1).is_none());
 	}
 
 	#[test]

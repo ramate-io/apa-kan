@@ -53,6 +53,21 @@ A braid is fulfilled when the other tile's color multiset covers the braid's col
 
 **Accepted default:** `--braid-fail-mismatch one` (flat +1 for the edge). `weight` (largest braid's slots) and `sum` (every braid's slots on both sides; 2+3 = +5) stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
 
+### Center adjacency (scoring vs geometry)
+
+The origin has **8 unique neighbors** (inner ring) and **16 incident arcs**. Each inner↔center pair is two generating-circle arcs — two petals through the same two nodes — but **one scoring edge**. Overwhelm walks unique neighbors, not arcs. Failed-braid `one` charges **+1 once for that pair**. Both tiles take that same +1 (undirected); it is not +1 per side and not +1 per visual arc.
+
+Worked example under the accepted default: a 2-slot orange+green braid at the center against two inner 2-slot blue+teal braids (neither braid covers the other). Inner-ring nodes are not adjacent to each other.
+
+| Tile | `ring_weight` | occupied edges | signed `mismatch − match` | overwhelmed? (`>= ring_weight`) |
+|---|---|---|---|---|
+| center | 2 | +1 + +1 | **+2** | **yes** (2 ≥ 2) |
+| each neighbor | 2 | +1 (only the center) | **+1** | **no** (1 < 2) |
+
+Capture is simultaneous: `collect_removals` scores every occupied node on the current board, then `apply` clears all of those nodes. Neighbors are evaluated; they simply are not overwhelmed. Popping the center first and re-scoring is not how it works, and in this position it would not change the neighbors anyway.
+
+"Hit for two, both pop" is `--braid-fail-mismatch weight` (a failed 2-braid costs 2, so each neighbor would also pop) or counting the two inner↔center arcs twice. Neither is the accepted default. `game::tests::failed_double_braid_at_center_pops_only_the_center` locks this.
+
 ### Plain English
 
 - **Normal.** If either tile has a normal ring, the edge either likes the pair (they "see" a shared color from a normal into the neighbor's rings) or it doesn't. One point either way. Leftover extra colors do not add extra hitch points once a match exists.
