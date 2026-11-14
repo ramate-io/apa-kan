@@ -31,7 +31,7 @@ A channel contributes on an edge only if **at least one** of the two tiles has a
 |---|---|---|---|
 | **Normal** | some ring on A or B is normal | 1, if some normal-ring color of A is in Colors_B **or** some normal-ring color of B is in Colors_A | 1 otherwise (`mismatch_uses_neighbor_weight` still uses the neighbor's ring count) |
 | **Zag** | some ring on A or B is a zag | never | +1 for each zag color on one side that appears among the other side's colors, counted as a multiset union over both directions (`zag_mismatch` `sum` / `max`, same formula as today) |
-| **Braid** | some tile has a 2- or 3-slot braid | the single largest fulfillable braid on either side (`−2` or `−3`). Tied sizes pick either | if **no** braid on the edge can be fulfilled: **exactly one** mismatch of weight **+1** for the edge (`one`, default). `weight` uses the largest braid's slots; `sum` adds every braid's slots on both sides (2+3 = +5) |
+| **Braid** | some tile has a 2- or 3-slot braid | the single largest fulfillable braid on either side (`−2` or `−3`). Tied sizes pick either | if **no** braid on the edge can be fulfilled: **exactly one** mismatch of weight **+1** (`one`, **accepted default**). `weight` / `sum` are research variants ([issue #39](https://github.com/ramate-io/apa-kan/issues/39)) |
 
 A braid is fulfilled when the other tile's color multiset covers the braid's color multiset (orange+orange needs two orange rings).
 
@@ -40,17 +40,13 @@ A braid is fulfilled when the other tile's color multiset covers the braid's col
 - A zag on A plus a normal ring of the same color on B nets 0.
 - A satisfied braid **stacks** with a normal match.
 
-**Variants** (`--braid-fail-mismatch`, default `one`):
-
-- `one` — exactly +1 for the edge.
-- `weight` — the largest unfulfilled braid's slot count (2 or 3).
-- `sum` — the sum of every braid's slot count on both sides (a 2-braid vs a 3-braid is +5; a lone 3-braid is +3).
+**Accepted default:** `--braid-fail-mismatch one` (flat +1 for the edge). `weight` (largest braid's slots) and `sum` (every braid's slots on both sides; 2+3 = +5) stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
 
 ### Plain English
 
 - **Normal.** If either tile has a normal ring, the edge either likes the pair (they "see" a shared color from a normal into the neighbor's rings) or it doesn't. One point either way. Leftover extra colors do not add extra hitch points once a match exists.
 - **Zag.** Zags only punish. Count every hitting zag stroke on the edge (SUM by default). They never make a match of their own; a same-color normal on the other tile is the normal channel's job.
-- **Braid.** Look at both braids, keep the biggest one that the neighbor can cover, and score that hitch as a match of its size. If neither braid is covered, the edge takes a single +1 by default (`one`). `weight` costs the largest braid; `sum` costs every braid thread on the edge.
+- **Braid.** Look at both braids, keep the biggest one that the neighbor can cover, and score that hitch as a match of its size. If neither braid is covered, the edge takes a single +1 (`one`, the accepted default). Heavier `weight` / `sum` costs are tracked in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
 
 ## Worked table
 
@@ -106,7 +102,7 @@ Tile rims are unchanged: `TILE_BRAID_TURN_UNITS = 0.21`, stroke `0.70`. Mobile c
 ## Alternatives considered
 
 - Keep zag-hits replacing the ordinary mismatch — rejected; a same-color zag vs normal should net 0.
-- Failed-braid mismatch equals the braid's weight by default — deferred as `--braid-fail-mismatch weight` / `sum`.
+- Failed-braid mismatch equals the braid's weight (or the sum of both sides) by default — rejected. **`one` is the accepted default.** `weight` and `sum` remain as CLI variants for [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
 - Draw all three lanes even when a channel is quiet — rejected; omit quiet lanes.
 
 ## Open questions

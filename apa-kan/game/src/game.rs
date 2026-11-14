@@ -1248,10 +1248,10 @@ pub struct RuleSet {
 	/// take that count. [`ZagMismatchCount::Max`] takes, per color, the
 	/// larger of the two tiles' hitting zag-stroke counts of that color.
 	pub zag_mismatch: ZagMismatchCount,
-	/// Failed-braid channel mismatch. Default [`BraidFailMismatch::One`]:
-	/// exactly +1 for the edge. [`BraidFailMismatch::Weight`] uses the
-	/// largest braid's slot count. [`BraidFailMismatch::Sum`] adds every
-	/// braid's slot count on both sides.
+	/// Failed-braid channel mismatch. Accepted default
+	/// [`BraidFailMismatch::One`]: exactly +1 for the edge.
+	/// [`BraidFailMismatch::Weight`] / [`BraidFailMismatch::Sum`] are
+	/// research variants (issue #39).
 	pub braid_fail_mismatch: BraidFailMismatch,
 }
 

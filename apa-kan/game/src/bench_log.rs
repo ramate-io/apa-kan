@@ -1114,6 +1114,16 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_doubles_disallowed_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/doubles_disallowed.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_doubles_allowed_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/doubles_allowed.jsonl.gz");
+	}
+
+	#[test]
 	fn default_games_log_path_is_jsonl_gz_sibling() {
 		let p =
 			std::path::Path::new("apa-kan/game/benchmark_results/low_value_pairs_deck11_on.txt");
