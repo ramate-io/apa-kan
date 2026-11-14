@@ -74,6 +74,10 @@ pub const MAX_EDGE_BEADS: usize = MAX_TILE_BEADS * 2;
 pub const TILE_BEAD_COUNT: u32 = 12;
 /// Bead disc radius in 22px-tile units.
 pub const TILE_BEAD_R: f32 = 1.15;
+/// Open-circle radius for the range modifier, in 22px-tile units. Drawn on
+/// the four antipodes of that ring (0°/90°/180°/270°).
+pub const TILE_RANGE_R: f32 = 1.45;
+pub const RANGE_ANTIPODES: u32 = 4;
 /// Board-unit spacing between bead discs along an arc lane.
 pub const ARC_BEAD_SPACING_UNITS: f64 = 0.10;
 /// Packed unmatched **normal** colors on one half of a conflict diamond.
@@ -766,6 +770,7 @@ pub struct TileRingDraw {
 	pub braid_samples: u32,
 	pub bead_r: f32,
 	pub bead_count: u32,
+	pub range_r: f32,
 	pub dot_r: f32,
 	pub dot_spread: f32,
 }
@@ -787,6 +792,7 @@ impl TileRingDraw {
 			braid_samples: TILE_BRAID_SAMPLES,
 			bead_r: (TILE_BEAD_R * scale).max(0.7),
 			bead_count: TILE_BEAD_COUNT,
+			range_r: (TILE_RANGE_R * scale).max(0.8),
 			dot_r: (2.6 * scale).max(1.8),
 			dot_spread: 7.0 * scale,
 		}
@@ -1299,6 +1305,16 @@ pub fn for_braid_segments(
 			start = i.saturating_sub(1);
 		}
 	}
+}
+
+/// Four antipodes of a ring (east, north, west, south) for the range glyph.
+pub fn range_antipodes(center: [f64; 2], radius: f64) -> [[f64; 2]; 4] {
+	let mut out = [[0.0, 0.0]; 4];
+	for i in 0..4 {
+		let ang = f64::from(i as u32) * (PI / 2.0);
+		out[i] = [center[0] + radius * ang.cos(), center[1] + radius * ang.sin()];
+	}
+	out
 }
 
 /// Centers of the small discs that make a bead ring on a tile.
@@ -3372,5 +3388,20 @@ mod tests {
 		let rmin = rs.iter().copied().fold(f64::INFINITY, f64::min);
 		let rmax = rs.iter().copied().fold(0.0, f64::max);
 		assert!(rmax - rmin <= 0.8 + 1e-6, "tile zag amplitude too wide: {}", rmax - rmin);
+	}
+
+	#[test]
+	fn range_antipodes_are_the_four_cardinal_points() {
+		let c = [3.0, -4.0];
+		let r = 10.0;
+		let pts = range_antipodes(c, r);
+		assert_eq!(pts.len(), 4);
+		let expected = [[c[0] + r, c[1]], [c[0], c[1] + r], [c[0] - r, c[1]], [c[0], c[1] - r]];
+		for (got, want) in pts.iter().zip(expected) {
+			assert!((got[0] - want[0]).abs() < 1e-9 && (got[1] - want[1]).abs() < 1e-9);
+		}
+		let d = TileRingDraw::for_radius(33.0);
+		assert!(d.range_r > 0.8);
+		assert!(d.range_r < d.gap, "open circles should sit on the ring, not eat the gap");
 	}
 }

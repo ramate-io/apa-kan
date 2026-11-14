@@ -82,6 +82,9 @@ pub struct RingLog {
 	/// Bead ring. Absent/false on logs from before beads.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub e: bool,
+	/// Range modifier on this ring. Absent/false on logs from before range.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub r: bool,
 }
 
 /// Full tile identity: ids, owner, dots, weight (= ring-slot count), rings.
@@ -98,6 +101,8 @@ pub struct TileLog {
 	pub braid_rings: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub bead_rings: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub range_rings: u8,
 	pub rings: Vec<RingLog>,
 }
 
@@ -112,6 +117,7 @@ impl TileLog {
 				z: tile.ring_is_zag(i),
 				b: tile.ring_is_braid(i),
 				e: tile.ring_is_bead(i),
+				r: tile.ring_is_ranged(i),
 			})
 			.collect();
 		Self {
@@ -124,6 +130,7 @@ impl TileLog {
 			zag_rings: tile.zag_ring_count(),
 			braid_rings: tile.braid_ring_count(),
 			bead_rings: tile.bead_ring_count(),
+			range_rings: tile.range_ring_count(),
 			rings,
 		}
 	}
@@ -148,6 +155,9 @@ impl TileLog {
 			.collect();
 		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.n_rings, self.dots);
 		tile.id = self.id;
+		for (i, r) in self.rings.iter().enumerate().take(tile.n_rings as usize) {
+			tile.ring_range[i] = r.r;
+		}
 		debug_assert_eq!(tile.weight, tile.n_rings);
 		Ok(tile)
 	}
@@ -173,6 +183,8 @@ pub struct PieceRef {
 	pub braid_rings: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub bead_rings: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub range_rings: u8,
 }
 
 impl PieceRef {
@@ -185,6 +197,7 @@ impl PieceRef {
 			zag_rings: tile.zag_ring_count(),
 			braid_rings: tile.braid_ring_count(),
 			bead_rings: tile.bead_ring_count(),
+			range_rings: tile.range_ring_count(),
 		}
 	}
 }
@@ -208,6 +221,9 @@ pub struct RulesLog {
 	/// Absent/0 on logs from before beads; replay then uses 0 (beads off).
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub bead_numer: u8,
+	/// Absent/0 on logs from before range; replay then uses 0 (range off).
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub range_numer: u8,
 	pub capture_draw_on_move: bool,
 	pub mismatch_uses_neighbor_weight: bool,
 	pub actions_per_turn: u8,
@@ -255,6 +271,7 @@ impl RulesLog {
 			zag_numer: r.zag_numer,
 			braid_numer: r.braid_numer,
 			bead_numer: r.bead_numer,
+			range_numer: r.range_numer,
 			capture_draw_on_move: r.capture_draw_on_move,
 			mismatch_uses_neighbor_weight: r.mismatch_uses_neighbor_weight,
 			actions_per_turn: r.actions_per_turn,
@@ -295,6 +312,7 @@ impl RulesLog {
 			zag_numer: self.zag_numer,
 			braid_numer: self.braid_numer,
 			bead_numer: self.bead_numer,
+			range_numer: self.range_numer,
 			capture_draw_on_move: self.capture_draw_on_move,
 			mismatch_uses_neighbor_weight: self.mismatch_uses_neighbor_weight,
 			actions_per_turn: self.actions_per_turn,
@@ -584,6 +602,8 @@ pub struct BoardPieceLog {
 	pub braid_rings: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub bead_rings: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub range_rings: u8,
 }
 
 impl BoardPieceLog {
@@ -597,6 +617,7 @@ impl BoardPieceLog {
 			zag_rings: tile.zag_ring_count(),
 			braid_rings: tile.braid_ring_count(),
 			bead_rings: tile.bead_ring_count(),
+			range_rings: tile.range_ring_count(),
 		}
 	}
 }

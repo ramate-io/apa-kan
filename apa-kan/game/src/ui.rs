@@ -1693,6 +1693,31 @@ fn polyline_mesh(pts: &[[f64; 2]], width: f32) -> Mesh {
 		.with_inserted_indices(Indices::U32(indices))
 }
 
+fn spawn_range_marks(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	center: [f64; 2],
+	ring_r: f64,
+	mark_r: f64,
+	color: Color,
+	z: f32,
+) {
+	let half = (mark_r * 0.42).max(0.45);
+	for p in visual::range_antipodes(center, ring_r) {
+		spawn_ring(
+			commands,
+			meshes,
+			materials,
+			Vec2::new(p[0] as f32, p[1] as f32),
+			(mark_r - half).max(0.35) as f32,
+			(mark_r + half) as f32,
+			color,
+			z,
+		);
+	}
+}
+
 fn spawn_ring(
 	commands: &mut Commands,
 	meshes: &mut Assets<Mesh>,
@@ -1822,6 +1847,18 @@ fn spawn_tile_at(
 					z,
 				);
 			}
+			if tile.stroke_is_ranged(k) {
+				spawn_range_marks(
+					commands,
+					meshes,
+					materials,
+					[f64::from(pos.x), f64::from(pos.y)],
+					f64::from(r),
+					f64::from(draw.range_r),
+					rgb(visual::tile_rgb(color)),
+					z + 0.05,
+				);
+			}
 		}
 	}
 	if tile.braid_ring_count() >= 2 {
@@ -1843,6 +1880,21 @@ fn spawn_tile_at(
 					rgb(visual::tile_rgb(thread.color)),
 					visual::Z_TILE_RING,
 					visual::Z_TILE_RING + 0.08,
+				);
+			}
+			if (0..tile.n_rings.min(3))
+				.any(|i| tile.ring_is_braid(i as usize) && tile.ring_is_ranged(i as usize))
+			{
+				let color = tile.braid_colors()[0].unwrap_or(tile.primary());
+				spawn_range_marks(
+					commands,
+					meshes,
+					materials,
+					center,
+					r,
+					f64::from(draw.range_r),
+					rgb(visual::tile_rgb(color)),
+					visual::Z_TILE_RING + 0.10,
 				);
 			}
 		}

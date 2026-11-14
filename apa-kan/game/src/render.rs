@@ -553,6 +553,15 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			} else {
 				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
 			}
+			if tile.stroke_is_ranged(k) {
+				draw_range_marks(
+					img,
+					[c.0, c.1],
+					rr,
+					f64::from(draw.range_r),
+					rgb_of(visual::tile_rgb(color)),
+				);
+			}
 		}
 	}
 	if tile.braid_ring_count() >= 2 {
@@ -576,6 +585,18 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			}
 			for (pts, color, width) in back.into_iter().chain(front) {
 				stroke_polyline(img, &pts, color, width);
+			}
+			if (0..tile.n_rings.min(3))
+				.any(|i| tile.ring_is_braid(i as usize) && tile.ring_is_ranged(i as usize))
+			{
+				let color = tile.braid_colors()[0].unwrap_or(tile.primary());
+				draw_range_marks(
+					img,
+					[c.0, c.1],
+					rr,
+					f64::from(draw.range_r),
+					rgb_of(visual::tile_rgb(color)),
+				);
 			}
 		}
 	}
@@ -649,6 +670,19 @@ fn fill_circle(img: &mut RgbaImage, c: (f64, f64), r: f64, color: Rgba<u8>) {
 			let a = (r2 - d + 0.5).clamp(0.0, 1.0);
 			put(img, x, y, color, a);
 		}
+	}
+}
+
+fn draw_range_marks(
+	img: &mut RgbaImage,
+	center: [f64; 2],
+	ring_r: f64,
+	mark_r: f64,
+	color: Rgba<u8>,
+) {
+	let width = (mark_r * 0.42).max(0.9);
+	for p in visual::range_antipodes(center, ring_r) {
+		stroke_circle(img, (p[0], p[1]), mark_r, color, width);
 	}
 }
 

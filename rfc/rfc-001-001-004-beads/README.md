@@ -89,4 +89,4 @@ Unit tests in `game::tests` (`bead_unmatched_counts_rings_not_color_pairs`, `bea
 
 ## Open questions
 
-- Range modifier is a later PR and is not part of this channel.
+- Range is a modifier on any ring, including beads; the bead match cap at range is still one −1 **per ranged edge**. See [`rfc-001-001-005`](../rfc-001-001-005-range/README.md).

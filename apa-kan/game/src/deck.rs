@@ -281,6 +281,7 @@ pub fn generate_collection(
 				rules.zag_numer,
 				rules.braid_numer,
 				rules.bead_numer,
+				rules.range_numer,
 				next_id,
 				rng,
 			));
@@ -308,6 +309,7 @@ fn repair_collection(
 			rules.zag_numer,
 			rules.braid_numer,
 			rules.bead_numer,
+			rules.range_numer,
 			next_id,
 			rng,
 		));
@@ -363,6 +365,7 @@ pub fn apply_deck_noise(
 				rules.zag_numer,
 				rules.braid_numer,
 				rules.bead_numer,
+				rules.range_numer,
 				next_id,
 				rng,
 			));
@@ -400,8 +403,8 @@ pub fn generate_both_collections(
 	[p1, p2]
 }
 
-fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3]) {
-	(t.n_rings, t.dots, t.rings.map(|c| c as u8), t.ring_type.map(|r| r as u8))
+fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3], [bool; 3]) {
+	(t.n_rings, t.dots, t.rings.map(|c| c as u8), t.ring_type.map(|r| r as u8), t.ring_range)
 }
 
 fn tile_score(tile: Tile) -> i32 {
@@ -410,6 +413,7 @@ fn tile_score(tile: Tile) -> i32 {
 	s += 4 * i32::from(tile.zag_ring_count());
 	s += 5 * i32::from(tile.braid_ring_count());
 	s += 6 * i32::from(tile.bead_ring_count());
+	s += 5 * i32::from(tile.range_ring_count());
 	for &c in tile.ring_colors() {
 		s += match c as u8 {
 			5 => 18,
@@ -455,6 +459,14 @@ fn set_score(tiles: &[Tile], opponent: &[Tile]) -> i32 {
 				if mine.braid_fulfilled_by(opp).is_some() || opp.braid_fulfilled_by(mine).is_some()
 				{
 					s += 14;
+				}
+				if mine.has_range() {
+					s += 8 * i32::from(mine.range_ring_count());
+					s += 7 * mine.ranged_zag_hits_on(opp);
+					s += 8 * i32::from(mine.ranged_bead_unmatched_on(opp));
+				}
+				if opp.has_range() {
+					s += 6 * i32::from(opp.range_ring_count());
 				}
 				if !mine.shares_color(opp) {
 					s += 3;

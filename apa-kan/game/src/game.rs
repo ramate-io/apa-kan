@@ -80,6 +80,13 @@ pub const BRAID_NUMER_DEFAULT: u8 = 1;
 /// skips the RNG and matches the pre-bead deal for the same seed.
 pub const BEAD_DENOM: u8 = 7;
 pub const BEAD_NUMER_DEFAULT: u8 = 1;
+/// Each live ring independently gains the **range** modifier with probability
+/// `range_numer / RANGE_DENOM`. Rolled after braid/zag/bead so `--range off`
+/// skips the RNG and matches the pre-range deal for the same seed. Range is
+/// a modifier, not a ring type: it does not change weight or the 6-per-type
+/// cap.
+pub const RANGE_DENOM: u8 = 7;
+pub const RANGE_NUMER_DEFAULT: u8 = 1;
 /// Maximum collection size (the old 27 unique 3-color kinds). CLI `--deck-size`
 /// / `--bag-size` accept `1..=BAG_SIZE`. The default collection is [`BAG_SIZE`].
 pub const BAG_SIZE: usize = 27;
@@ -297,6 +304,20 @@ pub fn sample_bead_types(
 	}
 }
 
+/// Independent range rolls on every live ring (any type). `range_numer == 0`
+/// skips the RNG so `--range off` matches the pre-range deal for the same seed.
+pub fn sample_range_flags(rng: &mut impl Rng, n_rings: u8, range_numer: u8) -> [bool; 3] {
+	let mut range = [false; 3];
+	if range_numer == 0 {
+		return range;
+	}
+	let numer = u32::from(range_numer.min(RANGE_DENOM));
+	for flag in range.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+		*flag = rng.gen_range(0..u32::from(RANGE_DENOM)) < numer;
+	}
+	range
+}
+
 /// 1–3 distinct ring colors. Ring 1 is always drawn. Rings 2 and 3
 /// keep the last existing color with weight 7, or draw any color with weight 1
 /// (a redraw of an already-present color is not a new ring). Each ring is
@@ -335,6 +356,10 @@ pub struct Tile {
 	/// Parallel to [`Self::rings`]: normal, zag (jag), braid, or bead. At most
 	/// one braid group per tile, occupying 2 or 3 slots.
 	pub ring_type: [RingType; 3],
+	/// Parallel to [`Self::rings`]: the **range** modifier. A ranged ring's
+	/// channel effects extend along uninterrupted 2-arc walks (empty
+	/// intermediate). Range is not a ring type and does not change weight.
+	pub ring_range: [bool; 3],
 	/// Overwhelm match base and hop compare. Always equal to [`Self::n_rings`]
 	/// (braid slots count). Constructor `weight` arguments are ignored.
 	pub weight: u8,
@@ -399,7 +424,41 @@ impl Tile {
 			n = 1;
 		}
 		let _ = weight;
-		Self { id, owner, rings, n_rings: n, ring_type, weight: n, dots }
+		Self { id, owner, rings, n_rings: n, ring_type, ring_range: [false; 3], weight: n, dots }
+	}
+
+	/// [`Self::with_typed_rings`] plus a per-slot range flag.
+	pub fn with_ranged_rings(
+		id: u32,
+		owner: Player,
+		parts: &[(TileColor, RingType, bool)],
+		weight: u8,
+		dots: u8,
+	) -> Self {
+		let typed: Vec<(TileColor, RingType)> = parts.iter().map(|&(c, t, _)| (c, t)).collect();
+		let mut tile = Self::with_typed_rings(id, owner, &typed, weight, dots);
+		for (i, &(_, _, ranged)) in parts.iter().take(MAX_COLOR_RINGS as usize).enumerate() {
+			tile.ring_range[i] = ranged;
+		}
+		tile
+	}
+
+	/// Mark every live ring ranged (test helper).
+	pub fn with_all_range(mut self) -> Self {
+		for i in 0..self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize {
+			self.ring_range[i] = true;
+		}
+		self
+	}
+
+	/// Mark listed live-ring indices ranged (test helper).
+	pub fn with_range_slots(mut self, slots: &[usize]) -> Self {
+		for &i in slots {
+			if i < self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize {
+				self.ring_range[i] = true;
+			}
+		}
+		self
 	}
 
 	pub fn ring_colors(&self) -> &[TileColor] {
@@ -424,6 +483,10 @@ impl Tile {
 
 	pub fn ring_is_bead(self, index: usize) -> bool {
 		self.ring_type_at(index).is_bead()
+	}
+
+	pub fn ring_is_ranged(self, index: usize) -> bool {
+		index < self.n_rings.clamp(1, MAX_COLOR_RINGS) as usize && self.ring_range[index]
 	}
 
 	/// Zag flags in slot order, for call sites that still compare a `[bool; 3]`.
@@ -479,6 +542,10 @@ impl Tile {
 
 	pub fn stroke_is_bead(self, k: u8) -> bool {
 		self.stroke_type(k).is_bead()
+	}
+
+	pub fn stroke_is_ranged(self, k: u8) -> bool {
+		self.ring_is_ranged(self.stroke_idx(k))
 	}
 
 	pub fn color_mask(self) -> u8 {
@@ -600,6 +667,79 @@ impl Tile {
 		self.bead_ring_count().saturating_sub(self.bead_matched_on(other))
 	}
 
+	/// How many of this tile's **ranged** zag rings of `color` hit `target`.
+	pub fn ranged_zag_hits_of_color(self, target: Tile, color: TileColor) -> i32 {
+		if !target.has_color(color) {
+			return 0;
+		}
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&k| {
+				self.stroke_is_zag(k) && self.stroke_is_ranged(k) && self.stroke_color(k) == color
+			})
+			.count() as i32
+	}
+
+	pub fn ranged_zag_hits_on(self, target: Tile) -> i32 {
+		TileColor::ALL.iter().map(|&c| self.ranged_zag_hits_of_color(target, c)).sum()
+	}
+
+	/// True if some **ranged** normal-ring color of this tile appears among
+	/// `other`'s colors (any ring type, ranged or not).
+	pub fn ranged_normal_color_in(self, other: Tile) -> bool {
+		self.ring_colors().iter().enumerate().any(|(i, &c)| {
+			self.ring_type[i].is_normal() && self.ring_range[i] && other.has_color(c)
+		})
+	}
+
+	pub fn ranged_bead_matched_on(self, other: Tile) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&k| {
+				self.stroke_is_bead(k)
+					&& self.stroke_is_ranged(k)
+					&& other.has_color(self.stroke_color(k))
+			})
+			.count() as u8
+	}
+
+	pub fn ranged_bead_unmatched_on(self, other: Tile) -> u8 {
+		self.ranged_bead_ring_count().saturating_sub(self.ranged_bead_matched_on(other))
+	}
+
+	/// Bead channel using only **ranged** beads, facing `other`'s full color set.
+	/// Match is still one −1 at most per (ranged) edge.
+	pub fn ranged_bead_channel(self, other: Tile) -> (i32, i32) {
+		let unmatched = i32::from(self.ranged_bead_unmatched_on(other))
+			+ i32::from(other.ranged_bead_unmatched_on(self));
+		let matched =
+			self.ranged_bead_matched_on(other) > 0 || other.ranged_bead_matched_on(self) > 0;
+		(if matched { 1 } else { 0 }, unmatched)
+	}
+
+	/// A braid extends at range iff every braid slot is ranged. Partial range
+	/// on some threads does not send the braid effect to second-order cells.
+	pub fn braid_extends(self) -> bool {
+		let size = self.braid_ring_count();
+		size >= 2
+			&& (0..self.n_rings.min(MAX_COLOR_RINGS))
+				.filter(|&i| self.ring_type[i as usize].is_braid())
+				.all(|i| self.ring_range[i as usize])
+	}
+
+	/// Bit `i` set when live ring `i` is ranged. Fits in 3 bits (`0..=7`).
+	pub fn range_mask(self) -> u8 {
+		let mut m = 0u8;
+		for i in 0..self.n_rings.min(MAX_COLOR_RINGS) {
+			if self.ring_range[i as usize] {
+				m |= 1 << i;
+			}
+		}
+		m
+	}
+
+	pub fn has_range(self) -> bool {
+		self.range_mask() != 0
+	}
+
 	/// Bead-channel scores on the undirected edge `self`–`other`.
 	///
 	/// Mismatch is +1 per unmatched bead ring on **either** tile (count the
@@ -653,7 +793,7 @@ impl Tile {
 				RingType::Braid => format!("{}-braid", c.name()),
 				RingType::Bead => format!("{}-bead", c.name()),
 				RingType::Normal => c.name().to_string(),
-			})
+			} + if self.ring_range[i] { "-range" } else { "" })
 			.collect::<Vec<_>>()
 			.join("+");
 		format!("{rings} w{} d{}", self.weight, self.dots)
@@ -698,6 +838,30 @@ impl Tile {
 			.count() as u8
 	}
 
+	pub fn range_ring_count(self) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&i| self.ring_range[i as usize])
+			.count() as u8
+	}
+
+	pub fn ranged_normal_ring_count(self) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&i| self.ring_type[i as usize].is_normal() && self.ring_range[i as usize])
+			.count() as u8
+	}
+
+	pub fn ranged_zag_ring_count(self) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&i| self.ring_type[i as usize].is_zag() && self.ring_range[i as usize])
+			.count() as u8
+	}
+
+	pub fn ranged_bead_ring_count(self) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&i| self.ring_type[i as usize].is_bead() && self.ring_range[i as usize])
+			.count() as u8
+	}
+
 	/// Piece value under `weights`: `dots * w.dots + normal_rings * w.normal_ring
 	/// + zag_rings * w.zag_ring + braid_rings * w.braid_ring + bead_rings *
 	/// w.bead_ring`. Used by the low-value end condition.
@@ -707,6 +871,30 @@ impl Tile {
 			+ weights.zag_ring * i32::from(self.zag_ring_count())
 			+ weights.braid_ring * i32::from(self.braid_ring_count())
 			+ weights.bead_ring * i32::from(self.bead_ring_count())
+	}
+}
+
+/// Largest fulfilled **extending** braid on a ranged edge. Only braids whose
+/// every slot is ranged participate; fulfillment still reads the neighbor's
+/// full color multiset.
+pub fn selected_ranged_braid(a: Tile, b: Tile) -> Option<(Tile, u8)> {
+	let fa = if a.braid_extends() { a.braid_fulfilled_by(b) } else { None };
+	let fb = if b.braid_extends() { b.braid_fulfilled_by(a) } else { None };
+	match (fa, fb) {
+		(None, None) => None,
+		(Some(n), None) => Some((a, n)),
+		(None, Some(n)) => Some((b, n)),
+		(Some(na), Some(nb)) if na > nb => Some((a, na)),
+		(Some(na), Some(nb)) if nb > na => Some((b, nb)),
+		(Some(n), Some(_)) => {
+			let ka = a.braid_color_counts();
+			let kb = b.braid_color_counts();
+			if ka < kb || (ka == kb && a.id <= b.id) {
+				Some((a, n))
+			} else {
+				Some((b, n))
+			}
+		}
 	}
 }
 
@@ -1100,6 +1288,21 @@ impl ZagMismatchCount {
 				.sum(),
 		}
 	}
+
+	/// Like [`Self::count`], counting only **ranged** zag rings. The facing
+	/// tile's full color set is still the hit test.
+	pub fn count_ranged(self, tile: Tile, other: Tile) -> i32 {
+		match self {
+			Self::Sum => tile.ranged_zag_hits_on(other) + other.ranged_zag_hits_on(tile),
+			Self::Max => TileColor::ALL
+				.iter()
+				.map(|&c| {
+					tile.ranged_zag_hits_of_color(other, c)
+						.max(other.ranged_zag_hits_of_color(tile, c))
+				})
+				.sum(),
+		}
+	}
 }
 
 /// Failed-braid mismatch on an edge where at least one tile has a braid and
@@ -1137,6 +1340,18 @@ impl BraidFailMismatch {
 	pub fn cost(self, a: Tile, b: Tile) -> i32 {
 		let a_n = a.braid_ring_count();
 		let b_n = b.braid_ring_count();
+		match self {
+			Self::One => 1,
+			Self::Weight => i32::from(a_n.max(b_n).max(1)),
+			Self::Sum => i32::from(a_n) + i32::from(b_n),
+		}
+	}
+
+	/// Failed-braid cost on a ranged edge: only **extending** braids count
+	/// toward `weight` / `sum`. `one` is still a single +1.
+	pub fn cost_ranged(self, a: Tile, b: Tile) -> i32 {
+		let a_n = if a.braid_extends() { a.braid_ring_count() } else { 0 };
+		let b_n = if b.braid_extends() { b.braid_ring_count() } else { 0 };
 		match self {
 			Self::One => 1,
 			Self::Weight => i32::from(a_n.max(b_n).max(1)),
@@ -1273,6 +1488,10 @@ pub struct RuleSet {
 	/// Default 1 (1/7, same rate as zags). Rolled after braid and zag.
 	/// `0` disables beads (`--beads off` / `--bead-chance 0`).
 	pub bead_numer: u8,
+	/// Each live ring independently gains range with probability
+	/// `range_numer / 7`. Default 1. Rolled after braid, zag, and bead.
+	/// `0` disables range (`--range off` / `--range-chance 0`).
+	pub range_numer: u8,
 	/// Legacy: on a MOVE, each removed opponent tile draws one hidden bag tile
 	/// onto the bench. Default **false** (the whole deck is public; captures
 	/// earn tokens only). Kept so historical JSONL logs replay.
@@ -1367,6 +1586,7 @@ impl Default for RuleSet {
 			zag_numer: ZAG_NUMER_DEFAULT,
 			braid_numer: BRAID_NUMER_DEFAULT,
 			bead_numer: BEAD_NUMER_DEFAULT,
+			range_numer: RANGE_NUMER_DEFAULT,
 			capture_draw_on_move: false,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
@@ -1420,6 +1640,10 @@ pub struct Removal {
 	pub tile: Tile,
 	pub matches: i32,
 	pub mismatches: i32,
+	/// True when a bead channel (adjacent or ranged) charged this removal.
+	pub uses_bead: bool,
+	/// True when a ranged 2-arc walk contributed a nonzero channel.
+	pub uses_range: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1526,7 +1750,10 @@ impl Game {
 				.map(|spec| {
 					let id = *next_id;
 					*next_id += 1;
-					Tile::with_typed_rings(id, owner, &spec.parts(), spec.weight, spec.dots)
+					let mut tile =
+						Tile::with_typed_rings(id, owner, &spec.parts(), spec.weight, spec.dots);
+					tile.ring_range = spec.ring_range;
+					tile
 				})
 				.collect::<Vec<_>>()
 		};
@@ -2100,6 +2327,18 @@ impl Game {
 		Tile::with_typed_rings(id, owner, parts, weight, dots)
 	}
 
+	pub fn alloc_ranged_rings(
+		&mut self,
+		owner: Player,
+		parts: &[(TileColor, RingType, bool)],
+		weight: u8,
+		dots: u8,
+	) -> Tile {
+		let id = self.next_tile_id;
+		self.next_tile_id += 1;
+		Tile::with_ranged_rings(id, owner, parts, weight, dots)
+	}
+
 	/// Independent per-type channels on the undirected edge `tile`–`other`.
 	///
 	/// A channel contributes only if at least one of the two tiles has a ring
@@ -2147,6 +2386,128 @@ impl Game {
 		ch
 	}
 
+	/// Independent channels on a **ranged** connection. Only rings that carry
+	/// the range modifier participate as actors; the facing tile presents its
+	/// **full** color set / ring multiset. Unranged rings on either side do
+	/// not fire at range. Both tiles take the same undirected totals.
+	///
+	/// A channel fires only if at least one tile has a **ranged** ring of that
+	/// type (for braid: a fully-ranged braid). Adjacent scoring is unchanged
+	/// and still uses [`Self::edge_channels`].
+	pub fn ranged_edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
+		let mut ch = EdgeChannels::default();
+		if tile.ranged_normal_ring_count() > 0 || other.ranged_normal_ring_count() > 0 {
+			if tile.ranged_normal_color_in(other) || other.ranged_normal_color_in(tile) {
+				ch.normal_match = 1;
+			} else {
+				ch.normal_mismatch = 1;
+			}
+		}
+		if tile.ranged_zag_ring_count() > 0 || other.ranged_zag_ring_count() > 0 {
+			ch.zag_mismatch = self.rules.zag_mismatch.count_ranged(tile, other);
+		}
+		if tile.braid_extends() || other.braid_extends() {
+			if let Some((_, n)) = selected_ranged_braid(tile, other) {
+				ch.braid_match = i32::from(n);
+			} else {
+				ch.braid_mismatch = self.rules.braid_fail_mismatch.cost_ranged(tile, other);
+			}
+		}
+		if tile.ranged_bead_ring_count() > 0 || other.ranged_bead_ring_count() > 0 {
+			let (m, x) = tile.ranged_bead_channel(other);
+			ch.bead_match = m;
+			ch.bead_mismatch = x;
+		}
+		ch
+	}
+
+	/// Each 2-arc walk `node —empty mid— dest` where `dest` is occupied.
+	/// Inner↔center doubles: two arcs to an empty center, times two arcs from
+	/// that center to an occupied inner, is **four** ranged connections to
+	/// that inner (cartesian product of consecutive incident arcs, matching
+	/// the per-petal adjacent rule). Occupied intermediates block.
+	pub fn for_each_ranged_other(&self, node: NodeId, mut visit: impl FnMut(NodeId, Tile)) {
+		for mid in self.board.incident_others(node) {
+			if self.tile_at(mid).is_some() {
+				continue;
+			}
+			for dest in self.board.incident_others(mid) {
+				if dest == node {
+					continue;
+				}
+				if let Some(other) = self.tile_at(dest) {
+					visit(dest, other);
+				}
+			}
+		}
+	}
+
+	fn ranged_effective_from(&self, node: NodeId, tile: Tile) -> i32 {
+		let mut effective = 0i32;
+		self.for_each_ranged_other(node, |_, other| {
+			effective += self.ranged_edge_channels(tile, other).effective();
+		});
+		effective
+	}
+
+	fn ranged_score_from(&self, node: NodeId, tile: Tile) -> (i32, i32) {
+		let mut matches = 0i32;
+		let mut mismatches = 0i32;
+		self.for_each_ranged_other(node, |_, other| {
+			let (m, x) = {
+				let ch = self.ranged_edge_channels(tile, other);
+				(ch.match_weight(), ch.mismatch_weight())
+			};
+			matches += m;
+			mismatches += x;
+		});
+		(matches, mismatches)
+	}
+
+	/// True when a removal at `node` includes a nonzero bead or range channel
+	/// on at least one of the scored edges that charged it (adjacent or ranged).
+	pub fn capture_uses_bead(&self, node: NodeId) -> bool {
+		let Some(tile) = self.tile_at(node) else {
+			return false;
+		};
+		for nb in self.board.incident_others(node) {
+			if let Some(other) = self.tile_at(nb) {
+				let ch = self.edge_channels(tile, other);
+				if ch.bead_match != 0 || ch.bead_mismatch != 0 {
+					return true;
+				}
+			}
+		}
+		let mut hit = false;
+		self.for_each_ranged_other(node, |_, other| {
+			if hit {
+				return;
+			}
+			let ch = self.ranged_edge_channels(tile, other);
+			if ch.bead_match != 0 || ch.bead_mismatch != 0 {
+				hit = true;
+			}
+		});
+		hit
+	}
+
+	pub fn capture_uses_range(&self, node: NodeId) -> bool {
+		let Some(tile) = self.tile_at(node) else {
+			return false;
+		};
+		let mut hit = false;
+		self.for_each_ranged_other(node, |_, other| {
+			if hit {
+				return;
+			}
+			let ch = self.ranged_edge_channels(tile, other);
+			if ch.match_weight() != 0 || ch.mismatch_weight() != 0 {
+				hit = true;
+			}
+		});
+		hit
+	}
+
 	/// Match/mismatch this `tile` receives from neighbor `other`.
 	///
 	/// Returns `(match_weight, mismatch_weight)` summed across independent
@@ -2170,6 +2531,7 @@ impl Game {
 				effective += self.edge_channels(tile, other).effective();
 			}
 		}
+		effective += self.ranged_effective_from(node, tile);
 		Some(effective)
 	}
 
@@ -2207,6 +2569,9 @@ impl Game {
 				mismatches += x;
 			}
 		}
+		let (rm, rx) = self.ranged_score_from(node, tile);
+		matches += rm;
+		mismatches += rx;
 		Some((matches, mismatches))
 	}
 
@@ -2228,6 +2593,7 @@ impl Game {
 				effective += self.edge_channels(tile, other).effective();
 			}
 		}
+		effective += self.ranged_effective_from(node, tile);
 		effective >= i32::from(tile.weight)
 	}
 
@@ -2236,7 +2602,14 @@ impl Game {
 		for (node, tile) in self.tiles() {
 			if let Some((matches, mismatches)) = self.tile_score(node) {
 				if mismatches >= matches {
-					out.push(Removal { node, tile, matches, mismatches });
+					out.push(Removal {
+						node,
+						tile,
+						matches,
+						mismatches,
+						uses_bead: self.capture_uses_bead(node),
+						uses_range: self.capture_uses_range(node),
+					});
 				}
 			}
 		}
@@ -2926,6 +3299,7 @@ pub fn sample_tile(
 	zag_numer: u8,
 	braid_numer: u8,
 	bead_numer: u8,
+	range_numer: u8,
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
@@ -2933,11 +3307,12 @@ pub fn sample_tile(
 	let mut ring_type = sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer);
 	sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
 	sample_bead_types(rng, n_rings, &mut ring_type, bead_numer);
+	let ring_range = sample_range_flags(rng, n_rings, range_numer);
 	let weight = n_rings.max(1);
 	let dots = rng.gen_range(1..=3);
 	let id = *next_id;
 	*next_id += 1;
-	Tile { id, owner, rings, n_rings, ring_type, weight, dots }
+	Tile { id, owner, rings, n_rings, ring_type, ring_range, weight, dots }
 }
 
 fn format_log(
@@ -5640,7 +6015,8 @@ mod tests {
 		let mut rings = 0u32;
 		let mut braid_rings = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(Player::One, 3, 0, BRAID_NUMER_DEFAULT, 0, &mut next_id, &mut rng);
+			let t =
+				sample_tile(Player::One, 3, 0, BRAID_NUMER_DEFAULT, 0, 0, &mut next_id, &mut rng);
 			let k = t.n_rings.clamp(1, 3);
 			rings += u32::from(k);
 			let b = t.braid_ring_count();
@@ -6876,7 +7252,8 @@ mod tests {
 		let mut rings = 0u32;
 		let mut beads = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(Player::One, 3, 0, 0, BEAD_NUMER_DEFAULT, &mut next_id, &mut rng);
+			let t =
+				sample_tile(Player::One, 3, 0, 0, BEAD_NUMER_DEFAULT, 0, &mut next_id, &mut rng);
 			rings += u32::from(t.n_rings.clamp(1, 3));
 			beads += u32::from(t.bead_ring_count());
 		}
@@ -6884,6 +7261,361 @@ mod tests {
 		assert!(
 			(0.12..0.17).contains(&rate),
 			"bead rate={rate:.4} (expected ~0.1429 = 1/7) with zags and braids off"
+		);
+	}
+
+	fn ranged_hits(game: &Game, from: NodeId, to: NodeId) -> u32 {
+		let mut n = 0u32;
+		game.for_each_ranged_other(from, |dest, _| {
+			if dest == to {
+				n += 1;
+			}
+		});
+		n
+	}
+
+	fn occupy_except(game: &mut Game, keep: &[NodeId]) {
+		let n = game.board().node_count() as NodeId;
+		for id in 0..n {
+			if keep.contains(&id) || game.tile_at(id).is_some() {
+				continue;
+			}
+			let tile = game.alloc_tile(Player::Two, TileColor::Green, 3, 1);
+			game.place_tile(id, tile);
+		}
+	}
+
+	#[test]
+	fn range_does_not_change_weight() {
+		let t = Tile::with_typed_rings(
+			1,
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal), (TileColor::Blue, RingType::Zag)],
+			99,
+			2,
+		)
+		.with_all_range();
+		assert_eq!(t.weight, 2);
+		assert_eq!(t.n_rings, 2);
+		assert_eq!(t.range_ring_count(), 2);
+	}
+
+	#[test]
+	fn occupied_intermediate_blocks_second_order_reach() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.board().inner_ring()[0];
+		let mid = game.board().center();
+		let dest = game.board().inner_ring()[1];
+		assert_ne!(a, dest);
+		let actor = game.alloc_ranged_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal, true)],
+			1,
+			1,
+		);
+		let other = game.alloc_ranged_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Normal, false)],
+			1,
+			1,
+		);
+		game.place_tile(a, actor);
+		game.place_tile(dest, other);
+		occupy_except(&mut game, &[a, mid, dest]);
+		assert!(ranged_hits(&game, a, dest) >= 1, "empty center must open at least one 2-arc walk");
+		let blocker = game.alloc_tile(Player::Two, TileColor::Green, 3, 1);
+		game.place_tile(mid, blocker);
+		assert_eq!(ranged_hits(&game, a, dest), 0, "occupied center blocks inner-to-inner range");
+	}
+
+	#[test]
+	fn empty_intermediate_reaches_second_order() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.board().inner_ring()[0];
+		let mid = game.board().center();
+		let dest = game.board().inner_ring()[4];
+		let actor = game.alloc_ranged_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal, true)],
+			1,
+			1,
+		);
+		let other = game.alloc_ranged_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Normal, false)],
+			1,
+			1,
+		);
+		game.place_tile(a, actor);
+		game.place_tile(dest, other);
+		occupy_except(&mut game, &[a, mid, dest]);
+		assert_eq!(game.tile_at(mid), None);
+		assert!(ranged_hits(&game, a, dest) > 0);
+		assert_eq!(game.ranged_edge_channels(actor, other).normal_mismatch, 1);
+		assert_eq!(game.ranged_edge_channels(actor, other).normal_match, 0);
+		assert_eq!(
+			game.ranged_edge_channels(actor, other),
+			game.ranged_edge_channels(other, actor)
+		);
+	}
+
+	#[test]
+	fn center_empty_inner_to_inner_is_four_ranged_walks() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.board().inner_ring()[0];
+		let dest = game.board().inner_ring()[3];
+		let mid = game.board().center();
+		assert_eq!(game.board().incident_others(a).filter(|&n| n == mid).count(), 2);
+		assert_eq!(game.board().incident_others(dest).filter(|&n| n == mid).count(), 2);
+		let actor = game.alloc_ranged_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal, true)],
+			1,
+			1,
+		);
+		let other = game.alloc_ranged_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Normal, false)],
+			1,
+			1,
+		);
+		game.place_tile(a, actor);
+		game.place_tile(dest, other);
+		occupy_except(&mut game, &[a, mid, dest]);
+		assert_eq!(
+			ranged_hits(&game, a, dest),
+			4,
+			"two arcs into empty center × two arcs out to the dest inner"
+		);
+		assert_eq!(ranged_hits(&game, dest, a), 4);
+	}
+
+	#[test]
+	fn ranged_scoring_is_both_charged_and_undirected() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.board().inner_ring()[0];
+		let dest = game.board().inner_ring()[4];
+		let mid = game.board().center();
+		let actor = game.alloc_ranged_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal, true)],
+			1,
+			1,
+		);
+		let other = game.alloc_ranged_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Normal, false)],
+			1,
+			1,
+		);
+		game.place_tile(a, actor);
+		game.place_tile(dest, other);
+		occupy_except(&mut game, &[a, mid, dest]);
+		assert_eq!(ranged_hits(&game, a, dest), 4);
+		let ch = game.ranged_edge_channels(actor, other);
+		assert_eq!(ch.effective(), 1, "orange-range vs blue: normal hitch 1");
+		assert_eq!(
+			game.ranged_edge_channels(actor, other),
+			game.ranged_edge_channels(other, actor)
+		);
+		assert!(game.capture_uses_range(a));
+		assert!(game.capture_uses_range(dest));
+	}
+
+	#[test]
+	fn unranged_rings_do_not_act_at_range() {
+		let mut game = Game::empty(RuleSet::default());
+		let mixed = game.alloc_ranged_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Normal, false),
+				(TileColor::Green, RingType::Normal, true),
+			],
+			1,
+			1,
+		);
+		let face = game.alloc_ranged_rings(
+			Player::Two,
+			&[(TileColor::Orange, RingType::Normal, false)],
+			1,
+			1,
+		);
+		let ch = game.ranged_edge_channels(mixed, face);
+		assert_eq!(ch.normal_match, 0, "unranged orange must not match at range");
+		assert_eq!(ch.normal_mismatch, 1, "only the ranged green fires, and orange lacks green");
+		let adjacent = game.edge_channels(mixed, face);
+		assert_eq!(adjacent.normal_match, 1, "adjacent still sees the unranged orange");
+	}
+
+	#[test]
+	fn ranged_zag_and_bead_channels_fire_independently() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.alloc_ranged_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Zag, true), (TileColor::Blue, RingType::Bead, true)],
+			1,
+			1,
+		);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
+		let ch = game.ranged_edge_channels(a, b);
+		assert_eq!(ch.zag_mismatch, 1, "ranged orange zag hits orange on B");
+		assert_eq!(ch.bead_mismatch, 1, "ranged blue bead unmatched");
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.normal_match, 0);
+		assert_eq!(ch.effective(), 2);
+		let plain = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Zag), (TileColor::Blue, RingType::Bead)],
+			1,
+			1,
+		);
+		assert_eq!(plain.range_ring_count(), 0);
+		let quiet = game.ranged_edge_channels(plain, b);
+		assert_eq!(quiet.zag_mismatch, 0);
+		assert_eq!(quiet.bead_mismatch, 0);
+	}
+
+	#[test]
+	fn braid_extends_only_when_every_slot_is_ranged() {
+		let mut game = Game::empty(RuleSet::default());
+		let full = game.alloc_ranged_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid, true),
+				(TileColor::Green, RingType::Braid, true),
+			],
+			1,
+			1,
+		);
+		let partial = game.alloc_ranged_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid, true),
+				(TileColor::Green, RingType::Braid, false),
+			],
+			1,
+			1,
+		);
+		let cover = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
+		assert!(full.braid_extends());
+		assert!(!partial.braid_extends());
+		assert!(selected_ranged_braid(full, cover).is_some());
+		assert!(selected_ranged_braid(partial, cover).is_none());
+		assert_eq!(game.ranged_edge_channels(full, cover).braid_match, 2);
+		assert_eq!(
+			game.ranged_edge_channels(partial, cover).braid_match,
+			0,
+			"partial range does not send the braid"
+		);
+		assert_eq!(game.ranged_edge_channels(partial, cover).braid_mismatch, 0);
+		assert_eq!(game.edge_channels(partial, cover).braid_match, 2, "adjacent braid still fires");
+	}
+
+	#[test]
+	fn bead_match_cap_is_per_ranged_edge() {
+		let mut game = Game::empty(RuleSet::default());
+		let three = game.alloc_ranged_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Bead, true),
+				(TileColor::Orange, RingType::Bead, true),
+				(TileColor::Orange, RingType::Bead, true),
+			],
+			1,
+			1,
+		);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.ranged_edge_channels(three, hit);
+		assert_eq!(ch.bead_match, 1, "one −1 per ranged edge, not per bead");
+		assert_eq!(ch.bead_mismatch, 0);
+		let miss = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(game.ranged_edge_channels(three, miss).bead_mismatch, 3);
+		assert_eq!(game.ranged_edge_channels(three, miss).bead_match, 0);
+	}
+
+	#[test]
+	fn range_and_adjacent_score_together_on_overwhelm() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.board().inner_ring()[0];
+		let dest = game.board().inner_ring()[4];
+		let mid = game.board().center();
+		let actor = game.alloc_ranged_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal, true)],
+			1,
+			1,
+		);
+		let other = game.alloc_ranged_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Normal, true)],
+			1,
+			1,
+		);
+		game.place_tile(a, actor);
+		game.place_tile(dest, other);
+		occupy_except(&mut game, &[a, mid, dest]);
+		assert!(game.is_overwhelmed(a));
+		assert!(game.is_overwhelmed(dest));
+		let removals = game.collect_removals();
+		assert!(removals.iter().any(|r| r.node == a && r.uses_range));
+		assert!(removals.iter().any(|r| r.node == dest && r.uses_range));
+	}
+
+	#[test]
+	fn simultaneous_capture_includes_ranged_edges() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.board().inner_ring()[0];
+		let dest = game.board().inner_ring()[4];
+		let actor = game.alloc_ranged_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal, true)],
+			1,
+			1,
+		);
+		let other = game.alloc_ranged_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Normal, true)],
+			1,
+			1,
+		);
+		game.place_tile(a, actor);
+		game.place_tile(dest, other);
+		let removals = game.collect_removals();
+		assert!(
+			removals.iter().any(|r| r.node == a) && removals.iter().any(|r| r.node == dest),
+			"both tiles scored on the same snapshot"
+		);
+	}
+
+	#[test]
+	fn range_off_deal_has_no_ranged_rings() {
+		let mut off = RuleSet::default();
+		off.range_numer = 0;
+		let game = Game::new(off, 11);
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.chain(game.bag(Player::One))
+			.all(|t| t.range_ring_count() == 0));
+	}
+
+	#[test]
+	fn range_generation_is_about_one_in_seven_rings() {
+		let mut rng = StdRng::seed_from_u64(7);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut rings = 0u32;
+		let mut ranged = 0u32;
+		for _ in 0..n {
+			let t =
+				sample_tile(Player::One, 3, 0, 0, 0, RANGE_NUMER_DEFAULT, &mut next_id, &mut rng);
+			rings += u32::from(t.n_rings.clamp(1, 3));
+			ranged += u32::from(t.range_ring_count());
+		}
+		let rate = f64::from(ranged) / f64::from(rings);
+		assert!(
+			(0.12..0.17).contains(&rate),
+			"range rate={rate:.4} (expected ~0.1429 = 1/7) with other specials off"
 		);
 	}
 

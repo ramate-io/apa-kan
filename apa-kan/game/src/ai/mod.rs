@@ -151,7 +151,9 @@ impl HistoryTable {
 	pub fn get(&self, mv: SearchMove) -> i32 {
 		match mv {
 			SearchMove::Move { from, to } => self.moves[from as usize * 32 + to as usize],
-			SearchMove::Add { kind, node } => self.adds[kind as usize * 32 + node as usize],
+			SearchMove::Add { kind, node } => {
+				self.adds[(kind as usize & 0xFFFF) * 32 + node as usize]
+			}
 			SearchMove::Pass => 0,
 		}
 	}
@@ -164,7 +166,7 @@ impl HistoryTable {
 				*slot = (*slot + inc).min(20_000);
 			}
 			SearchMove::Add { kind, node } => {
-				let slot = &mut self.adds[kind as usize * 32 + node as usize];
+				let slot = &mut self.adds[(kind as usize & 0xFFFF) * 32 + node as usize];
 				*slot = (*slot + inc).min(20_000);
 			}
 			SearchMove::Pass => {}
@@ -682,7 +684,8 @@ mod tests {
 		let game = Game::new(RuleSet::default(), 2);
 		let mut rng = StdRng::seed_from_u64(2);
 		let mut searcher = Searcher::new();
-		let action = searcher.choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(40));
+		let action =
+			searcher.choose_with(&game, Actor::Minimax, &mut rng, SearchLimit::work(20_000, 1));
 		assert!(game.legal_actions().contains(&action));
 		assert!(searcher.stats().depth >= 1);
 	}

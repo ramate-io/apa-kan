@@ -12,8 +12,13 @@ const MAX_BENCH_COPIES: usize = 16;
 pub struct Zobrist {
 	/// node × owner × kind, heap so the 6-color kind space cannot overflow the stack.
 	board: Vec<u64>,
+	/// node × owner × range_mask (0..=7). Distinguishes ranged vs unranged
+	/// occupancy of the same color-state kind.
+	board_range: Vec<u64>,
 	/// player × kind × copy-count (1-based)
 	bench: Vec<u64>,
+	/// player × range_mask × copy-count
+	bench_range: Vec<u64>,
 	side_two: u64,
 	pass_phase: [u64; 4],
 	actions_phase: [u64; 8],
@@ -33,7 +38,9 @@ impl Zobrist {
 		let mut next = || splitmix(&mut state);
 		let mut z = Self {
 			board: vec![0; MAX_NODES * 2 * KIND_COUNT],
+			board_range: vec![0; MAX_NODES * 2 * 8],
 			bench: vec![0; 2 * KIND_COUNT * MAX_BENCH_COPIES],
+			bench_range: vec![0; 2 * 8 * MAX_BENCH_COPIES],
 			side_two: next(),
 			pass_phase: [0; 4],
 			actions_phase: [0; 8],
@@ -51,12 +58,20 @@ impl Zobrist {
 				for kind in 0..KIND_COUNT {
 					z.board[board_ix(node, owner, kind)] = next();
 				}
+				for mask in 0..8 {
+					z.board_range[board_range_ix(node, owner, mask)] = next();
+				}
 			}
 		}
 		for player in 0..2 {
 			for kind in 0..KIND_COUNT {
 				for copy in 0..MAX_BENCH_COPIES {
 					z.bench[bench_ix(player, kind, copy)] = next();
+				}
+			}
+			for mask in 0..8 {
+				for copy in 0..MAX_BENCH_COPIES {
+					z.bench_range[bench_range_ix(player, mask, copy)] = next();
 				}
 			}
 		}
@@ -92,8 +107,16 @@ fn board_ix(node: usize, owner: usize, kind: usize) -> usize {
 	(node * 2 + owner) * KIND_COUNT + kind
 }
 
+fn board_range_ix(node: usize, owner: usize, mask: usize) -> usize {
+	(node * 2 + owner) * 8 + mask
+}
+
 fn bench_ix(player: usize, kind: usize, copy: usize) -> usize {
 	(player * KIND_COUNT + kind) * MAX_BENCH_COPIES + copy
+}
+
+fn bench_range_ix(player: usize, mask: usize, copy: usize) -> usize {
+	(player * 8 + mask) * MAX_BENCH_COPIES + copy
 }
 
 pub fn tables() -> &'static Zobrist {
@@ -109,15 +132,21 @@ pub fn hash(game: &Game) -> u64 {
 		let n = node as usize;
 		if n < MAX_NODES {
 			h ^= z.board[board_ix(n, tile.owner.index(), tile.kind_index())];
+			h ^= z.board_range[board_range_ix(n, tile.owner.index(), tile.range_mask() as usize)];
 		}
 	}
 	for player in [Player::One, Player::Two] {
 		let mut copies = [0u8; KIND_COUNT];
+		let mut range_copies = [0u8; 8];
 		for tile in game.bench(player) {
 			let k = tile.kind_index();
 			let n = copies[k].saturating_add(1).min(MAX_BENCH_COPIES as u8);
 			copies[k] = n;
 			h ^= z.bench[bench_ix(player.index(), k, (n as usize) - 1)];
+			let mask = tile.range_mask() as usize;
+			let rn = range_copies[mask].saturating_add(1).min(MAX_BENCH_COPIES as u8);
+			range_copies[mask] = rn;
+			h ^= z.bench_range[bench_range_ix(player.index(), mask, (rn as usize) - 1)];
 		}
 	}
 	if game.current_player() == Player::Two {
@@ -160,6 +189,7 @@ pub fn occupancy_hash(game: &Game) -> u64 {
 		let n = node as usize;
 		if n < MAX_NODES {
 			h ^= z.board[board_ix(n, tile.owner.index(), tile.kind_index())];
+			h ^= z.board_range[board_range_ix(n, tile.owner.index(), tile.range_mask() as usize)];
 		}
 	}
 	if game.current_player() == Player::Two {
