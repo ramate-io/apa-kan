@@ -30,11 +30,10 @@ colors = ["green", "orange"]   # all dots kinds of each color
 # [[p1.tiles]]
 # color = "green"              # or colors = ["green", "teal"] for two rings
 # zags = ["teal"]              # which of those rings are zags (or zag = true for all)
-# beads = ["green"]            # which of those rings are beads (or bead = true for all)
-# ranges = ["teal"]            # which rings carry range (or range = true for all)
 # weight = 3                   # ignored; weight is the ring-slot count
 #                              # omit weight/dots to expand all dots kinds of that color
 # dots = 1
+# capture = "dot"              # or "triangle" (default); dest for captures made with this tile
 # count = 1
 # [[p1.bench]]                 # optional ordered prefix of a small collection
 # color = "green"

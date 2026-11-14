@@ -14,7 +14,9 @@ use crate::config::GameConfig;
 use crate::deck::{
 	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
 };
-use crate::game::{Action, BudgetToken, DeckSlot, Game, Player, Tile, ZagMismatchCount};
+use crate::game::{
+	Action, BudgetToken, CaptureMark, DeckSlot, Game, Player, Tile, ZagMismatchCount,
+};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
@@ -1693,31 +1695,6 @@ fn polyline_mesh(pts: &[[f64; 2]], width: f32) -> Mesh {
 		.with_inserted_indices(Indices::U32(indices))
 }
 
-fn spawn_range_marks(
-	commands: &mut Commands,
-	meshes: &mut Assets<Mesh>,
-	materials: &mut Assets<ColorMaterial>,
-	center: [f64; 2],
-	ring_r: f64,
-	mark_r: f64,
-	color: Color,
-	z: f32,
-) {
-	let half = (mark_r * 0.42).max(0.45);
-	for p in visual::range_antipodes(center, ring_r) {
-		spawn_ring(
-			commands,
-			meshes,
-			materials,
-			Vec2::new(p[0] as f32, p[1] as f32),
-			(mark_r - half).max(0.35) as f32,
-			(mark_r + half) as f32,
-			color,
-			z,
-		);
-	}
-}
-
 fn spawn_ring(
 	commands: &mut Commands,
 	meshes: &mut Assets<Mesh>,
@@ -1847,18 +1824,6 @@ fn spawn_tile_at(
 					z,
 				);
 			}
-			if tile.stroke_is_ranged(k) {
-				spawn_range_marks(
-					commands,
-					meshes,
-					materials,
-					[f64::from(pos.x), f64::from(pos.y)],
-					f64::from(r),
-					f64::from(draw.range_r),
-					rgb(visual::tile_rgb(color)),
-					z + 0.05,
-				);
-			}
 		}
 	}
 	if tile.braid_ring_count() >= 2 {
@@ -1882,35 +1847,36 @@ fn spawn_tile_at(
 					visual::Z_TILE_RING + 0.08,
 				);
 			}
-			if (0..tile.n_rings.min(3))
-				.any(|i| tile.ring_is_braid(i as usize) && tile.ring_is_ranged(i as usize))
-			{
-				let color = tile.braid_colors()[0].unwrap_or(tile.primary());
-				spawn_range_marks(
-					commands,
-					meshes,
-					materials,
-					center,
-					r,
-					f64::from(draw.range_r),
-					rgb(visual::tile_rgb(color)),
-					visual::Z_TILE_RING + 0.10,
-				);
-			}
 		}
 	}
-	let dots = tile.dots.min(3);
-	let spread = draw.dot_spread;
-	let start = -spread * (f32::from(dots) - 1.0) / 2.0;
+	let marks = visual::capture_mark_count(tile);
 	let dot_r = draw.dot_r.max(2.0);
-	for i in 0..dots {
-		let dx = start + f32::from(i) * spread;
-		commands.spawn((
-			DynamicView,
-			Mesh2d(meshes.add(Circle::new(dot_r))),
-			MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
-			Transform::from_translation((pos + Vec2::new(dx, 0.0)).extend(visual::Z_TILE_DOT)),
-		));
+	for i in 0..marks {
+		let dx = draw.capture_mark_dx(i, marks);
+		let at = (pos + Vec2::new(dx, 0.0)).extend(visual::Z_TILE_DOT);
+		match tile.capture {
+			CaptureMark::Dot => {
+				commands.spawn((
+					DynamicView,
+					Mesh2d(meshes.add(Circle::new(dot_r))),
+					MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
+					Transform::from_translation(at),
+				));
+			}
+			CaptureMark::Triangle => {
+				let pts = visual::capture_triangle([0.0, 0.0], dot_r);
+				commands.spawn((
+					DynamicView,
+					Mesh2d(meshes.add(Triangle2d::new(
+						Vec2::new(pts[0][0], pts[0][1]),
+						Vec2::new(pts[1][0], pts[1][1]),
+						Vec2::new(pts[2][0], pts[2][1]),
+					))),
+					MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
+					Transform::from_translation(at),
+				));
+			}
+		}
 	}
 	if highlight {
 		spawn_ring(

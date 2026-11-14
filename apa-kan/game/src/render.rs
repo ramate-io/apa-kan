@@ -553,15 +553,6 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			} else {
 				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
 			}
-			if tile.stroke_is_ranged(k) {
-				draw_range_marks(
-					img,
-					[c.0, c.1],
-					rr,
-					f64::from(draw.range_r),
-					rgb_of(visual::tile_rgb(color)),
-				);
-			}
 		}
 	}
 	if tile.braid_ring_count() >= 2 {
@@ -586,27 +577,26 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			for (pts, color, width) in back.into_iter().chain(front) {
 				stroke_polyline(img, &pts, color, width);
 			}
-			if (0..tile.n_rings.min(3))
-				.any(|i| tile.ring_is_braid(i as usize) && tile.ring_is_ranged(i as usize))
-			{
-				let color = tile.braid_colors()[0].unwrap_or(tile.primary());
-				draw_range_marks(
+		}
+	}
+	let marks = visual::capture_mark_count(tile);
+	let dot_r = f64::from(draw.dot_r);
+	for i in 0..marks {
+		let dx = f64::from(draw.capture_mark_dx(i, marks));
+		let center = (c.0 + dx, c.1);
+		match tile.capture {
+			crate::game::CaptureMark::Dot => fill_circle(img, center, dot_r, primary),
+			crate::game::CaptureMark::Triangle => {
+				let pts = visual::capture_triangle([center.0 as f32, center.1 as f32], draw.dot_r);
+				fill_triangle(
 					img,
-					[c.0, c.1],
-					rr,
-					f64::from(draw.range_r),
-					rgb_of(visual::tile_rgb(color)),
+					(f64::from(pts[0][0]), f64::from(pts[0][1])),
+					(f64::from(pts[1][0]), f64::from(pts[1][1])),
+					(f64::from(pts[2][0]), f64::from(pts[2][1])),
+					primary,
 				);
 			}
 		}
-	}
-	let dots = tile.dots.min(3);
-	let spread = f64::from(draw.dot_spread);
-	let start = -spread * (f64::from(dots) - 1.0) / 2.0;
-	let dot_r = f64::from(draw.dot_r);
-	for i in 0..dots {
-		let dx = start + f64::from(i) * spread;
-		fill_circle(img, (c.0 + dx, c.1), dot_r, primary);
 	}
 }
 
@@ -656,6 +646,37 @@ fn put(img: &mut RgbaImage, x: i32, y: i32, color: Rgba<u8>, a: f64) {
 	blend(&mut img.get_pixel_mut(x as u32, y as u32), color, a);
 }
 
+fn fill_triangle(
+	img: &mut RgbaImage,
+	a: (f64, f64),
+	b: (f64, f64),
+	c: (f64, f64),
+	color: Rgba<u8>,
+) {
+	let minx = a.0.min(b.0).min(c.0).floor() as i32 - 1;
+	let maxx = a.0.max(b.0).max(c.0).ceil() as i32 + 1;
+	let miny = a.1.min(b.1).min(c.1).floor() as i32 - 1;
+	let maxy = a.1.max(b.1).max(c.1).ceil() as i32 + 1;
+	let area = (b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1);
+	if area.abs() < 1e-6 {
+		return;
+	}
+	for y in miny..=maxy {
+		for x in minx..=maxx {
+			let px = f64::from(x) + 0.5;
+			let py = f64::from(y) + 0.5;
+			let w0 = ((b.0 - px) * (c.1 - py) - (c.0 - px) * (b.1 - py)) / area;
+			let w1 = ((c.0 - px) * (a.1 - py) - (a.0 - px) * (c.1 - py)) / area;
+			let w2 = 1.0 - w0 - w1;
+			let d = (-w0).max(-w1).max(-w2);
+			let alpha = (0.55 - d * 8.0).clamp(0.0, 1.0);
+			if alpha > 0.0 {
+				put(img, x, y, color, alpha);
+			}
+		}
+	}
+}
+
 fn fill_circle(img: &mut RgbaImage, c: (f64, f64), r: f64, color: Rgba<u8>) {
 	let r2 = r + 0.5;
 	let minx = (c.0 - r2 - 1.0).floor() as i32;
@@ -670,19 +691,6 @@ fn fill_circle(img: &mut RgbaImage, c: (f64, f64), r: f64, color: Rgba<u8>) {
 			let a = (r2 - d + 0.5).clamp(0.0, 1.0);
 			put(img, x, y, color, a);
 		}
-	}
-}
-
-fn draw_range_marks(
-	img: &mut RgbaImage,
-	center: [f64; 2],
-	ring_r: f64,
-	mark_r: f64,
-	color: Rgba<u8>,
-) {
-	let width = (mark_r * 0.42).max(0.9);
-	for p in visual::range_antipodes(center, ring_r) {
-		stroke_circle(img, (p[0], p[1]), mark_r, color, width);
 	}
 }
 

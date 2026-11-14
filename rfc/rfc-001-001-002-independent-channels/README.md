@@ -83,7 +83,6 @@ Capture is simultaneous: `collect_removals` scores every occupied node on the cu
 - **Zag.** Zags only punish. Count every hitting zag stroke on the edge (SUM by default). They never make a match of their own; a same-color normal on the other tile is the normal channel's job.
 - **Braid.** Look at both braids, keep the biggest one that the neighbor can cover, and score that hitch as a match of its size. If neither braid is covered, the edge takes a single +1 (`one`, the accepted default). Heavier `weight` / `sum` costs are tracked in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
 - **Bead.** Count unmatched bead rings on both tiles (+1 each). If any bead is matched — the neighbor holds that color on any ring, same as a normal — the edge also takes a single −1. Beads bomb non-matching colors, especially braids whose colors they do not hold.
-- **Range** is not a fifth channel. It is a per-ring modifier that reapplies these four channels along uninterrupted 2-arc walks. See [`rfc-001-001-005`](../rfc-001-001-005-range/README.md).
 
 ## Worked table
 

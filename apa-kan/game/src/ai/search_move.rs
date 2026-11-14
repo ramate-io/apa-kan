@@ -6,8 +6,8 @@ use crate::game::{Action, Game, KIND_DOTS};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchMove {
 	/// Low 16 bits: [`crate::game::Tile::kind_index`] (color-state × dots).
-	/// High bits: [`crate::game::Tile::range_mask`] so ranged vs unranged ADDs
-	/// of the same colors/types stay distinct in the TT.
+	/// High bits: [`crate::game::CaptureMark::bit`] so dot vs triangle ADDs of
+	/// the same colors/types stay distinct in the TT.
 	Add {
 		kind: u32,
 		node: NodeId,
@@ -50,16 +50,16 @@ impl SearchMove {
 	}
 
 	/// Packed TT key: 0 = MOVE, u16::MAX = PASS, 1..=COLOR_STATES = ADD color-state.
-	/// `b` is `dots | (range_mask << 2)`.
+	/// `b` is `dots | (capture_bit << 2)`.
 	pub fn pack(self) -> (u16, u8, u8) {
 		match self {
 			SearchMove::Add { kind, node } => {
 				let dots_n = KIND_DOTS as u32;
 				let base = kind & 0xFFFF;
-				let range = ((kind >> 16) as u8) & 7;
+				let capture = ((kind >> 16) as u8) & 1;
 				let state = (base / dots_n + 1) as u16;
 				let dots = (base % dots_n) as u8;
-				(state, node, dots | (range << 2))
+				(state, node, dots | (capture << 2))
 			}
 			SearchMove::Move { from, to } => (0, from, to),
 			SearchMove::Pass => (u16::MAX, 0, 0),
@@ -73,13 +73,14 @@ impl SearchMove {
 			state
 				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
 					&& (b & 3) < KIND_DOTS as u8
-					&& (b >> 2) < 8 =>
+					&& (b >> 2) <= 1 =>
 			{
 				let dots = b & 3;
-				let range = b >> 2;
+				let capture = b >> 2;
 				Some(SearchMove::Add {
 					kind: u32::from(state - 1) * KIND_DOTS as u32
-						+ u32::from(dots) + (u32::from(range) << 16),
+						+ u32::from(dots)
+						+ (u32::from(capture) << 16),
 					node: a,
 				})
 			}
@@ -88,16 +89,16 @@ impl SearchMove {
 	}
 }
 
-fn search_kind(tile: crate::game::Tile) -> u32 {
-	(tile.kind_index() as u32) | (u32::from(tile.range_mask()) << 16)
+pub fn search_kind(tile: crate::game::Tile) -> u32 {
+	(tile.kind_index() as u32) | (u32::from(tile.capture.bit()) << 16)
 }
 
 fn kind_index_of(kind: u32) -> usize {
 	(kind & 0xFFFF) as usize
 }
 
-fn range_mask_of(kind: u32) -> u8 {
-	((kind >> 16) as u8) & 7
+fn capture_bit_of(kind: u32) -> u8 {
+	((kind >> 16) as u8) & 1
 }
 
 /// Legal actions with duplicate ADD kinds collapsed (one index per kind).
@@ -148,7 +149,7 @@ pub fn apply_move(game: &mut Game, mv: SearchMove) -> Result<crate::game::Action
 }
 
 /// True when the action removed at least one tile (capture / overwhelm).
-/// Own-tile removals count: they earn capture budget the same as opponent tiles.
+/// Own-tile removals count: they follow the acting tile's capture mark.
 pub fn is_capture(outcome: &crate::game::ActionOutcome, _mover: crate::game::Player) -> bool {
 	!outcome.removals.is_empty() || outcome.draws > 0
 }
@@ -188,6 +189,13 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 						}
 					}
 				}
+				if tile.capture.is_dot() {
+					if game.bench(tile.owner).len() < 4 {
+						s += 10;
+					}
+				} else if game.budget_token_count(tile.owner) < 3 {
+					s += 10;
+				}
 			}
 			s
 		}
@@ -195,8 +203,13 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 			let mut s = 12;
 			let view = crate::game::decode_color_state(kind_index_of(kind) / KIND_DOTS);
 			let add_all = view.normal | view.zag | view.braid | view.bead;
-			if range_mask_of(kind) != 0 {
-				s += 10;
+			let me = game.current_player();
+			if capture_bit_of(kind) == 1 {
+				if game.bench(me).len() < 4 {
+					s += 8;
+				}
+			} else if game.budget_token_count(me) < 3 {
+				s += 8;
 			}
 			for nb in game.board().incident_others(node) {
 				if let Some(other) = game.tile_at(nb) {
@@ -241,7 +254,7 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
-	use crate::game::{Game, RuleSet};
+	use crate::game::{CaptureMark, Game, RuleSet};
 
 	#[test]
 	fn collapsed_adds_are_no_more_than_full_legal() {
@@ -278,9 +291,14 @@ mod tests {
 			1,
 			1,
 		);
-		let braid_add = SearchMove::Add { kind: braid.kind_index() as u32, node: 4 };
+		let braid_add = SearchMove::Add { kind: search_kind(braid), node: 4 };
 		let packed = braid_add.pack();
 		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(braid_add));
+		let dotted = braid.with_capture(CaptureMark::Dot);
+		let dotted_add = SearchMove::Add { kind: search_kind(dotted), node: 4 };
+		let packed = dotted_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(dotted_add));
+		assert_ne!(braid_add, dotted_add);
 		let mv = SearchMove::Move { from: 2, to: 7 };
 		let (k, a, b) = mv.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));
@@ -315,8 +333,8 @@ mod tests {
 			1,
 			1,
 		);
-		let hit = SearchMove::Add { kind: braid.kind_index() as u32, node: spawn };
-		let miss_mv = SearchMove::Add { kind: miss.kind_index() as u32, node: spawn };
+		let hit = SearchMove::Add { kind: search_kind(braid), node: spawn };
+		let miss_mv = SearchMove::Add { kind: search_kind(miss), node: spawn };
 		assert!(cheap_order(&game, hit) > cheap_order(&game, miss_mv));
 	}
 

@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::deck::PickStrategy;
 use crate::game::{
-	Action, ActionOutcome, BraidFailMismatch, BudgetToken, EndReason, Game, GameStatus,
+	Action, ActionOutcome, BraidFailMismatch, BudgetToken, CaptureMark, EndReason, Game, GameStatus,
 	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
 	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
+	DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -25,6 +26,18 @@ fn skip_zero_u8(v: &u8) -> bool {
 
 fn skip_zero_usize(v: &usize) -> bool {
 	*v == 0
+}
+
+fn default_triangle() -> String {
+	CaptureMark::Triangle.name().to_string()
+}
+
+fn skip_triangle(v: &String) -> bool {
+	v == "triangle"
+}
+
+fn default_dot_percent() -> u8 {
+	DOT_PERCENT_DEFAULT
 }
 
 fn player_num(p: Player) -> u8 {
@@ -82,9 +95,6 @@ pub struct RingLog {
 	/// Bead ring. Absent/false on logs from before beads.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub e: bool,
-	/// Range modifier on this ring. Absent/false on logs from before range.
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
-	pub r: bool,
 }
 
 /// Full tile identity: ids, owner, dots, weight (= ring-slot count), rings.
@@ -101,8 +111,10 @@ pub struct TileLog {
 	pub braid_rings: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub bead_rings: u8,
-	#[serde(default, skip_serializing_if = "skip_zero_u8")]
-	pub range_rings: u8,
+	/// Capture mark. Absent on logs from before capture modifiers; those
+	/// replay as triangle (spawn-token dest).
+	#[serde(default = "default_triangle")]
+	pub capture: String,
 	pub rings: Vec<RingLog>,
 }
 
@@ -117,7 +129,6 @@ impl TileLog {
 				z: tile.ring_is_zag(i),
 				b: tile.ring_is_braid(i),
 				e: tile.ring_is_bead(i),
-				r: tile.ring_is_ranged(i),
 			})
 			.collect();
 		Self {
@@ -130,7 +141,7 @@ impl TileLog {
 			zag_rings: tile.zag_ring_count(),
 			braid_rings: tile.braid_ring_count(),
 			bead_rings: tile.bead_ring_count(),
-			range_rings: tile.range_ring_count(),
+			capture: tile.capture.name().to_string(),
 			rings,
 		}
 	}
@@ -153,11 +164,9 @@ impl TileLog {
 				Ok((TileColor::parse(&r.c)?, typ))
 			})
 			.collect();
-		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.n_rings, self.dots);
+		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.n_rings, self.dots)
+			.with_capture(CaptureMark::parse(&self.capture).unwrap_or(CaptureMark::Triangle));
 		tile.id = self.id;
-		for (i, r) in self.rings.iter().enumerate().take(tile.n_rings as usize) {
-			tile.ring_range[i] = r.r;
-		}
 		debug_assert_eq!(tile.weight, tile.n_rings);
 		Ok(tile)
 	}
@@ -183,8 +192,8 @@ pub struct PieceRef {
 	pub braid_rings: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub bead_rings: u8,
-	#[serde(default, skip_serializing_if = "skip_zero_u8")]
-	pub range_rings: u8,
+	#[serde(default = "default_triangle", skip_serializing_if = "skip_triangle")]
+	pub capture: String,
 }
 
 impl PieceRef {
@@ -197,7 +206,7 @@ impl PieceRef {
 			zag_rings: tile.zag_ring_count(),
 			braid_rings: tile.braid_ring_count(),
 			bead_rings: tile.bead_ring_count(),
-			range_rings: tile.range_ring_count(),
+			capture: tile.capture.name().to_string(),
 		}
 	}
 }
@@ -221,9 +230,9 @@ pub struct RulesLog {
 	/// Absent/0 on logs from before beads; replay then uses 0 (beads off).
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub bead_numer: u8,
-	/// Absent/0 on logs from before range; replay then uses 0 (range off).
-	#[serde(default, skip_serializing_if = "skip_zero_u8")]
-	pub range_numer: u8,
+	/// Absent on logs from before capture modifiers; replay uses 50.
+	#[serde(default = "default_dot_percent")]
+	pub dot_percent: u8,
 	pub capture_draw_on_move: bool,
 	pub mismatch_uses_neighbor_weight: bool,
 	pub actions_per_turn: u8,
@@ -271,7 +280,7 @@ impl RulesLog {
 			zag_numer: r.zag_numer,
 			braid_numer: r.braid_numer,
 			bead_numer: r.bead_numer,
-			range_numer: r.range_numer,
+			dot_percent: r.dot_percent,
 			capture_draw_on_move: r.capture_draw_on_move,
 			mismatch_uses_neighbor_weight: r.mismatch_uses_neighbor_weight,
 			actions_per_turn: r.actions_per_turn,
@@ -312,7 +321,7 @@ impl RulesLog {
 			zag_numer: self.zag_numer,
 			braid_numer: self.braid_numer,
 			bead_numer: self.bead_numer,
-			range_numer: self.range_numer,
+			dot_percent: self.dot_percent,
 			capture_draw_on_move: self.capture_draw_on_move,
 			mismatch_uses_neighbor_weight: self.mismatch_uses_neighbor_weight,
 			actions_per_turn: self.actions_per_turn,
@@ -434,12 +443,26 @@ pub struct ActionLog {
 	pub self_capture: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub draws: u8,
+	/// `bench` or `tokens`. Absent when the action captured nothing.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub capture_dest: Option<String>,
+	/// One entry per simultaneous removal. Same dest on every entry.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub captures: Vec<CaptureEventLog>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub piece: Option<PieceRef>,
 	pub tokens: usize,
 	pub budget: usize,
 	#[serde(default, skip_serializing_if = "skip_zero_usize")]
 	pub surplus: usize,
+}
+
+/// One captured tile: original owner and where it went.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CaptureEventLog {
+	pub node: u8,
+	pub owner: u8,
+	pub dest: String,
 }
 
 impl ActionLog {
@@ -459,6 +482,16 @@ impl ActionLog {
 		};
 		let capture = outcome.removals.iter().filter(|r| r.tile.owner != player).count() as u8;
 		let self_capture = outcome.removals.iter().filter(|r| r.tile.owner == player).count() as u8;
+		let captures: Vec<CaptureEventLog> = outcome
+			.removals
+			.iter()
+			.map(|r| CaptureEventLog {
+				node: r.node,
+				owner: player_num(r.tile.owner),
+				dest: r.dest.name().to_string(),
+			})
+			.collect();
+		let capture_dest = captures.first().map(|c| c.dest.clone());
 		Self {
 			turn: game_after.turn_count(),
 			player: player_num(player),
@@ -469,6 +502,8 @@ impl ActionLog {
 			capture,
 			self_capture,
 			draws: outcome.draws,
+			capture_dest,
+			captures,
 			piece: piece.map(PieceRef::from_tile),
 			tokens: game_after.budget_token_count(player),
 			budget: game_after.budget(player),
@@ -602,8 +637,6 @@ pub struct BoardPieceLog {
 	pub braid_rings: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub bead_rings: u8,
-	#[serde(default, skip_serializing_if = "skip_zero_u8")]
-	pub range_rings: u8,
 }
 
 impl BoardPieceLog {
@@ -617,7 +650,6 @@ impl BoardPieceLog {
 			zag_rings: tile.zag_ring_count(),
 			braid_rings: tile.braid_ring_count(),
 			bead_rings: tile.bead_ring_count(),
-			range_rings: tile.range_ring_count(),
 		}
 	}
 }
@@ -1160,6 +1192,48 @@ mod tests {
 		r.braid_fail_mismatch = BraidFailMismatch::Sum;
 		let log = RulesLog::from_rules(r);
 		assert_eq!(log.to_rules().unwrap(), r);
+		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
+	}
+
+	#[test]
+	fn jsonl_records_capture_dest_per_removal() {
+		use crate::game::{Action, CaptureDest, CaptureMark, Game, Player, TileColor};
+
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let victim = game.alloc_tile(Player::Two, TileColor::Green, 1, 1);
+		game.place_tile(spawn, victim);
+		let helper = game.alloc_rings(
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			3,
+			1,
+		);
+		game.place_tile(nbs[1], helper);
+		let mover = game
+			.alloc_tile(Player::One, TileColor::Blue, 3, 1)
+			.with_capture(CaptureMark::Dot);
+		game.place_tile(from, mover);
+		game.set_current(Player::One);
+		let mut log = GameLog::begin(1, "t", "g", "g", 0, "default", &game);
+		let action = Action::Move { from, to: land };
+		let piece = piece_for_action(&game, action);
+		let outcome = game.apply(action).unwrap();
+		log.push_action(action, piece, &outcome, &game);
+		log.finish(&game, None);
+		let act = log.actions.last().unwrap();
+		assert_eq!(act.capture_dest.as_deref(), Some("bench"));
+		assert!(!act.captures.is_empty());
+		assert!(act.captures.iter().all(|c| c.dest == "bench"));
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
 	}
 
 	fn opening_weight_equals_rings(log: &GameLog) -> bool {

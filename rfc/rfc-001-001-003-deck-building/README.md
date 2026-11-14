@@ -21,7 +21,7 @@ ADD, usable budget, and spawn tokens are unchanged:
 
 - usable budget = `min(tokens, unplaced bench tiles)`
 - 7 starting tokens (`--starting-tokens` / `--starting-bench`)
-- +1 token per capture (self-capture still gated by `self_capture_budget`)
+- triangle captures: +1 token (self-capture still gated by `self_capture_budget`); dot captures join the mover's bench (see [`rfc-001-001-005`](../rfc-001-001-005-capture-modifiers/README.md))
 - the full 11 public tiles are selectable once chosen
 
 ### Ring-type cap (confirmed)
@@ -71,4 +71,4 @@ Humans walk the 7-pick, reveal, and +4 on a collection grid. The cap is shown an
 
 ## Open questions
 
-- Range is a per-ring modifier, not a type, and does **not** count toward this 6-slot cap. See [`rfc-001-001-005`](../rfc-001-001-005-range/README.md). Beads share the cap: [`rfc-001-001-004`](../rfc-001-001-004-beads/README.md).
+- Range modifier is a later PR and is not part of this draft. Beads are specified in [`rfc-001-001-004`](../rfc-001-001-004-beads/README.md) and share this 6-slot cap.
