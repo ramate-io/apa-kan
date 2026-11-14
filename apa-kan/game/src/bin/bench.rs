@@ -83,7 +83,7 @@ fn usage() -> &'static str {
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
-	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --beads, --zag-mismatch,\n\
+	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --beads, --dot-chance, --zag-mismatch,\n\
 	   --braid-fail-mismatch,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -378,6 +378,13 @@ struct SeatStats {
 	self_captures: u32,
 	center_captures: u32,
 	center_self_captures: u32,
+	bench_captures: u32,
+	token_captures: u32,
+	token_sum: u64,
+	bench_len_sum: u64,
+	snapshots: u32,
+	p1_open_dots: u32,
+	p1_open_n: u32,
 }
 
 fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
@@ -423,7 +430,7 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!("# {}", cfg.label));
 	lines.push(limit_header(&cfg, rules.turn_limit));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} dot_percent={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -448,6 +455,7 @@ fn run(cfg: BenchConfig) {
 		rules.zag_numer,
 		rules.braid_numer,
 		rules.bead_numer,
+		rules.dot_percent,
 		rules.zag_mismatch.name(),
 		rules.path_constraint.name(),
 		cfg.scenario.as_ref().map(|s| s.name.as_str()).unwrap_or("default")
@@ -579,6 +587,11 @@ fn run(cfg: BenchConfig) {
 	let mut self_captures = 0u32;
 	let mut center_captures = 0u32;
 	let mut center_self_captures = 0u32;
+	let mut bench_captures = 0u32;
+	let mut token_captures = 0u32;
+	let mut token_sum = 0u64;
+	let mut bench_len_sum = 0u64;
+	let mut snapshots = 0u32;
 	for (_, stats, line) in &pairing_results {
 		println!("{line}");
 		lines.push(line.clone());
@@ -603,6 +616,11 @@ fn run(cfg: BenchConfig) {
 		self_captures += stats.self_captures;
 		center_captures += stats.center_captures;
 		center_self_captures += stats.center_self_captures;
+		bench_captures += stats.bench_captures;
+		token_captures += stats.token_captures;
+		token_sum += stats.token_sum;
+		bench_len_sum += stats.bench_len_sum;
+		snapshots += stats.snapshots;
 		stall_games += cfg.games;
 		stall_rep2 += stats.games_repeat_ge2;
 		stall_rep3 += stats.games_repeat_ge3;
@@ -638,8 +656,48 @@ fn run(cfg: BenchConfig) {
 		if games_n == 0 { 0.0 } else { f64::from(center_self_captures) / f64::from(games_n) };
 	lines.push(format!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}"));
 	lines.push(format!("# center_captures  opponent_tiles_removed={center_captures}  avg_per_game={avg_center:.2}  self_captures={center_self_captures}  self_avg_per_game={avg_center_self:.2}"));
+	let avg_bench_cap =
+		if games_n == 0 { 0.0 } else { f64::from(bench_captures) / f64::from(games_n) };
+	let avg_token_cap =
+		if games_n == 0 { 0.0 } else { f64::from(token_captures) / f64::from(games_n) };
+	let mean_tokens =
+		if snapshots == 0 { 0.0 } else { token_sum as f64 / f64::from(snapshots) / 2.0 };
+	let mean_bench =
+		if snapshots == 0 { 0.0 } else { bench_len_sum as f64 / f64::from(snapshots) / 2.0 };
+	lines.push(format!(
+		"# capture_dest  bench={bench_captures} avg_per_game={avg_bench_cap:.2}  tokens={token_captures} avg_per_game={avg_token_cap:.2}"
+	));
+	lines.push(format!(
+		"# tokens_bench_over_time  mean_tokens_per_side={mean_tokens:.2}  mean_bench_per_side={mean_bench:.2}  snapshots={snapshots}"
+	));
+	let mut pick_w = [0u32; 12];
+	let mut pick_d = [0u32; 12];
+	let mut pick_l = [0u32; 12];
+	for results in &by_pair {
+		for r in results {
+			debug_assert!(r.p1_open_n == 0 || r.p1_open_dots <= r.p1_open_n);
+			let i = r.p1_open_dots.min(11) as usize;
+			match r.status {
+				GameStatus::Won { winner: Player::One, .. } => pick_w[i] += 1,
+				GameStatus::Won { winner: Player::Two, .. } => pick_l[i] += 1,
+				_ => pick_d[i] += 1,
+			}
+		}
+	}
+	let pick_bits: Vec<String> = (0..12)
+		.filter(|&i| pick_w[i] + pick_d[i] + pick_l[i] > 0)
+		.map(|i| format!("dots{}={}-{}-{}", i, pick_w[i], pick_d[i], pick_l[i]))
+		.collect();
+	lines.push(format!("# pick_dot_ratio  P1_opening_dots W-D-L  {}", pick_bits.join("  ")));
 	println!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}");
 	println!("# center_captures  opponent_tiles_removed={center_captures}  avg_per_game={avg_center:.2}  self_captures={center_self_captures}  self_avg_per_game={avg_center_self:.2}");
+	println!(
+		"# capture_dest  bench={bench_captures} avg_per_game={avg_bench_cap:.2}  tokens={token_captures} avg_per_game={avg_token_cap:.2}"
+	);
+	println!(
+		"# tokens_bench_over_time  mean_tokens_per_side={mean_tokens:.2}  mean_bench_per_side={mean_bench:.2}  snapshots={snapshots}"
+	);
+	println!("# pick_dot_ratio  P1_opening_dots W-D-L  {}", pick_bits.join("  "));
 	println!(
 		"# seat_totals  P1 {p1_w}-{p1_d}-{p1_l}  P2 {p1_l}-{p1_d}-{p1_w}  games={}",
 		p1_w + p1_d + p1_l
@@ -919,6 +977,13 @@ fn summarize_pairing(
 		stats.self_captures += result.self_captures;
 		stats.center_captures += result.center_captures;
 		stats.center_self_captures += result.center_self_captures;
+		stats.bench_captures += result.bench_captures;
+		stats.token_captures += result.token_captures;
+		stats.token_sum += result.token_sum;
+		stats.bench_len_sum += result.bench_len_sum;
+		stats.snapshots += result.snapshots;
+		stats.p1_open_dots += result.p1_open_dots;
+		stats.p1_open_n += result.p1_open_n;
 		match result.status {
 			GameStatus::Won { winner, reason } => {
 				if winner == Player::One {
@@ -1072,6 +1137,13 @@ struct PlayResult {
 	self_captures: u32,
 	center_captures: u32,
 	center_self_captures: u32,
+	bench_captures: u32,
+	token_captures: u32,
+	token_sum: u64,
+	bench_len_sum: u64,
+	snapshots: u32,
+	p1_open_dots: u32,
+	p1_open_n: u32,
 	record: Option<GameRecord>,
 	log: Option<GameLog>,
 	deck: DeckRow,
@@ -1158,6 +1230,13 @@ fn play_game(
 	let mut self_captures = 0u32;
 	let mut center_captures = 0u32;
 	let mut center_self_captures = 0u32;
+	let mut bench_captures = 0u32;
+	let mut token_captures = 0u32;
+	let mut token_sum = 0u64;
+	let mut bench_len_sum = 0u64;
+	let mut snapshots = 0u32;
+	let p1_open_dots = game.bench(Player::One).iter().filter(|t| t.capture.is_dot()).count() as u32;
+	let p1_open_n = game.bench(Player::One).len() as u32;
 	let center = game.board().center();
 	let mut guard = 0u32;
 	let mut add_rings = [0u32; 4];
@@ -1180,6 +1259,11 @@ fn play_game(
 		max_occ = max_occ.max(*oc);
 
 		board_positions += 1;
+		snapshots += 1;
+		token_sum += game.budget_token_count(Player::One) as u64
+			+ game.budget_token_count(Player::Two) as u64;
+		bench_len_sum +=
+			game.bench(Player::One).len() as u64 + game.bench(Player::Two).len() as u64;
 		for (_, t) in game.tiles() {
 			board_tiles += 1;
 			board_rings += u64::from(t.n_rings);
@@ -1245,6 +1329,16 @@ fn play_game(
 					.removals
 					.iter()
 					.filter(|r| r.node == center && r.tile.owner == outcome.player)
+					.count() as u32;
+				bench_captures += outcome
+					.removals
+					.iter()
+					.filter(|r| r.dest == apa_kan::game::CaptureDest::Bench)
+					.count() as u32;
+				token_captures += outcome
+					.removals
+					.iter()
+					.filter(|r| r.dest == apa_kan::game::CaptureDest::Tokens)
 					.count() as u32;
 				if keep_record {
 					record_lines.push(format!(
@@ -1332,6 +1426,13 @@ fn play_game(
 		self_captures,
 		center_captures,
 		center_self_captures,
+		bench_captures,
+		token_captures,
+		token_sum,
+		bench_len_sum,
+		snapshots,
+		p1_open_dots,
+		p1_open_n,
 		record,
 		log: game_log,
 		deck: DeckRow {
@@ -1421,6 +1522,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			rules.zag_numer,
 			rules.braid_numer,
 			rules.bead_numer,
+			rules.dot_percent,
 			&mut next_id,
 			&mut rng,
 		);
@@ -1687,6 +1789,9 @@ mod tests {
 					|| line.starts_with("# low_value_pairs")
 					|| line.starts_with("# captures")
 					|| line.starts_with("# center_captures")
+					|| line.starts_with("# capture_dest")
+					|| line.starts_with("# tokens_bench_over_time")
+					|| line.starts_with("# pick_dot_ratio")
 			})
 			.collect::<Vec<_>>()
 			.join("\n")

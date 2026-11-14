@@ -281,6 +281,7 @@ pub fn generate_collection(
 				rules.zag_numer,
 				rules.braid_numer,
 				rules.bead_numer,
+				rules.dot_percent,
 				next_id,
 				rng,
 			));
@@ -308,6 +309,7 @@ fn repair_collection(
 			rules.zag_numer,
 			rules.braid_numer,
 			rules.bead_numer,
+			rules.dot_percent,
 			next_id,
 			rng,
 		));
@@ -363,6 +365,7 @@ pub fn apply_deck_noise(
 				rules.zag_numer,
 				rules.braid_numer,
 				rules.bead_numer,
+				rules.dot_percent,
 				next_id,
 				rng,
 			));
@@ -400,8 +403,8 @@ pub fn generate_both_collections(
 	[p1, p2]
 }
 
-fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3]) {
-	(t.n_rings, t.dots, t.rings.map(|c| c as u8), t.ring_type.map(|r| r as u8))
+fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3], u8) {
+	(t.n_rings, t.dots, t.rings.map(|c| c as u8), t.ring_type.map(|r| r as u8), t.capture.bit())
 }
 
 fn tile_score(tile: Tile) -> i32 {
@@ -439,6 +442,19 @@ fn set_score(tiles: &[Tile], opponent: &[Tile]) -> i32 {
 	s += 8 * (cap - zag).max(0);
 	s += 8 * (cap - braid).max(0);
 	s += 8 * (cap - bead).max(0);
+	let n = tiles.len() as i32;
+	if n > 0 {
+		let dots = tiles.iter().filter(|t| t.capture.is_dot()).count() as i32;
+		let pct = dots * 100 / n;
+		// Slightly triangle-heavy keeps spawn tokens flowing; all-dot starves ADD.
+		s -= (pct - 45).abs() * 3;
+		if dots == n {
+			s -= 90;
+		}
+		if dots == 0 {
+			s -= 50;
+		}
+	}
 	if !opponent.is_empty() {
 		for &mine in tiles {
 			for &opp in opponent {
@@ -967,7 +983,7 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
-	use crate::game::{TileColor, STARTING_TOKENS_DEFAULT};
+	use crate::game::{CaptureMark, TileColor, STARTING_TOKENS_DEFAULT};
 
 	fn zag_tile(id: u32, n_zag: u8) -> Tile {
 		let n = n_zag.clamp(1, 3);
@@ -1075,6 +1091,28 @@ mod tests {
 		assert!(respects_type_cap(&mixed));
 		assert!(!would_respect_cap(&mixed, bead_tile(7, 1)));
 		assert!(would_respect_cap(&six, zag_tile(7, 2)));
+	}
+
+	#[test]
+	fn picker_scores_mixed_capture_marks_above_all_dots() {
+		let mixed: Vec<Tile> = (0..11)
+			.map(|i| {
+				normal_tile(i + 1, TileColor::ALL[i as usize % 6]).with_capture(if i < 5 {
+					CaptureMark::Dot
+				} else {
+					CaptureMark::Triangle
+				})
+			})
+			.collect();
+		let all_dot: Vec<Tile> = (0..11)
+			.map(|i| {
+				normal_tile(i + 21, TileColor::ALL[i as usize % 6]).with_capture(CaptureMark::Dot)
+			})
+			.collect();
+		let all_tri: Vec<Tile> =
+			(0..11).map(|i| normal_tile(i + 41, TileColor::ALL[i as usize % 6])).collect();
+		assert!(set_score(&mixed, &[]) > set_score(&all_dot, &[]));
+		assert!(set_score(&mixed, &[]) > set_score(&all_tri, &[]));
 	}
 
 	#[test]

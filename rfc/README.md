@@ -30,3 +30,4 @@ Each RFC directory should contain:
 - [rfc-001-001-002-independent-channels](./rfc-001-001-002-independent-channels/README.md) — independent additive normal / zag / braid / bead edge channels; accepted default: channels + flat-1 failed braids + 11-tile public bench with spawn tokens + doubles allowed
 - [rfc-001-001-003-deck-building](./rfc-001-001-003-deck-building/README.md) — 27-tile collections, 7+4 public bench, reserves never usable, 6-ring-per-type cap (zag, braid, bead; braids count by slots)
 - [rfc-001-001-004-beads](./rfc-001-001-004-beads/README.md) — fourth ring type: beads as a bomb against non-matching colors; unmatched bead rings +1 each, single match −1 per edge
+- [rfc-001-001-005-capture-modifiers](./rfc-001-001-005-capture-modifiers/README.md) — every tile is a dot or a triangle: captures from that tile go to the mover's bench or to spawn tokens

@@ -90,6 +90,9 @@ pub const BAG_SIZE_DEFAULT: usize = 11;
 /// Default opening spawn-token stack. Independent of [`BAG_SIZE_DEFAULT`].
 pub const STARTING_TOKENS_DEFAULT: u8 = 7;
 pub const MAX_COLOR_RINGS: u8 = 3;
+/// Generated tiles are dots with this percent chance; the rest are triangles.
+/// CLI `--dot-chance 0..100`. Default 50/50.
+pub const DOT_PERCENT_DEFAULT: u8 = 50;
 /// Per live slot: empty + (6 colors × 4 types). Kind space is this cubed.
 pub const RING_TYPE_COUNT: usize = 4;
 pub const SLOT_KINDS: usize = 1 + 6 * RING_TYPE_COUNT;
@@ -324,6 +327,97 @@ pub fn sample_rings(rng: &mut impl Rng, max_rings: u8) -> ([TileColor; 3], u8) {
 	(rings, n)
 }
 
+/// Capture destination encoded by the marks drawn in place of move-length
+/// dots. Every tile has one: there is no unmarked tile. The **number** of
+/// marks is [`Tile::dots`] (MOVE length 1–3); the **shape** is this mark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+pub enum CaptureMark {
+	/// Captures on a move/ADD made with this tile become spawn tokens (+1
+	/// each). Today's pre-modifier behavior.
+	#[default]
+	Triangle = 0,
+	/// Captures join the mover's bench as unplaced tiles they now own.
+	Dot = 1,
+}
+
+impl CaptureMark {
+	pub fn is_dot(self) -> bool {
+		matches!(self, Self::Dot)
+	}
+
+	pub fn is_triangle(self) -> bool {
+		matches!(self, Self::Triangle)
+	}
+
+	pub fn dest(self) -> CaptureDest {
+		match self {
+			Self::Dot => CaptureDest::Bench,
+			Self::Triangle => CaptureDest::Tokens,
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Dot => "dot",
+			Self::Triangle => "triangle",
+		}
+	}
+
+	/// Compact kind-tag suffix: `o` (circle) vs `^` (triangle).
+	pub fn tag(self) -> &'static str {
+		match self {
+			Self::Dot => "o",
+			Self::Triangle => "^",
+		}
+	}
+
+	pub fn bit(self) -> u8 {
+		self as u8
+	}
+
+	pub fn from_bit(bit: u8) -> Self {
+		if bit == 0 {
+			Self::Triangle
+		} else {
+			Self::Dot
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"dot" | "dots" | "o" | "circle" | "bench" => Ok(Self::Dot),
+			"triangle" | "tri" | "t" | "^" | "tokens" | "token" => Ok(Self::Triangle),
+			other => Err(format!("unknown capture mark '{other}' (expected dot|triangle)")),
+		}
+	}
+}
+
+/// Where a single move's captures go. One destination for the whole
+/// simultaneous snapshot; the acting tile's [`CaptureMark`] picks it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CaptureDest {
+	Tokens,
+	Bench,
+}
+
+impl CaptureDest {
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Tokens => "tokens",
+			Self::Bench => "bench",
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"tokens" | "token" | "triangle" => Ok(Self::Tokens),
+			"bench" | "dot" => Ok(Self::Bench),
+			other => Err(format!("unknown capture dest '{other}' (expected bench|tokens)")),
+		}
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Tile {
 	pub id: u32,
@@ -338,7 +432,10 @@ pub struct Tile {
 	/// Overwhelm match base and hop compare. Always equal to [`Self::n_rings`]
 	/// (braid slots count). Constructor `weight` arguments are ignored.
 	pub weight: u8,
+	/// Exact MOVE length (1–3). Drawn as that many capture marks.
 	pub dots: u8,
+	/// Dot → captured tiles join the mover's bench. Triangle → spawn tokens.
+	pub capture: CaptureMark,
 }
 
 /// Kind space: color-state × dots. Weight is the ring-slot count, already
@@ -399,7 +496,22 @@ impl Tile {
 			n = 1;
 		}
 		let _ = weight;
-		Self { id, owner, rings, n_rings: n, ring_type, weight: n, dots }
+		Self {
+			id,
+			owner,
+			rings,
+			n_rings: n,
+			ring_type,
+			weight: n,
+			dots,
+			capture: CaptureMark::Triangle,
+		}
+	}
+
+	/// Fixtures and constructors default to triangle (spawn-token captures).
+	pub fn with_capture(mut self, capture: CaptureMark) -> Self {
+		self.capture = capture;
+		self
 	}
 
 	pub fn ring_colors(&self) -> &[TileColor] {
@@ -656,7 +768,7 @@ impl Tile {
 			})
 			.collect::<Vec<_>>()
 			.join("+");
-		format!("{rings} w{} d{}", self.weight, self.dots)
+		format!("{rings} w{} d{} {}", self.weight, self.dots, self.capture.name())
 	}
 
 	/// Slot-coded color state: empty / (color × type) per live ring.
@@ -1236,10 +1348,10 @@ impl GameStatus {
 pub struct RuleSet {
 	/// Opening spawn-token stack (that many blank tokens). Default 7.
 	/// Independent of [`Self::bag_size`] (the public 11-tile bench). CLI:
-	/// `--starting-tokens` / `--starting-bench`. ADD spends 1 token; each
-	/// opponent capture earns 1. Own-tile captures earn 1 iff
-	/// [`Self::self_capture_budget`]. Usable budget is min(tokens, unplaced
-	/// bench tiles).
+	/// `--starting-tokens` / `--starting-bench`. ADD spends 1 token. Triangle
+	/// captures earn 1 (own-tile iff [`Self::self_capture_budget`]); dot
+	/// captures join the bench. Usable budget is min(tokens, unplaced bench
+	/// tiles).
 	pub starting_bench_size: u8,
 	/// Public in-game bench size (unplaced tiles that can be ADDed). Default
 	/// [`BAG_SIZE_DEFAULT`] (11): the 7+4 draft. Reserves are not this field.
@@ -1249,10 +1361,10 @@ pub struct RuleSet {
 	/// a 7-tile bench then 4 more from reserves; leftover tiles stay in
 	/// reserve and are never usable in play.
 	pub deck_size: u8,
-	/// If true (default), capturing your own tile on your turn earns +1
-	/// budget the same as capturing an opponent tile. False still removes
-	/// the tile (overwhelm is unchanged) but does not refund a token.
-	/// CLI: `--self-capture-budget on|off`.
+	/// Triangle dest only: if true (default), capturing your own tile on
+	/// your turn earns +1 token. False still removes the tile but does not
+	/// refund. Dot dest always benches self-captures. CLI:
+	/// `--self-capture-budget on|off`.
 	pub self_capture_budget: bool,
 	/// Both players receive the same shuffled [`Self::deck_size`]-tile collection. Default true.
 	pub identical_bags: bool,
@@ -1273,6 +1385,9 @@ pub struct RuleSet {
 	/// Default 1 (1/7, same rate as zags). Rolled after braid and zag.
 	/// `0` disables beads (`--beads off` / `--bead-chance 0`).
 	pub bead_numer: u8,
+	/// Percent of generated tiles that carry a **dot** capture mark (rest
+	/// triangles). Default [`DOT_PERCENT_DEFAULT`] (50). CLI `--dot-chance`.
+	pub dot_percent: u8,
 	/// Legacy: on a MOVE, each removed opponent tile draws one hidden bag tile
 	/// onto the bench. Default **false** (the whole deck is public; captures
 	/// earn tokens only). Kept so historical JSONL logs replay.
@@ -1367,6 +1482,7 @@ impl Default for RuleSet {
 			zag_numer: ZAG_NUMER_DEFAULT,
 			braid_numer: BRAID_NUMER_DEFAULT,
 			bead_numer: BEAD_NUMER_DEFAULT,
+			dot_percent: DOT_PERCENT_DEFAULT,
 			capture_draw_on_move: false,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
@@ -1420,6 +1536,8 @@ pub struct Removal {
 	pub tile: Tile,
 	pub matches: i32,
 	pub mismatches: i32,
+	/// Where this removal went. Same for every removal of one action.
+	pub dest: CaptureDest,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1527,6 +1645,7 @@ impl Game {
 					let id = *next_id;
 					*next_id += 1;
 					Tile::with_typed_rings(id, owner, &spec.parts(), spec.weight, spec.dots)
+						.with_capture(spec.capture)
 				})
 				.collect::<Vec<_>>()
 		};
@@ -2236,7 +2355,13 @@ impl Game {
 		for (node, tile) in self.tiles() {
 			if let Some((matches, mismatches)) = self.tile_score(node) {
 				if mismatches >= matches {
-					out.push(Removal { node, tile, matches, mismatches });
+					out.push(Removal {
+						node,
+						tile,
+						matches,
+						mismatches,
+						dest: CaptureDest::Tokens,
+					});
 				}
 			}
 		}
@@ -2597,17 +2722,30 @@ impl Game {
 			self.consecutive_passes = 0;
 		}
 
-		let removals = self.collect_removals();
+		let dest = self.acting_capture(action).dest();
+		let mut removals = self.collect_removals();
+		for rem in &mut removals {
+			rem.dest = dest;
+		}
 		let opponent = player.other();
 		let mut draws = 0u8;
 		let is_move = matches!(action, Action::Move { .. });
 		for rem in &removals {
 			self.tiles[rem.node as usize] = None;
-			// Opponent tiles always earn +1. Own-tile removals (self-capture
-			// via simultaneous overwhelm) earn +1 only when
-			// `self_capture_budget` is on (default).
-			if rem.tile.owner != player || self.rules.self_capture_budget {
-				self.earn_budget(player, rem.tile);
+			match dest {
+				CaptureDest::Bench => {
+					let mut tile = rem.tile;
+					tile.owner = player;
+					self.benches[player.index()].push(tile);
+				}
+				CaptureDest::Tokens => {
+					// Opponent tiles always earn +1. Own-tile removals
+					// (self-capture via simultaneous overwhelm) earn +1
+					// only when `self_capture_budget` is on (default).
+					if rem.tile.owner != player || self.rules.self_capture_budget {
+						self.earn_budget(player, rem.tile);
+					}
+				}
 			}
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
 				if self.draw_from_bag(player).is_some() {
@@ -2849,6 +2987,15 @@ impl Game {
 		self.budget_tokens[player.index()].push(BudgetToken::Captured(tile));
 	}
 
+	/// Capture mark of the tile that was MOVEd or ADDed this action.
+	fn acting_capture(&self, action: Action) -> CaptureMark {
+		let node = match action {
+			Action::Add { node, .. } | Action::Move { to: node, .. } => node,
+			Action::Pass => return CaptureMark::Triangle,
+		};
+		self.tile_at(node).map(|t| t.capture).unwrap_or(CaptureMark::Triangle)
+	}
+
 	fn apply_add(&mut self, bench_index: usize, node: NodeId) -> Result<(), String> {
 		if self.budget(self.current) == 0 {
 			return Err("no capture budget".into());
@@ -2926,6 +3073,7 @@ pub fn sample_tile(
 	zag_numer: u8,
 	braid_numer: u8,
 	bead_numer: u8,
+	dot_percent: u8,
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
@@ -2935,9 +3083,14 @@ pub fn sample_tile(
 	sample_bead_types(rng, n_rings, &mut ring_type, bead_numer);
 	let weight = n_rings.max(1);
 	let dots = rng.gen_range(1..=3);
+	let capture = if rng.gen_range(0..100u8) < dot_percent.min(100) {
+		CaptureMark::Dot
+	} else {
+		CaptureMark::Triangle
+	};
 	let id = *next_id;
 	*next_id += 1;
-	Tile { id, owner, rings, n_rings, ring_type, weight, dots }
+	Tile { id, owner, rings, n_rings, ring_type, weight, dots, capture }
 }
 
 fn format_log(
@@ -2960,10 +3113,11 @@ fn format_log(
 			.iter()
 			.map(|r| {
 				format!(
-					"{} {} at {} (matches={}, mismatches={})",
+					"{} {} at {} ->{} (matches={}, mismatches={})",
 					r.tile.owner.label(),
 					r.tile.kind_label(),
 					r.node,
+					r.dest.name(),
 					r.matches,
 					r.mismatches
 				)
@@ -5640,7 +5794,16 @@ mod tests {
 		let mut rings = 0u32;
 		let mut braid_rings = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(Player::One, 3, 0, BRAID_NUMER_DEFAULT, 0, &mut next_id, &mut rng);
+			let t = sample_tile(
+				Player::One,
+				3,
+				0,
+				BRAID_NUMER_DEFAULT,
+				0,
+				DOT_PERCENT_DEFAULT,
+				&mut next_id,
+				&mut rng,
+			);
 			let k = t.n_rings.clamp(1, 3);
 			rings += u32::from(k);
 			let b = t.braid_ring_count();
@@ -6876,7 +7039,16 @@ mod tests {
 		let mut rings = 0u32;
 		let mut beads = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(Player::One, 3, 0, 0, BEAD_NUMER_DEFAULT, &mut next_id, &mut rng);
+			let t = sample_tile(
+				Player::One,
+				3,
+				0,
+				0,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				&mut next_id,
+				&mut rng,
+			);
 			rings += u32::from(t.n_rings.clamp(1, 3));
 			beads += u32::from(t.bead_ring_count());
 		}
@@ -7177,5 +7349,238 @@ mod tests {
 		assert_eq!(game.bench(Player::One).len(), 0);
 		assert_eq!(game.budget(Player::One), 0);
 		assert!(game.budget_token_count(Player::One) >= 1);
+	}
+
+	fn put_capture(
+		game: &mut Game,
+		node: NodeId,
+		owner: Player,
+		color: TileColor,
+		weight: u8,
+		dots: u8,
+		capture: CaptureMark,
+	) {
+		let tile = take(game, owner, color, weight, dots).with_capture(capture);
+		game.place_tile(node, tile);
+	}
+
+	fn overwhelm_neighbors(game: &mut Game, node: NodeId, owner: Player) {
+		let nbs = game.board().neighbors(node).to_vec();
+		assert!(nbs.len() >= 2);
+		put_rings(game, nbs[0], owner, &[TileColor::Orange, TileColor::Teal, TileColor::Maroon], 1);
+		put_rings(game, nbs[1], owner, &[TileColor::Orange, TileColor::Teal, TileColor::Maroon], 1);
+	}
+
+	#[test]
+	fn triangle_opponent_capture_earns_tokens() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Triangle);
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let bench_n = game.bench(Player::One).len();
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		let opp = outcome.removals.iter().filter(|r| r.tile.owner == Player::Two).count();
+		assert!(opp > 0);
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Tokens));
+		assert_eq!(
+			game.budget_token_count(Player::One),
+			tokens + outcome.removals.len(),
+			"triangle dest earns one token per captured tile"
+		);
+		assert_eq!(game.bench(Player::One).len(), bench_n);
+	}
+
+	#[test]
+	fn dot_opponent_capture_joins_mover_bench_and_changes_owner() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Dot);
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let bench_n = game.bench(Player::One).len();
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		let opp = outcome
+			.removals
+			.iter()
+			.filter(|r| r.tile.owner == Player::Two)
+			.cloned()
+			.collect::<Vec<_>>();
+		assert!(!opp.is_empty());
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
+		assert_eq!(game.budget_token_count(Player::One), tokens, "dot dest must not earn tokens");
+		assert_eq!(game.bench(Player::One).len(), bench_n + outcome.removals.len());
+		for rem in &outcome.removals {
+			assert!(
+				game.bench(Player::One)
+					.iter()
+					.any(|t| t.id == rem.tile.id && t.owner == Player::One),
+				"captured tile {} must join mover bench with mover owner",
+				rem.tile.id
+			);
+		}
+		assert!(game.budget(Player::One) >= 1.min(game.bench(Player::One).len()));
+	}
+
+	#[test]
+	fn dot_self_capture_joins_mover_bench() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
+		assert!(game.is_overwhelmed(spawn));
+		let from = game.board().spawns()[4];
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Dot);
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let bench_n = game.bench(Player::One).len();
+		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One),
+			"own overwhelmed tile must be removed: {:?}",
+			outcome.removals
+		);
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
+		assert_eq!(game.budget_token_count(Player::One), tokens);
+		assert_eq!(game.bench(Player::One).len(), bench_n + outcome.removals.len());
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.any(|t| t.owner == Player::One && game.tile_at(spawn).is_none()));
+	}
+
+	#[test]
+	fn mixed_multi_capture_shares_one_destination() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
+		let opp = nbs.get(2).copied().unwrap_or(game.board().spawns()[1]);
+		if game.tile_at(opp).is_none() {
+			let opp_nbs = game.board().neighbors(opp).to_vec();
+			if opp_nbs.len() >= 2
+				&& game.tile_at(opp_nbs[0]).is_none()
+				&& game.tile_at(opp_nbs[1]).is_none()
+			{
+				overwhelm_neighbors(&mut game, opp, Player::One);
+				put(&mut game, opp, Player::Two, TileColor::Green, 1, 1);
+			}
+		}
+		let from = game.board().spawns()[4];
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 2, CaptureMark::Dot);
+		game.set_current(Player::One);
+		let to = game.destinations(from).into_iter().next().expect("mover can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(
+			outcome.removals.len() >= 2,
+			"want mixed opp+self snapshot, got {:?}",
+			outcome.removals
+		);
+		let dests: Vec<_> = outcome.removals.iter().map(|r| r.dest).collect();
+		assert!(dests.iter().all(|d| *d == CaptureDest::Bench));
+		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::One));
+		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::Two));
+		for rem in &outcome.removals {
+			assert!(game
+				.bench(Player::One)
+				.iter()
+				.any(|t| t.id == rem.tile.id && t.owner == Player::One));
+		}
+	}
+
+	#[test]
+	fn captured_to_bench_may_exceed_eleven_and_type_cap() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let mut bench = Vec::new();
+		for i in 0..11 {
+			let color = TileColor::ALL[i % 6];
+			let mut t = take(&mut game, Player::One, color, 1, 1);
+			if i < 6 {
+				t.ring_type[0] = RingType::Zag;
+			}
+			bench.push(t);
+		}
+		game.set_bench(Player::One, bench);
+		assert_eq!(game.bench(Player::One).len(), 11);
+		assert_eq!(crate::deck::zag_ring_count(game.bench(Player::One)), 6);
+		let mut captured =
+			take(&mut game, Player::Two, TileColor::Green, 1, 1).with_capture(CaptureMark::Dot);
+		captured.ring_type[0] = RingType::Zag;
+		game.place_tile(spawn, captured);
+		put_rings(
+			&mut game,
+			nbs[1],
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		let mover =
+			take(&mut game, Player::One, TileColor::Blue, 3, 1).with_capture(CaptureMark::Dot);
+		game.place_tile(from, mover);
+		game.set_current(Player::One);
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::Two));
+		assert!(game.bench(Player::One).len() > 11);
+		assert!(crate::deck::zag_ring_count(game.bench(Player::One)) >= 6);
+		assert_eq!(
+			game.budget(Player::One),
+			game.budget_token_count(Player::One).min(game.bench(Player::One).len())
+		);
+	}
+
+	#[test]
+	fn capture_mark_generation_is_about_half_dots() {
+		let mut rng = StdRng::seed_from_u64(13);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut dots = 0u32;
+		for _ in 0..n {
+			let t =
+				sample_tile(Player::One, 3, 0, 0, 0, DOT_PERCENT_DEFAULT, &mut next_id, &mut rng);
+			assert_ne!(t.capture.bit(), 2);
+			if t.capture.is_dot() {
+				dots += 1;
+			}
+		}
+		let rate = f64::from(dots) / f64::from(n);
+		assert!((0.47..0.53).contains(&rate), "dot rate={rate:.4} (expected ~0.50)");
+	}
+
+	#[test]
+	fn constructors_default_to_triangle() {
+		let t = Tile::mono(1, Player::One, TileColor::Green, 1, 2);
+		assert_eq!(t.capture, CaptureMark::Triangle);
+		assert_eq!(t.dots, 2);
 	}
 }

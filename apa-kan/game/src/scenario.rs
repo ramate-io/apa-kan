@@ -8,7 +8,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::Deserialize;
 
-use crate::game::{RingType, Tile, TileColor, MAX_COLOR_RINGS};
+use crate::game::{CaptureMark, RingType, Tile, TileColor, MAX_COLOR_RINGS};
 
 /// One (rings × dots) kind. `count` repeats in the bag. `weight` is always
 /// the ring-slot count.
@@ -19,6 +19,7 @@ pub struct KindCount {
 	pub ring_type: [RingType; 3],
 	pub weight: u8,
 	pub dots: u8,
+	pub capture: CaptureMark,
 	pub count: u8,
 }
 
@@ -30,6 +31,7 @@ impl KindCount {
 			ring_type: [RingType::Normal; 3],
 			weight: 1,
 			dots,
+			capture: CaptureMark::Triangle,
 			count,
 		}
 	}
@@ -39,7 +41,7 @@ impl KindCount {
 	}
 
 	pub fn tag(self) -> String {
-		kind_tag(self.ring_colors(), &self.ring_type, self.weight, self.dots)
+		kind_tag(self.ring_colors(), &self.ring_type, self.weight, self.dots, self.capture)
 	}
 }
 
@@ -51,6 +53,7 @@ pub struct TileSpec {
 	pub ring_type: [RingType; 3],
 	pub weight: u8,
 	pub dots: u8,
+	pub capture: CaptureMark,
 }
 
 impl TileSpec {
@@ -71,7 +74,13 @@ impl TileSpec {
 	}
 }
 
-pub fn kind_tag(colors: &[TileColor], types: &[RingType; 3], weight: u8, dots: u8) -> String {
+pub fn kind_tag(
+	colors: &[TileColor],
+	types: &[RingType; 3],
+	weight: u8,
+	dots: u8,
+	capture: CaptureMark,
+) -> String {
 	let rings = colors
 		.iter()
 		.enumerate()
@@ -83,11 +92,11 @@ pub fn kind_tag(colors: &[TileColor], types: &[RingType; 3], weight: u8, dots: u
 		})
 		.collect::<Vec<_>>()
 		.join("+");
-	format!("{rings}{weight}-{dots}")
+	format!("{rings}{weight}-{dots}{}", capture.tag())
 }
 
 pub fn tile_tag(tile: Tile) -> String {
-	kind_tag(tile.ring_colors(), &tile.ring_type, tile.weight, tile.dots)
+	kind_tag(tile.ring_colors(), &tile.ring_type, tile.weight, tile.dots, tile.capture)
 }
 
 /// Sum of ring counts (weight), dots, and distinct colors — a simple deck-strength view.
@@ -338,6 +347,9 @@ struct FileTile {
 	/// If true, every ring on this tile is a bead.
 	#[serde(default)]
 	bead: Option<bool>,
+	/// `dot` or `triangle`. Default triangle (spawn-token captures).
+	#[serde(default)]
+	capture: Option<String>,
 }
 
 pub fn parse_toml(text: &str) -> Result<Scenario, String> {
@@ -427,6 +439,7 @@ fn deck_from_file(d: &FileDeck) -> Result<DeckSpec, String> {
 					types,
 					t.weight.unwrap_or(1),
 					t.dots.unwrap_or(1),
+					parse_file_capture(t)?,
 				));
 			}
 			Some(out)
@@ -549,14 +562,27 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 	Ok((out, types))
 }
 
-fn spec_from_rings(colors: &[TileColor], types: [RingType; 3], _weight: u8, dots: u8) -> TileSpec {
+fn spec_from_rings(
+	colors: &[TileColor],
+	types: [RingType; 3],
+	_weight: u8,
+	dots: u8,
+	capture: CaptureMark,
+) -> TileSpec {
 	let first = colors[0];
 	let mut rings = [first; 3];
 	for (i, &c) in colors.iter().take(3).enumerate() {
 		rings[i] = c;
 	}
 	let n_rings = colors.len().min(3) as u8;
-	TileSpec { rings, n_rings, ring_type: types, weight: n_rings.max(1), dots }
+	TileSpec { rings, n_rings, ring_type: types, weight: n_rings.max(1), dots, capture }
+}
+
+fn parse_file_capture(t: &FileTile) -> Result<CaptureMark, String> {
+	match &t.capture {
+		None => Ok(CaptureMark::Triangle),
+		Some(s) => CaptureMark::parse(s),
+	}
 }
 
 fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
@@ -565,6 +591,7 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 	if count == 0 {
 		return Err("tile count must be >= 1".into());
 	}
+	let capture = parse_file_capture(t)?;
 	let to_kind = |dots: u8| {
 		let n = colors.len().min(3) as u8;
 		let mut k = KindCount::mono(colors[0], n, dots, count);
@@ -575,6 +602,7 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 		k.n_rings = n;
 		k.weight = n.max(1);
 		k.ring_type = types;
+		k.capture = capture;
 		k
 	};
 	match (t.weight, t.dots) {
@@ -582,6 +610,7 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 			.into_iter()
 			.map(|mut k| {
 				k.count = count;
+				k.capture = capture;
 				k
 			})
 			.collect()),
@@ -630,7 +659,7 @@ pub fn materialize(
 				.iter()
 				.map(|&(role, w, d)| {
 					let color = if role == 0 { excl } else { c.shared };
-					spec_from_rings(&[color], [RingType::Normal; 3], w, d)
+					spec_from_rings(&[color], [RingType::Normal; 3], w, d, CaptureMark::Triangle)
 				})
 				.collect()
 		};
@@ -671,6 +700,7 @@ fn expand_kinds(kinds: &[KindCount]) -> Vec<TileSpec> {
 				ring_type: k.ring_type,
 				weight: k.weight,
 				dots: k.dots,
+				capture: k.capture,
 			});
 		}
 	}
@@ -689,7 +719,7 @@ fn take_fixed_bench(
 		let pos = bag.iter().position(|&x| x == k).ok_or_else(|| {
 			format!(
 				"fixed bench {} is not in the bag",
-				kind_tag(k.ring_colors(), &k.ring_type, k.weight, k.dots)
+				kind_tag(k.ring_colors(), &k.ring_type, k.weight, k.dots, k.capture)
 			)
 		})?;
 		bench.push(bag.remove(pos));
