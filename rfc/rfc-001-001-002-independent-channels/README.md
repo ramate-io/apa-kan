@@ -14,9 +14,9 @@ Those overrides made a same-color zag vs a normal a capture instead of a wash, a
 
 Together with [`rfc-001-001-001-rosette-redesign`](../rfc-001-001-001-rosette-redesign/README.md), the accepted default is:
 
-- **Independent additive channels** (this RFC): per edge, normal / zag / braid score on their own and add. No cross-channel overrides.
+- **Independent additive channels** (this RFC): per edge, normal / zag / braid / bead score on their own and add. No cross-channel overrides. Beads: [`rfc-001-001-004`](../rfc-001-001-004-beads/README.md).
 - **Failed-braid mismatch `--braid-fail-mismatch one`** (flat +1). `weight` and `sum` stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
-- **11-tile public bench with spawn tokens:** each player drafts 7 then +4 from a 27-tile collection (`deck_size` 27, `bag_size` 11, `starting_bench_size` 7). Reserves are never usable. ADD is gated by usable budget = min(tokens, unplaced **bench** tiles). Ring-type cap: 6 slots of each non-normal type on the 11; braids count by ring slots (a 3-braid uses 3 of 6). See [`rfc-001-001-003`](../rfc-001-001-003-deck-building/README.md).
+- **11-tile public bench with spawn tokens:** each player drafts 7 then +4 from a 27-tile collection (`deck_size` 27, `bag_size` 11, `starting_bench_size` 7). Reserves are never usable. ADD is gated by usable budget = min(tokens, unplaced **bench** tiles). Ring-type cap: 6 slots of each non-normal type on the 11 (zag, braid, bead); braids count by ring slots (a 3-braid uses 3 of 6). See [`rfc-001-001-003`](../rfc-001-001-003-deck-building/README.md).
 - **Doubles allowed:** `--no-same-piece-twice off` is the locked default and the **only benchmarked** H2H configuration. `always` and `when-deck-empty` remain as non-default CLI variants; they are not part of the H2H package.
 - **Low-value:** both players have `board tiles + usable budget` strictly below 5. Usable budget need not be 0. Progressive pair resolution is unchanged (missing on-board piece = max value).
 
@@ -37,13 +37,14 @@ HUD `tile_score` still reports `(ring_weight + match_weight, mismatch_weight)`. 
 
 ### Channels
 
-A channel contributes on an edge only if **at least one** of the two tiles has a ring of that type. Channels never override each other. "Colors_X" means all ring colors on tile X, as a **multiset** including braid and zag colors.
+A channel contributes on an edge only if **at least one** of the two tiles has a ring of that type. Channels never override each other. "Colors_X" means all ring colors on tile X, as a **multiset** including braid, zag, and bead colors.
 
 | Channel | When it fires | Match | Mismatch |
 |---|---|---|---|
 | **Normal** | some ring on A or B is normal | 1, if some normal-ring color of A is in Colors_B **or** some normal-ring color of B is in Colors_A | 1 otherwise (`mismatch_uses_neighbor_weight` still uses the neighbor's ring count) |
 | **Zag** | some ring on A or B is a zag | never | +1 for each zag color on one side that appears among the other side's colors, counted as a multiset union over both directions (`zag_mismatch` `sum` / `max`, same formula as today) |
 | **Braid** | some tile has a 2- or 3-slot braid | the single largest fulfillable braid on either side (`−2` or `−3`). Tied sizes pick either | if **no** braid on the edge can be fulfilled: **exactly one** mismatch of weight **+1** (`one`, **accepted default**). `weight` / `sum` are research variants ([issue #39](https://github.com/ramate-io/apa-kan/issues/39)) |
+| **Bead** | some ring on A or B is a bead | 1, if any bead ring on either tile is matched (`other.has_color(bead_color)`, same presence test as a normal ring). One −1 at most per edge, not per bead | +1 per unmatched **bead ring** on either tile (count rings, not color-pairs). Mixed edges can score both. See [`rfc-001-001-004`](../rfc-001-001-004-beads/README.md) |
 
 A braid is fulfilled when the other tile's color multiset covers the braid's color multiset (orange+orange needs two orange rings).
 
@@ -81,6 +82,7 @@ Capture is simultaneous: `collect_removals` scores every occupied node on the cu
 - **Normal.** If either tile has a normal ring, the edge either likes the pair (they "see" a shared color from a normal into the neighbor's rings) or it doesn't. One point either way. Leftover extra colors do not add extra hitch points once a match exists.
 - **Zag.** Zags only punish. Count every hitting zag stroke on the edge (SUM by default). They never make a match of their own; a same-color normal on the other tile is the normal channel's job.
 - **Braid.** Look at both braids, keep the biggest one that the neighbor can cover, and score that hitch as a match of its size. If neither braid is covered, the edge takes a single +1 (`one`, the accepted default). Heavier `weight` / `sum` costs are tracked in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
+- **Bead.** Count unmatched bead rings on both tiles (+1 each). If any bead is matched — the neighbor holds that color on any ring, same as a normal — the edge also takes a single −1. Beads bomb non-matching colors, especially braids whose colors they do not hold.
 
 ## Worked table
 
@@ -99,15 +101,16 @@ Unit tests in `game::tests::independent_channel_table_rows` cover every row.
 
 ## Visual lane spec
 
-Each channel that **fires** (nonzero ink: a normal match or hitch, at least one hitting/potential zag, or a braid weave/fail) gets its own lane. Fixed order: **normal, zag, braid**. Quiet channels are omitted.
+Each channel that **fires** (nonzero ink: a normal match or hitch, at least one hitting/potential zag, a braid weave/fail, or a bead match/unmatched) gets its own lane. Fixed order: **normal, zag, braid, bead**. Quiet channels are omitted.
 
 Lane offsets, given pitch `≈ 2.4 ×` highway stripe offset:
 
-| Active lanes | Offsets (normal, zag, braid) |
+| Active lanes | Offsets (normal, zag, braid, bead) |
 |---|---|
 | 1 | centerline |
 | 2 | `+pitch`, `−pitch` in the order they appear |
 | 3 | `+pitch`, `0`, `−pitch` |
+| 4 | `+1.5 pitch`, `+0.5 pitch`, `−0.5 pitch`, `−1.5 pitch` |
 
 **Normal**
 
@@ -123,6 +126,11 @@ Lane offsets, given pitch `≈ 2.4 ×` highway stripe offset:
 - Fulfilled: draw the max fulfilled braid between the two tiles (existing weave: one thread per slot, arc period `BRAID_TURN_UNITS = 0.42`).
 - Failed: like the normal mismatch. From each tile, **that tile's own** braid weave reaches the middle (its threads only) and the two meet at a diamond. If only one side has a braid, only that side reaches in, up to the diamond.
 - Unconnected edges still show the would-be braid (potential weave, no diamond).
+
+**Bead**
+
+- Tile rims: a ring of small filled discs in the bead color.
+- Edge: dotted discs along the bead lane. Unmatched beads ink one strand per unmatched ring; a match inks a single dotted strand in the matched color.
 
 Tile-rim weave period is unchanged (`TILE_BRAID_TURN_UNITS = 0.21`). Tile-rim braid threads and zag rings are 1.3× thicker than the previous 0.70 / 0.90 strokes; arc braid/zag strokes are unchanged. Mobile crowding of stacked lanes is acceptable for now.
 
@@ -140,7 +148,7 @@ Tile-rim weave period is unchanged (`TILE_BRAID_TURN_UNITS = 0.21`). Tile-rim br
 - Keep zag-hits replacing the ordinary mismatch — rejected; a same-color zag vs normal should net 0.
 - Failed-braid mismatch equals the braid's weight (or the sum of both sides) by default — rejected. **`one` is the accepted default.** `weight` and `sum` remain as CLI variants for [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
 - Late-game double-move restriction (`--no-same-piece-twice when-deck-empty`) as the default — rejected. **`off` is the locked default** (doubles allowed) and the **only benchmarked** H2H configuration; `always` / `when-deck-empty` remain as CLI variants.
-- Draw all three lanes even when a channel is quiet — rejected; omit quiet lanes.
+- Draw all four lanes even when a channel is quiet — rejected; omit quiet lanes.
 
 ## Open questions
 

@@ -78,6 +78,7 @@ pub fn kind_tag(colors: &[TileColor], types: &[RingType; 3], weight: u8, dots: u
 		.map(|(i, c)| match types[i] {
 			RingType::Zag => format!("{}z", c.tag()),
 			RingType::Braid => format!("{}d", c.tag()),
+			RingType::Bead => format!("{}e", c.tag()),
 			RingType::Normal => c.tag().to_string(),
 		})
 		.collect::<Vec<_>>()
@@ -331,6 +332,12 @@ struct FileTile {
 	/// If true, every ring on this tile is a braid (must be 2 or 3 slots).
 	#[serde(default)]
 	braid: Option<bool>,
+	/// Colors among this tile's rings that are beads.
+	#[serde(default)]
+	beads: Option<Vec<String>>,
+	/// If true, every ring on this tile is a bead.
+	#[serde(default)]
+	bead: Option<bool>,
 }
 
 pub fn parse_toml(text: &str) -> Result<Scenario, String> {
@@ -459,10 +466,11 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 			let mut found = false;
 			for (i, &ring) in out.iter().enumerate() {
 				if ring == c {
-					if types[i].is_braid() {
+					if !types[i].is_normal() {
 						return Err(format!(
-							"ring color '{}' cannot be both zag and braid",
-							c.name()
+							"ring color '{}' cannot be both {} and zag",
+							c.name(),
+							types[i].name()
 						));
 					}
 					types[i] = RingType::Zag;
@@ -476,8 +484,8 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 	}
 	if t.braid.unwrap_or(false) {
 		for slot in types.iter_mut().take(out.len()) {
-			if slot.is_zag() {
-				return Err("a tile cannot be both fully zag and fully braid".into());
+			if !slot.is_normal() {
+				return Err(format!("a tile cannot be both fully {} and fully braid", slot.name()));
 			}
 			*slot = RingType::Braid;
 		}
@@ -488,10 +496,11 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 			let mut found = false;
 			for (i, &ring) in out.iter().enumerate() {
 				if ring == c {
-					if types[i].is_zag() {
+					if !types[i].is_normal() {
 						return Err(format!(
-							"ring color '{}' cannot be both zag and braid",
-							c.name()
+							"ring color '{}' cannot be both {} and braid",
+							c.name(),
+							types[i].name()
 						));
 					}
 					types[i] = RingType::Braid;
@@ -500,6 +509,36 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 			}
 			if !found {
 				return Err(format!("braid color '{}' is not one of this tile's rings", c.name()));
+			}
+		}
+	}
+	if t.bead.unwrap_or(false) {
+		for slot in types.iter_mut().take(out.len()) {
+			if !slot.is_normal() {
+				return Err(format!("a tile cannot be both fully {} and fully bead", slot.name()));
+			}
+			*slot = RingType::Bead;
+		}
+	}
+	if let Some(names) = &t.beads {
+		for name in names {
+			let c = TileColor::parse(name)?;
+			let mut found = false;
+			for (i, &ring) in out.iter().enumerate() {
+				if ring == c {
+					if !types[i].is_normal() {
+						return Err(format!(
+							"ring color '{}' cannot be both {} and bead",
+							c.name(),
+							types[i].name()
+						));
+					}
+					types[i] = RingType::Bead;
+					found = true;
+				}
+			}
+			if !found {
+				return Err(format!("bead color '{}' is not one of this tile's rings", c.name()));
 			}
 		}
 	}
@@ -844,6 +883,28 @@ count = 1
 		assert!(t.ring_is_braid(0));
 		assert!(t.ring_is_braid(1));
 		assert_eq!(t.color_count(TileColor::Orange), 2);
+	}
+
+	#[test]
+	fn custom_toml_bead_ring() {
+		let toml = r#"
+name = "bead"
+shuffle = false
+mirror = true
+[[p1.tiles]]
+colors = ["blue", "orange"]
+beads = ["orange"]
+weight = 1
+dots = 1
+count = 1
+"#;
+		let s = parse_toml(toml).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		let t = game.bench(Player::One)[0];
+		assert!(t.has_normal(TileColor::Blue));
+		assert!(t.ring_is_bead(1));
+		assert!(!t.has_normal(TileColor::Orange));
+		assert!(t.has_color(TileColor::Orange));
 	}
 
 	#[test]

@@ -83,7 +83,7 @@ fn usage() -> &'static str {
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
-	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --zag-mismatch,\n\
+	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --beads, --zag-mismatch,\n\
 	   --braid-fail-mismatch,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -423,7 +423,7 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!("# {}", cfg.label));
 	lines.push(limit_header(&cfg, rules.turn_limit));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -447,6 +447,7 @@ fn run(cfg: BenchConfig) {
 		rules.max_rings,
 		rules.zag_numer,
 		rules.braid_numer,
+		rules.bead_numer,
 		rules.zag_mismatch.name(),
 		rules.path_constraint.name(),
 		cfg.scenario.as_ref().map(|s| s.name.as_str()).unwrap_or("default")
@@ -1411,6 +1412,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut zag_rings = 0u32;
 	let mut braid_rings = 0u32;
 	let mut braid_pieces = 0u32;
+	let mut bead_rings = 0u32;
 	let mut rings = 0u32;
 	for _ in 0..n {
 		let t = sample_tile(
@@ -1418,6 +1420,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			rules.max_rings,
 			rules.zag_numer,
 			rules.braid_numer,
+			rules.bead_numer,
 			&mut next_id,
 			&mut rng,
 		);
@@ -1429,11 +1432,12 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 		if b >= 2 {
 			braid_pieces += 1;
 		}
+		bead_rings += u32::from(t.bead_ring_count());
 		rings += k as u32;
 	}
 	lines.push(format!(
-		"# ring_process  sample={n} max_rings={} zag_numer={} braid_numer={}  n1={} n2={} n3={}",
-		rules.max_rings, rules.zag_numer, rules.braid_numer, ring_n[1], ring_n[2], ring_n[3]
+		"# ring_process  sample={n} max_rings={} zag_numer={} braid_numer={} bead_numer={}  n1={} n2={} n3={}",
+		rules.max_rings, rules.zag_numer, rules.braid_numer, rules.bead_numer, ring_n[1], ring_n[2], ring_n[3]
 	));
 	if rings > 0 {
 		lines.push(format!(
@@ -1444,6 +1448,10 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			"# ring_process_braids  pieces={n} braided={braid_pieces} piece_rate={:.4} rings={rings} braid_rings={braid_rings} ring_rate={:.4}",
 			f64::from(braid_pieces) / f64::from(n),
 			f64::from(braid_rings) / f64::from(rings)
+		));
+		lines.push(format!(
+			"# ring_process_beads  rings={rings} beads={bead_rings} rate={:.4}",
+			f64::from(bead_rings) / f64::from(rings)
 		));
 	}
 	let names = TileColor::ALL.map(|c| c.name());
@@ -1751,6 +1759,8 @@ mod tests {
 		assert!(cfg.jobs >= 1);
 	}
 
+	/// Default rules include beads; `--jobs 1` and `--jobs 4` must still
+	/// produce identical JSONL (generation, picks, and play).
 	#[test]
 	fn work_budget_jobs_1_and_4_match_and_replay() {
 		let dir1 = tmp_dir("j1");

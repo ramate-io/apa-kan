@@ -75,6 +75,11 @@ pub const ZAG_NUMER_DEFAULT: u8 = 1;
 /// A piece forms a braid with probability `braid_numer / BRAID_DENOM`.
 pub const BRAID_DENOM: u8 = 7;
 pub const BRAID_NUMER_DEFAULT: u8 = 1;
+/// Each remaining normal ring is independently a bead with probability
+/// `bead_numer / BEAD_DENOM`. Rolled after braid and zag so `--beads off`
+/// skips the RNG and matches the pre-bead deal for the same seed.
+pub const BEAD_DENOM: u8 = 7;
+pub const BEAD_NUMER_DEFAULT: u8 = 1;
 /// Maximum collection size (the old 27 unique 3-color kinds). CLI `--deck-size`
 /// / `--bag-size` accept `1..=BAG_SIZE`. The default collection is [`BAG_SIZE`].
 pub const BAG_SIZE: usize = 27;
@@ -85,13 +90,14 @@ pub const BAG_SIZE_DEFAULT: usize = 11;
 /// Default opening spawn-token stack. Independent of [`BAG_SIZE_DEFAULT`].
 pub const STARTING_TOKENS_DEFAULT: u8 = 7;
 pub const MAX_COLOR_RINGS: u8 = 3;
-/// Per live slot: empty + (6 colors × 3 types). Kind space is this cubed.
-pub const RING_TYPE_COUNT: usize = 3;
+/// Per live slot: empty + (6 colors × 4 types). Kind space is this cubed.
+pub const RING_TYPE_COUNT: usize = 4;
 pub const SLOT_KINDS: usize = 1 + 6 * RING_TYPE_COUNT;
 pub const COLOR_STATES: usize = SLOT_KINDS * SLOT_KINDS * SLOT_KINDS;
 
 /// Ring kind is independent of color: a slot is a normal match, a zag (jag),
-/// or part of one braid group occupying 2–3 slots.
+/// part of one braid group occupying 2–3 slots, or a bead (a bomb against
+/// non-matching colors on the bead channel).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum RingType {
@@ -99,6 +105,7 @@ pub enum RingType {
 	Normal = 0,
 	Zag = 1,
 	Braid = 2,
+	Bead = 3,
 }
 
 impl RingType {
@@ -107,6 +114,7 @@ impl RingType {
 			Self::Normal => "normal",
 			Self::Zag => "zag",
 			Self::Braid => "braid",
+			Self::Bead => "bead",
 		}
 	}
 
@@ -120,6 +128,10 @@ impl RingType {
 
 	pub fn is_braid(self) -> bool {
 		matches!(self, Self::Braid)
+	}
+
+	pub fn is_bead(self) -> bool {
+		matches!(self, Self::Bead)
 	}
 
 	pub fn from_zag(zag: bool) -> Self {
@@ -265,6 +277,26 @@ pub fn sample_zag_types(rng: &mut impl Rng, n_rings: u8, types: &mut [RingType; 
 	}
 }
 
+/// Independent bead rolls on remaining **normal** slots. Braid and zag stay
+/// put. `bead_numer == 0` skips the RNG so `--beads off` matches the pre-bead
+/// deal for the same seed.
+pub fn sample_bead_types(
+	rng: &mut impl Rng,
+	n_rings: u8,
+	types: &mut [RingType; 3],
+	bead_numer: u8,
+) {
+	if bead_numer == 0 {
+		return;
+	}
+	let numer = u32::from(bead_numer.min(BEAD_DENOM));
+	for slot in types.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+		if *slot == RingType::Normal && rng.gen_range(0..u32::from(BEAD_DENOM)) < numer {
+			*slot = RingType::Bead;
+		}
+	}
+}
+
 /// 1–3 distinct ring colors. Ring 1 is always drawn. Rings 2 and 3
 /// keep the last existing color with weight 7, or draw any color with weight 1
 /// (a redraw of an already-present color is not a new ring). Each ring is
@@ -300,8 +332,8 @@ pub struct Tile {
 	/// a braid may repeat a color (orange+orange). First [`Self::n_rings`] live.
 	pub rings: [TileColor; 3],
 	pub n_rings: u8,
-	/// Parallel to [`Self::rings`]: normal, zag (jag), or braid. At most one
-	/// braid group per tile, occupying 2 or 3 slots.
+	/// Parallel to [`Self::rings`]: normal, zag (jag), braid, or bead. At most
+	/// one braid group per tile, occupying 2 or 3 slots.
 	pub ring_type: [RingType; 3],
 	/// Overwhelm match base and hop compare. Always equal to [`Self::n_rings`]
 	/// (braid slots count). Constructor `weight` arguments are ignored.
@@ -390,6 +422,10 @@ impl Tile {
 		self.ring_type_at(index).is_braid()
 	}
 
+	pub fn ring_is_bead(self, index: usize) -> bool {
+		self.ring_type_at(index).is_bead()
+	}
+
 	/// Zag flags in slot order, for call sites that still compare a `[bool; 3]`.
 	pub fn zag(self) -> [bool; 3] {
 		self.ring_type.map(RingType::is_zag)
@@ -439,6 +475,10 @@ impl Tile {
 
 	pub fn stroke_is_braid(self, k: u8) -> bool {
 		self.stroke_type(k).is_braid()
+	}
+
+	pub fn stroke_is_bead(self, k: u8) -> bool {
+		self.stroke_type(k).is_bead()
 	}
 
 	pub fn color_mask(self) -> u8 {
@@ -495,7 +535,7 @@ impl Tile {
 		out
 	}
 
-	/// Any ring color, normal, zag, or braid.
+	/// Any ring color, normal, zag, braid, or bead.
 	pub fn shares_color(self, other: Tile) -> bool {
 		(self.color_mask() & other.color_mask()) != 0
 	}
@@ -509,7 +549,7 @@ impl Tile {
 	}
 
 	/// True if some **normal**-ring color of this tile appears among `other`'s
-	/// colors (any ring type: normal, zag, or braid).
+	/// colors (any ring type: normal, zag, braid, or bead).
 	pub fn normal_color_in(self, other: Tile) -> bool {
 		self.ring_colors()
 			.iter()
@@ -535,11 +575,43 @@ impl Tile {
 	}
 
 	/// How many of this tile's zag **rings** have their color on `target`
-	/// (normal, zag, or braid). Counts live ring slots only. Own zags do not
+	/// (normal, zag, braid, or bead). Counts live ring slots only. Own zags do not
 	/// mismatch their owner. A zag whose color `target` lacks is absent (not
 	/// a hit).
 	pub fn zag_hits_on(self, target: Tile) -> i32 {
 		TileColor::ALL.iter().map(|&c| self.zag_hits_of_color(target, c)).sum()
+	}
+
+	/// A bead ring of color `C` is **matched** by `other` iff `other.has_color(C)`:
+	/// `C` appears among `other`'s live rings of any type. This is the same
+	/// presence test [`Self::normal_color_in`] uses for a normal ring
+	/// (`other.has_color(c)`). It is **not** multiset coverage (three orange
+	/// beads vs one orange = all three matched) and not the edge-level OR of
+	/// the normal channel (a bead does not become matched just because some
+	/// other normal ring on the edge matches).
+	pub fn bead_matched_on(self, other: Tile) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&k| self.stroke_is_bead(k) && other.has_color(self.stroke_color(k)))
+			.count() as u8
+	}
+
+	/// Bead rings on this tile whose color `other` does not hold.
+	pub fn bead_unmatched_on(self, other: Tile) -> u8 {
+		self.bead_ring_count().saturating_sub(self.bead_matched_on(other))
+	}
+
+	/// Bead-channel scores on the undirected edge `self`–`other`.
+	///
+	/// Mismatch is +1 per unmatched bead ring on **either** tile (count the
+	/// rings, not each mismatching color pair). If any bead ring on either
+	/// side is matched, the channel also scores a single match of 1 (one −1
+	/// at most per edge, like the normal channel — not per bead). Both can
+	/// fire together when some beads match and others do not.
+	pub fn bead_channel(self, other: Tile) -> (i32, i32) {
+		let unmatched =
+			i32::from(self.bead_unmatched_on(other)) + i32::from(other.bead_unmatched_on(self));
+		let matched = self.bead_matched_on(other) > 0 || other.bead_matched_on(self) > 0;
+		(if matched { 1 } else { 0 }, unmatched)
 	}
 
 	/// This tile's braid is satisfied when `other`'s facing **ring** color
@@ -561,10 +633,14 @@ impl Tile {
 	}
 
 	/// True if this tile has a real presence toward `dst`: a normal ring, a
-	/// braid (2–3 slots), or a zag whose color `dst` holds. Non-matching zags
-	/// are treated as empty.
+	/// braid (2–3 slots), a zag whose color `dst` holds, or any bead (beads
+	/// always fire: matched or unmatched). Non-matching zags are treated as
+	/// empty.
 	pub fn present_toward(self, dst: Tile) -> bool {
-		self.normal_mask() != 0 || self.braid_ring_count() >= 2 || self.zag_hits_on(dst) > 0
+		self.normal_mask() != 0
+			|| self.braid_ring_count() >= 2
+			|| self.zag_hits_on(dst) > 0
+			|| self.bead_ring_count() > 0
 	}
 
 	pub fn kind_label(self) -> String {
@@ -575,6 +651,7 @@ impl Tile {
 			.map(|(i, c)| match self.ring_type[i] {
 				RingType::Zag => format!("{}-zag", c.name()),
 				RingType::Braid => format!("{}-braid", c.name()),
+				RingType::Bead => format!("{}-bead", c.name()),
 				RingType::Normal => c.name().to_string(),
 			})
 			.collect::<Vec<_>>()
@@ -607,7 +684,14 @@ impl Tile {
 			.count() as u8
 	}
 
-	/// How many of this tile's live rings are normal (not zag, not braid).
+	/// How many of this tile's live rings are beads.
+	pub fn bead_ring_count(self) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&i| self.ring_type[i as usize].is_bead())
+			.count() as u8
+	}
+
+	/// How many of this tile's live rings are normal (not zag, braid, or bead).
 	pub fn normal_ring_count(self) -> u8 {
 		(0..self.n_rings.min(MAX_COLOR_RINGS))
 			.filter(|&i| self.ring_type[i as usize].is_normal())
@@ -615,13 +699,14 @@ impl Tile {
 	}
 
 	/// Piece value under `weights`: `dots * w.dots + normal_rings * w.normal_ring
-	/// + zag_rings * w.zag_ring + braid_rings * w.braid_ring`. Used by the
-	/// low-value end condition.
+	/// + zag_rings * w.zag_ring + braid_rings * w.braid_ring + bead_rings *
+	/// w.bead_ring`. Used by the low-value end condition.
 	pub fn piece_value(self, weights: PieceValueWeights) -> i32 {
 		weights.dots * i32::from(self.dots)
 			+ weights.normal_ring * i32::from(self.normal_ring_count())
 			+ weights.zag_ring * i32::from(self.zag_ring_count())
 			+ weights.braid_ring * i32::from(self.braid_ring_count())
+			+ weights.bead_ring * i32::from(self.bead_ring_count())
 	}
 }
 
@@ -650,20 +735,23 @@ pub fn selected_braid(a: Tile, b: Tile) -> Option<(Tile, u8)> {
 
 /// Tunable weights for [`Tile::piece_value`]. Low-value resolution uses
 /// [`Self::PRIMARY`] first (every ring counts 1), then [`Self::TIEBREAK`]
-/// (zag and braid rings count 2). Add fields here as new ring types appear.
+/// (zag, braid, and bead rings count 2). Add fields here as new ring types appear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PieceValueWeights {
 	pub dots: i32,
 	pub normal_ring: i32,
 	pub zag_ring: i32,
 	pub braid_ring: i32,
+	pub bead_ring: i32,
 }
 
 impl PieceValueWeights {
 	/// Step 1: value = dots + rings (every ring 1). Lower wins.
-	pub const PRIMARY: Self = Self { dots: 1, normal_ring: 1, zag_ring: 1, braid_ring: 1 };
-	/// Step 2 on a primary tie: zag and braid rings are worth 2. Lower wins.
-	pub const TIEBREAK: Self = Self { dots: 1, normal_ring: 1, zag_ring: 2, braid_ring: 2 };
+	pub const PRIMARY: Self =
+		Self { dots: 1, normal_ring: 1, zag_ring: 1, braid_ring: 1, bead_ring: 1 };
+	/// Step 2 on a primary tie: zag, braid, and bead rings are worth 2. Lower wins.
+	pub const TIEBREAK: Self =
+		Self { dots: 1, normal_ring: 1, zag_ring: 2, braid_ring: 2, bead_ring: 2 };
 }
 
 /// A missing piece in a low-value pair. Treated as maximum value so the
@@ -758,6 +846,7 @@ pub struct ColorStateView {
 	pub normal: u8,
 	pub zag: u8,
 	pub braid: u8,
+	pub bead: u8,
 	pub counts: [u8; 6],
 	pub braid_counts: [u8; 6],
 	pub braid_size: u8,
@@ -782,11 +871,12 @@ pub fn decode_color_state(mut state: usize) -> ColorStateView {
 		match typ {
 			0 => view.normal |= bit,
 			1 => view.zag |= bit,
-			_ => {
+			2 => {
 				view.braid |= bit;
 				view.braid_counts[color] += 1;
 				view.braid_size += 1;
 			}
+			_ => view.bead |= bit,
 		}
 	}
 	view
@@ -1064,15 +1154,17 @@ pub struct EdgeChannels {
 	pub zag_mismatch: i32,
 	pub braid_match: i32,
 	pub braid_mismatch: i32,
+	pub bead_match: i32,
+	pub bead_mismatch: i32,
 }
 
 impl EdgeChannels {
 	pub fn match_weight(self) -> i32 {
-		self.normal_match + self.braid_match
+		self.normal_match + self.braid_match + self.bead_match
 	}
 
 	pub fn mismatch_weight(self) -> i32 {
-		self.normal_mismatch + self.zag_mismatch + self.braid_mismatch
+		self.normal_mismatch + self.zag_mismatch + self.braid_mismatch + self.bead_mismatch
 	}
 
 	/// Per-edge `mismatch_weight − match_weight`. Summed over a tile's edges
@@ -1177,6 +1269,10 @@ pub struct RuleSet {
 	/// (1/7, same rate as zags). `0` disables braids (`--braids off` /
 	/// `--braid-chance 0`).
 	pub braid_numer: u8,
+	/// Each remaining normal ring is a bead with probability `bead_numer / 7`.
+	/// Default 1 (1/7, same rate as zags). Rolled after braid and zag.
+	/// `0` disables beads (`--beads off` / `--bead-chance 0`).
+	pub bead_numer: u8,
 	/// Legacy: on a MOVE, each removed opponent tile draws one hidden bag tile
 	/// onto the bench. Default **false** (the whole deck is public; captures
 	/// earn tokens only). Kept so historical JSONL logs replay.
@@ -1270,6 +1366,7 @@ impl Default for RuleSet {
 			max_rings: MAX_COLOR_RINGS,
 			zag_numer: ZAG_NUMER_DEFAULT,
 			braid_numer: BRAID_NUMER_DEFAULT,
+			bead_numer: BEAD_NUMER_DEFAULT,
 			capture_draw_on_move: false,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
@@ -2007,7 +2104,8 @@ impl Game {
 	///
 	/// A channel contributes only if at least one of the two tiles has a ring
 	/// of that type. Channels never override each other: a zag vs a same-color
-	/// normal nets 0, and a fulfilled braid stacks with a normal match.
+	/// normal nets 0, a fulfilled braid stacks with a normal match, and beads
+	/// add on top of both.
 	///
 	/// - **Normal:** match 1 if some normal-ring color of either tile is in
 	///   the other tile's color multiset; otherwise mismatch 1 (or the
@@ -2016,6 +2114,10 @@ impl Game {
 	/// - **Braid:** the single largest fulfilled braid (match = its slot
 	///   count). If none is fulfilled, one mismatch of
 	///   [`RuleSet::braid_fail_mismatch`] (default 1).
+	/// - **Bead:** +1 mismatch per unmatched bead ring on either tile (count
+	///   the rings, not color-pairs). If any bead is matched — same presence
+	///   test as the normal channel, `other.has_color(bead_color)` — a single
+	///   match of 1 (one −1 at most per edge). Mixed edges can score both.
 	pub fn edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
 		let mut ch = EdgeChannels::default();
 		if tile.normal_ring_count() > 0 || other.normal_ring_count() > 0 {
@@ -2036,6 +2138,11 @@ impl Game {
 			} else {
 				ch.braid_mismatch = self.rules.braid_fail_mismatch.cost(tile, other);
 			}
+		}
+		if tile.bead_ring_count() > 0 || other.bead_ring_count() > 0 {
+			let (m, x) = tile.bead_channel(other);
+			ch.bead_match = m;
+			ch.bead_mismatch = x;
 		}
 		ch
 	}
@@ -2818,12 +2925,14 @@ pub fn sample_tile(
 	max_rings: u8,
 	zag_numer: u8,
 	braid_numer: u8,
+	bead_numer: u8,
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
 	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
 	let mut ring_type = sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer);
 	sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
+	sample_bead_types(rng, n_rings, &mut ring_type, bead_numer);
 	let weight = n_rings.max(1);
 	let dots = rng.gen_range(1..=3);
 	let id = *next_id;
@@ -3047,6 +3156,7 @@ mod tests {
 		assert_eq!(rules.max_rings, 3);
 		assert_eq!(rules.zag_numer, ZAG_NUMER_DEFAULT);
 		assert_eq!(rules.braid_numer, BRAID_NUMER_DEFAULT);
+		assert_eq!(rules.bead_numer, BEAD_NUMER_DEFAULT);
 		assert!(!rules.petal_majority_win);
 		assert_eq!(rules.insufficient_tiles_loss, InsufficientTilesLoss::Off);
 		assert!(rules.counted_pass_through);
@@ -4824,6 +4934,18 @@ mod tests {
 		);
 		assert!(zag.kind_index() < KIND_COUNT);
 		assert!(seen.insert(zag.kind_index()), "zag vs normal of same colors is a distinct kind");
+		let bead = Tile::with_typed_rings(
+			0,
+			Player::One,
+			&[(TileColor::Green, RingType::Normal), (TileColor::Teal, RingType::Bead)],
+			2,
+			1,
+		);
+		assert!(bead.kind_index() < KIND_COUNT);
+		assert!(seen.insert(bead.kind_index()), "bead vs zag/normal of same colors is distinct");
+		let view = decode_color_state(bead.color_state());
+		assert_ne!(view.bead, 0);
+		assert_eq!(view.zag, 0);
 	}
 
 	#[test]
@@ -5518,7 +5640,7 @@ mod tests {
 		let mut rings = 0u32;
 		let mut braid_rings = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(Player::One, 3, 0, BRAID_NUMER_DEFAULT, &mut next_id, &mut rng);
+			let t = sample_tile(Player::One, 3, 0, BRAID_NUMER_DEFAULT, 0, &mut next_id, &mut rng);
 			let k = t.n_rings.clamp(1, 3);
 			rings += u32::from(k);
 			let b = t.braid_ring_count();
@@ -6578,8 +6700,190 @@ mod tests {
 		assert_eq!(mixed.weight, mixed.n_rings);
 		assert_eq!(mixed.weight, 3);
 		assert_eq!(
-			mixed.braid_ring_count() + mixed.zag_ring_count() + mixed.normal_ring_count(),
+			mixed.braid_ring_count()
+				+ mixed.zag_ring_count()
+				+ mixed.normal_ring_count()
+				+ mixed.bead_ring_count(),
 			3
+		);
+	}
+
+	fn beads(game: &mut Game, owner: Player, colors: &[TileColor]) -> Tile {
+		let parts: Vec<(TileColor, RingType)> =
+			colors.iter().copied().map(|c| (c, RingType::Bead)).collect();
+		game.alloc_typed_rings(owner, &parts, 1, 1)
+	}
+
+	#[test]
+	fn bead_unmatched_counts_rings_not_color_pairs() {
+		let mut game = Game::empty(RuleSet::default());
+		let three = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let miss = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		let ch = game.edge_channels(three, miss);
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.bead_mismatch, 3, "three unmatched orange beads, not 3×1 color pairs");
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(game.edge_score(three, miss), (0, 4));
+		assert_eq!(game.edge_score(miss, three), (0, 4));
+	}
+
+	#[test]
+	fn bead_match_is_capped_at_one_per_edge() {
+		let mut game = Game::empty(RuleSet::default());
+		let three = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(three, hit);
+		assert_eq!(ch.bead_match, 1, "one −1 for the edge, not per bead");
+		assert_eq!(
+			ch.bead_mismatch, 0,
+			"presence, not coverage: 3 orange vs 1 orange are all matched"
+		);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(game.edge_score(three, hit), (2, 0));
+	}
+
+	#[test]
+	fn bead_matching_uses_normal_channel_presence() {
+		let mut game = Game::empty(RuleSet::default());
+		let bead = beads(&mut game, Player::One, &[TileColor::Orange]);
+		let zag = game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		let braid = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			1,
+		);
+		let other_bead = beads(&mut game, Player::Two, &[TileColor::Orange]);
+		assert_eq!(bead.bead_matched_on(zag), 1, "zag orange is in Colors_B like a normal");
+		assert_eq!(bead.bead_matched_on(braid), 1, "braid orange is in Colors_B");
+		assert_eq!(bead.bead_matched_on(other_bead), 1, "bead orange is in Colors_B");
+		assert_eq!(game.edge_channels(bead, zag).bead_match, 1);
+		assert_eq!(game.edge_channels(bead, zag).zag_mismatch, 1);
+		assert_eq!(game.edge_score(bead, zag), (1, 1), "same-color bead vs zag washes");
+	}
+
+	#[test]
+	fn mixed_beads_score_unmatched_plus_single_match() {
+		let mut game = Game::empty(RuleSet::default());
+		let mixed = beads(&mut game, Player::One, &[TileColor::Orange, TileColor::Green]);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(mixed, hit);
+		assert_eq!(ch.bead_match, 1);
+		assert_eq!(ch.bead_mismatch, 1, "green unmatched; orange matched");
+		assert_eq!(game.edge_score(mixed, hit), (2, 1));
+	}
+
+	#[test]
+	fn beads_bomb_unmatched_braids_and_stack_with_fail() {
+		let mut game = Game::empty(RuleSet::default());
+		let bomb = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let braid = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Blue, RingType::Braid),
+				(TileColor::Teal, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+			],
+			1,
+			1,
+		);
+		let ch = game.edge_channels(bomb, braid);
+		assert_eq!(ch.bead_mismatch, 3);
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.braid_mismatch, 1);
+		assert_eq!(ch.braid_match, 0);
+		assert_eq!(game.edge_score(bomb, braid), (0, 4));
+		assert_eq!(bomb.weight, 3);
+		assert_eq!(braid.weight, 3);
+	}
+
+	#[test]
+	fn beads_and_zags_are_independent_channels() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Zag)],
+			1,
+			1,
+		);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Blue, TileColor::Green], 1, 1);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.zag_mismatch, 1, "blue zag hits");
+		assert_eq!(ch.bead_mismatch, 1, "orange bead unmatched");
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.normal_match, 1, "blue normal of B is in Colors_A");
+		assert_eq!(game.edge_score(a, b), (1, 2));
+	}
+
+	#[test]
+	fn center_inner_bead_mismatch_scores_per_petal() {
+		let mut game = Game::empty(RuleSet::default());
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		let a = beads(&mut game, Player::One, &[TileColor::Orange, TileColor::Orange]);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(game.edge_channels(a, b).bead_mismatch, 2);
+		assert_eq!(game.edge_score(a, b), (0, 3), "2 unmatched beads + 1 normal hitch");
+		game.place_tile(center, a);
+		game.place_tile(inner, b);
+		assert_eq!(game.tile_effective_weight(center), Some(6), "two petals: +3 + +3");
+		assert_eq!(game.tile_effective_weight(inner), Some(6));
+		assert_eq!(game.tile_score(center), Some((2, 6)));
+		assert!(game.is_overwhelmed(center));
+		assert!(game.is_overwhelmed(inner));
+	}
+
+	#[test]
+	fn both_sides_unmatched_beads_sum() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = beads(&mut game, Player::One, &[TileColor::Orange]);
+		let b = beads(&mut game, Player::Two, &[TileColor::Green, TileColor::Blue]);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.bead_mismatch, 3, "1 + 2 unmatched bead rings");
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(game.edge_channels(a, b), game.edge_channels(b, a));
+	}
+
+	#[test]
+	fn bead_off_deal_has_no_bead_rings() {
+		let mut off = RuleSet::default();
+		off.bead_numer = 0;
+		let game = Game::new(off, 11);
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.chain(game.bag(Player::One))
+			.all(|t| t.bead_ring_count() == 0));
+	}
+
+	#[test]
+	fn bead_generation_is_about_one_in_seven_of_remaining_normals() {
+		let mut rng = StdRng::seed_from_u64(7);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut rings = 0u32;
+		let mut beads = 0u32;
+		for _ in 0..n {
+			let t = sample_tile(Player::One, 3, 0, 0, BEAD_NUMER_DEFAULT, &mut next_id, &mut rng);
+			rings += u32::from(t.n_rings.clamp(1, 3));
+			beads += u32::from(t.bead_ring_count());
+		}
+		let rate = f64::from(beads) / f64::from(rings);
+		assert!(
+			(0.12..0.17).contains(&rate),
+			"bead rate={rate:.4} (expected ~0.1429 = 1/7) with zags and braids off"
 		);
 	}
 
