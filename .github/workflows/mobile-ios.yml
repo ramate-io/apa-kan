@@ -35,7 +35,7 @@ jobs:
 
   ios:
     needs: version
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 180
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -48,7 +48,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       
       - name: Build iOS binary
-        run: cargo build -p apa-kan --release --target aarch64-apple-ios
+        run: cargo build -p apa-kan --bin apa-kan --release --target aarch64-apple-ios
       
       - name: Package iOS app bundle
         run: packaging/scripts/package-ios.sh
