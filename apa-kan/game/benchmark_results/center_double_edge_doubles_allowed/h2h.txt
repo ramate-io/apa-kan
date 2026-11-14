@@ -1,0 +1,176 @@
+# apa-kan search benchmark
+# think_ms=1000 games_per_pairing_per_seat=12 seed_base=1 turn_limit=200
+
+# branching factor (legal actions per position, from greedy/random games)
+# sample_games=12  (greedy vs random, random vs greedy, greedy vs greedy)
+# kind     n_positions  avg    max
+ADD       372          40.07  88
+MOVE      354          16.19  52
+ALL       404          51.08  88
+
+# center double-edge + new low-value, doubles allowed
+# think_ms=1000 games_per_pairing_per_seat=12 seed_base=1 turn_limit=200
+# rules: no_moves_loses=on center_hold_win=off center_hold_n=5 no_same_piece_twice=off color_restricted_hops=on hop_weight_cmp=le counted_pass_through=on pass_through_ring_cmp=ge petal_majority_win=off petal_majority_n=1 control_win=on control_n=5 control_hold_turns=1 insufficient_tiles_loss=off starting_bench=7 bag_size=11 self_capture_budget=on max_rings=3 zag_numer=1 braid_numer=1 zag_mismatch=sum path_constraint=no-edge-revisit scenario=default
+# ring_process  sample=20000 max_rings=3 zag_numer=1 braid_numer=1  n1=14236 n2=5660 n3=104
+# ring_process_zags  rings=25868 zags=2936 rate=0.1135
+# ring_process_braids  pieces=20000 braided=2817 piece_rate=0.1409 rings=25868 braid_rings=5642 ring_rate=0.2181
+# ring_process_colors  green=7968 blue=8018 orange=7890 lavender-pink=934 teal=949 maroon=109
+# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.
+# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).
+# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures
+greedy          vs greedy           P1  5-3-4  46.50  0  0  0  0  2  0  9  1  0  0  1.08  0.00  0.0  cap=6.83  self=5.83
+greedy          vs minimax          P1  0-0-12  36.00  0  4  0  0  4  0  4  0  0  0  1.00  2.97  0.0  cap=5.17  self=4.33
+greedy          vs mcts             P1  0-0-12  38.33  0  1  0  0  3  0  8  0  0  0  1.08  0.00  1996.4  cap=6.08  self=5.17
+minimax         vs greedy           P1  12-0-0  29.83  0  2  0  0  7  0  3  0  0  0  1.08  3.21  0.0  cap=4.33  self=3.42
+minimax         vs minimax          P1  8-2-2  88.00  0  0  0  0  4  0  6  2  0  2  1.58  3.92  0.0  cap=5.00  self=6.00
+minimax         vs mcts             P1  2-1-9  51.33  0  1  0  0  2  0  8  1  0  0  1.00  4.45  3554.0  cap=6.08  self=6.50
+mcts            vs greedy           P1  12-0-0  36.67  0  0  0  0  5  0  7  0  0  0  1.00  0.00  1541.7  cap=4.50  self=4.58
+mcts            vs minimax          P1  7-1-4  49.00  0  1  0  0  5  0  6  0  0  0  1.00  3.58  2234.6  cap=4.92  self=5.08
+mcts            vs mcts             P1  7-1-4  51.58  0  0  0  0  6  0  5  1  0  0  1.00  0.00  2253.7  cap=5.83  self=4.42
+# seat_totals  P1 53-8-47  P2 47-8-53  games=108
+# end_reasons  elim=0 locked_out=9 center_hold=0 petal_maj=0 control=38 insuff=0 low_value=56 low_value_wins=53 low_value_draws=3 turn_limit=5 double_pass=0
+# low_value_pairs  pair0=26 later=13 piece_count=14
+# captures  opponent_tiles_removed=585  avg_per_game=5.42  self_captures=544  self_avg_per_game=5.04
+# center_captures  opponent_tiles_removed=63  avg_per_game=0.58  self_captures=12  self_avg_per_game=0.11
+
+# stalling (rules unchanged; no threefold draw)
+# games=108  visible_pos_seen_>=2=7  visible_pos_seen_>=3=2  occupancy_seen_>=3=11
+# games_that_both_hit_turn_limit_and_had_a_visible_repeat_>=3 (lower bound via pairing mins) ~ 2
+# Visible hash covers occupancy, tile kind, owner, the public remaining deck, spawn-token count (including surplus), side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).
+# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.
+
+# observed_opening_rings  tiles=2376  n1=1708 n2=648 n3=20
+# observed_opening_colors  green=968 blue=966 orange=886 lavender-pink=120 teal=120 maroon=4
+# add_rings  tiles=1802  n1=1182 n2=600 n3=20
+# move_rings  tiles=3325  n1=2037 n2=1261 n3=27
+# board_sample  positions=5235 avg_tiles=5.65 avg_rings=1.437 avg_weight=1.437
+# braid_edges  occupied_with_braid=3337 satisfied=1333 rate=0.3995
+
+# deck fairness
+# games=108
+# opening_strength_equal=108/108
+# strength = weight_sum + dots_sum + n_colors on the opening bench (and on tiles that entered play).
+# pearson(opening_combined_diff, outcome +1/0/-1)=n/a
+# pearson(opening_weight_diff, outcome)=n/a
+# pearson(opening_dots_diff, outcome)=n/a
+# pearson(opening_color_diff, outcome)=n/a
+# pearson(p1_opening_weight, outcome)=0.017  (shared-deal / first-player view)
+# pearson(p1_opening_weight, turns)=-0.145
+# pearson(played_combined_diff, outcome)=0.324  (board+bench at end; play-influenced)
+# higher_opening_strength_won=0/0 (excludes draws and equal opening strength)
+# higher_played_strength_won=54/85 (excludes draws and equal end strength)
+# opening_deal  pairing  game  seed  p1  p2  p1_bench  p2_bench  outcome  turns
+#   greedy vs greedy  g1  seed=1  p1=n11 w15 d22 c5  p2=n11 w15 d22 c5  [o1-1,o1-3,td+td2-2,gd+gd2-1,b+p2-1,p1-2,b1-2,g1-3,g1-1,bd+bd2-3,g1-3]  [o1-1,o1-3,td+td2-2,gd+gd2-1,b+p2-1,p1-2,b1-2,g1-3,g1-1,bd+bd2-3,g1-3]  D  t26
+#   greedy vs greedy  g2  seed=2  p1=n11 w13 d22 c3  p2=n11 w13 d22 c3  [g1-2,b1-3,b1-1,o1-3,g+o2-3,gd+gd2-1,b1-3,bz1-3,b1-1,g1-1,g1-1]  [g1-2,b1-3,b1-1,o1-3,g+o2-3,gd+gd2-1,b1-3,bz1-3,b1-1,g1-1,g1-1]  P2  t38
+#   greedy vs greedy  g3  seed=3  p1=n11 w13 d23 c4  p2=n11 w13 d23 c4  [p1-3,b1-2,t1-2,b1-2,b1-3,bd+bd2-1,b1-3,o1-1,p1-2,b1-1,t+oz2-3]  [p1-3,b1-2,t1-2,b1-2,b1-3,bd+bd2-1,b1-3,o1-1,p1-2,b1-1,t+oz2-3]  P1  t33
+#   greedy vs greedy  g4  seed=4  p1=n11 w17 d24 c4  p2=n11 w17 d24 c4  [bd+bd2-2,td+td2-3,o1-2,bd+bd2-2,bd+bd2-1,g1-2,bd+bd2-3,o1-2,g1-1,o+b2-3,b1-3]  [bd+bd2-2,td+td2-3,o1-2,bd+bd2-2,bd+bd2-1,g1-2,bd+bd2-3,o1-2,g1-1,o+b2-3,b1-3]  P1  t41
+#   greedy vs greedy  g5  seed=5  p1=n11 w14 d19 c4  p2=n11 w14 d19 c4  [b1-3,b1-3,g1-1,g+t2-3,o1-2,g1-1,g+b2-2,b1-1,g1-1,g+b2-1,g1-1]  [b1-3,b1-3,g1-1,g+t2-3,o1-2,g1-1,g+b2-2,b1-1,g1-1,g+b2-1,g1-1]  P2  t20
+#   greedy vs greedy  g6  seed=6  p1=n11 w15 d25 c4  p2=n11 w15 d25 c4  [g1-2,gd+bd2-1,bd+bd2-2,bz1-1,b1-3,o1-2,m+g2-2,bd+bd2-3,b1-3,g1-3,o1-3]  [g1-2,gd+bd2-1,bd+bd2-2,bz1-1,b1-3,o1-2,m+g2-2,bd+bd2-3,b1-3,g1-3,o1-3]  P1  t41
+#   greedy vs greedy  g7  seed=7  p1=n11 w14 d19 c4  p2=n11 w14 d19 c4  [bd+gd2-1,g1-2,pz1-3,b1-2,gd+gd2-1,b1-1,g1-1,b1-3,bd+bd2-1,o1-3,b1-1]  [bd+gd2-1,g1-2,pz1-3,b1-2,gd+gd2-1,b1-1,g1-1,b1-3,bd+bd2-1,o1-3,b1-1]  P1  t31
+#   greedy vs greedy  g8  seed=8  p1=n11 w13 d19 c4  p2=n11 w13 d19 c4  [bz1-2,g1-2,o1-1,o1-2,gd+gd2-3,b1-3,o1-1,bd+gd2-1,t1-1,g1-1,b1-2]  [bz1-2,g1-2,o1-1,o1-2,gd+gd2-3,b1-3,o1-1,bd+gd2-1,t1-1,g1-1,b1-2]  P1  t23
+#   greedy vs greedy  g9  seed=9  p1=n11 w14 d22 c5  p2=n11 w14 d22 c5  [o1-2,b1-1,oz1-1,bd+bd2-3,b1-3,od+od2-1,b1-3,p1-2,g+o2-1,t1-3,g1-2]  [o1-2,b1-1,oz1-1,bd+bd2-3,b1-3,od+od2-1,b1-3,p1-2,g+o2-1,t1-3,g1-2]  P2  t34
+#   greedy vs greedy  g10  seed=10  p1=n11 w14 d23 c3  p2=n11 w14 d23 c3  [oz1-3,o1-1,o+g2-2,bz1-3,gd+bd2-2,g+b2-1,o1-3,g1-1,b1-3,b1-3,o1-1]  [oz1-3,o1-1,o+g2-2,bz1-3,gd+bd2-2,g+b2-1,o1-3,g1-1,b1-3,b1-3,o1-1]  D  t43
+#   greedy vs greedy  g11  seed=11  p1=n11 w14 d28 c4  p2=n11 w14 d28 c4  [td+od2-3,gd+gd2-2,o1-1,bd+bd2-3,b1-3,o1-1,o1-3,g1-3,b1-3,b1-3,g1-3]  [td+od2-3,gd+gd2-2,o1-1,bd+bd2-3,b1-3,o1-1,o1-3,g1-3,b1-3,b1-3,g1-3]  P2  t28
+#   greedy vs greedy  g12  seed=12  p1=n11 w13 d24 c3  p2=n11 w13 d24 c3  [g1-2,oz1-3,o+b2-3,g+o2-3,g1-1,b1-1,o1-3,b1-2,gz1-2,o1-3,g1-1]  [g1-2,oz1-3,o+b2-3,g+o2-3,g1-1,b1-1,o1-3,b1-2,gz1-2,o1-3,g1-1]  D  t200
+#   greedy vs mcts  g1  seed=20001  p1=n11 w14 d17 c4  p2=n11 w14 d17 c4  [bz1-2,bz1-1,g1-1,o1-2,o1-1,o1-2,b+g2-1,bz+p2-2,g+b2-2,b1-1,o1-2]  [bz1-2,bz1-1,g1-1,o1-2,o1-1,o1-2,b+g2-1,bz+p2-2,g+b2-2,b1-1,o1-2]  P2  t32
+#   greedy vs mcts  g2  seed=20002  p1=n11 w15 d22 c5  p2=n11 w15 d22 c5  [p+b2-2,o+t2-3,b+g2-3,g1-2,o1-2,b1-1,oz1-1,p1-3,o1-1,gd+gd2-3,b1-1]  [p+b2-2,o+t2-3,b+g2-3,g1-2,o1-2,b1-1,oz1-1,p1-3,o1-1,gd+gd2-3,b1-1]  P2  t40
+#   greedy vs mcts  g3  seed=20003  p1=n11 w13 d18 c3  p2=n11 w13 d18 c3  [bd+gd2-3,gz1-3,b1-1,bz1-1,b1-1,g1-2,b1-2,o1-1,b1-1,gd+od2-2,b1-1]  [bd+gd2-3,gz1-3,b1-1,bz1-1,b1-1,g1-2,b1-2,o1-1,b1-1,gd+od2-2,b1-1]  P2  t36
+#   greedy vs mcts  g4  seed=20004  p1=n11 w12 d24 c3  p2=n11 w12 d24 c3  [g1-2,b1-2,b1-3,o1-3,o1-2,g1-1,b1-3,b1-3,o1-1,o+bz2-3,b1-1]  [g1-2,b1-2,b1-3,o1-3,o1-2,g1-1,b1-3,b1-3,o1-1,o+bz2-3,b1-1]  P2  t48
+#   greedy vs mcts  g5  seed=20005  p1=n11 w14 d23 c5  p2=n11 w14 d23 c5  [bd+bd2-3,bz1-1,b1-3,t1-3,b1-2,pd+pd2-3,bz1-2,g+o2-1,b1-2,b1-1,o1-2]  [bd+bd2-3,bz1-1,b1-3,t1-3,b1-2,pd+pd2-3,bz1-2,g+o2-1,b1-2,b1-1,o1-2]  P2  t32
+#   greedy vs mcts  g6  seed=20006  p1=n11 w13 d18 c3  p2=n11 w13 d18 c3  [g1-3,b1-2,g1-1,g+o2-1,o1-3,oz1-1,g1-2,oz+b2-1,o1-2,b1-1,g1-1]  [g1-3,b1-2,g1-1,g+o2-1,o1-3,oz1-1,g1-2,oz+b2-1,o1-2,b1-1,g1-1]  P2  t64
+#   greedy vs mcts  g7  seed=20007  p1=n11 w14 d21 c4  p2=n11 w14 d21 c4  [b+g2-1,o+g2-3,o1-3,b1-2,g1-3,b1-1,g1-2,bz1-1,g+t2-2,g1-1,gz1-2]  [b+g2-1,o+g2-3,o1-3,b1-2,g1-3,b1-1,g1-2,bz1-1,g+t2-2,g1-1,gz1-2]  P2  t20
+#   greedy vs mcts  g8  seed=20008  p1=n11 w15 d17 c3  p2=n11 w15 d17 c3  [g1-1,b+g2-1,o1-3,od+od2-1,g+b2-2,b1-1,g1-1,o1-1,o1-3,o+b2-2,o1-1]  [g1-1,b+g2-1,o1-3,od+od2-1,g+b2-2,b1-1,g1-1,o1-1,o1-3,o+b2-2,o1-1]  P2  t30
+#   greedy vs mcts  g9  seed=20009  p1=n11 w16 d24 c3  p2=n11 w16 d24 c3  [bz1-2,bd+bd2-1,bz1-3,bz1-3,b1-2,od+od2-2,gd+gd2-2,g1-2,od+od2-2,oz1-3,bd+bd2-2]  [bz1-2,bd+bd2-1,bz1-3,bz1-3,b1-2,od+od2-2,gd+gd2-2,g1-2,od+od2-2,oz1-3,bd+bd2-2]  P2  t38
+#   greedy vs mcts  g10  seed=20010  p1=n11 w15 d20 c4  p2=n11 w15 d20 c4  [od+od2-2,b1-3,g+b2-1,p1-1,b1-1,b1-2,b1-1,g1-2,gd+gd2-1,b1-3,b+o2-3]  [od+od2-2,b1-3,g+b2-1,p1-1,b1-1,b1-2,b1-1,g1-2,gd+gd2-1,b1-3,b+o2-3]  P2  t26
+#   greedy vs mcts  g11  seed=20011  p1=n11 w14 d20 c5  p2=n11 w14 d20 c5  [b1-3,gz+o2-3,td+gd2-1,g1-1,b1-2,od+od2-2,p1-1,g1-2,o1-1,oz1-1,p1-3]  [b1-3,gz+o2-3,td+gd2-1,g1-1,b1-2,od+od2-2,p1-1,g1-2,o1-1,oz1-1,p1-3]  P2  t58
+#   greedy vs mcts  g12  seed=20012  p1=n11 w15 d21 c3  p2=n11 w15 d21 c3  [gz1-1,g1-2,od+od2-2,od+od2-1,o1-3,bz1-3,g1-3,g1-1,bz1-2,gd+gd2-2,o+g2-1]  [gz1-1,g1-2,od+od2-2,od+od2-1,o1-3,bz1-3,g1-3,g1-1,bz1-2,gd+gd2-2,o+g2-1]  P2  t36
+#   greedy vs minimax  g1  seed=10001  p1=n11 w11 d21 c3  p2=n11 w11 d21 c3  [b1-1,g1-3,o1-2,gz1-3,b1-1,o1-2,g1-3,o1-1,g1-1,o1-3,b1-1]  [b1-1,g1-3,o1-2,gz1-3,b1-1,o1-2,g1-3,o1-1,g1-1,o1-3,b1-1]  P2  t34
+#   greedy vs minimax  g2  seed=10002  p1=n11 w13 d22 c3  p2=n11 w13 d22 c3  [b1-3,o1-1,g+o2-3,bz1-2,o1-3,b1-1,g1-2,g1-2,b1-1,gz1-1,b+o2-3]  [b1-3,o1-1,g+o2-3,bz1-2,o1-3,b1-1,g1-2,g1-2,b1-1,gz1-1,b+o2-3]  P2  t24
+#   greedy vs minimax  g3  seed=10003  p1=n11 w16 d20 c4  p2=n11 w16 d20 c4  [o1-1,g1-2,g1-2,gz+b2-2,gz1-2,gz1-1,oz1-2,b+p2-3,b+o2-1,od+gd2-3,gz+o2-1]  [o1-1,g1-2,g1-2,gz+b2-2,gz1-2,gz1-1,oz1-2,b+p2-3,b+o2-1,od+gd2-3,gz+o2-1]  P2  t38
+#   greedy vs minimax  g4  seed=10004  p1=n11 w12 d25 c4  p2=n11 w12 d25 c4  [b1-1,t1-2,g+b2-1,g1-2,g1-3,b1-3,g1-3,gz1-1,o1-3,b1-3,bz1-3]  [b1-1,t1-2,g+b2-1,g1-2,g1-3,b1-3,g1-3,gz1-1,o1-3,b1-3,bz1-3]  P2  t20
+#   greedy vs minimax  g5  seed=10005  p1=n11 w16 d22 c3  p2=n11 w16 d22 c3  [o1-2,od+od2-1,b1-3,g+o2-1,o1-1,g1-1,od+od2-3,gz1-3,o+g2-3,oz1-3,oz+g2-1]  [o1-2,od+od2-1,b1-3,g+o2-1,o1-1,g1-1,od+od2-3,gz1-3,o+g2-3,oz1-3,oz+g2-1]  P2  t30
+#   greedy vs minimax  g6  seed=10006  p1=n11 w16 d27 c4  p2=n11 w16 d27 c4  [b1-2,b+g2-3,b+o2-1,o1-2,b1-3,o1-2,b+oz2-3,g+p2-3,g1-3,od+gd2-2,g1-3]  [b1-2,b+g2-3,b+o2-1,o1-2,b1-3,o1-2,b+oz2-3,g+p2-3,g1-3,od+gd2-2,g1-3]  P2  t38
+#   greedy vs minimax  g7  seed=10007  p1=n11 w13 d24 c3  p2=n11 w13 d24 c3  [g1-3,b+o2-1,g1-3,g1-2,o1-2,g1-1,b1-2,o1-1,b+o2-3,b1-3,g1-3]  [g1-3,b+o2-1,g1-3,g1-2,o1-2,g1-1,b1-2,o1-1,b+o2-3,b1-3,g1-3]  P2  t24
+#   greedy vs minimax  g8  seed=10008  p1=n11 w15 d25 c4  p2=n11 w15 d25 c4  [gz1-1,bd+bd2-2,o1-2,g1-3,gd+gd2-1,b1-3,p+g2-3,o1-1,o+b2-3,g1-3,b1-3]  [gz1-1,bd+bd2-2,o1-2,g1-3,gd+gd2-1,b1-3,p+g2-3,o1-1,o+b2-3,g1-3,b1-3]  P2  t26
+#   greedy vs minimax  g9  seed=10009  p1=n11 w12 d24 c4  p2=n11 w12 d24 c4  [o1-2,o1-2,o1-3,b1-3,o1-2,o1-2,b1-3,o1-1,gz1-3,pd+gd2-1,gz1-2]  [o1-2,o1-2,o1-3,b1-3,o1-2,o1-2,b1-3,o1-1,gz1-3,pd+gd2-1,gz1-2]  P2  t116
+#   greedy vs minimax  g10  seed=10010  p1=n11 w12 d21 c4  p2=n11 w12 d21 c4  [tz1-1,g1-2,g1-2,od+od2-2,bz1-1,g1-2,b1-1,o1-3,b1-3,g1-1,o1-3]  [tz1-1,g1-2,g1-2,od+od2-2,bz1-1,g1-2,b1-1,o1-3,b1-3,g1-1,o1-3]  P2  t28
+#   greedy vs minimax  g11  seed=10011  p1=n11 w16 d17 c4  p2=n11 w16 d17 c4  [gd+gd2-1,p+oz2-1,gz1-3,g1-1,bz1-2,g1-3,gd+gd2-2,od+od2-1,o1-1,oz1-1,o+b2-1]  [gd+gd2-1,p+oz2-1,gz1-3,g1-1,bz1-2,g1-3,gd+gd2-2,od+od2-1,o1-1,oz1-1,o+b2-1]  P2  t26
+#   greedy vs minimax  g12  seed=10012  p1=n11 w15 d23 c4  p2=n11 w15 d23 c4  [b1-3,g+b2-2,g+o2-3,b1-3,o1-3,td+gd2-2,b1-1,bz1-1,o1-3,bd+bd2-1,g1-1]  [b1-3,g+b2-2,g+o2-3,b1-3,o1-3,td+gd2-2,b1-1,bz1-1,o1-3,bd+bd2-1,g1-1]  P2  t28
+#   mcts vs greedy  g1  seed=60001  p1=n11 w16 d17 c4  p2=n11 w16 d17 c4  [bd+bd2-1,g1-1,b1-3,g1-1,o1-2,g1-1,td+gd2-2,oz1-3,gd+bd2-1,od+od2-1,o+g2-1]  [bd+bd2-1,g1-1,b1-3,g1-1,o1-2,g1-1,td+gd2-2,oz1-3,gd+bd2-1,od+od2-1,o+g2-1]  P1  t29
+#   mcts vs greedy  g2  seed=60002  p1=n11 w13 d23 c3  p2=n11 w13 d23 c3  [g+o2-3,g1-3,g1-2,b1-3,b1-2,gd+od2-2,g1-1,o1-1,b1-1,g1-2,b1-3]  [g+o2-3,g1-3,g1-2,b1-3,b1-2,gd+od2-2,g1-1,o1-1,b1-1,g1-2,b1-3]  P1  t27
+#   mcts vs greedy  g3  seed=60003  p1=n11 w14 d20 c5  p2=n11 w14 d20 c5  [g1-3,p1-2,o1-3,gz1-1,o+b2-1,g1-3,t1-1,bd+bd2-2,g1-1,g1-1,bd+gd2-2]  [g1-3,p1-2,o1-3,gz1-1,o+b2-1,g1-3,t1-1,bd+bd2-2,g1-1,g1-1,bd+gd2-2]  P1  t29
+#   mcts vs greedy  g4  seed=60004  p1=n11 w19 d23 c3  p2=n11 w19 d23 c3  [b+o2-2,b1-3,gd+gd2-2,gd+gd2-2,o1-1,b+oz2-3,o+g2-3,g+b+o3-1,g1-1,b1-3,gd+gd2-2]  [b+o2-2,b1-3,gd+gd2-2,gd+gd2-2,o1-1,b+oz2-3,o+g2-3,g+b+o3-1,g1-1,b1-3,gd+gd2-2]  P1  t27
+#   mcts vs greedy  g5  seed=60005  p1=n11 w12 d24 c5  p2=n11 w12 d24 c5  [o1-3,p1-2,b1-1,tz1-1,o1-3,g1-2,g1-3,g1-2,oz1-3,g+o2-3,o1-1]  [o1-3,p1-2,b1-1,tz1-1,o1-3,g1-2,g1-3,g1-2,oz1-3,g+o2-3,o1-1]  P1  t59
+#   mcts vs greedy  g6  seed=60006  p1=n11 w15 d23 c4  p2=n11 w15 d23 c4  [g1-2,g1-2,b1-3,g+o2-1,g1-2,bz+p+g3-1,p1-3,bz1-2,g+o2-3,o1-1,b1-3]  [g1-2,g1-2,b1-3,g+o2-1,g1-2,bz+p+g3-1,p1-3,bz1-2,g+o2-3,o1-1,b1-3]  P1  t25
+#   mcts vs greedy  g7  seed=60007  p1=n11 w14 d18 c4  p2=n11 w14 d18 c4  [g1-2,o1-1,g1-1,o1-2,o1-2,b+g2-1,p1-3,oz+g2-1,g1-2,bd+bd2-1,g1-2]  [g1-2,o1-1,g1-1,o1-2,o1-2,b+g2-1,p1-3,oz+g2-1,g1-2,bd+bd2-1,g1-2]  P1  t23
+#   mcts vs greedy  g8  seed=60008  p1=n11 w15 d27 c4  p2=n11 w15 d27 c4  [o1-2,b+o2-2,b1-3,b+oz2-2,g1-2,b1-3,p+oz2-3,g1-3,b1-3,o+b2-2,o1-2]  [o1-2,b+o2-2,b1-3,b+oz2-2,g1-2,b1-3,p+oz2-3,g1-3,b1-3,o+b2-2,o1-2]  P1  t33
+#   mcts vs greedy  g9  seed=60009  p1=n11 w11 d19 c4  p2=n11 w11 d19 c4  [t1-1,b1-3,o1-1,b1-1,oz1-1,oz1-1,o1-2,g1-3,g1-3,o1-2,b1-1]  [t1-1,b1-3,o1-1,b1-1,oz1-1,oz1-1,o1-2,g1-3,g1-3,o1-2,b1-1]  P1  t25
+#   mcts vs greedy  g10  seed=60010  p1=n11 w14 d18 c4  p2=n11 w14 d18 c4  [g1-2,g1-1,od+od2-1,b1-2,g1-2,td+td2-1,g1-2,o1-3,b1-1,o1-1,o+b2-2]  [g1-2,g1-1,od+od2-1,b1-2,g1-2,td+td2-1,g1-2,o1-3,b1-1,o1-1,o+b2-2]  P1  t29
+#   mcts vs greedy  g11  seed=60011  p1=n11 w14 d25 c4  p2=n11 w14 d25 c4  [b+o2-3,o1-2,b1-2,g+o2-3,g1-3,g+t2-3,b1-1,o1-1,b1-3,gz1-3,b1-1]  [b+o2-3,o1-2,b1-2,g+o2-3,g1-3,g+t2-3,b1-1,o1-1,b1-3,gz1-3,b1-1]  P1  t57
+#   mcts vs greedy  g12  seed=60012  p1=n11 w14 d20 c4  p2=n11 w14 d20 c4  [g+o2-3,bz1-2,g+b2-1,oz1-1,o1-1,g1-2,p1-2,oz1-2,pz1-1,bz1-2,o+g2-3]  [g+o2-3,bz1-2,g+b2-1,oz1-1,o1-1,g1-2,p1-2,oz1-2,pz1-1,bz1-2,o+g2-3]  P1  t77
+#   mcts vs mcts  g1  seed=80001  p1=n11 w16 d18 c3  p2=n11 w16 d18 c3  [b1-2,g1-1,o1-2,bd+bd2-1,o1-1,bz1-1,o1-1,gd+bd2-3,bd+gd2-1,bz+gz2-2,o+g2-3]  [b1-2,g1-1,o1-2,bd+bd2-1,o1-1,bz1-1,o1-1,gd+bd2-3,bd+gd2-1,bz+gz2-2,o+g2-3]  P2  t38
+#   mcts vs mcts  g2  seed=80002  p1=n11 w17 d24 c4  p2=n11 w17 d24 c4  [b+g2-1,b1-2,b1-1,gd+gd2-3,oz+b2-3,g+o2-3,td+td2-1,bz1-3,g1-1,od+od2-3,o1-3]  [b+g2-1,b1-2,b1-1,gd+gd2-3,oz+b2-3,g+o2-3,td+td2-1,bz1-3,g1-1,od+od2-3,o1-3]  P1  t25
+#   mcts vs mcts  g3  seed=80003  p1=n11 w12 d25 c4  p2=n11 w12 d25 c4  [g1-3,g1-2,bd+bd2-3,b1-3,gz1-1,t1-1,o1-3,g1-3,gz1-1,gz1-2,b1-3]  [g1-3,g1-2,bd+bd2-3,b1-3,gz1-1,t1-1,o1-3,g1-3,gz1-1,gz1-2,b1-3]  P2  t46
+#   mcts vs mcts  g4  seed=80004  p1=n11 w14 d24 c3  p2=n11 w14 d24 c3  [oz1-3,oz1-3,o1-3,b1-3,o1-3,g1-3,o1-1,b1-1,o+b2-1,o+g2-2,bd+bd2-1]  [oz1-3,oz1-3,o1-3,b1-3,o1-3,g1-3,o1-1,b1-1,o+b2-1,o+g2-2,bd+bd2-1]  P1  t33
+#   mcts vs mcts  g5  seed=80005  p1=n11 w14 d26 c3  p2=n11 w14 d26 c3  [od+od2-1,b+gz2-3,b1-3,b1-3,bz1-1,b1-2,b1-3,g1-3,o1-2,gz1-2,g+o2-3]  [od+od2-1,b+gz2-3,b1-3,b1-3,bz1-1,b1-2,b1-3,g1-3,o1-2,gz1-2,g+o2-3]  P2  t62
+#   mcts vs mcts  g6  seed=80006  p1=n11 w17 d24 c3  p2=n11 w17 d24 c3  [g1-3,o1-2,g1-2,bd+bd2-3,b+o2-3,g1-2,gd+gd2-3,gd+gd2-1,g+bz2-3,b1-1,gd+gd2-1]  [g1-3,o1-2,g1-2,bd+bd2-3,b+o2-3,g1-2,gd+gd2-3,gd+gd2-1,g+bz2-3,b1-1,gd+gd2-1]  D  t200
+#   mcts vs mcts  g7  seed=80007  p1=n11 w12 d25 c3  p2=n11 w12 d25 c3  [gz1-2,g1-2,b1-3,b1-1,bd+bd2-3,p1-2,gz1-3,gz1-2,b1-3,b1-2,b1-2]  [gz1-2,g1-2,b1-3,b1-1,bd+bd2-3,p1-2,gz1-3,gz1-2,b1-3,b1-2,b1-2]  P1  t31
+#   mcts vs mcts  g8  seed=80008  p1=n11 w14 d17 c5  p2=n11 w14 d17 c5  [t1-1,o1-2,b1-1,g1-3,o1-1,o+g2-1,od+od2-2,b1-3,o+b2-1,b1-1,p1-1]  [t1-1,o1-2,b1-1,g1-3,o1-1,o+g2-1,od+od2-2,b1-3,o+b2-1,b1-1,p1-1]  P1  t23
+#   mcts vs mcts  g9  seed=80009  p1=n11 w15 d22 c5  p2=n11 w15 d22 c5  [g1-2,oz1-3,t1-3,b1-3,oz1-1,o1-1,b+p2-1,b1-3,g1-2,gd+gd2-2,b+t+o3-1]  [g1-2,oz1-3,t1-3,b1-3,oz1-1,o1-1,b+p2-1,b1-3,g1-2,gd+gd2-2,b+t+o3-1]  P1  t49
+#   mcts vs mcts  g10  seed=80010  p1=n11 w12 d22 c4  p2=n11 w12 d22 c4  [b1-3,b1-3,b1-3,p1-1,t1-2,b+o2-1,b1-3,oz1-1,b1-1,o1-2,b1-2]  [b1-3,b1-3,b1-3,p1-1,t1-2,b+o2-1,b1-3,oz1-1,b1-1,o1-2,b1-2]  P1  t23
+#   mcts vs mcts  g11  seed=80011  p1=n11 w14 d24 c4  p2=n11 w14 d24 c4  [b1-3,g1-2,tz1-3,o1-3,g1-2,o1-2,gz1-3,t1-1,oz+bz2-1,b1-2,o+g+b3-2]  [b1-3,g1-2,tz1-3,o1-3,g1-2,o1-2,gz1-3,t1-1,oz+bz2-1,b1-2,o+g+b3-2]  P1  t45
+#   mcts vs mcts  g12  seed=80012  p1=n11 w19 d17 c4  p2=n11 w19 d17 c4  [gd+gd2-1,o1-1,gd+od2-2,g+p2-2,p1-1,b1-1,oz+b+g3-1,od+od2-2,g1-2,o+b2-1,od+od2-3]  [gd+gd2-1,o1-1,gd+od2-2,g+p2-2,p1-1,b1-1,oz+b+g3-1,od+od2-2,g1-2,o+b2-1,od+od2-3]  P2  t44
+#   mcts vs minimax  g1  seed=70001  p1=n11 w16 d24 c3  p2=n11 w16 d24 c3  [gd+gd2-2,b+g2-2,o1-1,g+bz2-3,o1-3,o1-3,g+b2-3,gd+od2-1,g1-1,o1-3,gz1-2]  [gd+gd2-2,b+g2-2,o1-1,g+bz2-3,o1-3,o1-3,g+b2-3,gd+od2-1,g1-1,o1-3,gz1-2]  P1  t23
+#   mcts vs minimax  g2  seed=70002  p1=n11 w14 d26 c4  p2=n11 w14 d26 c4  [o1-3,g1-3,o1-2,od+od2-2,o1-2,b1-3,o1-2,g1-1,o+b2-3,o1-2,td+td2-3]  [o1-3,g1-3,o1-2,od+od2-2,o1-2,b1-3,o1-2,g1-1,o+b2-3,o1-2,td+td2-3]  P1  t25
+#   mcts vs minimax  g3  seed=70003  p1=n11 w15 d23 c5  p2=n11 w15 d23 c5  [b1-3,td+td2-1,b1-2,b1-3,g1-1,pz+oz2-3,o+b2-2,g1-2,b1-1,t+bz2-2,b1-3]  [b1-3,td+td2-1,b1-2,b1-3,g1-1,pz+oz2-3,o+b2-2,g1-2,b1-1,t+bz2-2,b1-3]  P1  t41
+#   mcts vs minimax  g4  seed=70004  p1=n11 w13 d24 c5  p2=n11 w13 d24 c5  [o1-1,g1-2,b1-2,b1-2,b1-3,bz1-2,g1-3,o1-3,o+g2-2,b1-3,t+p2-1]  [o1-1,g1-2,b1-2,b1-2,b1-3,bz1-2,g1-3,o1-3,o+g2-2,b1-3,t+p2-1]  P2  t56
+#   mcts vs minimax  g5  seed=70005  p1=n11 w16 d21 c4  p2=n11 w16 d21 c4  [bd+bd2-1,b+o2-2,g+o2-2,o1-1,o1-1,bd+bd2-3,b1-1,td+td2-3,oz1-2,g1-3,gz1-2]  [bd+bd2-1,b+o2-2,g+o2-2,o1-1,o1-1,bd+bd2-3,b1-1,td+td2-3,oz1-2,g1-3,gz1-2]  P2  t22
+#   mcts vs minimax  g6  seed=70006  p1=n11 w16 d24 c5  p2=n11 w16 d24 c5  [od+od2-3,gz1-2,bd+bd2-3,b+oz2-3,o+t2-1,g1-2,o1-2,gd+gd2-3,b1-3,p1-1,g1-1]  [od+od2-3,gz1-2,bd+bd2-3,b+oz2-3,o+t2-1,g1-2,o1-2,gd+gd2-3,b1-3,p1-1,g1-1]  D  t27
+#   mcts vs minimax  g7  seed=70007  p1=n11 w15 d19 c3  p2=n11 w15 d19 c3  [g1-1,b1-2,gd+gd2-1,b1-1,o1-3,od+od2-1,g+o2-1,g+b2-2,oz1-3,g1-1,g1-3]  [g1-1,b1-2,gd+gd2-1,b1-1,o1-3,od+od2-1,g+o2-1,g+b2-2,oz1-3,g1-1,g1-3]  P1  t25
+#   mcts vs minimax  g8  seed=70008  p1=n11 w14 d24 c4  p2=n11 w14 d24 c4  [o1-2,g+o2-3,g1-3,g1-2,bz1-1,b1-2,od+gd2-1,b1-2,gd+gd2-3,t1-3,o1-2]  [o1-2,g+o2-3,g1-3,g1-2,bz1-1,b1-2,od+gd2-1,b1-2,gd+gd2-3,t1-3,o1-2]  P1  t53
+#   mcts vs minimax  g9  seed=70009  p1=n11 w16 d19 c4  p2=n11 w16 d19 c4  [p+g2-1,o1-2,bz+g2-2,o1-2,b1-2,gd+gd2-2,b1-2,bd+bd2-1,g1-1,od+od2-2,g1-2]  [p+g2-1,o1-2,bz+g2-2,o1-2,b1-2,gd+gd2-2,b1-2,bd+bd2-1,g1-1,od+od2-2,g1-2]  P2  t38
+#   mcts vs minimax  g10  seed=70010  p1=n11 w13 d19 c4  p2=n11 w13 d19 c4  [o+gz2-1,b1-1,oz1-2,p1-1,g1-1,o+g2-1,o1-2,g1-3,b1-3,o1-3,b1-1]  [o+gz2-1,b1-1,oz1-2,p1-1,g1-1,o+g2-1,o1-2,g1-3,b1-3,o1-3,b1-1]  P2  t108
+#   mcts vs minimax  g11  seed=70011  p1=n11 w13 d23 c3  p2=n11 w13 d23 c3  [gz1-2,g1-3,g1-1,g1-2,bd+bd2-3,b+o2-3,gz1-2,o1-2,g1-1,b1-3,g1-1]  [gz1-2,g1-3,g1-1,g1-2,bd+bd2-3,b+o2-3,gz1-2,o1-2,g1-1,b1-3,g1-1]  P1  t143
+#   mcts vs minimax  g12  seed=70012  p1=n11 w15 d19 c4  p2=n11 w15 d19 c4  [g+o2-2,o+g2-3,o1-1,g1-1,b1-2,g1-3,g1-2,o1-1,pd+pd2-2,gd+gd2-1,pz1-1]  [g+o2-2,o+g2-3,o1-1,g1-1,b1-2,g1-3,g1-2,o1-1,pd+pd2-2,gd+gd2-1,pz1-1]  P1  t27
+#   minimax vs greedy  g1  seed=30001  p1=n11 w14 d21 c4  p2=n11 w14 d21 c4  [o1-1,bz1-2,o1-1,g1-2,b1-2,g1-2,bz1-2,g+o2-3,b1-2,g1-3,p+g+o3-1]  [o1-1,bz1-2,o1-1,g1-2,b1-2,g1-2,bz1-2,g+o2-3,b1-2,g1-3,p+g+o3-1]  P1  t33
+#   minimax vs greedy  g2  seed=30002  p1=n11 w15 d20 c5  p2=n11 w15 d20 c5  [g1-1,od+bd2-2,bd+bd2-1,o1-3,b1-1,pz1-2,o1-3,t+g2-1,od+od2-2,b1-3,g1-1]  [g1-1,od+bd2-2,bd+bd2-1,o1-3,b1-1,pz1-2,o1-3,t+g2-1,od+od2-2,b1-3,g1-1]  P1  t25
+#   minimax vs greedy  g3  seed=30003  p1=n11 w13 d25 c4  p2=n11 w13 d25 c4  [t1-1,t1-3,g1-2,o+b2-2,o1-1,o1-3,g1-3,b+o2-3,b1-3,gz1-2,g1-2]  [t1-1,t1-3,g1-2,o+b2-2,o1-1,o1-3,g1-3,b+o2-3,b1-3,gz1-2,g1-2]  P1  t55
+#   minimax vs greedy  g4  seed=30004  p1=n11 w18 d25 c3  p2=n11 w18 d25 c3  [oz1-3,o1-3,gz1-2,b+o2-2,o+b+g3-3,o+b2-2,bd+bd2-3,gd+gd2-1,gz1-1,o+g2-3,o1-2]  [oz1-3,o1-3,gz1-2,b+o2-2,o+b+g3-3,o+b2-2,bd+bd2-3,gd+gd2-1,gz1-1,o+g2-3,o1-2]  P1  t19
+#   minimax vs greedy  g5  seed=30005  p1=n11 w15 d18 c3  p2=n11 w15 d18 c3  [g+b2-1,od+od2-2,b1-1,o1-3,gz1-1,gd+bd2-2,oz1-1,g1-1,g1-3,o+g2-1,o1-2]  [g+b2-1,od+od2-2,b1-1,o1-3,gz1-1,gd+bd2-2,oz1-1,g1-1,g1-3,o+g2-1,o1-2]  P1  t29
+#   minimax vs greedy  g6  seed=30006  p1=n11 w16 d21 c3  p2=n11 w16 d21 c3  [o1-1,b+g2-2,g1-1,b+o2-1,o1-2,g1-3,o1-3,bd+bd2-2,g+o2-2,b+g2-2,g1-2]  [o1-1,b+g2-2,g1-1,b+o2-1,o1-2,g1-3,o1-3,bd+bd2-2,g+o2-2,b+g2-2,g1-2]  P1  t25
+#   minimax vs greedy  g7  seed=30007  p1=n11 w15 d19 c4  p2=n11 w15 d19 c4  [b+o2-2,b1-1,g1-3,t1-3,t1-1,g1-1,b1-1,g+o2-1,b+g2-2,b1-3,gd+bd2-1]  [b+o2-2,b1-1,g1-3,t1-3,t1-1,g1-1,b1-1,g+o2-1,b+g2-2,b1-3,gd+bd2-1]  P1  t25
+#   minimax vs greedy  g8  seed=30008  p1=n11 w11 d23 c3  p2=n11 w11 d23 c3  [b1-3,o1-1,b1-2,g1-1,b1-2,o1-3,b1-2,b1-2,b1-2,b1-3,b1-2]  [b1-3,o1-1,b1-2,g1-1,b1-2,o1-3,b1-2,b1-2,b1-2,b1-3,b1-2]  P1  t35
+#   minimax vs greedy  g9  seed=30009  p1=n11 w14 d25 c4  p2=n11 w14 d25 c4  [g1-1,b1-3,pz1-2,gd+gd2-3,bz1-3,g1-1,g1-2,g1-3,p+o2-3,o1-1,gd+gd2-3]  [g1-1,b1-3,pz1-2,gd+gd2-3,bz1-3,g1-1,g1-2,g1-3,p+o2-3,o1-1,gd+gd2-3]  P1  t25
+#   minimax vs greedy  g10  seed=30010  p1=n11 w15 d21 c4  p2=n11 w15 d21 c4  [o1-1,o1-2,bd+bd2-1,o1-3,o1-1,o1-2,gd+gd2-1,b1-3,b1-3,o1-2,o+p+g3-2]  [o1-1,o1-2,bd+bd2-1,o1-3,o1-1,o1-2,gd+gd2-1,b1-3,b1-3,o1-2,o+p+g3-2]  P1  t35
+#   minimax vs greedy  g11  seed=30011  p1=n11 w13 d23 c4  p2=n11 w13 d23 c4  [b1-1,gz1-3,p+g2-1,gd+gd2-2,g1-3,o1-1,b1-2,b1-3,o1-1,b1-3,g1-3]  [b1-1,gz1-3,p+g2-1,gd+gd2-2,g1-3,o1-1,b1-2,b1-3,o1-1,b1-3,g1-3]  P1  t29
+#   minimax vs greedy  g12  seed=30012  p1=n11 w14 d17 c4  p2=n11 w14 d17 c4  [oz+t2-1,g1-1,gd+gd2-1,b1-3,g1-2,o1-1,b1-2,b+oz2-1,o1-2,o1-2,oz1-1]  [oz+t2-1,g1-1,gd+gd2-1,b1-3,g1-2,o1-1,b1-2,b+oz2-1,o1-2,o1-2,oz1-1]  P1  t23
+#   minimax vs mcts  g1  seed=50001  p1=n11 w13 d20 c4  p2=n11 w13 d20 c4  [g1-1,b1-2,g1-2,g1-2,o1-1,o1-3,o1-1,od+bd2-1,p1-2,bd+bd2-3,g1-2]  [g1-1,b1-2,g1-2,g1-2,o1-1,o1-3,o1-1,od+bd2-1,p1-2,bd+bd2-3,g1-2]  P2  t32
+#   minimax vs mcts  g2  seed=50002  p1=n11 w12 d20 c3  p2=n11 w12 d20 c3  [g1-2,b1-3,b1-2,oz1-1,g1-1,o1-1,g1-1,b1-1,o1-2,b1-3,g+o2-3]  [g1-2,b1-3,b1-2,oz1-1,g1-1,o1-1,g1-1,b1-1,o1-2,b1-3,g+o2-3]  P2  t76
+#   minimax vs mcts  g3  seed=50003  p1=n11 w15 d24 c5  p2=n11 w15 d24 c5  [o1-2,b1-2,b1-3,bz+o2-3,p+b+o3-1,b1-2,t1-1,g1-3,bz1-3,pd+pd2-2,o1-2]  [o1-2,b1-2,b1-3,bz+o2-3,p+b+o3-1,b1-2,t1-1,g1-3,bz1-3,pd+pd2-2,o1-2]  P2  t34
+#   minimax vs mcts  g4  seed=50004  p1=n11 w13 d25 c5  p2=n11 w13 d25 c5  [g1-3,g1-3,bd+bd2-3,b1-3,o1-2,oz1-1,b+p2-1,t1-2,g1-3,b1-1,o1-3]  [g1-3,g1-3,bd+bd2-3,b1-3,o1-2,oz1-1,b+p2-1,t1-2,g1-3,b1-1,o1-3]  P2  t40
+#   minimax vs mcts  g5  seed=50005  p1=n11 w13 d24 c4  p2=n11 w13 d24 c4  [bd+bd2-3,b1-2,b1-3,o1-3,g1-3,p1-1,g1-1,g1-3,o1-3,gd+gd2-1,oz1-1]  [bd+bd2-3,b1-2,b1-3,o1-3,g1-3,p1-1,g1-1,g1-3,o1-3,gd+gd2-1,oz1-1]  P1  t25
+#   minimax vs mcts  g6  seed=50006  p1=n11 w15 d23 c3  p2=n11 w15 d23 c3  [o1-1,b1-2,b+o2-2,gd+gd2-3,b1-3,b+g2-3,o1-3,g1-2,g1-2,od+od2-1,b1-1]  [o1-1,b1-2,b+o2-2,gd+gd2-3,b1-3,b+g2-3,o1-3,g1-2,g1-2,od+od2-1,b1-1]  P2  t54
+#   minimax vs mcts  g7  seed=50007  p1=n11 w13 d22 c4  p2=n11 w13 d22 c4  [g1-3,t+gz2-3,o1-1,gz+oz2-1,o1-3,t1-2,o1-3,b1-1,g1-2,o1-2,gz1-1]  [g1-3,t+gz2-3,o1-1,gz+oz2-1,o1-3,t1-2,o1-3,b1-1,g1-2,o1-2,gz1-1]  P2  t26
+#   minimax vs mcts  g8  seed=50008  p1=n11 w13 d23 c3  p2=n11 w13 d23 c3  [o1-3,o1-1,od+od2-1,g1-3,g1-2,b1-3,b1-1,b1-3,b1-3,oz1-2,bd+bd2-1]  [o1-3,o1-1,od+od2-1,g1-3,g1-2,b1-3,b1-1,b1-3,b1-3,oz1-2,bd+bd2-1]  P2  t48
+#   minimax vs mcts  g9  seed=50009  p1=n11 w14 d24 c3  p2=n11 w14 d24 c3  [o1-2,o1-1,b1-3,gd+gd2-3,o+g2-2,b1-1,o1-3,g1-3,o+b2-1,g1-3,b1-2]  [o1-2,o1-1,b1-3,gd+gd2-3,o+g2-2,b1-1,o1-3,g1-3,o+b2-1,g1-3,b1-2]  P2  t20
+#   minimax vs mcts  g10  seed=50010  p1=n11 w15 d23 c4  p2=n11 w15 d23 c4  [bd+bd2-3,o1-2,bz1-3,gd+gd2-2,g1-1,oz+g2-2,gd+gd2-1,b1-2,b1-1,t1-3,b1-3]  [bd+bd2-3,o1-2,bz1-3,gd+gd2-2,g1-1,oz+g2-2,gd+gd2-1,b1-2,b1-1,t1-3,b1-3]  P1  t31
+#   minimax vs mcts  g11  seed=50011  p1=n11 w13 d19 c4  p2=n11 w13 d19 c4  [o1-1,g1-2,gd+gd2-3,o1-1,o1-2,bd+od2-2,g1-1,p1-2,o1-1,g1-2,g1-2]  [o1-1,g1-2,gd+gd2-3,o1-1,o1-2,bd+od2-2,g1-1,p1-2,o1-1,g1-2,g1-2]  D  t200
+#   minimax vs mcts  g12  seed=50012  p1=n11 w17 d23 c5  p2=n11 w17 d23 c5  [o+g2-2,o1-3,gz+o2-1,gd+gd2-3,g1-3,o+b2-1,t1-3,b1-1,g+b2-2,o+p2-1,g1-3]  [o+g2-2,o1-3,gz+o2-1,gd+gd2-3,g1-3,o+b2-1,t1-3,b1-1,g+b2-2,o+p2-1,g1-3]  P2  t30
+#   minimax vs minimax  g1  seed=40001  p1=n11 w17 d21 c4  p2=n11 w17 d21 c4  [b1-3,gz+t2-1,b1-2,od+gd2-2,b1-1,gd+gd2-2,gd+bd2-3,g1-2,bd+bd2-1,bd+od2-2,o1-2]  [b1-3,gz+t2-1,b1-2,od+gd2-2,b1-1,gd+gd2-2,gd+bd2-3,g1-2,bd+bd2-1,bd+od2-2,o1-2]  P1  t61
+#   minimax vs minimax  g2  seed=40002  p1=n11 w12 d23 c4  p2=n11 w12 d23 c4  [b1-3,od+od2-3,o1-1,oz1-1,b1-2,g1-2,b1-3,p1-1,g1-1,gz1-3,g1-3]  [b1-3,od+od2-3,o1-1,oz1-1,b1-2,g1-2,b1-3,p1-1,g1-1,gz1-3,g1-3]  P2  t154
+#   minimax vs minimax  g3  seed=40003  p1=n11 w12 d20 c4  p2=n11 w12 d20 c4  [b1-2,b1-1,g1-1,b1-2,b1-3,g1-1,o1-1,g+b2-3,b1-2,o1-3,p1-1]  [b1-2,b1-1,g1-1,b1-2,b1-3,g1-1,o1-1,g+b2-3,b1-2,o1-3,p1-1]  P1  t25
+#   minimax vs minimax  g4  seed=40004  p1=n11 w14 d24 c3  p2=n11 w14 d24 c3  [o1-3,g1-1,b1-2,od+od2-3,b1-2,gd+od2-1,b1-2,b1-3,b1-3,g+b2-1,g1-3]  [o1-3,g1-1,b1-2,od+od2-3,b1-2,gd+od2-1,b1-2,b1-3,b1-3,g+b2-1,g1-3]  P1  t35
+#   minimax vs minimax  g5  seed=40005  p1=n11 w12 d26 c3  p2=n11 w12 d26 c3  [o1-3,od+od2-3,g1-3,g1-1,b1-2,o1-3,o1-2,bz1-3,b1-2,o1-3,o1-1]  [o1-3,od+od2-3,g1-3,g1-1,b1-2,o1-3,o1-2,bz1-3,b1-2,o1-3,o1-1]  P1  t19
+#   minimax vs minimax  g6  seed=40006  p1=n11 w12 d27 c4  p2=n11 w12 d27 c4  [g1-3,g1-2,b1-3,o1-1,g1-3,bz1-3,o1-3,g1-2,b1-3,t1-2,oz+gz2-2]  [g1-3,g1-2,b1-3,o1-1,g1-3,bz1-3,o1-3,g1-2,b1-3,t1-2,oz+gz2-2]  P1  t187
+#   minimax vs minimax  g7  seed=40007  p1=n11 w15 d21 c6  p2=n11 w15 d21 c6  [o+b2-3,g1-2,gd+gd2-1,t1-1,pd+od2-2,g1-2,oz1-1,o1-3,o+b2-1,m1-3,b1-2]  [o+b2-3,g1-2,gd+gd2-1,t1-1,pd+od2-2,g1-2,oz1-1,o1-3,o+b2-1,m1-3,b1-2]  P1  t61
+#   minimax vs minimax  g8  seed=40008  p1=n11 w11 d24 c2  p2=n11 w11 d24 c2  [o1-3,g1-3,gz1-2,o1-1,g1-3,g1-1,g1-1,o1-3,o1-1,g1-3,oz1-3]  [o1-3,g1-3,gz1-2,o1-1,g1-3,g1-1,g1-1,o1-3,o1-1,g1-3,oz1-3]  P1  t31
+#   minimax vs minimax  g9  seed=40009  p1=n11 w15 d22 c3  p2=n11 w15 d22 c3  [b1-3,b1-3,b1-3,b1-1,b1-1,b+o2-3,bd+bd2-1,t+o2-1,bd+bd2-2,bz1-1,b1-3]  [b1-3,b1-3,b1-3,b1-1,b1-1,b+o2-3,bd+bd2-1,t+o2-1,bd+bd2-2,bz1-1,b1-3]  P1  t35
+#   minimax vs minimax  g10  seed=40010  p1=n11 w14 d16 c4  p2=n11 w14 d16 c4  [oz+b2-2,b1-1,g1-1,o1-1,g1-3,o+t2-2,g1-1,g1-2,gd+gd2-1,b1-1,b1-1]  [oz+b2-2,b1-1,g1-1,o1-1,g1-3,o+t2-2,g1-1,g1-2,gd+gd2-1,b1-1,b1-1]  D  t200
+#   minimax vs minimax  g11  seed=40011  p1=n11 w16 d22 c3  p2=n11 w16 d22 c3  [b1-1,o1-3,b1-1,g+o2-3,g1-1,bz1-2,o1-2,od+gd2-3,od+od2-2,g+b+o3-3,oz1-1]  [b1-1,o1-3,b1-1,g+o2-3,g1-1,bz1-2,o1-2,od+gd2-3,od+od2-2,g+b+o3-3,oz1-1]  P2  t48
+#   minimax vs minimax  g12  seed=40012  p1=n11 w14 d25 c4  p2=n11 w14 d25 c4  [bz1-1,b1-2,o1-2,p+b2-2,o1-3,p1-3,gd+gd2-3,b+g2-3,o1-3,b1-2,o1-1]  [bz1-1,b1-2,o1-2,p+b2-2,o1-3,p1-3,gd+gd2-3,b+g2-3,o1-3,b1-2,o1-1]  D  t200
+
+# MCTS: the remaining deck is public, so bag shuffle is a no-op on default rules. Legacy `capture_draw_on_move` logs still shuffle hidden remainders. Minimax searches the live position.
+# Minimax: iterative deepening alpha-beta, Zobrist TT, TT/capture/killer/history ordering, quiescence on capture sequences.
+# game_record=apa-kan/game/benchmark_results/center_double_edge_doubles_allowed/h2h_record.txt
+# games_log=apa-kan/game/benchmark_results/center_double_edge_doubles_allowed/h2h.jsonl.gz
+# elapsed_sec=1048.4

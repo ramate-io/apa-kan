@@ -6,10 +6,10 @@ Release `apa-kan-bench`, 12 games per pairing per seat, 1000 ms, seed 1, `--no-d
 
 Inner↔center is two generating-circle petals, so scoring walks `Board::incident_others`. Low-value fires when both players have `board + usable budget < 5` (usable need not be 0). These runs were recorded **after** both of those changes.
 
-| Dir | Rules | Notes |
-|---|---|---|
-| [`center_double_edge_doubles_allowed/`](center_double_edge_doubles_allowed/) | independent channels, `--braid-fail-mismatch one`, `--no-same-piece-twice off` | accepted default |
-| [`center_double_edge_doubles_disallowed/`](center_double_edge_doubles_disallowed/) | same, `--no-same-piece-twice when-deck-empty` | comparison |
+| Dir | Rules | P1 W-D-L | Mean avg turns | Notes |
+|---|---|---|---|---|
+| [`center_double_edge_doubles_allowed/`](center_double_edge_doubles_allowed/) | independent channels, `--braid-fail-mismatch one`, `--no-same-piece-twice off` | 53-8-47 | 47.47 | accepted default |
+| [`center_double_edge_doubles_disallowed/`](center_double_edge_doubles_disallowed/) | same, `--no-same-piece-twice when-deck-empty` | 55-12-41 | 51.45 | comparison |
 
 ## Unique-neighbor logs (historical)
 
