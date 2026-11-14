@@ -10,6 +10,17 @@ Edge scoring in `rfc-001-001-001` used **cross-type overrides**:
 
 Those overrides made a same-color zag vs a normal a capture instead of a wash, and they hid a satisfied braid's leftover normal match. This RFC replaces that with **independent, additive per-type channels**.
 
+## Accepted default ruleset
+
+Together with [`rfc-001-001-001-rosette-redesign`](../rfc-001-001-001-rosette-redesign/README.md), the accepted default is:
+
+- **Independent additive channels** (this RFC): per edge, normal / zag / braid score on their own and add. No cross-channel overrides.
+- **Failed-braid mismatch `--braid-fail-mismatch one`** (flat +1). `weight` and `sum` stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
+- **Public 11-tile deck with spawn tokens:** `bag_size` 11, `starting_bench_size` 7. ADD is gated by usable budget = min(tokens, unplaced deck tiles).
+- **Doubles allowed:** `--no-same-piece-twice off`. `always` and `when-deck-empty` remain as non-default variants.
+
+Supported by the committed [`doubles_allowed`](../../apa-kan/game/benchmark_results/doubles_allowed.txt) benchmark (12 games/pairing/seat, 1000 ms, seed 1): P1 **46-18-44**, mean avg turns **68.51**.
+
 ## Proposed solution
 
 ### Core (unchanged)
@@ -103,6 +114,7 @@ Tile rims are unchanged: `TILE_BRAID_TURN_UNITS = 0.21`, stroke `0.70`. Mobile c
 
 - Keep zag-hits replacing the ordinary mismatch — rejected; a same-color zag vs normal should net 0.
 - Failed-braid mismatch equals the braid's weight (or the sum of both sides) by default — rejected. **`one` is the accepted default.** `weight` and `sum` remain as CLI variants for [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
+- Late-game double-move restriction (`--no-same-piece-twice when-deck-empty`) as the default — rejected. **`off` is the accepted default** (doubles allowed); `always` / `when-deck-empty` remain as CLI variants.
 - Draw all three lanes even when a channel is quiet — rejected; omit quiet lanes.
 
 ## Open questions

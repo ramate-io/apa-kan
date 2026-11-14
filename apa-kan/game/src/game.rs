@@ -1203,7 +1203,9 @@ pub struct RuleSet {
 	/// Consecutive own turns holding the center required to win. Default 5.
 	pub center_hold_n: u8,
 	/// Disallow moving the same tile on two consecutive own turns, with a
-	/// capture exception. Default [`SamePieceTwice::WhenDeckEmpty`].
+	/// capture exception. Accepted default [`SamePieceTwice::Off`] (doubles
+	/// allowed). [`SamePieceTwice::Always`] / [`SamePieceTwice::WhenDeckEmpty`]
+	/// remain as non-default variants.
 	pub no_same_piece_twice: SamePieceTwice,
 	/// If true, a hop may only cross tiles of the mover's color, compared with
 	/// [`Self::hop_weight_cmp`]. Default true.
@@ -1276,7 +1278,7 @@ impl Default for RuleSet {
 			no_moves_loses: true,
 			center_hold_win: false,
 			center_hold_n: 5,
-			no_same_piece_twice: SamePieceTwice::WhenDeckEmpty,
+			no_same_piece_twice: SamePieceTwice::Off,
 			color_restricted_hops: true,
 			hop_weight_cmp: HopWeightCmp::Le,
 			petal_majority_win: false,
@@ -2949,6 +2951,7 @@ mod tests {
 		assert_eq!(rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
 		assert_eq!(rules.braid_fail_mismatch, BraidFailMismatch::One);
+		assert_eq!(rules.no_same_piece_twice, SamePieceTwice::Off);
 		assert!(rules.no_moves_loses);
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
@@ -4285,6 +4288,30 @@ mod tests {
 		let spawn = game.board().spawns()[0];
 		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
 		assert_eq!(game.status(), GameStatus::Draw { reason: EndReason::InsufficientTiles });
+	}
+
+	#[test]
+	fn no_same_piece_twice_defaults_to_off() {
+		assert_eq!(RuleSet::default().no_same_piece_twice, SamePieceTwice::Off);
+		let mut game = Game::empty(RuleSet::default());
+		let inner = inner_ring(&game);
+		let a = inner[0];
+		let center = game.board().center();
+		put(&mut game, a, Player::One, TileColor::Blue, 3, 1);
+		game.set_bench(Player::One, vec![]);
+		{
+			let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
+			game.set_bench(Player::Two, vec![t]);
+		}
+		game.set_current(Player::One);
+		game.apply(Action::Move { from: a, to: center }).unwrap();
+		let p2_spawn = game.board().spawns()[0];
+		game.apply(Action::Add { bench_index: 0, node: p2_spawn }).unwrap();
+		assert!(game.bench(Player::One).is_empty());
+		assert!(
+			game.legal_destinations(center).contains(&a),
+			"default Off must allow a repeat MOVE even with an empty remaining deck"
+		);
 	}
 
 	#[test]

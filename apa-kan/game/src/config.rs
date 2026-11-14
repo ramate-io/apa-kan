@@ -337,7 +337,7 @@ pub fn usage() -> &'static str {
 	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
 	   --no-same-piece-twice <off|always|when-deck-empty>\n\
-	                                              Repeat-piece rule (default: when-deck-empty)\n\
+	                                              Repeat-piece rule (default: off)\n\
 	   --color-restricted-hops <on|off>           Hop only own color (default: on; hops off by default)\n\
 	   --hop-weight-cmp <lt|le>                   Color-hop weight compare (default: le)\n\
 	   --counted-pass-through <on|off>            Pass through occupied tiles at 1/step (default: on)\n\
@@ -468,7 +468,7 @@ mod tests {
 		assert!(cfg.rules.no_moves_loses);
 		assert!(!cfg.rules.center_hold_win);
 		assert_eq!(cfg.rules.center_hold_n, 5);
-		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::WhenDeckEmpty);
+		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::Off);
 		assert!(cfg.rules.color_restricted_hops);
 		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
 		assert!(!cfg.rules.petal_majority_win);

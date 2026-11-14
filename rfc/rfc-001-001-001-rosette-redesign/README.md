@@ -63,7 +63,7 @@ Options: `starting_bench_size` (spawn tokens), `bag_size` (public deck), `self_c
 
 Evaluated **board-wide, simultaneously**, after every action.
 
-**Independent channels** (see [`rfc-001-001-002-independent-channels`](../rfc-001-001-002-independent-channels/README.md)) replace the earlier cross-type overrides. Core: every ring has weight 1; `effective_weight = mismatch − match` summed over edges; overwhelmed iff `effective_weight >= ring_weight`. Per edge, normal / zag / braid each score on their own and **add**. A zag vs a same-color normal nets 0; a fulfilled braid stacks with a normal match. Failed braid **accepted default** is +1 (`--braid-fail-mismatch one`). `weight` and `sum` stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
+**Independent channels** (see [`rfc-001-001-002-independent-channels`](../rfc-001-001-002-independent-channels/README.md)) replace the earlier cross-type overrides. Core: every ring has weight 1; `effective_weight = mismatch − match` summed over edges; overwhelmed iff `effective_weight >= ring_weight`. Per edge, normal / zag / braid each score on their own and **add**. A zag vs a same-color normal nets 0; a fulfilled braid stacks with a normal match. Failed braid **accepted default** is +1 (`--braid-fail-mismatch one`). `weight` and `sum` stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39). Doubles are **allowed** by default (`--no-same-piece-twice off`).
 
 - A neighbor **matches** on the **normal** channel if some normal-ring color of either tile is in the other tile's color multiset (including zag and braid colors). Zags never produce a zag-channel match.
 - Zag mismatches are an **edge** event (`RuleSet::zag_mismatch`, CLI `--zag-mismatch`): a zag on either tile whose color the other holds (normal or zag) counts. Both tiles take the same number. The zag channel no longer suppresses the normal lane.
@@ -158,15 +158,15 @@ Each player has a counter of consecutive **own** turns that ended with their til
 - Win is awarded at **exactly N** (the turn on which the counter becomes N).
 - The HUD shows `center hold P1 a/N P2 b/N` while this option is on.
 
-#### 3. `no_same_piece_twice` (default **WhenDeckEmpty**)
+#### 3. `no_same_piece_twice` (default **Off**)
 
 CLI: `--no-same-piece-twice <off|always|when-deck-empty>` (`when-bench-empty` is still accepted)
 
 A player may not MOVE the same tile (by tile id) on two consecutive **own** turns.
 
-- `Off` — no restriction.
-- `Always` — always enforced.
-- `WhenDeckEmpty` — enforced only while that player’s remaining (unplaced) deck is empty (opening ADD-heavy play is unrestricted; endgame shuffling is not).
+- `Off` — no restriction (**accepted default**; doubles allowed).
+- `Always` — always enforced (non-default variant).
+- `WhenDeckEmpty` — enforced only while that player’s remaining (unplaced) deck is empty (opening ADD-heavy play is unrestricted; endgame shuffling is not). Non-default variant.
 
 **Capture exception:** a repeat MOVE **is** legal if that MOVE causes at least one opponent tile to be removed under simultaneous overwhelm (previewed before the action). Own-tile suicides do not count. ADD does not set the “last moved” tile; only a MOVE does.
 
@@ -263,7 +263,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --path-constraint no-node-revisit|no-edge-revisit|both
 ```
 
-Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` when-deck-empty, `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` on, `pass_through_ring_cmp` ge, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7 (spawn tokens), `bag_size` 11 (public deck), `self_capture_budget` on, `max_rings` 3, `zag_numer` 1 (1/7), `zag_mismatch` sum, `path_constraint` no-edge-revisit. Usable budget is `min(tokens, unplaced deck tiles)`. Low-value uses the progressive lowest-tile pair check (missing piece = max value).
+Defaults: P1 human, P2 greedy, seed 1, think 80 ms, `no_moves_loses` on, `center_hold_win` off, `no_same_piece_twice` off (doubles allowed), `color_restricted_hops` on, `hop_weight_cmp` le, `counted_pass_through` on, `pass_through_ring_cmp` ge, `petal_majority_win` off, `control_win` on (k=5, t=1), `insufficient_tiles_loss` off, `starting_bench_size` 7 (spawn tokens), `bag_size` 11 (public deck), `self_capture_budget` on, `max_rings` 3, `zag_numer` 1 (1/7), `zag_mismatch` sum, `--braid-fail-mismatch one`, `path_constraint` no-edge-revisit. Usable budget is `min(tokens, unplaced deck tiles)`. Low-value uses the progressive lowest-tile pair check (missing piece = max value). The accepted default ruleset (independent channels, flat-1 failed braids, public 11-tile deck with spawn tokens, doubles allowed) is documented in [`rfc-001-001-002-independent-channels`](../rfc-001-001-002-independent-channels/README.md).
 
 Bots: uniform random; greedy one-ply; minimax with alpha-beta, iterative deepening, and a material / at-risk / mobility / usable-budget / center-hold-threat heuristic (`minimax-legacy` is the previous eval); MCTS (UCT). Legal-move generation is shared, so every bot respects every RuleSet option. Eval and search read usable budget (`min(tokens, remaining deck)`), not leftover surplus, and see every unplaced tile (the deck is public). Locked-out, center-hold, petal-majority, control, insufficient-tiles, and low-value terminals are wins/losses in search (a low-value equal-count full tie is a draw scored 0). Search sees the same progressive pair check as the rules, including leftover tiles beating an empty slot.
 
