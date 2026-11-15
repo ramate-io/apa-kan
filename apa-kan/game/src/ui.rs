@@ -1424,7 +1424,7 @@ fn spawn_bead_lane(
 	}
 	let spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(scale);
 	let bead_r = visual::arc_bead_radius(arc_width);
-	let half_len = f64::from(visual::bead_half_len(bead_r));
+	let pinch = f64::from(visual::bead_pinch(bead_r));
 	let mut z = visual::Z_ARC_OVER + 0.04;
 	let push = |commands: &mut Commands,
 	            meshes: &mut Assets<Mesh>,
@@ -1433,9 +1433,8 @@ fn spawn_bead_lane(
 	            off: f64,
 	            z: f32| {
 		let line = visual::offset_polyline(pts, lane + off);
-		for poly in visual::bead_spindles_along(&line, spacing, f64::from(bead_r), half_len) {
-			spawn_filled_poly(commands, meshes, materials, &poly, rgb(visual::tile_rgb(color)), z);
-		}
+		let tris = visual::bead_chain_triangles(&line, spacing, f64::from(bead_r), pinch);
+		spawn_filled_tris(commands, meshes, materials, &tris, rgb(visual::tile_rgb(color)), z);
 	};
 	if let Some(color) = paint.bead_match {
 		push(commands, meshes, materials, color, 0.0, z);
@@ -1704,16 +1703,29 @@ fn spawn_filled_poly(
 	if pts.len() < 3 {
 		return;
 	}
+	spawn_filled_tris(commands, meshes, materials, &visual::polygon_triangles(pts), color, z);
+}
+
+fn spawn_filled_tris(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	tris: &[[[f32; 2]; 3]],
+	color: Color,
+	z: f32,
+) {
+	if tris.is_empty() {
+		return;
+	}
 	commands.spawn((
 		DynamicView,
-		Mesh2d(meshes.add(polygon_mesh(pts))),
+		Mesh2d(meshes.add(tris_mesh(tris))),
 		MeshMaterial2d(materials.add(ColorMaterial::from(color))),
 		Transform::from_xyz(0.0, 0.0, z),
 	));
 }
 
-fn polygon_mesh(pts: &[[f32; 2]]) -> Mesh {
-	let tris = visual::polygon_triangles(pts);
+fn tris_mesh(tris: &[[[f32; 2]; 3]]) -> Mesh {
 	let mut positions: Vec<[f32; 3]> = Vec::with_capacity(tris.len() * 3);
 	let mut normals: Vec<[f32; 3]> = Vec::with_capacity(tris.len() * 3);
 	let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(tris.len() * 3);
@@ -1906,23 +1918,23 @@ fn spawn_tile_at(
 				);
 			} else if tile.stroke_is_bead(k) {
 				let bead_r = f64::from(draw.bead_r.max(0.7));
-				let spindles = visual::bead_ring_spindles(
+				let pinch = f64::from(visual::bead_pinch(bead_r as f32));
+				let tris = visual::bead_chain_ring(
 					[f64::from(pos.x), f64::from(pos.y)],
 					f64::from(r - ring_half * 0.5),
 					draw.bead_count,
 					bead_r,
-					f64::from(visual::bead_half_len(bead_r as f32)),
+					pinch,
+					96,
 				);
-				for poly in spindles {
-					spawn_filled_poly(
-						commands,
-						meshes,
-						materials,
-						&poly,
-						rgb(visual::tile_rgb(color)),
-						z,
-					);
-				}
+				spawn_filled_tris(
+					commands,
+					meshes,
+					materials,
+					&tris,
+					rgb(visual::tile_rgb(color)),
+					z,
+				);
 			} else {
 				spawn_ring(
 					commands,
@@ -1960,26 +1972,10 @@ fn spawn_tile_at(
 			}
 		}
 	}
-	let plate = draw.plate_center([pos.x, pos.y], radius, visual::CAPTURE_DOWN_BEVY);
-	let plate_pos = Vec2::new(plate[0], plate[1]);
-	commands.spawn((
-		DynamicView,
-		Mesh2d(meshes.add(Circle::new(draw.plate_r))),
-		MeshMaterial2d(materials.add(ColorMaterial::from(fill))),
-		Transform::from_translation(plate_pos.extend(visual::Z_TILE_BAND)),
-	));
-	spawn_ring(
-		commands,
-		meshes,
-		materials,
-		plate_pos,
-		(draw.plate_r - draw.plate_rim).max(draw.plate_r * 0.82),
-		draw.plate_r,
-		rgb(visual::BLANK_TOKEN_RIM_RGB),
-		visual::Z_TILE_PLATE_RIM,
-	);
+	let lens = draw.capture_plate_lens([pos.x, pos.y], radius, visual::CAPTURE_DOWN_BEVY);
+	spawn_filled_poly(commands, meshes, materials, &lens, fill, visual::Z_TILE_BAND);
 	let marks = visual::capture_mark_count(tile);
-	let dot_r = draw.capture_mark_r(marks);
+	let dot_r = draw.capture_mark_r(radius, marks);
 	for i in 0..marks {
 		let at = draw.capture_mark_pos([pos.x, pos.y], radius, i, marks, visual::CAPTURE_DOWN_BEVY);
 		let z = visual::Z_TILE_DOT;

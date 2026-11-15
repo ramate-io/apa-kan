@@ -70,19 +70,19 @@ pub const MAX_EDGE_ZAGS: usize = MAX_TILE_ZAGS * 2;
 pub const MAX_TILE_BEADS: usize = 3;
 /// Unmatched bead rings on both tiles of an edge (3 + 3).
 pub const MAX_EDGE_BEADS: usize = MAX_TILE_BEADS * 2;
-/// Spindles on a tile bead ring.
+/// Swells on a tile bead-chain ring.
 pub const TILE_BEAD_COUNT: u32 = 12;
-/// Mid-span half-width of a tile-ring bead spindle, in 22px-tile units.
+/// Peak half-width of a tile-ring bead chain, in 22px-tile units.
 /// Modest relative to a normal ring stroke (`2.2`).
 pub const TILE_BEAD_R: f32 = 1.15;
-/// Tip-to-center length as a multiple of mid-span half-width. Elongated
-/// lens / spindle along the path; thin at both ends, widest in the middle.
-pub const BEAD_SPINDLE_ASPECT: f32 = 2.35;
-/// Samples per side of a bead spindle (plus the two tips).
-pub const BEAD_SPINDLE_SAMPLES: u32 = 10;
-/// Board-unit spacing between bead spindles along an arc lane.
+/// Pinch half-width as a fraction of the peak. Thin, but the strand
+/// never breaks — pinch points still touch.
+pub const BEAD_PINCH_SCALE: f32 = 0.34;
+/// Floor on pinch half-width so a connected strand stays visible.
+pub const BEAD_PINCH_MIN: f32 = 0.55;
+/// Board-unit spacing between bead *swells* along an arc lane (peak to peak).
 pub const ARC_BEAD_SPACING_UNITS: f64 = 0.10;
-/// Arc-lane bead mid-span half-width as a fraction of the arc stroke. The
+/// Arc-lane bead peak half-width as a fraction of the arc stroke. The
 /// previous `layout.scale * TILE_BEAD_R * 0.35` formula used board-pixel
 /// scale and drew ~40px blobs that swallowed the edge.
 pub const ARC_BEAD_RADIUS_SCALE: f32 = 0.52;
@@ -127,10 +127,8 @@ pub const Z_ARC_OVER: f32 = 0.08;
 pub const Z_NODE: f32 = 1.0;
 pub const Z_TILE: f32 = 2.0;
 pub const Z_TILE_RING: f32 = 2.15;
-/// Thumb-plate disc overlapping the bottom of the tile, above the rings.
+/// Vesica thumb-plate covering the bottom of the rings, above ring ink.
 pub const Z_TILE_BAND: f32 = 2.25;
-/// Thin rim on the thumb-plate so a dark P2 plate stays visible.
-pub const Z_TILE_PLATE_RIM: f32 = 2.26;
 pub const Z_TILE_DOT: f32 = 2.3;
 pub const Z_HIGHLIGHT: f32 = 3.0;
 /// Last-move capture freeze-frame in the left gutter, above board arcs.
@@ -187,16 +185,16 @@ pub const CAPTURE_GLOW_RGB: [f32; 3] = [1.00, 0.72, 0.28];
 pub const CAPTURE_GLOW_INNER_RGB: [f32; 3] = [0.99, 0.94, 0.82];
 /// Rim on a blank budget token so dark P2 blanks stay visible.
 pub const BLANK_TOKEN_RIM_RGB: [f32; 3] = [0.55, 0.56, 0.58];
-/// Radius of the capture thumb-plate circle, in 22px-tile units. A
-/// separate disc, centered below the tile's bottom edge; its upper cap
-/// shows over the tile as a rounded tab. Marks sit on this plate.
-pub const TILE_PLATE_R: f32 = 9.4;
-/// How far the plate center sits below the tile's bottom edge.
-/// Overlap into the tile is `TILE_PLATE_R - TILE_PLATE_BELOW` = 1.4,
-/// inside [`TILE_RING_INSET`] (1.7) so the outer ring stays visible.
-pub const TILE_PLATE_BELOW: f32 = 8.0;
-/// Thumb-plate rim width in 22px-tile units.
-pub const TILE_PLATE_RIM: f32 = 0.90;
+/// Plate circle radius as a fraction of the tile radius. Similar size,
+/// so the overlap is a classic vesica / lens along the bottom edge.
+pub const TILE_PLATE_R_SCALE: f32 = 1.0;
+/// Distance from the tile center to the plate-circle center, as a
+/// fraction of the tile radius. For equal radii the lens height is
+/// `2R − sep·R = 0.5 R`, a quarter of the tile's height (`2R`).
+pub const TILE_PLATE_SEP: f32 = 1.50;
+/// Samples per arc of the vesica outline (two arcs between the
+/// intersection points).
+pub const TILE_PLATE_SAMPLES: u32 = 16;
 
 /// Unusable surplus or unfilled blanks: opaque owner-fill face, rim only.
 pub fn budget_slot_is_blank_face(token: &BudgetToken, index: usize, usable: usize) -> bool {
@@ -246,14 +244,14 @@ impl CaptureFlash {
 	}
 }
 
-/// Mid-span half-width of a bead spindle on an arc lane, in pixels.
+/// Peak half-width of a bead chain on an arc lane, in pixels.
 pub fn arc_bead_radius(arc_width: f32) -> f32 {
 	(arc_width * ARC_BEAD_RADIUS_SCALE).max(1.15)
 }
 
-/// Tip-to-center length of a bead spindle from its mid-span half-width.
-pub fn bead_half_len(half_w: f32) -> f32 {
-	half_w * BEAD_SPINDLE_ASPECT
+/// Pinch half-width of a bead chain. Stays positive so swells connect.
+pub fn bead_pinch(half_w: f32) -> f32 {
+	(half_w * BEAD_PINCH_SCALE).max(BEAD_PINCH_MIN)
 }
 
 /// Usable budget, or `usable+surplus` when tokens exceed the remaining deck.
@@ -853,8 +851,7 @@ pub struct TileRingDraw {
 	pub bead_r: f32,
 	pub bead_count: u32,
 	pub plate_r: f32,
-	pub plate_below: f32,
-	pub plate_rim: f32,
+	pub plate_sep: f32,
 }
 
 impl TileRingDraw {
@@ -874,9 +871,8 @@ impl TileRingDraw {
 			braid_samples: TILE_BRAID_SAMPLES,
 			bead_r: (TILE_BEAD_R * scale).max(0.7),
 			bead_count: TILE_BEAD_COUNT,
-			plate_r: (TILE_PLATE_R * scale).max(6.0),
-			plate_below: (TILE_PLATE_BELOW * scale).max(5.0),
-			plate_rim: (TILE_PLATE_RIM * scale).max(0.8),
+			plate_r: radius * TILE_PLATE_R_SCALE,
+			plate_sep: radius * TILE_PLATE_SEP,
 		}
 	}
 
@@ -884,30 +880,44 @@ impl TileRingDraw {
 		tile_radius - self.inset - f32::from(k) * self.gap
 	}
 
-	/// Center of the thumb-plate circle: below the tile's bottom edge along
-	/// `down` (`[0, -1]` in Bevy, `[0, 1]` in the PNG image).
-	pub fn plate_center(self, tile_center: [f32; 2], tile_radius: f32, down: [f32; 2]) -> [f32; 2] {
-		let d = tile_radius + self.plate_below;
-		[tile_center[0] + down[0] * d, tile_center[1] + down[1] * d]
+	/// Center of the (undrawn) plate circle, along `down` from the tile
+	/// center (`[0, -1]` in Bevy, `[0, 1]` in the PNG image).
+	pub fn plate_center(self, tile_center: [f32; 2], down: [f32; 2]) -> [f32; 2] {
+		[tile_center[0] + down[0] * self.plate_sep, tile_center[1] + down[1] * self.plate_sep]
 	}
 
-	/// How far the plate's upper cap overlaps the tile disc.
-	pub fn plate_overlap(self) -> f32 {
-		(self.plate_r - self.plate_below).max(0.0)
+	/// Lens height along `down`: how far the vesica reaches into the tile
+	/// from the bottom edge.
+	pub fn plate_lens_height(self, tile_radius: f32) -> f32 {
+		(tile_radius + self.plate_r - self.plate_sep).max(0.0)
 	}
 
-	/// Capture-mark radius sized to fill the plate for `count` marks (1–3).
-	pub fn capture_mark_r(self, count: u8) -> f32 {
+	/// Distance from the tile center to the vesica's waist (the chord
+	/// through the two intersection points).
+	pub fn plate_waist(self, tile_radius: f32) -> f32 {
+		(self.plate_sep * self.plate_sep + tile_radius * tile_radius - self.plate_r * self.plate_r)
+			/ (2.0 * self.plate_sep.max(1e-6))
+	}
+
+	/// Half-width of that waist chord.
+	pub fn plate_chord_half(self, tile_radius: f32) -> f32 {
+		let a = self.plate_waist(tile_radius);
+		(tile_radius * tile_radius - a * a).max(0.0).sqrt()
+	}
+
+	/// Capture-mark radius sized to fill the lens for `count` marks (1–3).
+	pub fn capture_mark_r(self, tile_radius: f32, count: u8) -> f32 {
+		let h = self.plate_lens_height(tile_radius);
 		let k = match count {
-			0 | 1 => 0.40,
-			2 => 0.34,
-			_ => 0.32,
+			0 | 1 => 0.38,
+			2 => 0.30,
+			_ => 0.26,
 		};
-		(self.plate_r * k).max(2.4 * self.scale.max(0.4))
+		(h * k).max(2.2 * self.scale.max(0.4))
 	}
 
-	/// World-or-image offset of capture mark `i` on the thumb-plate.
-	/// Marks spread along the plate, perpendicular to `down`.
+	/// World-or-image offset of capture mark `i` on the vesica waist,
+	/// perpendicular to `down`. Marks stay inside the tile.
 	pub fn capture_mark_offset(
 		self,
 		tile_radius: f32,
@@ -915,19 +925,18 @@ impl TileRingDraw {
 		count: u8,
 		down: [f32; 2],
 	) -> [f32; 2] {
-		let plate = [
-			down[0] * (tile_radius + self.plate_below),
-			down[1] * (tile_radius + self.plate_below),
-		];
+		let a = self.plate_waist(tile_radius);
+		let waist = [down[0] * a, down[1] * a];
 		let along = [-down[1], down[0]];
 		let n = count.max(1);
+		let half = self.plate_chord_half(tile_radius);
 		let span = match n {
 			1 => 0.0,
-			2 => self.plate_r * 0.78,
-			_ => self.plate_r * 1.12,
+			2 => half * 0.72,
+			_ => half * 0.90,
 		};
 		let t = if n == 1 { 0.0 } else { -0.5 + f32::from(i) / f32::from(n - 1) };
-		[plate[0] + along[0] * span * t, plate[1] + along[1] * span * t]
+		[waist[0] + along[0] * span * t, waist[1] + along[1] * span * t]
 	}
 
 	pub fn capture_mark_pos(
@@ -941,12 +950,123 @@ impl TileRingDraw {
 		let off = self.capture_mark_offset(tile_radius, i, count, down);
 		[center[0] + off[0], center[1] + off[1]]
 	}
+
+	/// Vesica (lens) of the tile disc and the plate circle. Entirely inside
+	/// the tile; the rest of the plate circle is not drawn.
+	pub fn capture_plate_lens(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		down: [f32; 2],
+	) -> Vec<[f32; 2]> {
+		vesica_lens(
+			tile_center,
+			tile_radius,
+			self.plate_center(tile_center, down),
+			self.plate_r,
+			TILE_PLATE_SAMPLES,
+		)
+	}
 }
 
 /// Screen-down in Bevy world coordinates (+Y up).
 pub const CAPTURE_DOWN_BEVY: [f32; 2] = [0.0, -1.0];
 /// Screen-down in PNG image coordinates (+Y down).
 pub const CAPTURE_DOWN_IMAGE: [f32; 2] = [0.0, 1.0];
+
+fn circle_intersections(
+	c0: [f32; 2],
+	r0: f32,
+	c1: [f32; 2],
+	r1: f32,
+) -> Option<([f32; 2], [f32; 2])> {
+	let dx = c1[0] - c0[0];
+	let dy = c1[1] - c0[1];
+	let d = dx.hypot(dy);
+	if d < 1e-5 || d >= r0 + r1 - 1e-4 || d <= (r0 - r1).abs() + 1e-4 {
+		return None;
+	}
+	let a = (d * d + r0 * r0 - r1 * r1) / (2.0 * d);
+	let h = (r0 * r0 - a * a).max(0.0).sqrt();
+	let mx = c0[0] + dx * a / d;
+	let my = c0[1] + dy * a / d;
+	let ix = -dy * h / d;
+	let iy = dx * h / d;
+	Some(([mx + ix, my + iy], [mx - ix, my - iy]))
+}
+
+fn point_on_circle(c: [f32; 2], r: f32, ang: f32) -> [f32; 2] {
+	[c[0] + r * ang.cos(), c[1] + r * ang.sin()]
+}
+
+fn ang_of(c: [f32; 2], p: [f32; 2]) -> f32 {
+	(p[1] - c[1]).atan2(p[0] - c[0])
+}
+
+fn inside_circle(p: [f32; 2], c: [f32; 2], r: f32) -> bool {
+	let dx = p[0] - c[0];
+	let dy = p[1] - c[1];
+	dx * dx + dy * dy <= r * r + 1e-3
+}
+
+/// Arc of `c,r` from `a_from` to `a_to` whose interior sits inside the
+/// other circle. Includes both endpoints.
+fn sample_arc_inside(
+	c: [f32; 2],
+	r: f32,
+	a_from: f32,
+	a_to: f32,
+	other_c: [f32; 2],
+	other_r: f32,
+	n: u32,
+) -> Vec<[f32; 2]> {
+	use std::f32::consts::PI;
+	let mut d = a_to - a_from;
+	while d <= -PI {
+		d += 2.0 * PI;
+	}
+	while d > PI {
+		d -= 2.0 * PI;
+	}
+	let mid_short = point_on_circle(c, r, a_from + d * 0.5);
+	let sweep = if inside_circle(mid_short, other_c, other_r) {
+		d
+	} else if d >= 0.0 {
+		d - 2.0 * PI
+	} else {
+		d + 2.0 * PI
+	};
+	let n = n.max(4);
+	(0..=n)
+		.map(|i| {
+			let t = i as f32 / n as f32;
+			point_on_circle(c, r, a_from + sweep * t)
+		})
+		.collect()
+}
+
+/// Lens / vesica of two circles: the intersection only. Built from the two
+/// interior arcs between the intersection points, so nothing hangs outside
+/// either disc.
+pub fn vesica_lens(c0: [f32; 2], r0: f32, c1: [f32; 2], r1: f32, samples: u32) -> Vec<[f32; 2]> {
+	let Some((i0, i1)) = circle_intersections(c0, r0, c1, r1) else {
+		return Vec::new();
+	};
+	let a0_from = ang_of(c0, i0);
+	let a0_to = ang_of(c0, i1);
+	let a1_from = ang_of(c1, i1);
+	let a1_to = ang_of(c1, i0);
+	let mut pts = sample_arc_inside(c0, r0, a0_from, a0_to, c1, r1, samples);
+	let mut other = sample_arc_inside(c1, r1, a1_from, a1_to, c0, r0, samples);
+	if other.len() > 1 {
+		other.remove(0);
+	}
+	if other.last().is_some() {
+		other.pop();
+	}
+	pts.extend(other);
+	pts
+}
 
 /// Fan triangulation of a simple closed polygon (bead spindle, etc.).
 pub fn polygon_triangles(pts: &[[f32; 2]]) -> Vec<[[f32; 2]; 3]> {
@@ -1545,108 +1665,115 @@ pub fn for_braid_segments(
 	}
 }
 
-/// Lens/spindle polygon: pointed tips along `tangent`, widest across the
-/// midpoint. `half_w` is the mid-span half-width; `half_len` is tip-to-center.
-/// Width follows `sin(π t)` so both ends taper to a point.
-pub fn bead_spindle(
-	center: [f64; 2],
-	tangent: [f64; 2],
-	half_len: f64,
-	half_w: f64,
-	samples: u32,
-) -> Vec<[f32; 2]> {
-	let n = (tangent[0] * tangent[0] + tangent[1] * tangent[1]).sqrt();
-	if n < 1e-12 || half_len <= 0.0 || half_w <= 0.0 {
-		return Vec::new();
-	}
-	let tx = tangent[0] / n;
-	let ty = tangent[1] / n;
-	let nx = -ty;
-	let ny = tx;
-	let samples = samples.max(3);
-	let mut pts = Vec::with_capacity((samples * 2) as usize);
-	for i in 0..=samples {
-		let t = f64::from(i) / f64::from(samples);
-		let along = (t - 0.5) * 2.0 * half_len;
-		let across = half_w * (PI * t).sin();
-		pts.push([
-			(center[0] + tx * along + nx * across) as f32,
-			(center[1] + ty * along + ny * across) as f32,
-		]);
-	}
-	for i in (1..samples).rev() {
-		let t = f64::from(i) / f64::from(samples);
-		let along = (t - 0.5) * 2.0 * half_len;
-		let across = half_w * (PI * t).sin();
-		pts.push([
-			(center[0] + tx * along - nx * across) as f32,
-			(center[1] + ty * along - ny * across) as f32,
-		]);
-	}
-	pts
+/// Half-width of the bead chain at arc-length `s`. Cosine swell: pinch at
+/// phase 0, peak at π. Never hits zero, so the strand stays connected.
+pub fn bead_half_width_at(s: f64, period: f64, half_w: f64, pinch: f64) -> f64 {
+	let phase = 2.0 * PI * (s / period.max(1e-9));
+	pinch + (half_w - pinch) * 0.5 * (1.0 - phase.cos())
 }
 
-/// Tile-ring bead spindles, tangent to the ring at each sample.
-pub fn bead_ring_spindles(
-	center: [f64; 2],
-	radius: f64,
-	n: u32,
-	half_w: f64,
-	half_len: f64,
-) -> Vec<Vec<[f32; 2]>> {
-	let n = n.max(3);
-	(0..n)
-		.map(|i| {
-			let ang = f64::from(i) / f64::from(n) * 2.0 * PI;
-			let c = [center[0] + radius * ang.cos(), center[1] + radius * ang.sin()];
-			bead_spindle(c, [-ang.sin(), ang.cos()], half_len, half_w, BEAD_SPINDLE_SAMPLES)
-		})
-		.filter(|p| p.len() >= 3)
-		.collect()
+fn polyline_is_closed(pts: &[[f64; 2]]) -> bool {
+	if pts.len() < 3 {
+		return false;
+	}
+	let a = pts[0];
+	let b = pts[pts.len() - 1];
+	let dx = a[0] - b[0];
+	let dy = a[1] - b[1];
+	dx * dx + dy * dy < 1e-8
 }
 
-/// (center, unit tangent) along a polyline, spaced by `spacing`.
-pub fn bead_frames_along(pts: &[[f64; 2]], spacing: f64) -> Vec<([f64; 2], [f64; 2])> {
-	if pts.len() < 2 || spacing <= 1e-9 {
+fn bead_chain_sides(
+	pts: &[[f64; 2]],
+	period: f64,
+	half_w: f64,
+	pinch: f64,
+) -> Option<(Vec<[f32; 2]>, Vec<[f32; 2]>, bool)> {
+	if pts.len() < 2 || half_w <= 0.0 || pinch < 0.0 {
+		return None;
+	}
+	let closed = polyline_is_closed(pts);
+	let n = if closed { pts.len() - 1 } else { pts.len() };
+	if n < 2 {
+		return None;
+	}
+	let mut s = vec![0.0; n];
+	for i in 1..n {
+		let dx = pts[i][0] - pts[i - 1][0];
+		let dy = pts[i][1] - pts[i - 1][1];
+		s[i] = s[i - 1] + (dx * dx + dy * dy).sqrt();
+	}
+	let mut left = Vec::with_capacity(n);
+	let mut right = Vec::with_capacity(n);
+	for i in 0..n {
+		let prev = if i == 0 {
+			if closed {
+				pts[n - 1]
+			} else {
+				pts[0]
+			}
+		} else {
+			pts[i - 1]
+		};
+		let next = if i + 1 >= n {
+			if closed {
+				pts[0]
+			} else {
+				pts[i]
+			}
+		} else {
+			pts[i + 1]
+		};
+		let dx = next[0] - prev[0];
+		let dy = next[1] - prev[1];
+		let len = (dx * dx + dy * dy).sqrt();
+		let (nx, ny) = if len <= 1e-12 { (0.0, 1.0) } else { (-dy / len, dx / len) };
+		let w = bead_half_width_at(s[i], period, half_w, pinch);
+		let p = pts[i];
+		left.push([(p[0] + nx * w) as f32, (p[1] + ny * w) as f32]);
+		right.push([(p[0] - nx * w) as f32, (p[1] - ny * w) as f32]);
+	}
+	Some((left, right, closed))
+}
+
+/// Triangle strip for a connected bead-chain ribbon along `pts`.
+pub fn bead_chain_triangles(
+	pts: &[[f64; 2]],
+	period: f64,
+	half_w: f64,
+	pinch: f64,
+) -> Vec<[[f32; 2]; 3]> {
+	let Some((left, right, closed)) = bead_chain_sides(pts, period, half_w, pinch) else {
+		return Vec::new();
+	};
+	let n = left.len();
+	if n < 2 {
 		return Vec::new();
 	}
-	let mut out = Vec::new();
-	let mut acc = 0.0;
-	let mut next = 0.0;
-	let dx0 = pts[1][0] - pts[0][0];
-	let dy0 = pts[1][1] - pts[0][1];
-	let n0 = (dx0 * dx0 + dy0 * dy0).sqrt().max(1e-12);
-	out.push((pts[0], [dx0 / n0, dy0 / n0]));
-	for w in pts.windows(2) {
-		let dx = w[1][0] - w[0][0];
-		let dy = w[1][1] - w[0][1];
-		let seg = (dx * dx + dy * dy).sqrt();
-		if seg <= 1e-12 {
-			continue;
-		}
-		let tan = [dx / seg, dy / seg];
-		while next + spacing <= acc + seg + 1e-12 {
-			next += spacing;
-			let t = ((next - acc) / seg).clamp(0.0, 1.0);
-			out.push(([w[0][0] + dx * t, w[0][1] + dy * t], tan));
-		}
-		acc += seg;
+	let segs = if closed { n } else { n - 1 };
+	let mut out = Vec::with_capacity(segs * 2);
+	for i in 0..segs {
+		let j = (i + 1) % n;
+		out.push([left[i], left[j], right[i]]);
+		out.push([left[j], right[j], right[i]]);
 	}
 	out
 }
 
-/// Bead spindle polygons along a polyline, spaced by `spacing`.
-pub fn bead_spindles_along(
-	pts: &[[f64; 2]],
-	spacing: f64,
+/// Closed bead-chain ring: `n_beads` swells around `radius`, pinch points
+/// still connected.
+pub fn bead_chain_ring(
+	center: [f64; 2],
+	radius: f64,
+	n_beads: u32,
 	half_w: f64,
-	half_len: f64,
-) -> Vec<Vec<[f32; 2]>> {
-	bead_frames_along(pts, spacing)
-		.into_iter()
-		.map(|(c, tan)| bead_spindle(c, tan, half_len, half_w, BEAD_SPINDLE_SAMPLES))
-		.filter(|p| p.len() >= 3)
-		.collect()
+	pinch: f64,
+	samples: u32,
+) -> Vec<[[f32; 2]; 3]> {
+	let n_beads = n_beads.max(3);
+	let rim = circle_polyline(center, radius, samples.max(48));
+	let period = 2.0 * PI * radius / f64::from(n_beads);
+	bead_chain_triangles(&rim, period, half_w, pinch)
 }
 
 pub fn zigzag_circle(
@@ -3718,39 +3845,34 @@ mod tests {
 	}
 
 	#[test]
-	fn capture_marks_sit_on_the_thumb_plate_not_the_center() {
+	fn capture_marks_sit_on_the_vesica_lens_inside_the_tile() {
 		let r = 22.0;
 		let draw = TileRingDraw::for_radius(r);
-		let plate = draw.plate_center([0.0, 0.0], r, CAPTURE_DOWN_BEVY);
-		assert!(plate[1] < -r, "plate center must sit below the tile, got {plate:?}");
-		assert!(
-			draw.plate_overlap() > 0.5,
-			"upper cap must overlap the tile, overlap={}",
-			draw.plate_overlap()
-		);
-		assert!(
-			draw.plate_overlap() < draw.inset,
-			"plate must not cover the outer ring, overlap={} inset={}",
-			draw.plate_overlap(),
-			draw.inset
-		);
+		let plate = draw.plate_center([0.0, 0.0], CAPTURE_DOWN_BEVY);
+		let h = draw.plate_lens_height(r);
+		assert!((h - r * 0.5).abs() < 0.2, "lens height should be ~quarter of the tile, h={h}");
+		let lens = draw.capture_plate_lens([0.0, 0.0], r, CAPTURE_DOWN_BEVY);
+		assert!(lens.len() > 8, "vesica needs both arcs");
+		for p in &lens {
+			let dist = p[0].hypot(p[1]);
+			assert!(dist <= r + 0.15, "lens must stay inside the tile, {p:?} dist={dist}");
+			let d_plate = (p[0] - plate[0]).hypot(p[1] - plate[1]);
+			assert!(d_plate <= draw.plate_r + 0.15, "lens must stay inside the plate circle");
+		}
 		for n in 1..=3u8 {
-			let mark_r = draw.capture_mark_r(n);
+			let mark_r = draw.capture_mark_r(r, n);
 			assert!(
-				mark_r > 2.4,
+				mark_r > 2.2,
 				"marks must be clearly bigger than the old 1.45, n={n} r={mark_r}"
 			);
-			assert!(
-				mark_r * 2.0 < draw.plate_r * 1.15,
-				"marks must fit on the plate, n={n} mark_r={mark_r} plate_r={}",
-				draw.plate_r
-			);
+			assert!(mark_r * 2.0 < h * 1.05, "marks must fit in the lens height, n={n}");
 			for i in 0..n {
 				let p = draw.capture_mark_pos([0.0, 0.0], r, i, n, CAPTURE_DOWN_BEVY);
+				let dist = p[0].hypot(p[1]);
+				assert!(dist < r - mark_r * 0.2, "mark {i}/{n} must stay inside the tile, {p:?}");
+				assert!(dist > r * 0.45, "mark {i}/{n} must leave the center free, dist={dist}");
 				let d_plate = (p[0] - plate[0]).hypot(p[1] - plate[1]);
-				assert!(d_plate < draw.plate_r * 0.85, "mark {i}/{n} must sit on the plate, {p:?}");
-				let dist = (p[0] * p[0] + p[1] * p[1]).sqrt();
-				assert!(dist > r, "mark {i}/{n} must leave the tile center free, dist={dist}");
+				assert!(d_plate < draw.plate_r, "mark {i}/{n} must sit in the plate circle");
 			}
 		}
 		let layout = ViewLayout::from_window(1280.0, 800.0);
@@ -3761,32 +3883,34 @@ mod tests {
 			layout.arc_width
 		);
 		assert!(bead < 4.0, "arc beads must not dominate the edge, got {bead}");
-		assert!(
-			bead_half_len(bead) < layout.arc_width * 2.2,
-			"spindle length must stay modest vs the stroke"
-		);
+		let pinch = bead_pinch(bead);
+		assert!(pinch > 0.4, "pinch must stay connected, pinch={pinch}");
+		assert!(pinch < bead, "pinch must be thinner than the swell");
 	}
 
 	#[test]
-	fn bead_spindle_tapers_to_points() {
+	fn bead_chain_swells_but_never_breaks() {
 		let half_w = 1.5;
-		let half_len = 4.0;
-		let pts = bead_spindle([0.0, 0.0], [1.0, 0.0], half_len, half_w, 10);
-		assert!(pts.len() >= 12);
-		let max_y = pts.iter().map(|p| p[1].abs()).fold(0.0f32, f32::max);
-		assert!((max_y - half_w as f32).abs() < 0.08, "mid-span half-width, max_y={max_y}");
-		let tip_y = pts
-			.iter()
-			.filter(|p| p[0].abs() > half_len as f32 * 0.92)
-			.map(|p| p[1].abs())
-			.fold(0.0f32, f32::max);
-		assert!(tip_y < half_w as f32 * 0.2, "tips must taper in, tip_y={tip_y}");
-		let mid_x = pts
-			.iter()
-			.filter(|p| p[1].abs() > half_w as f32 * 0.9)
-			.map(|p| p[0].abs())
-			.fold(0.0f32, f32::max);
-		assert!(mid_x < half_len as f32 * 0.25, "widest span must sit near the middle");
+		let pinch = 0.5;
+		let period = 8.0;
+		let min = bead_half_width_at(0.0, period, half_w, pinch);
+		let max = bead_half_width_at(period * 0.5, period, half_w, pinch);
+		assert!((min - pinch).abs() < 1e-9, "phase 0 is a pinch, min={min}");
+		assert!((max - half_w).abs() < 1e-9, "phase π is a swell, max={max}");
+		let line: Vec<[f64; 2]> = (0..=40).map(|i| [f64::from(i), 0.0]).collect();
+		let tris = bead_chain_triangles(&line, period, half_w, pinch);
+		assert!(tris.len() > 16, "connected chain is one ribbon, not separate spindles");
+		let mut min_w = f64::INFINITY;
+		let mut max_w = 0.0f64;
+		for t in 0..40 {
+			let w = bead_half_width_at(f64::from(t), period, half_w, pinch);
+			min_w = min_w.min(w);
+			max_w = max_w.max(w);
+		}
+		assert!(min_w >= pinch - 1e-9, "pinch points still have width, min_w={min_w}");
+		assert!(max_w <= half_w + 1e-9);
+		let ring = bead_chain_ring([0.0, 0.0], 10.0, 12, half_w, pinch, 96);
+		assert!(ring.len() > 24, "tile ring is one closed chain");
 	}
 
 	#[test]

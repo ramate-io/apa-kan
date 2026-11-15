@@ -245,13 +245,11 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		let bead_lane = lanes[3].unwrap_or(0.0);
 		let bead_spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(layout.scale);
 		let bead_r = f64::from(visual::arc_bead_radius(layout.arc_width));
-		let half_len = f64::from(visual::bead_half_len(bead_r as f32));
+		let pinch = f64::from(visual::bead_pinch(bead_r as f32));
 		if let Some(color) = paint.bead_match {
 			let line = visual::offset_polyline(&pts, bead_lane);
 			let fill = rgb_of(visual::tile_rgb(color));
-			for poly in visual::bead_spindles_along(&line, bead_spacing, bead_r, half_len) {
-				fill_polygon(img, &poly, fill);
-			}
+			fill_tris(img, &visual::bead_chain_triangles(&line, bead_spacing, bead_r, pinch), fill);
 		}
 		let n = paint.bead_from_count() + paint.bead_to_count() + paint.bead_mid_count();
 		let fan = visual::zag_center_offsets(n.max(1), bead_spacing.max(1.0));
@@ -268,9 +266,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let line =
 				visual::offset_polyline(&pts, bead_lane + fan.get(i).copied().unwrap_or(0.0));
 			let fill = rgb_of(visual::tile_rgb(color));
-			for poly in visual::bead_spindles_along(&line, bead_spacing, bead_r, half_len) {
-				fill_polygon(img, &poly, fill);
-			}
+			fill_tris(img, &visual::bead_chain_triangles(&line, bead_spacing, bead_r, pinch), fill);
 			i += 1;
 		}
 	}
@@ -600,16 +596,13 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
 			} else if tile.stroke_is_bead(k) {
 				let bead_r = f64::from(draw.bead_r);
+				let pinch = f64::from(visual::bead_pinch(draw.bead_r));
 				let fill = rgb_of(visual::tile_rgb(color));
-				for poly in visual::bead_ring_spindles(
-					[c.0, c.1],
-					rr,
-					draw.bead_count,
-					bead_r,
-					f64::from(visual::bead_half_len(draw.bead_r)),
-				) {
-					fill_polygon(img, &poly, fill);
-				}
+				fill_tris(
+					img,
+					&visual::bead_chain_ring([c.0, c.1], rr, draw.bead_count, bead_r, pinch, 96),
+					fill,
+				);
 			} else {
 				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
 			}
@@ -640,18 +633,11 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 		}
 	}
 	let fill = rgb_of(visual::owner_fill_rgb(tile.owner));
-	let plate = draw.plate_center([c.0 as f32, c.1 as f32], r as f32, visual::CAPTURE_DOWN_IMAGE);
-	let plate_c = (f64::from(plate[0]), f64::from(plate[1]));
-	fill_circle(img, plate_c, f64::from(draw.plate_r), fill);
-	stroke_circle(
-		img,
-		plate_c,
-		f64::from(draw.plate_r),
-		rgb_of(visual::BLANK_TOKEN_RIM_RGB),
-		f64::from(draw.plate_rim),
-	);
+	let lens =
+		draw.capture_plate_lens([c.0 as f32, c.1 as f32], r as f32, visual::CAPTURE_DOWN_IMAGE);
+	fill_polygon(img, &lens, fill);
 	let marks = visual::capture_mark_count(tile);
-	let dot_r = f64::from(draw.capture_mark_r(marks));
+	let dot_r = f64::from(draw.capture_mark_r(r as f32, marks));
 	for i in 0..marks {
 		let center = draw.capture_mark_pos(
 			[c.0 as f32, c.1 as f32],
@@ -666,7 +652,7 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			crate::game::CaptureMark::Triangle => {
 				let pts = visual::capture_triangle_facing(
 					[center.0 as f32, center.1 as f32],
-					draw.capture_mark_r(marks),
+					draw.capture_mark_r(r as f32, marks),
 					-1.0,
 				);
 				fill_triangle(
@@ -728,7 +714,11 @@ fn put(img: &mut RgbaImage, x: i32, y: i32, color: Rgba<u8>, a: f64) {
 }
 
 fn fill_polygon(img: &mut RgbaImage, pts: &[[f32; 2]], color: Rgba<u8>) {
-	for tri in visual::polygon_triangles(pts) {
+	fill_tris(img, &visual::polygon_triangles(pts), color);
+}
+
+fn fill_tris(img: &mut RgbaImage, tris: &[[[f32; 2]; 3]], color: Rgba<u8>) {
+	for tri in tris {
 		fill_triangle(
 			img,
 			(f64::from(tri[0][0]), f64::from(tri[0][1])),
@@ -930,7 +920,7 @@ mod tests {
 			!channel_near(px[0], fill[0], 18)
 				|| !channel_near(px[1], fill[1], 18)
 				|| !channel_near(px[2], fill[2], 18),
-			"last deck slot should show a capture mark on the thumb-plate, not a blank face, got {px:?}"
+			"last deck slot should show a capture mark on the vesica plate, not a blank face, got {px:?}"
 		);
 	}
 
@@ -1122,8 +1112,12 @@ mod tests {
 			visual::CAPTURE_DOWN_IMAGE,
 		);
 		assert!(
-			mark[1] > p[1] + layout.tile_radius,
-			"PNG mark sits on the thumb-plate below the tile"
+			mark[1] > p[1] + layout.tile_radius * 0.4,
+			"PNG mark sits toward the bottom of the tile"
+		);
+		assert!(
+			mark[1] < p[1] + layout.tile_radius,
+			"PNG mark must stay inside the tile, not hang below it"
 		);
 	}
 
@@ -1627,7 +1621,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_bead_bomb_vs_braid.png"),
-			"bead lane: unmatched orange spindles bomb a non-matching braid",
+			"bead lane: unmatched orange bead-chain bombs a non-matching braid",
 			48.0,
 		);
 		write_cropped(
@@ -1638,7 +1632,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_bead_match.png"),
-			"bead match: tapered spindles plus the orange normal highway",
+			"bead match: connected bead chain plus the orange normal highway",
 			48.0,
 		);
 		write_png_sized(
@@ -1692,14 +1686,20 @@ mod tests {
 		write_cropped(
 			&demo_zag_tile(),
 			dir.join("edge_capture_marks.png"),
-			"dot/triangle marks on the thumb-plate below the tile",
-			36.0,
+			"dot/triangle marks on the vesica lens inside the tile",
+			28.0,
 		);
 		write_cropped(
 			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 2),
 			dir.join("bead_ring_tile.png"),
-			"tile bead ring as tapered spindles",
-			36.0,
+			"tile bead ring as a connected bead chain",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 3),
+			dir.join("bead_and_plate_tile.png"),
+			"connected bead chain and vesica thumb-plate",
+			28.0,
 		);
 	}
 
@@ -1746,10 +1746,7 @@ mod tests {
 				continue;
 			}
 			let p = layout.board_to_image(board.position(id));
-			let draw = crate::visual::TileRingDraw::for_radius(layout.tile_radius);
 			bump(p[0], p[1], layout.tile_radius + pad, &mut minx, &mut miny, &mut maxx, &mut maxy);
-			let hang = draw.plate_below + draw.plate_r;
-			bump(p[0], p[1] + hang, pad.max(2.0), &mut minx, &mut miny, &mut maxx, &mut maxy);
 		}
 		for arc in board.arcs() {
 			if game.tile_at(arc.from).is_none() && game.tile_at(arc.to).is_none() {
