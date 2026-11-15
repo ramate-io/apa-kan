@@ -14,11 +14,7 @@ pub struct AppState {
 
 impl AppState {
 	pub fn new(store: SqliteStore, clock: Arc<dyn Clock>, mailer: Arc<dyn Mailer>) -> Self {
-		Self {
-			store: Arc::new(store),
-			clock,
-			mailer,
-		}
+		Self { store: Arc::new(store), clock, mailer }
 	}
 
 	pub fn service(&self) -> crate::service::AccountService<SqliteStore> {

@@ -23,9 +23,7 @@ pub struct FakeClock {
 
 impl FakeClock {
 	pub fn new(start_unix: i64) -> Self {
-		Self {
-			secs: Arc::new(AtomicI64::new(start_unix)),
-		}
+		Self { secs: Arc::new(AtomicI64::new(start_unix)) }
 	}
 
 	pub fn advance_secs(&self, delta: i64) {

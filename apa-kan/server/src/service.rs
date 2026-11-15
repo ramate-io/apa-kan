@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use apa_kan_account::crypto::VerifyingKeyBytes;
 use apa_kan_account::id::AccountId;
-use apa_kan_account::link::{
-	verify_link_approval, LinkApproval, LinkRequest, LinkRequestStatus,
-};
+use apa_kan_account::link::{verify_link_approval, LinkApproval, LinkRequest, LinkRequestStatus};
 use apa_kan_account::recovery::{RecoveryKind, COOLDOWN_RECOVERY_SECS};
 use apa_kan_account::types::AuthorizedKeyStatus;
 use apa_kan_store::model::*;
@@ -62,13 +60,10 @@ where
 				usable_at_unix: None,
 			})
 			.await?;
-		let tiles: Vec<_> = (1..=STARTER_TILE_COUNT as u32)
-			.map(|id| (id, "starter".to_string()))
-			.collect();
+		let tiles: Vec<_> =
+			(1..=STARTER_TILE_COUNT as u32).map(|id| (id, "starter".to_string())).collect();
 		self.store.grant_tiles(&account_id, &tiles).await?;
-		self.store
-			.upsert_default_rating(&account_id, DEFAULT_ELO_MILLI)
-			.await?;
+		self.store.upsert_default_rating(&account_id, DEFAULT_ELO_MILLI).await?;
 		Ok(row)
 	}
 
@@ -76,24 +71,13 @@ where
 		&self,
 		id: &AccountId,
 	) -> Result<(AccountRow, Vec<TileInstanceRow>, RatingRow), StoreError> {
-		let account = self
-			.store
-			.get_account(id)
-			.await?
-			.ok_or(StoreError::NotFound)?;
+		let account = self.store.get_account(id).await?.ok_or(StoreError::NotFound)?;
 		let tiles = self.store.list_tiles(id).await?;
-		let rating = self
-			.store
-			.get_rating(id)
-			.await?
-			.ok_or(StoreError::NotFound)?;
+		let rating = self.store.get_rating(id).await?.ok_or(StoreError::NotFound)?;
 		Ok((account, tiles, rating))
 	}
 
-	pub async fn submit_link_request(
-		&self,
-		request: LinkRequest,
-	) -> Result<[u8; 32], StoreError> {
+	pub async fn submit_link_request(&self, request: LinkRequest) -> Result<[u8; 32], StoreError> {
 		request.verify_new_key_signature().map_err(StoreError::Account)?;
 		let now = self.now();
 		if now > request.payload.expires_at_unix {
@@ -113,10 +97,7 @@ where
 		Ok(request.request_id)
 	}
 
-	pub async fn approve_link(
-		&self,
-		approval: LinkApproval,
-	) -> Result<(), StoreError> {
+	pub async fn approve_link(&self, approval: LinkApproval) -> Result<(), StoreError> {
 		let stored = self
 			.store
 			.get_link_request(&approval.payload.request_id)
@@ -124,10 +105,7 @@ where
 			.ok_or(StoreError::NotFound)?;
 		let active = self
 			.store
-			.is_active_key(
-				&approval.payload.account_id,
-				&approval.payload.approver_vk,
-			)
+			.is_active_key(&approval.payload.account_id, &approval.payload.approver_vk)
 			.await?;
 		let approver_nonce = self
 			.store
@@ -147,11 +125,7 @@ where
 		)
 		.map_err(StoreError::Account)?;
 		self.store
-			.bump_nonce(
-				&approval.payload.account_id,
-				&approval.payload.approver_vk,
-				approver_nonce,
-			)
+			.bump_nonce(&approval.payload.account_id, &approval.payload.approver_vk, approver_nonce)
 			.await?;
 		self.store
 			.insert_authorized_key(AuthorizedKeyRow {
@@ -166,10 +140,7 @@ where
 			})
 			.await?;
 		self.store
-			.update_link_request_status(
-				&approval.payload.request_id,
-				LinkRequestStatus::Approved,
-			)
+			.update_link_request_status(&approval.payload.request_id, LinkRequestStatus::Approved)
 			.await?;
 		self.store
 			.insert_link_approval(StoredLinkApproval {
@@ -187,11 +158,7 @@ where
 		pending_vk: VerifyingKeyBytes,
 		email: &str,
 	) -> Result<String, StoreError> {
-		let account = self
-			.store
-			.get_account(account_id)
-			.await?
-			.ok_or(StoreError::NotFound)?;
+		let account = self.store.get_account(account_id).await?.ok_or(StoreError::NotFound)?;
 		if !account.recovery_opt_in {
 			return Err(StoreError::InvalidInput("recovery not opted in".into()));
 		}
@@ -212,8 +179,7 @@ where
 			email: email.to_string(),
 		};
 		self.store.insert_recovery(row).await?;
-		self.mailer
-			.send_recovery_token(email, &account_id.to_hex(), &token);
+		self.mailer.send_recovery_token(email, &account_id.to_hex(), &token);
 		Ok(token)
 	}
 
@@ -222,11 +188,7 @@ where
 		account_id: &AccountId,
 		token: &str,
 	) -> Result<(), StoreError> {
-		let row = self
-			.store
-			.get_active_recovery(account_id)
-			.await?
-			.ok_or(StoreError::NotFound)?;
+		let row = self.store.get_active_recovery(account_id).await?.ok_or(StoreError::NotFound)?;
 		let hash: [u8; 32] = Sha3_256::digest(token.as_bytes()).into();
 		if hash != row.token_hash {
 			return Err(StoreError::InvalidInput("bad token".into()));

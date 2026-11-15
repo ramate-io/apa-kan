@@ -116,20 +116,13 @@ pub struct LinkApproval {
 impl LinkApproval {
 	pub fn message_id(&self) -> Result<[u8; 32], serde_json::Error> {
 		let canonical = to_canonical_json(&self.payload)?;
-		Ok(message_id(
-			canonical.as_bytes(),
-			&self.payload.approver_vk,
-		))
+		Ok(message_id(canonical.as_bytes(), &self.payload.approver_vk))
 	}
 
 	pub fn verify_approver_signature(&self) -> Result<[u8; 32], LinkError> {
 		let id = self.message_id().map_err(LinkError::Serde)?;
-		verify_bytes(
-			&self.payload.approver_vk,
-			&id,
-			&self.approver_sig,
-		)
-		.map_err(LinkError::Crypto)?;
+		verify_bytes(&self.payload.approver_vk, &id, &self.approver_sig)
+			.map_err(LinkError::Crypto)?;
 		Ok(id)
 	}
 }
@@ -223,36 +216,19 @@ mod tests {
 		let (sk, vk) = generate_keypair(&seed);
 		let account_id = AccountId::from_genesis_vk(&vk);
 		let (new_sk, new_vk) = generate_keypair(&Seed::from_bytes([6u8; 32]));
-		let payload = LinkRequestPayload::new(
-			account_id,
-			new_vk.clone(),
-			[9u8; 32],
-			unix_now(),
-			"phone",
-		);
+		let payload =
+			LinkRequestPayload::new(account_id, new_vk.clone(), [9u8; 32], unix_now(), "phone");
 		let request_id = LinkRequest::compute_request_id(&payload).unwrap();
 		let sig = sign_bytes(&new_sk, &request_id);
-		let req = LinkRequest {
-			request_id,
-			payload,
-			new_key_sig: sig,
-		};
+		let req = LinkRequest { request_id, payload, new_key_sig: sig };
 		req.verify_new_key_signature().unwrap();
 
-		let approval_payload = LinkApprovalPayload::new(
-			request_id,
-			account_id,
-			vk.clone(),
-			0,
-			unix_now(),
-		);
+		let approval_payload =
+			LinkApprovalPayload::new(request_id, account_id, vk.clone(), 0, unix_now());
 		let canonical = to_canonical_json(&approval_payload).unwrap();
 		let msg_id = message_id(canonical.as_bytes(), &vk);
 		let approver_sig = sign_bytes(&sk, &msg_id);
-		let approval = LinkApproval {
-			payload: approval_payload,
-			approver_sig,
-		};
+		let approval = LinkApproval { payload: approval_payload, approver_sig };
 		verify_link_approval(&req, LinkRequestStatus::Open, &approval, true, 0, unix_now())
 			.unwrap();
 		let _ = new_sk;

@@ -11,10 +11,11 @@ pub struct FakeMailer {
 
 impl Mailer for FakeMailer {
 	fn send_recovery_token(&self, email: &str, account_hex: &str, token: &str) {
-		self.sent
-			.lock()
-			.unwrap()
-			.push((email.to_string(), account_hex.to_string(), token.to_string()));
+		self.sent.lock().unwrap().push((
+			email.to_string(),
+			account_hex.to_string(),
+			token.to_string(),
+		));
 	}
 }
 

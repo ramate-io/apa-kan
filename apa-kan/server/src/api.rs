@@ -86,9 +86,8 @@ pub struct KeyView {
 }
 
 fn vk_from_hex(s: &str) -> Result<VerifyingKeyBytes, (StatusCode, String)> {
-	let bytes = hex::decode(s.trim()).map_err(|e| {
-		(StatusCode::BAD_REQUEST, format!("bad hex: {e}"))
-	})?;
+	let bytes =
+		hex::decode(s.trim()).map_err(|e| (StatusCode::BAD_REQUEST, format!("bad hex: {e}")))?;
 	Ok(VerifyingKeyBytes(bytes))
 }
 
@@ -114,23 +113,11 @@ pub fn router(state: AppState) -> Router {
 		.route("/v1/accounts", post(create_account))
 		.route("/v1/accounts/{account_id}", get(get_account))
 		.route("/v1/accounts/{account_id}/link-requests", post(link_request))
-		.route(
-			"/v1/accounts/{account_id}/link-requests/approve",
-			post(link_approve),
-		)
+		.route("/v1/accounts/{account_id}/link-requests/approve", post(link_approve))
 		.route("/v1/accounts/{account_id}/recovery/start", post(recovery_start))
-		.route(
-			"/v1/accounts/{account_id}/recovery/confirm",
-			post(recovery_confirm),
-		)
-		.route(
-			"/v1/accounts/{account_id}/recovery/cancel",
-			post(recovery_cancel),
-		)
-		.route(
-			"/v1/accounts/{account_id}/recovery/finish",
-			post(recovery_finish),
-		)
+		.route("/v1/accounts/{account_id}/recovery/confirm", post(recovery_confirm))
+		.route("/v1/accounts/{account_id}/recovery/cancel", post(recovery_cancel))
+		.route("/v1/accounts/{account_id}/recovery/finish", post(recovery_finish))
 		.route("/v1/accounts/{account_id}/email", post(set_email))
 		.route("/v1/accounts/{account_id}/keys", get(list_keys))
 		.with_state(state)
@@ -147,9 +134,7 @@ async fn create_account(
 	let service = state.service();
 	let vk = vk_from_hex(&body.genesis_vk_hex)?;
 	let row = service.create_account(vk).await.map_err(store_error)?;
-	Ok(Json(CreateAccountResponse {
-		account_id: row.account_id.to_hex(),
-	}))
+	Ok(Json(CreateAccountResponse { account_id: row.account_id.to_hex() }))
 }
 
 async fn get_account(
@@ -181,18 +166,10 @@ async fn link_request(
 	let service = state.service();
 	let id = account_id_from_path(&account_id)?;
 	if body.request.payload.account_id != id {
-		return Err((
-			StatusCode::BAD_REQUEST,
-			"account_id mismatch".into(),
-		));
+		return Err((StatusCode::BAD_REQUEST, "account_id mismatch".into()));
 	}
-	let request_id = service
-		.submit_link_request(body.request)
-		.await
-		.map_err(store_error)?;
-	Ok(Json(LinkRequestResponse {
-		request_id: hex::encode(request_id),
-	}))
+	let request_id = service.submit_link_request(body.request).await.map_err(store_error)?;
+	Ok(Json(LinkRequestResponse { request_id: hex::encode(request_id) }))
 }
 
 async fn link_approve(
@@ -203,10 +180,7 @@ async fn link_approve(
 	let service = state.service();
 	let id = account_id_from_path(&account_id)?;
 	if body.approval.payload.account_id != id {
-		return Err((
-			StatusCode::BAD_REQUEST,
-			"account_id mismatch".into(),
-		));
+		return Err((StatusCode::BAD_REQUEST, "account_id mismatch".into()));
 	}
 	service.approve_link(body.approval).await.map_err(store_error)?;
 	Ok(Json(OkResponse { ok: true }))
@@ -220,10 +194,7 @@ async fn recovery_start(
 	let service = state.service();
 	let id = account_id_from_path(&account_id)?;
 	let vk = vk_from_hex(&body.pending_vk_hex)?;
-	service
-		.start_recovery(&id, vk, &body.email)
-		.await
-		.map_err(store_error)?;
+	service.start_recovery(&id, vk, &body.email).await.map_err(store_error)?;
 	Ok(Json(OkResponse { ok: true }))
 }
 
@@ -234,10 +205,7 @@ async fn recovery_confirm(
 ) -> Result<Json<OkResponse>, (StatusCode, String)> {
 	let service = state.service();
 	let id = account_id_from_path(&account_id)?;
-	service
-		.confirm_recovery_token(&id, &body.token)
-		.await
-		.map_err(store_error)?;
+	service.confirm_recovery_token(&id, &body.token).await.map_err(store_error)?;
 	Ok(Json(OkResponse { ok: true }))
 }
 
@@ -269,12 +237,7 @@ async fn set_email(
 	let service = state.service();
 	let id = account_id_from_path(&account_id)?;
 	service
-		.set_recovery_email(
-			&id,
-			body.email,
-			body.recovery_opt_in,
-			body.approve_via_email,
-		)
+		.set_recovery_email(&id, body.email, body.recovery_opt_in, body.approve_via_email)
 		.await
 		.map_err(store_error)?;
 	Ok(Json(OkResponse { ok: true }))
@@ -288,8 +251,7 @@ async fn list_keys(
 	let id = account_id_from_path(&account_id)?;
 	let keys = service.list_keys(&id).await.map_err(store_error)?;
 	Ok(Json(
-		keys
-			.into_iter()
+		keys.into_iter()
 			.map(|k| KeyView {
 				vk_hex: hex::encode(&k.vk.0),
 				label: k.label,

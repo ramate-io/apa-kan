@@ -8,10 +8,12 @@ pub mod link;
 pub mod recovery;
 pub mod types;
 
-pub use crypto::{sign_bytes, verify_bytes, CryptoError, Param, Seed, SignatureBytes, VerifyingKeyBytes};
+pub use crypto::{
+	sign_bytes, verify_bytes, CryptoError, Param, Seed, SignatureBytes, VerifyingKeyBytes,
+};
 pub use id::AccountId;
-pub use link::{verify_link_approval, LinkApproval, LinkRequest, LinkError};
+pub use link::{verify_link_approval, LinkApproval, LinkError, LinkRequest};
 pub use recovery::{
-	COOLDOWN_RECOVERY_SECS, COOLDOWN_EMAIL_LINK_SECS, RecoveryKind, RecoveryPending,
+	RecoveryKind, RecoveryPending, COOLDOWN_EMAIL_LINK_SECS, COOLDOWN_RECOVERY_SECS,
 };
 pub use types::{AuthorizedKeyStatus, KeyLabel};

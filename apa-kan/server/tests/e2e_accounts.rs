@@ -3,9 +3,7 @@ use std::sync::Arc;
 use apa_kan_account::canonical::to_canonical_json;
 use apa_kan_account::crypto::{generate_keypair, message_id, sign_bytes, Seed, SignatureBytes};
 use apa_kan_account::id::AccountId;
-use apa_kan_account::link::{
-	LinkApproval, LinkApprovalPayload, LinkRequest, LinkRequestPayload,
-};
+use apa_kan_account::link::{LinkApproval, LinkApprovalPayload, LinkRequest, LinkRequestPayload};
 use apa_kan_account::recovery::COOLDOWN_RECOVERY_SECS;
 use apa_kan_server::mailer::FakeMailer;
 use apa_kan_server::testutil::{base_url, spawn_test_server};
@@ -17,9 +15,7 @@ const NOW: i64 = 1_700_000_000;
 async fn e2e_link_two_keys_and_reject_bad_signature() {
 	let clock = Arc::new(FakeClock::new(NOW));
 	let mailer = Arc::new(FakeMailer::default());
-	let (addr, handle) = spawn_test_server(clock.clone(), mailer)
-		.await
-		.expect("spawn");
+	let (addr, handle) = spawn_test_server(clock.clone(), mailer).await.expect("spawn");
 	let client = reqwest::Client::new();
 	let root = base_url(addr);
 
@@ -37,13 +33,7 @@ async fn e2e_link_two_keys_and_reject_bad_signature() {
 	let account_id = AccountId::from_hex(&account_hex).unwrap();
 
 	let (phone_sk, phone_vk) = generate_keypair(&Seed::from_bytes([21u8; 32]));
-	let payload = LinkRequestPayload::new(
-		account_id,
-		phone_vk.clone(),
-		[4u8; 32],
-		NOW,
-		"phone",
-	);
+	let payload = LinkRequestPayload::new(account_id, phone_vk.clone(), [4u8; 32], NOW, "phone");
 	let request_id = LinkRequest::compute_request_id(&payload).unwrap();
 	let req = LinkRequest {
 		request_id,
@@ -62,13 +52,8 @@ async fn e2e_link_two_keys_and_reject_bad_signature() {
 		.unwrap();
 	assert_eq!(link_resp["request_id"].as_str().unwrap(), hex::encode(request_id));
 
-	let approval_payload = LinkApprovalPayload::new(
-		request_id,
-		account_id,
-		genesis_vk.clone(),
-		0,
-		NOW,
-	);
+	let approval_payload =
+		LinkApprovalPayload::new(request_id, account_id, genesis_vk.clone(), 0, NOW);
 	let canonical = to_canonical_json(&approval_payload).unwrap();
 	let msg_id = message_id(canonical.as_bytes(), &genesis_vk);
 	let good_approval = LinkApproval {
@@ -94,17 +79,12 @@ async fn e2e_link_two_keys_and_reject_bad_signature() {
 		.await
 		.unwrap();
 	assert_eq!(keys.len(), 2);
-	let vks: Vec<_> = keys
-		.iter()
-		.map(|k| k["vk_hex"].as_str().unwrap())
-		.collect();
+	let vks: Vec<_> = keys.iter().map(|k| k["vk_hex"].as_str().unwrap()).collect();
 	assert!(vks.contains(&hex::encode(&genesis_vk.0).as_str()));
 	assert!(vks.contains(&hex::encode(&phone_vk.0).as_str()));
 
-	let bad_approval = LinkApproval {
-		payload: approval_payload,
-		approver_sig: SignatureBytes(vec![0u8; 64]),
-	};
+	let bad_approval =
+		LinkApproval { payload: approval_payload, approver_sig: SignatureBytes(vec![0u8; 64]) };
 	let bad = client
 		.post(format!("{root}/v1/accounts/{account_hex}/link-requests/approve"))
 		.json(&serde_json::json!({ "approval": bad_approval }))
@@ -120,9 +100,7 @@ async fn e2e_link_two_keys_and_reject_bad_signature() {
 async fn e2e_recovery_email_cooldown_with_fake_clock_and_mailer() {
 	let clock = Arc::new(FakeClock::new(NOW));
 	let mailer = Arc::new(FakeMailer::default());
-	let (addr, handle) = spawn_test_server(clock.clone(), mailer.clone())
-		.await
-		.expect("spawn");
+	let (addr, handle) = spawn_test_server(clock.clone(), mailer.clone()).await.expect("spawn");
 	let client = reqwest::Client::new();
 	let root = base_url(addr);
 

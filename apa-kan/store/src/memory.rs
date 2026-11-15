@@ -31,7 +31,6 @@ impl MemoryStore {
 	pub fn new() -> Self {
 		Self::default()
 	}
-
 }
 
 #[async_trait]
@@ -68,10 +67,7 @@ impl AccountRepo for MemoryStore {
 		approve_via_email: bool,
 	) -> Result<(), StoreError> {
 		let mut st = self.inner.lock().unwrap();
-		let acc = st
-			.accounts
-			.get_mut(id.as_bytes())
-			.ok_or(StoreError::NotFound)?;
+		let acc = st.accounts.get_mut(id.as_bytes()).ok_or(StoreError::NotFound)?;
 		let verified = email.is_some();
 		acc.email = email;
 		acc.recovery_opt_in = recovery_opt_in;
@@ -91,12 +87,7 @@ impl KeyRepo for MemoryStore {
 
 	async fn list_keys(&self, account_id: &AccountId) -> Result<Vec<AuthorizedKeyRow>, StoreError> {
 		let st = self.inner.lock().unwrap();
-		Ok(st
-			.keys
-			.iter()
-			.filter(|k| k.account_id == *account_id)
-			.cloned()
-			.collect())
+		Ok(st.keys.iter().filter(|k| k.account_id == *account_id).cloned().collect())
 	}
 
 	async fn is_active_key(
@@ -106,9 +97,7 @@ impl KeyRepo for MemoryStore {
 	) -> Result<bool, StoreError> {
 		let st = self.inner.lock().unwrap();
 		Ok(st.keys.iter().any(|k| {
-			k.account_id == *account_id
-				&& k.vk == *vk
-				&& k.status == AuthorizedKeyStatus::Active
+			k.account_id == *account_id && k.vk == *vk && k.status == AuthorizedKeyStatus::Active
 		}))
 	}
 
@@ -142,8 +131,7 @@ impl KeyRepo for MemoryStore {
 		if st.link_requests.contains_key(&stored.request.request_id) {
 			return Err(StoreError::Conflict("link request exists".into()));
 		}
-		st.link_requests
-			.insert(stored.request.request_id, stored);
+		st.link_requests.insert(stored.request.request_id, stored);
 		Ok(())
 	}
 
@@ -161,10 +149,7 @@ impl KeyRepo for MemoryStore {
 		status: LinkRequestStatus,
 	) -> Result<(), StoreError> {
 		let mut st = self.inner.lock().unwrap();
-		let req = st
-			.link_requests
-			.get_mut(request_id)
-			.ok_or(StoreError::NotFound)?;
+		let req = st.link_requests.get_mut(request_id).ok_or(StoreError::NotFound)?;
 		req.status = status;
 		Ok(())
 	}
@@ -201,12 +186,7 @@ impl InventoryRepo for MemoryStore {
 
 	async fn list_tiles(&self, account_id: &AccountId) -> Result<Vec<TileInstanceRow>, StoreError> {
 		let st = self.inner.lock().unwrap();
-		Ok(st
-			.tiles
-			.iter()
-			.filter(|t| t.account_id == *account_id)
-			.cloned()
-			.collect())
+		Ok(st.tiles.iter().filter(|t| t.account_id == *account_id).cloned().collect())
 	}
 }
 
@@ -218,11 +198,7 @@ impl RatingRepo for MemoryStore {
 		elo_milli: i32,
 	) -> Result<RatingRow, StoreError> {
 		let mut st = self.inner.lock().unwrap();
-		let row = RatingRow {
-			account_id: *account_id,
-			elo_milli,
-			games: 0,
-		};
+		let row = RatingRow { account_id: *account_id, elo_milli, games: 0 };
 		st.ratings.insert(*account_id.as_bytes(), row.clone());
 		Ok(row)
 	}
@@ -237,9 +213,11 @@ impl RatingRepo for MemoryStore {
 impl RecoveryRepo for MemoryStore {
 	async fn insert_recovery(&self, row: RecoveryRow) -> Result<(), StoreError> {
 		let mut st = self.inner.lock().unwrap();
-		if st.recoveries.iter().any(|r| {
-			r.account_id == row.account_id && r.cancelled_at_unix.is_none()
-		}) {
+		if st
+			.recoveries
+			.iter()
+			.any(|r| r.account_id == row.account_id && r.cancelled_at_unix.is_none())
+		{
 			return Err(StoreError::Conflict("recovery in flight".into()));
 		}
 		st.recoveries.push(row);
@@ -259,7 +237,11 @@ impl RecoveryRepo for MemoryStore {
 			.cloned())
 	}
 
-	async fn cancel_recovery(&self, account_id: &AccountId, now_unix: i64) -> Result<(), StoreError> {
+	async fn cancel_recovery(
+		&self,
+		account_id: &AccountId,
+		now_unix: i64,
+	) -> Result<(), StoreError> {
 		let mut st = self.inner.lock().unwrap();
 		let row = st
 			.recoveries
@@ -271,7 +253,11 @@ impl RecoveryRepo for MemoryStore {
 		Ok(())
 	}
 
-	async fn finish_recovery(&self, account_id: &AccountId, now_unix: i64) -> Result<(), StoreError> {
+	async fn finish_recovery(
+		&self,
+		account_id: &AccountId,
+		now_unix: i64,
+	) -> Result<(), StoreError> {
 		let mut st = self.inner.lock().unwrap();
 		let row = st
 			.recoveries
@@ -321,11 +307,7 @@ mod tests {
 		let id = AccountId::from_bytes([1u8; 32]);
 		let vk = VerifyingKeyBytes(vec![2, 3]);
 		let row = store
-			.insert_account(NewAccount {
-				account_id: id,
-				genesis_vk: vk,
-				created_at_unix: 0,
-			})
+			.insert_account(NewAccount { account_id: id, genesis_vk: vk, created_at_unix: 0 })
 			.await
 			.unwrap();
 		assert_eq!(row.account_id, id);

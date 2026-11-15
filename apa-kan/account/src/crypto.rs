@@ -1,5 +1,5 @@
 use ml_dsa::signature::{Signer, Verifier};
-use ml_dsa::{B32, EncodedVerifyingKey, MlDsa44, Signature, SigningKey, VerifyingKey};
+use ml_dsa::{EncodedVerifyingKey, MlDsa44, Signature, SigningKey, VerifyingKey, B32};
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha3::{Digest, Sha3_256};
@@ -84,10 +84,7 @@ pub fn generate_keypair(seed: &Seed) -> (SigningKey<Param>, VerifyingKeyBytes) {
 	let sk = SigningKey::<Param>::from_seed(&b32);
 	let vk = sk.verifying_key();
 	let encoded = vk.encode();
-	(
-		sk,
-		VerifyingKeyBytes(encoded.as_slice().to_vec()),
-	)
+	(sk, VerifyingKeyBytes(encoded.as_slice().to_vec()))
 }
 
 /// Message id per gwrdfa pattern: SHA3-256(canonical_payload ‖ signer_vk_bytes).
@@ -110,10 +107,9 @@ pub fn verify_bytes(
 	sig: &SignatureBytes,
 ) -> Result<(), CryptoError> {
 	let vk = vk.decode()?;
-	let signature = Signature::<Param>::try_from(sig.0.as_slice())
-		.map_err(|_| CryptoError::BadSignature)?;
-	vk.verify(message_id, &signature)
-		.map_err(|_| CryptoError::VerifyFailed)
+	let signature =
+		Signature::<Param>::try_from(sig.0.as_slice()).map_err(|_| CryptoError::BadSignature)?;
+	vk.verify(message_id, &signature).map_err(|_| CryptoError::VerifyFailed)
 }
 
 #[cfg(test)]

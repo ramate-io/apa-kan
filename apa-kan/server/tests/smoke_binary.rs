@@ -18,24 +18,16 @@ fn server_binary() -> PathBuf {
 
 #[tokio::test]
 async fn smoke_real_server_binary_health_and_account() {
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-		.await
-		.expect("bind");
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
 	let port = listener.local_addr().expect("addr").port();
 	drop(listener);
 
-	let db_path = std::env::temp_dir().join(format!(
-		"apa-kan-smoke-{}.db",
-		std::process::id()
-	));
+	let db_path = std::env::temp_dir().join(format!("apa-kan-smoke-{}.db", std::process::id()));
 	let _ = std::fs::remove_file(&db_path);
 
 	let mut child = std::process::Command::new(server_binary())
 		.env("PORT", port.to_string())
-		.env(
-			"APA_KAN_DATABASE_URL",
-			format!("sqlite:{}", db_path.display()),
-		)
+		.env("APA_KAN_DATABASE_URL", format!("sqlite:{}", db_path.display()))
 		.stdout(std::process::Stdio::null())
 		.stderr(std::process::Stdio::null())
 		.spawn()
@@ -45,7 +37,11 @@ async fn smoke_real_server_binary_health_and_account() {
 	let root = format!("http://127.0.0.1:{port}");
 
 	for _ in 0..40 {
-		if client.get(format!("{root}/health")).send().await.is_ok_and(|r| r.status().is_success())
+		if client
+			.get(format!("{root}/health"))
+			.send()
+			.await
+			.is_ok_and(|r| r.status().is_success())
 		{
 			break;
 		}

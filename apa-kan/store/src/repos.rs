@@ -73,8 +73,16 @@ pub trait RecoveryRepo: Send + Sync {
 		&self,
 		account_id: &AccountId,
 	) -> Result<Option<RecoveryRow>, StoreError>;
-	async fn cancel_recovery(&self, account_id: &AccountId, now_unix: i64) -> Result<(), StoreError>;
-	async fn finish_recovery(&self, account_id: &AccountId, now_unix: i64) -> Result<(), StoreError>;
+	async fn cancel_recovery(
+		&self,
+		account_id: &AccountId,
+		now_unix: i64,
+	) -> Result<(), StoreError>;
+	async fn finish_recovery(
+		&self,
+		account_id: &AccountId,
+		now_unix: i64,
+	) -> Result<(), StoreError>;
 }
 
 #[async_trait]

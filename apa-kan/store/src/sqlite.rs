@@ -1,6 +1,6 @@
 use apa_kan_account::crypto::VerifyingKeyBytes;
 use apa_kan_account::id::AccountId;
-use apa_kan_account::link::{LinkRequest, LinkRequestStatus, LinkRequestPayload};
+use apa_kan_account::link::{LinkRequest, LinkRequestPayload, LinkRequestStatus};
 use apa_kan_account::recovery::RecoveryKind;
 use apa_kan_account::types::AuthorizedKeyStatus;
 use async_trait::async_trait;
@@ -337,11 +337,8 @@ impl KeyRepo for SqliteStore {
 		.map_err(|e| StoreError::Storage(e.to_string()))?;
 
 		let Some(row) = row else { return Ok(None) };
-		let request = decode_link_request(
-			*request_id,
-			row.get::<String, _>(0).as_str(),
-			row.get(1),
-		)?;
+		let request =
+			decode_link_request(*request_id, row.get::<String, _>(0).as_str(), row.get(1))?;
 		Ok(Some(StoredLinkRequest {
 			request,
 			status: link_status_from(&row.get::<String, _>(2))?,
@@ -441,11 +438,7 @@ impl RatingRepo for SqliteStore {
 		.execute(&self.pool)
 		.await
 		.map_err(|e| StoreError::Storage(e.to_string()))?;
-		Ok(RatingRow {
-			account_id: *account_id,
-			elo_milli,
-			games: 0,
-		})
+		Ok(RatingRow { account_id: *account_id, elo_milli, games: 0 })
 	}
 
 	async fn get_rating(&self, account_id: &AccountId) -> Result<Option<RatingRow>, StoreError> {
@@ -516,7 +509,11 @@ impl RecoveryRepo for SqliteStore {
 		}))
 	}
 
-	async fn cancel_recovery(&self, account_id: &AccountId, now_unix: i64) -> Result<(), StoreError> {
+	async fn cancel_recovery(
+		&self,
+		account_id: &AccountId,
+		now_unix: i64,
+	) -> Result<(), StoreError> {
 		let updated = sqlx::query(
 			r#"UPDATE recovery_pending SET cancelled_at_unix = ?
                WHERE account_id = ? AND cancelled_at_unix IS NULL"#,
@@ -532,7 +529,11 @@ impl RecoveryRepo for SqliteStore {
 		Ok(())
 	}
 
-	async fn finish_recovery(&self, account_id: &AccountId, now_unix: i64) -> Result<(), StoreError> {
+	async fn finish_recovery(
+		&self,
+		account_id: &AccountId,
+		now_unix: i64,
+	) -> Result<(), StoreError> {
 		let row = self.get_active_recovery(account_id).await?.ok_or(StoreError::NotFound)?;
 		if now_unix < row.usable_at_unix {
 			return Err(StoreError::Expired);
@@ -567,11 +568,7 @@ mod tests {
 		let id = AccountId::from_bytes([8u8; 32]);
 		let vk = VerifyingKeyBytes(vec![1, 2, 3]);
 		store
-			.insert_account(NewAccount {
-				account_id: id,
-				genesis_vk: vk,
-				created_at_unix: 1,
-			})
+			.insert_account(NewAccount { account_id: id, genesis_vk: vk, created_at_unix: 1 })
 			.await
 			.unwrap();
 		assert!(store.get_account(&id).await.unwrap().is_some());
