@@ -86,10 +86,7 @@ pub struct PassphraseKeyStore<B: PassphraseKeystoreBackend> {
 
 impl<B: PassphraseKeystoreBackend> PassphraseKeyStore<B> {
 	pub fn new(backend: B, passphrase: impl Into<String>) -> Self {
-		Self {
-			backend,
-			passphrase: passphrase.into(),
-		}
+		Self { backend, passphrase: passphrase.into() }
 	}
 }
 
