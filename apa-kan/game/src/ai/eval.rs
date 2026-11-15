@@ -146,6 +146,7 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	for tile in game.bench(opp) {
 		bench_score -= 28 + 10 * i32::from(tile.weight);
 	}
+	bench_score += capture_mix_score(game, me) - capture_mix_score(game, opp);
 	let presence = 32 * (my_board - opp_board);
 
 	let mobility = 3 * (mobility_of(game, me) - mobility_of(game, opp));
@@ -287,6 +288,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	for tile in game.bench(opp) {
 		bench_score -= 28 + 10 * i32::from(tile.weight);
 	}
+	bench_score += capture_mix_score(game, me) - capture_mix_score(game, opp);
 	// Usable budget only (min(tokens, remaining deck)); surplus tokens are not ADD permission.
 	let budget = 90 * (game.budget(me) as i32 - game.budget(opp) as i32);
 	let presence = 32 * (my_board - opp_board);
@@ -431,6 +433,33 @@ fn can_reach_center(game: &Game, player: Player) -> bool {
 		game.tile_at(n).map(|t| t.owner == player).unwrap_or(false)
 			&& game.legal_destinations(n).contains(&center)
 	})
+}
+
+/// Prefer a mixed capture-mark bench. All dots starve spawn tokens; all
+/// triangles starve later ADDs once the opening bench is spent.
+fn capture_mix_score(game: &Game, player: Player) -> i32 {
+	let bench = game.bench(player);
+	let n = bench.len() as i32;
+	if n == 0 {
+		return 0;
+	}
+	let dots = bench.iter().filter(|t| t.capture.is_dot()).count() as i32;
+	let tris = n - dots;
+	let mut s = 0i32;
+	if dots > 0 && tris > 0 {
+		s += 12;
+	} else if dots == n {
+		s -= 50;
+	} else {
+		s -= 20;
+	}
+	if tris == 0 && game.budget_token_count(player) as i32 <= 2 {
+		s -= 40;
+	}
+	if dots == 0 && n <= 3 {
+		s -= 24;
+	}
+	s
 }
 
 /// Cheap mobility: empty adjacent nodes + empty spawns if the bench can ADD.

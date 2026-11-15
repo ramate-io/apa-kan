@@ -33,6 +33,7 @@ colors = ["green", "orange"]   # all dots kinds of each color
 # weight = 3                   # ignored; weight is the ring-slot count
 #                              # omit weight/dots to expand all dots kinds of that color
 # dots = 1
+# capture = "dot"              # or "triangle" (default); dest for captures made with this tile
 # count = 1
 # [[p1.bench]]                 # optional ordered prefix of a small collection
 # color = "green"

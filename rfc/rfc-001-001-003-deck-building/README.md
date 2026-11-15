@@ -21,7 +21,7 @@ ADD, usable budget, and spawn tokens are unchanged:
 
 - usable budget = `min(tokens, unplaced bench tiles)`
 - 7 starting tokens (`--starting-tokens` / `--starting-bench`)
-- +1 token per capture (self-capture still gated by `self_capture_budget`)
+- triangle captures: +1 token (self-capture still gated by `self_capture_budget`); dot captures join the mover's bench (see [`rfc-001-001-005`](../rfc-001-001-005-capture-modifiers/README.md))
 - the full 11 public tiles are selectable once chosen
 
 ### Ring-type cap (confirmed)

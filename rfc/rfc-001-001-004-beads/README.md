@@ -89,4 +89,4 @@ Unit tests in `game::tests` (`bead_unmatched_counts_rings_not_color_pairs`, `bea
 
 ## Open questions
 
-- Range modifier is a later PR and is not part of this channel.
+- Capture-mark destination (dot → bench, triangle → tokens) is a later PR and is not a ring type. See [`rfc-001-001-005`](../rfc-001-001-005-capture-modifiers/README.md).

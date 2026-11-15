@@ -14,7 +14,9 @@ use crate::config::GameConfig;
 use crate::deck::{
 	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
 };
-use crate::game::{Action, BudgetToken, DeckSlot, Game, Player, Tile, ZagMismatchCount};
+use crate::game::{
+	Action, BudgetToken, CaptureMark, DeckSlot, Game, Player, Tile, ZagMismatchCount,
+};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
@@ -1847,18 +1849,34 @@ fn spawn_tile_at(
 			}
 		}
 	}
-	let dots = tile.dots.min(3);
-	let spread = draw.dot_spread;
-	let start = -spread * (f32::from(dots) - 1.0) / 2.0;
+	let marks = visual::capture_mark_count(tile);
 	let dot_r = draw.dot_r.max(2.0);
-	for i in 0..dots {
-		let dx = start + f32::from(i) * spread;
-		commands.spawn((
-			DynamicView,
-			Mesh2d(meshes.add(Circle::new(dot_r))),
-			MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
-			Transform::from_translation((pos + Vec2::new(dx, 0.0)).extend(visual::Z_TILE_DOT)),
-		));
+	for i in 0..marks {
+		let dx = draw.capture_mark_dx(i, marks);
+		let at = (pos + Vec2::new(dx, 0.0)).extend(visual::Z_TILE_DOT);
+		match tile.capture {
+			CaptureMark::Dot => {
+				commands.spawn((
+					DynamicView,
+					Mesh2d(meshes.add(Circle::new(dot_r))),
+					MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
+					Transform::from_translation(at),
+				));
+			}
+			CaptureMark::Triangle => {
+				let pts = visual::capture_triangle([0.0, 0.0], dot_r);
+				commands.spawn((
+					DynamicView,
+					Mesh2d(meshes.add(Triangle2d::new(
+						Vec2::new(pts[0][0], pts[0][1]),
+						Vec2::new(pts[1][0], pts[1][1]),
+						Vec2::new(pts[2][0], pts[2][1]),
+					))),
+					MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
+					Transform::from_translation(at),
+				));
+			}
+		}
 	}
 	if highlight {
 		spawn_ring(

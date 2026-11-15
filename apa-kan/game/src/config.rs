@@ -327,6 +327,13 @@ where
 			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
 			rules.bead_numer = if on { crate::game::BEAD_NUMER_DEFAULT } else { 0 };
 		}
+		"--dot-chance" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n > 100 {
+				return Err("invalid --dot-chance (expected 0..100 percent)".into());
+			}
+			rules.dot_percent = n as u8;
+		}
 		"--zag-mismatch" => {
 			rules.zag_mismatch = ZagMismatchCount::parse(&require_value(arg, it.next())?)?;
 		}
@@ -402,6 +409,7 @@ pub fn usage() -> &'static str {
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --bead-chance <0..7>                       Each remaining normal ring is a bead with k/7 chance (default: 1)\n\
 	   --beads <on|off>                           Alias for --bead-chance 1 or 0 (default: on)\n\
+	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
 	   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
@@ -540,6 +548,7 @@ mod tests {
 		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.bead_numer, 1);
+		assert_eq!(cfg.rules.dot_percent, crate::game::DOT_PERCENT_DEFAULT);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 		assert!(cfg.rules.counted_pass_through);
 		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
@@ -727,6 +736,16 @@ mod tests {
 		assert!(on.rules.self_capture_budget);
 		let off = GameConfig::parse(["--self-capture-budget", "off"]).unwrap();
 		assert!(!off.rules.self_capture_budget);
+	}
+
+	#[test]
+	fn parses_dot_chance() {
+		let cfg = GameConfig::parse(["--dot-chance", "0"]).unwrap();
+		assert_eq!(cfg.rules.dot_percent, 0);
+		let cfg = GameConfig::parse(["--dot-chance", "100"]).unwrap();
+		assert_eq!(cfg.rules.dot_percent, 100);
+		let err = GameConfig::parse(["--dot-chance", "101"]).unwrap_err();
+		assert!(err.contains("dot-chance"));
 	}
 
 	#[test]

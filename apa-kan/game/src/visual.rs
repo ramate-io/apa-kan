@@ -795,6 +795,26 @@ impl TileRingDraw {
 	pub fn ring_radius(self, tile_radius: f32, k: u8) -> f32 {
 		tile_radius - self.inset - f32::from(k) * self.gap
 	}
+
+	pub fn capture_mark_dx(self, i: u8, count: u8) -> f32 {
+		let start = -self.dot_spread * (f32::from(count) - 1.0) / 2.0;
+		start + f32::from(i) * self.dot_spread
+	}
+}
+
+/// Equilateral-ish triangle pointing up, sized like a filled circle of radius `r`.
+pub fn capture_triangle(center: [f32; 2], r: f32) -> [[f32; 2]; 3] {
+	let h = r * 1.25;
+	let w = r * 1.15;
+	[
+		[center[0], center[1] + h],
+		[center[0] - w, center[1] - h * 0.55],
+		[center[0] + w, center[1] - h * 0.55],
+	]
+}
+
+pub fn capture_mark_count(tile: Tile) -> u8 {
+	tile.dots.clamp(1, 3)
 }
 
 pub fn tile_rgb(color: TileColor) -> [f32; 3] {

@@ -4,19 +4,31 @@ Release `apa-kan-bench`, 12 games per pairing per seat, seed 1, `--no-depth-prob
 
 **Doubles allowed** (`--no-same-piece-twice off`) is the locked default and the **only configuration that is benchmarked**. `always` / `when-deck-empty` remain as non-default CLI variants; do not run them as the H2H package.
 
-## Current (work budget, doubles allowed)
+## Current (capture modifiers, work budget, doubles allowed)
 
 `--budget nodes:132000,iters:2600` is the default. It is the rounded mean of a **single-threaded** 1000 ms/move calibrate on this VM (4 physical cores), so the same seed replays regardless of load. `--jobs` defaults to `available_parallelism` (4 here); each search stays single-threaded; JSONL is written in pairing-then-game order.
 
 Calibrate log: [`work_budget_calibration.txt`](work_budget_calibration.txt). Command: `apa-kan-bench --calibrate --think-ms 1000 --seed 1` (3 games × 16 moves, minimax vs MCTS). Minimax nodes/move: n=24, mean=131781, min=46720, max=248256, mean completed ID depth=3.58. MCTS iters/move: n=24, mean=2635, min=1327, max=3961. `--think-ms` remains for wall-clock search (not reproducible).
 
-Release `apa-kan-bench`, 12/pairing/seat, seed 1, `--no-depth-probe`, 108 games, zags on, `--jobs 4`. Wall-clock **1796.2 s** (~30 min). The earlier time-based doubles-allowed run on this VM was 1048.4 s.
+Release `apa-kan-bench`, 12/pairing/seat, seed 1, `--no-depth-probe`, 108 games, `--jobs 4`, `--pick search`, 27-tile collections (`deck_noise=0`), `dot_percent=50`. Wall-clock **1630.6 s** (~27 min).
+
+| Dir | P1 W-D-L | Ends (control/lockout/TL/LV/elim) | Mean avg turns | Opp / self /game | Center opp / self |
+|---|---|---|---|---|---|
+| [`capture_modifiers/`](capture_modifiers/) | **49-7-52** | 41 / 18 / 2 / 47 (wins 42, draws 5) / 0 | **39.63** | 5.17 (558) / 5.38 (581) | 0.58 (63) / 0.10 (11) |
+
+Capture dest: **507** to bench (4.69/game), **632** to tokens (5.85/game). Mean tokens/side **3.09**, mean live bench/side **6.13** (4388 snapshots). Draws: 5 low-value + 2 turn-limit. Picker (P1 opening dots of 11): 98/108 games had 5 dots (46-7-45); 6 dots 1-0-5; 4 dots 2-0-1; 3 dots 0-0-1.
+
+Vs PR #40 [`work_budget_doubles_allowed/`](work_budget_doubles_allowed/) (**45-17-46**, 38/7/14/49/0, mean **60.29**): fewer draws (17→7), fewer turn-limits (14→2), more lockouts (7→18), games much shorter (60.29→39.63). Opp captures stay in band; self-captures rise (5.06→5.38) as dots recycle tiles onto the bench.
+
+## Historical: work budget, doubles allowed (PR #40)
+
+Same search budget and H2H shape, **before** 27-tile 7+4 draft, beads, and capture marks. Do not overwrite.
 
 | Dir | P1 W-D-L | Ends (control/lockout/TL/LV/elim) | Mean avg turns | Opp / self /game | Center opp / self |
 |---|---|---|---|---|---|
 | [`work_budget_doubles_allowed/`](work_budget_doubles_allowed/) | **45-17-46** | 38 / 7 / 14 / 49 (wins 46, draws 3) / 0 | **60.29** | 5.15 (556) / 5.06 (546) | 0.59 (64) / 0.16 (17) |
 
-Work-budget games run longer (more turn-limits and draws) than the time-based doubles-allowed log: that 1000 ms was 9 pairing threads on 4 cores, so each search got less than a full second of CPU. The work budget is a full single-thread 1000 ms. Captures and center pops stay in the same band. P1 W-D-L shifts toward more draws (8→17).
+Work-budget games on that package ran longer (more turn-limits and draws) than the earlier time-based doubles-allowed log: that 1000 ms was 9 pairing threads on 4 cores, so each search got less than a full second of CPU. The work budget is a full single-thread 1000 ms.
 
 ## Historical: time-based doubles allowed
 
