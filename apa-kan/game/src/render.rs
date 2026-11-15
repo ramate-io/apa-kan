@@ -600,7 +600,14 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 				let fill = rgb_of(visual::tile_rgb(color));
 				fill_tris(
 					img,
-					&visual::bead_chain_ring([c.0, c.1], rr, draw.bead_count, bead_r, pinch, 96),
+					&visual::bead_chain_ring(
+						[c.0, c.1],
+						rr,
+						draw.bead_count,
+						bead_r,
+						pinch,
+						visual::TILE_BEAD_SAMPLES,
+					),
 					fill,
 				);
 			} else {
@@ -632,38 +639,30 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			}
 		}
 	}
-	let fill = rgb_of(visual::owner_fill_rgb(tile.owner));
-	let lens =
-		draw.capture_plate_lens([c.0 as f32, c.1 as f32], r as f32, visual::CAPTURE_DOWN_IMAGE);
-	fill_polygon(img, &lens, fill);
+	let plate_arc =
+		draw.capture_plate_arc([c.0 as f32, c.1 as f32], r as f32, visual::CAPTURE_DOWN_IMAGE);
+	if plate_arc.len() >= 2 {
+		let pts: Vec<[f64; 2]> =
+			plate_arc.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+		stroke_polyline(
+			img,
+			&pts,
+			rgb_of(visual::plate_arc_rgb(tile.owner)),
+			f64::from(draw.plate_stroke),
+		);
+	}
 	let marks = visual::capture_mark_count(tile);
-	let dot_r = f64::from(draw.capture_mark_r(r as f32, marks));
 	for i in 0..marks {
-		let center = draw.capture_mark_pos(
+		let triangle = matches!(tile.capture, crate::game::CaptureMark::Triangle);
+		let poly = draw.capture_mark_poly(
 			[c.0 as f32, c.1 as f32],
 			r as f32,
 			i,
 			marks,
 			visual::CAPTURE_DOWN_IMAGE,
+			triangle,
 		);
-		let center = (f64::from(center[0]), f64::from(center[1]));
-		match tile.capture {
-			crate::game::CaptureMark::Dot => fill_circle(img, center, dot_r, primary),
-			crate::game::CaptureMark::Triangle => {
-				let pts = visual::capture_triangle_facing(
-					[center.0 as f32, center.1 as f32],
-					draw.capture_mark_r(r as f32, marks),
-					-1.0,
-				);
-				fill_triangle(
-					img,
-					(f64::from(pts[0][0]), f64::from(pts[0][1])),
-					(f64::from(pts[1][0]), f64::from(pts[1][1])),
-					(f64::from(pts[2][0]), f64::from(pts[2][1])),
-					primary,
-				);
-			}
-		}
+		fill_polygon(img, &poly, primary);
 	}
 }
 
@@ -751,6 +750,10 @@ fn fill_triangle(
 			let w0 = ((b.0 - px) * (c.1 - py) - (c.0 - px) * (b.1 - py)) / area;
 			let w1 = ((c.0 - px) * (a.1 - py) - (a.0 - px) * (c.1 - py)) / area;
 			let w2 = 1.0 - w0 - w1;
+			if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+				put(img, x, y, color, 1.0);
+				continue;
+			}
 			let d = (-w0).max(-w1).max(-w2);
 			let alpha = (0.55 - d * 8.0).clamp(0.0, 1.0);
 			if alpha > 0.0 {
@@ -920,7 +923,7 @@ mod tests {
 			!channel_near(px[0], fill[0], 18)
 				|| !channel_near(px[1], fill[1], 18)
 				|| !channel_near(px[2], fill[2], 18),
-			"last deck slot should show a capture mark on the vesica plate, not a blank face, got {px:?}"
+			"last deck slot should show a capture mark in the plate-arc band, not a blank face, got {px:?}"
 		);
 	}
 
@@ -1122,6 +1125,33 @@ mod tests {
 	}
 
 	#[test]
+	fn bead_pinches_stay_inked_at_board_scale() {
+		use crate::game::TileColor;
+		use crate::visual::{self, ViewLayout};
+		let layout = ViewLayout::from_window(1280.0, 800.0);
+		let peak = f64::from(visual::arc_bead_radius(layout.arc_width));
+		let pinch = f64::from(visual::bead_pinch(visual::arc_bead_radius(layout.arc_width)));
+		let period = visual::ARC_BEAD_SPACING_UNITS * f64::from(layout.scale);
+		let y = 24.5;
+		let pts: Vec<[f64; 2]> = (0..=220).map(|i| [f64::from(i), y]).collect();
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img = image::RgbaImage::from_pixel(240, 48, rgba(bg[0], bg[1], bg[2], 255));
+		fill_tris(
+			&mut img,
+			&visual::bead_chain_triangles(&pts, period, peak, pinch),
+			rgb_of(visual::tile_rgb(TileColor::Orange)),
+		);
+		for k in 1..=8 {
+			let x = (period * f64::from(k)).round() as u32;
+			let px = img.get_pixel(x, 24);
+			assert!(
+				px[0] > 80,
+				"pinch {k} at x={x} must stay connected at board scale, pixel={px:?} peak={peak:.2} pinch={pinch:.2}"
+			);
+		}
+	}
+
+	#[test]
 	fn last_capture_flash_paints_between_the_stacks() {
 		use crate::game::CaptureDest;
 		use crate::visual::{self, ViewLayout};
@@ -1179,7 +1209,9 @@ mod tests {
 		if !dir.is_dir() {
 			return;
 		}
-		use crate::game::{CaptureDest, RingType, RuleSet, TileColor, ZagMismatchCount};
+		use crate::game::{
+			CaptureDest, CaptureMark, Player, RingType, RuleSet, TileColor, ZagMismatchCount,
+		};
 		use crate::visual::{
 			demo_center_inner_pair, demo_hop_turn, demo_left_cluster, demo_midgame,
 			demo_midgame_capture_flash, demo_pair, demo_pair_with, demo_typed_pair,
@@ -1686,7 +1718,7 @@ mod tests {
 		write_cropped(
 			&demo_zag_tile(),
 			dir.join("edge_capture_marks.png"),
-			"dot/triangle marks on the vesica lens inside the tile",
+			"dot/triangle marks along the interior plate arc",
 			28.0,
 		);
 		write_cropped(
@@ -1698,9 +1730,136 @@ mod tests {
 		write_cropped(
 			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 3),
 			dir.join("bead_and_plate_tile.png"),
-			"connected bead chain and vesica thumb-plate",
+			"connected bead chain and stroked interior plate arc",
 			28.0,
 		);
+		{
+			let mut g = crate::game::Game::empty(RuleSet::default());
+			let dot = g
+				.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Bead)], 1, 3)
+				.with_capture(CaptureMark::Dot);
+			let tri = g
+				.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Bead)], 1, 3)
+				.with_capture(CaptureMark::Triangle);
+			write_tile_closeup(dot, dir.join("closeup_bead_plate_dot.png"), 880, 330.0);
+			write_tile_closeup(tri, dir.join("closeup_bead_plate_triangle.png"), 880, 330.0);
+			write_arc_bead_closeup(
+				&demo_typed_pair(
+					&[(TileColor::Orange, RingType::Bead)],
+					1,
+					&[(TileColor::Orange, RingType::Normal)],
+					1,
+				),
+				dir.join("closeup_bead_arc.png"),
+				dir.join("bead_arc_normal_zoom.png"),
+			);
+		}
+	}
+
+	fn write_tile_closeup(
+		tile: crate::game::Tile,
+		path: impl AsRef<std::path::Path>,
+		size: u32,
+		radius: f64,
+	) {
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img = image::RgbaImage::from_pixel(size, size, rgba(bg[0], bg[1], bg[2], 255));
+		let c = (f64::from(size) * 0.5, f64::from(size) * 0.5);
+		draw_tile(&mut img, c, radius, tile);
+		img.save(path.as_ref()).unwrap();
+	}
+
+	fn write_arc_bead_closeup(
+		game: &Game,
+		closeup: impl AsRef<std::path::Path>,
+		normal: impl AsRef<std::path::Path>,
+	) {
+		use crate::visual::ViewLayout;
+		let layout = ViewLayout::from_window(1280.0, 800.0);
+		let board = game.board();
+		let mut line: Option<Vec<[f64; 2]>> = None;
+		let mut color = crate::game::TileColor::Orange;
+		for arc in board.arcs() {
+			let paint = visual::arc_paint_with(
+				game.tile_at(arc.from),
+				game.tile_at(arc.to),
+				game.rules().zag_mismatch,
+			);
+			if !paint.has_bead_lane() {
+				continue;
+			}
+			let samples = arc.sample(visual::ARC_SAMPLES);
+			let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(&layout, *p)).collect();
+			let stripe_off = if visual::arc_touches_center(arc, board.center()) {
+				f64::from(layout.stripe_off_center)
+			} else {
+				f64::from(layout.stripe_off)
+			};
+			let lanes = paint.lane_offsets(visual::channel_lane_pitch(stripe_off));
+			let bead_lane = lanes[3].unwrap_or(0.0);
+			line = Some(visual::offset_polyline(&pts, bead_lane));
+			if let Some(c) = paint.bead_match {
+				color = c;
+			} else if let Some(c) = paint.beads_from.iter().copied().flatten().next() {
+				color = c;
+			}
+			break;
+		}
+		let pts = line.expect("bead arc for close-up");
+		let minx = pts.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+		let maxx = pts.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+		let miny = pts.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+		let maxy = pts.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+		let bw = (maxx - minx).max(1.0);
+		let bh = (maxy - miny).max(1.0);
+		let mag = (920.0 / bw).min(380.0 / bh);
+		let pad = 36.0;
+		let w = (bw * mag + 2.0 * pad).ceil() as u32;
+		let h = (bh * mag + 2.0 * pad).ceil() as u32;
+		let mapped: Vec<[f64; 2]> = pts
+			.iter()
+			.map(|p| [(p[0] - minx) * mag + pad, (p[1] - miny) * mag + pad])
+			.collect();
+		let peak = f64::from(visual::arc_bead_radius(layout.arc_width)) * mag;
+		let pinch = f64::from(visual::bead_pinch(visual::arc_bead_radius(layout.arc_width))) * mag;
+		let spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(layout.scale) * mag;
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img =
+			image::RgbaImage::from_pixel(w.max(8), h.max(8), rgba(bg[0], bg[1], bg[2], 255));
+		fill_tris(
+			&mut img,
+			&visual::bead_chain_triangles(&mapped, spacing, peak, pinch),
+			rgb_of(visual::tile_rgb(color)),
+		);
+		img.save(closeup.as_ref()).unwrap();
+		write_png_sized(
+			game,
+			&std::env::temp_dir().join("apa-kan-bead-arc-src.png"),
+			"bead arc",
+			1280,
+			800,
+		)
+		.unwrap();
+		let src = image::open(std::env::temp_dir().join("apa-kan-bead-arc-src.png"))
+			.unwrap()
+			.to_rgba8();
+		let pad = 18.0;
+		let nx = (minx - pad).max(0.0).floor() as u32;
+		let ny = (miny - pad).max(0.0).floor() as u32;
+		let nw =
+			((maxx + pad).min(f64::from(src.width() - 1)) - f64::from(nx)).ceil().max(8.0) as u32;
+		let nh =
+			((maxy + pad).min(f64::from(src.height() - 1)) - f64::from(ny)).ceil().max(8.0) as u32;
+		image::imageops::crop_imm(
+			&src,
+			nx,
+			ny,
+			nw.min(src.width() - nx),
+			nh.min(src.height() - ny),
+		)
+		.to_image()
+		.save(normal.as_ref())
+		.unwrap();
 	}
 
 	fn write_cropped(game: &Game, path: impl AsRef<std::path::Path>, caption: &str, pad: f32) {

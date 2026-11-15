@@ -1925,7 +1925,7 @@ fn spawn_tile_at(
 					draw.bead_count,
 					bead_r,
 					pinch,
-					96,
+					visual::TILE_BEAD_SAMPLES,
 				);
 				spawn_filled_tris(
 					commands,
@@ -1972,36 +1972,32 @@ fn spawn_tile_at(
 			}
 		}
 	}
-	let lens = draw.capture_plate_lens([pos.x, pos.y], radius, visual::CAPTURE_DOWN_BEVY);
-	spawn_filled_poly(commands, meshes, materials, &lens, fill, visual::Z_TILE_BAND);
+	let plate_arc = draw.capture_plate_arc([pos.x, pos.y], radius, visual::CAPTURE_DOWN_BEVY);
+	if plate_arc.len() >= 2 {
+		let pts: Vec<[f64; 2]> =
+			plate_arc.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+		spawn_stroke(
+			commands,
+			meshes,
+			materials,
+			&pts,
+			draw.plate_stroke,
+			rgb(visual::plate_arc_rgb(tile.owner)),
+			visual::Z_TILE_BAND,
+		);
+	}
 	let marks = visual::capture_mark_count(tile);
-	let dot_r = draw.capture_mark_r(radius, marks);
 	for i in 0..marks {
-		let at = draw.capture_mark_pos([pos.x, pos.y], radius, i, marks, visual::CAPTURE_DOWN_BEVY);
-		let z = visual::Z_TILE_DOT;
-		match tile.capture {
-			CaptureMark::Dot => {
-				commands.spawn((
-					DynamicView,
-					Mesh2d(meshes.add(Circle::new(dot_r))),
-					MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
-					Transform::from_translation(Vec2::new(at[0], at[1]).extend(z)),
-				));
-			}
-			CaptureMark::Triangle => {
-				let pts = visual::capture_triangle([0.0, 0.0], dot_r);
-				commands.spawn((
-					DynamicView,
-					Mesh2d(meshes.add(Triangle2d::new(
-						Vec2::new(pts[0][0], pts[0][1]),
-						Vec2::new(pts[1][0], pts[1][1]),
-						Vec2::new(pts[2][0], pts[2][1]),
-					))),
-					MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
-					Transform::from_translation(Vec2::new(at[0], at[1]).extend(z)),
-				));
-			}
-		}
+		let triangle = matches!(tile.capture, CaptureMark::Triangle);
+		let poly = draw.capture_mark_poly(
+			[pos.x, pos.y],
+			radius,
+			i,
+			marks,
+			visual::CAPTURE_DOWN_BEVY,
+			triangle,
+		);
+		spawn_filled_poly(commands, meshes, materials, &poly, primary, visual::Z_TILE_DOT);
 	}
 	if highlight {
 		spawn_ring(

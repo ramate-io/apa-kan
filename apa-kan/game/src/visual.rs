@@ -74,18 +74,24 @@ pub const MAX_EDGE_BEADS: usize = MAX_TILE_BEADS * 2;
 pub const TILE_BEAD_COUNT: u32 = 12;
 /// Peak half-width of a tile-ring bead chain, in 22px-tile units.
 /// Modest relative to a normal ring stroke (`2.2`).
-pub const TILE_BEAD_R: f32 = 1.15;
+pub const TILE_BEAD_R: f32 = 1.85;
 /// Pinch half-width as a fraction of the peak. Thin, but the strand
 /// never breaks — pinch points still touch.
-pub const BEAD_PINCH_SCALE: f32 = 0.34;
-/// Floor on pinch half-width so a connected strand stays visible.
-pub const BEAD_PINCH_MIN: f32 = 0.55;
+pub const BEAD_PINCH_SCALE: f32 = 0.52;
+/// Floor on pinch half-width so a connected strand covers a pixel at
+/// board scale (~25px tiles, ~3px arcs).
+pub const BEAD_PINCH_MIN: f32 = 1.15;
 /// Board-unit spacing between bead *swells* along an arc lane (peak to peak).
 pub const ARC_BEAD_SPACING_UNITS: f64 = 0.10;
 /// Arc-lane bead peak half-width as a fraction of the arc stroke. The
 /// previous `layout.scale * TILE_BEAD_R * 0.35` formula used board-pixel
 /// scale and drew ~40px blobs that swallowed the edge.
-pub const ARC_BEAD_RADIUS_SCALE: f32 = 0.52;
+pub const ARC_BEAD_RADIUS_SCALE: f32 = 0.78;
+/// Samples along a tile bead-chain ring so pinches stay smooth.
+pub const TILE_BEAD_SAMPLES: u32 = 192;
+/// At least this many samples per swell so a pinch is a short ribbon,
+/// not a single vanishing quad.
+pub const BEAD_SAMPLES_PER_PERIOD: f64 = 8.0;
 /// Packed unmatched **normal** colors on one half of a conflict diamond.
 pub const MAX_HITCH_COLORS: usize = 3;
 pub const ARC_SAMPLES: usize = 96;
@@ -127,7 +133,7 @@ pub const Z_ARC_OVER: f32 = 0.08;
 pub const Z_NODE: f32 = 1.0;
 pub const Z_TILE: f32 = 2.0;
 pub const Z_TILE_RING: f32 = 2.15;
-/// Vesica thumb-plate covering the bottom of the rings, above ring ink.
+/// Stroked interior plate arc, above ring ink.
 pub const Z_TILE_BAND: f32 = 2.25;
 pub const Z_TILE_DOT: f32 = 2.3;
 pub const Z_HIGHLIGHT: f32 = 3.0;
@@ -186,15 +192,20 @@ pub const CAPTURE_GLOW_INNER_RGB: [f32; 3] = [0.99, 0.94, 0.82];
 /// Rim on a blank budget token so dark P2 blanks stay visible.
 pub const BLANK_TOKEN_RIM_RGB: [f32; 3] = [0.55, 0.56, 0.58];
 /// Plate circle radius as a fraction of the tile radius. Similar size,
-/// so the overlap is a classic vesica / lens along the bottom edge.
+/// so the interior arc cuts a classic lens-height band along the bottom.
 pub const TILE_PLATE_R_SCALE: f32 = 1.0;
 /// Distance from the tile center to the plate-circle center, as a
-/// fraction of the tile radius. For equal radii the lens height is
-/// `2R − sep·R = 0.5 R`, a quarter of the tile's height (`2R`).
+/// fraction of the tile radius. For equal radii the band between the
+/// interior plate arc and the tile's bottom edge is `0.5 R`.
 pub const TILE_PLATE_SEP: f32 = 1.50;
-/// Samples per arc of the vesica outline (two arcs between the
-/// intersection points).
-pub const TILE_PLATE_SAMPLES: u32 = 16;
+/// Samples along the interior plate arc (intersection to intersection).
+pub const TILE_PLATE_SAMPLES: u32 = 48;
+/// Plate-arc stroke in 22px-tile units. Thinner than a color ring.
+pub const TILE_PLATE_STROKE: f32 = 1.55;
+/// Samples around a capture-dot warped through plate polar coordinates.
+pub const TILE_MARK_DOT_SAMPLES: u32 = 28;
+/// Samples along each triangle edge so the sides follow the plate arc.
+pub const TILE_MARK_TRI_EDGE_SAMPLES: u32 = 10;
 
 /// Unusable surplus or unfilled blanks: opaque owner-fill face, rim only.
 pub fn budget_slot_is_blank_face(token: &BudgetToken, index: usize, usable: usize) -> bool {
@@ -852,6 +863,7 @@ pub struct TileRingDraw {
 	pub bead_count: u32,
 	pub plate_r: f32,
 	pub plate_sep: f32,
+	pub plate_stroke: f32,
 }
 
 impl TileRingDraw {
@@ -873,6 +885,7 @@ impl TileRingDraw {
 			bead_count: TILE_BEAD_COUNT,
 			plate_r: radius * TILE_PLATE_R_SCALE,
 			plate_sep: radius * TILE_PLATE_SEP,
+			plate_stroke: (TILE_PLATE_STROKE * scale).max(1.15),
 		}
 	}
 
@@ -886,28 +899,14 @@ impl TileRingDraw {
 		[tile_center[0] + down[0] * self.plate_sep, tile_center[1] + down[1] * self.plate_sep]
 	}
 
-	/// Lens height along `down`: how far the vesica reaches into the tile
-	/// from the bottom edge.
-	pub fn plate_lens_height(self, tile_radius: f32) -> f32 {
+	/// Band height at the midpoint: plate arc to the tile's bottom edge.
+	pub fn plate_band_height(self, tile_radius: f32) -> f32 {
 		(tile_radius + self.plate_r - self.plate_sep).max(0.0)
 	}
 
-	/// Distance from the tile center to the vesica's waist (the chord
-	/// through the two intersection points).
-	pub fn plate_waist(self, tile_radius: f32) -> f32 {
-		(self.plate_sep * self.plate_sep + tile_radius * tile_radius - self.plate_r * self.plate_r)
-			/ (2.0 * self.plate_sep.max(1e-6))
-	}
-
-	/// Half-width of that waist chord.
-	pub fn plate_chord_half(self, tile_radius: f32) -> f32 {
-		let a = self.plate_waist(tile_radius);
-		(tile_radius * tile_radius - a * a).max(0.0).sqrt()
-	}
-
-	/// Capture-mark radius sized to fill the lens for `count` marks (1–3).
+	/// Capture-mark radius sized to the bottom band for `count` marks (1–3).
 	pub fn capture_mark_r(self, tile_radius: f32, count: u8) -> f32 {
-		let h = self.plate_lens_height(tile_radius);
+		let h = self.plate_band_height(tile_radius);
 		let k = match count {
 			0 | 1 => 0.38,
 			2 => 0.30,
@@ -916,27 +915,36 @@ impl TileRingDraw {
 		(h * k).max(2.2 * self.scale.max(0.4))
 	}
 
-	/// World-or-image offset of capture mark `i` on the vesica waist,
-	/// perpendicular to `down`. Marks stay inside the tile.
-	pub fn capture_mark_offset(
+	/// Polar frame of capture mark `i`: plate center, angle, and radius
+	/// from that center. Marks sit in the band between the interior plate
+	/// arc and the tile's bottom edge.
+	pub fn capture_mark_frame(
 		self,
+		tile_center: [f32; 2],
 		tile_radius: f32,
 		i: u8,
 		count: u8,
 		down: [f32; 2],
-	) -> [f32; 2] {
-		let a = self.plate_waist(tile_radius);
-		let waist = [down[0] * a, down[1] * a];
-		let along = [-down[1], down[0]];
+	) -> Option<([f32; 2], f32, f32)> {
+		let plate = self.plate_center(tile_center, down);
+		let Some((p0, p1)) = circle_intersections(tile_center, tile_radius, plate, self.plate_r)
+		else {
+			return None;
+		};
+		let mid = ang_of(plate, tile_center);
+		let half = ang_dist(mid, ang_of(plate, p0)).min(ang_dist(mid, ang_of(plate, p1)));
 		let n = count.max(1);
-		let half = self.plate_chord_half(tile_radius);
 		let span = match n {
 			1 => 0.0,
-			2 => half * 0.72,
-			_ => half * 0.90,
+			2 => half * 0.50,
+			_ => half * 0.55,
 		};
 		let t = if n == 1 { 0.0 } else { -0.5 + f32::from(i) / f32::from(n - 1) };
-		[waist[0] + along[0] * span * t, waist[1] + along[1] * span * t]
+		let theta = mid + span * 2.0 * t;
+		let rho_near = ray_circle_near(plate, theta, tile_center, tile_radius)?;
+		let band = (self.plate_r - rho_near).max(0.0);
+		let rho = rho_near + band * 0.52;
+		Some((plate, theta, rho))
 	}
 
 	pub fn capture_mark_pos(
@@ -947,25 +955,58 @@ impl TileRingDraw {
 		count: u8,
 		down: [f32; 2],
 	) -> [f32; 2] {
-		let off = self.capture_mark_offset(tile_radius, i, count, down);
-		[center[0] + off[0], center[1] + off[1]]
+		match self.capture_mark_frame(center, tile_radius, i, count, down) {
+			Some((plate, theta, rho)) => plate_polar(plate, theta, rho),
+			None => center,
+		}
 	}
 
-	/// Vesica (lens) of the tile disc and the plate circle. Entirely inside
-	/// the tile; the rest of the plate circle is not drawn.
-	pub fn capture_plate_lens(
+	/// Interior arc of the plate circle: the single stroke that lies
+	/// inside the tile, ending on the two intersection points.
+	pub fn capture_plate_arc(
 		self,
 		tile_center: [f32; 2],
 		tile_radius: f32,
 		down: [f32; 2],
 	) -> Vec<[f32; 2]> {
-		vesica_lens(
+		let plate = self.plate_center(tile_center, down);
+		let Some((i0, i1)) = circle_intersections(tile_center, tile_radius, plate, self.plate_r)
+		else {
+			return Vec::new();
+		};
+		sample_arc_inside(
+			plate,
+			self.plate_r,
+			ang_of(plate, i0),
+			ang_of(plate, i1),
 			tile_center,
 			tile_radius,
-			self.plate_center(tile_center, down),
-			self.plate_r,
 			TILE_PLATE_SAMPLES,
 		)
+	}
+
+	/// Dot or triangle built in plate polar coordinates so the shape
+	/// follows the arc's tangent and normal.
+	pub fn capture_mark_poly(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		i: u8,
+		count: u8,
+		down: [f32; 2],
+		triangle: bool,
+	) -> Vec<[f32; 2]> {
+		let Some((plate, theta, rho)) =
+			self.capture_mark_frame(tile_center, tile_radius, i, count, down)
+		else {
+			return Vec::new();
+		};
+		let r = self.capture_mark_r(tile_radius, count);
+		if triangle {
+			capture_triangle_on_arc(plate, theta, rho, r)
+		} else {
+			capture_dot_on_arc(plate, theta, rho, r)
+		}
 	}
 }
 
@@ -1009,6 +1050,84 @@ fn inside_circle(p: [f32; 2], c: [f32; 2], r: f32) -> bool {
 	dx * dx + dy * dy <= r * r + 1e-3
 }
 
+fn ang_dist(a: f32, b: f32) -> f32 {
+	use std::f32::consts::PI;
+	let mut d = (b - a).abs();
+	if d > PI {
+		d = 2.0 * PI - d;
+	}
+	d
+}
+
+/// Smallest positive hit of the ray `origin + t·(cos θ, sin θ)` on circle `c,r`.
+fn ray_circle_near(origin: [f32; 2], theta: f32, c: [f32; 2], r: f32) -> Option<f32> {
+	let ux = theta.cos();
+	let uy = theta.sin();
+	let dx = origin[0] - c[0];
+	let dy = origin[1] - c[1];
+	let b = 2.0 * (dx * ux + dy * uy);
+	let cc = dx * dx + dy * dy - r * r;
+	let disc = b * b - 4.0 * cc;
+	if disc < 0.0 {
+		return None;
+	}
+	let s = disc.sqrt();
+	let t0 = (-b - s) * 0.5;
+	let t1 = (-b + s) * 0.5;
+	match (t0 > 1e-4, t1 > 1e-4) {
+		(true, true) => Some(t0.min(t1)),
+		(true, false) => Some(t0),
+		(false, true) => Some(t1),
+		_ => None,
+	}
+}
+
+fn plate_polar(origin: [f32; 2], theta: f32, rho: f32) -> [f32; 2] {
+	[origin[0] + rho * theta.cos(), origin[1] + rho * theta.sin()]
+}
+
+/// `(s, n)` is arc-length along the plate tangent and radius away from the
+/// plate center. Mapping through polar coords bends the shape with the ring.
+fn plate_local_to_world(origin: [f32; 2], theta: f32, rho: f32, s: f32, n: f32) -> [f32; 2] {
+	let th = theta + s / rho.max(1e-4);
+	plate_polar(origin, th, (rho + n).max(0.05))
+}
+
+fn capture_dot_on_arc(plate: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
+	use std::f32::consts::TAU;
+	let n = TILE_MARK_DOT_SAMPLES.max(8);
+	(0..n)
+		.map(|i| {
+			let a = TAU * i as f32 / n as f32;
+			plate_local_to_world(plate, theta, rho, r * a.cos(), r * a.sin())
+		})
+		.collect()
+}
+
+fn capture_triangle_on_arc(plate: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
+	let h = r * 1.25;
+	let w = r * 1.15;
+	// Tip along +radial (the arc normal pointing toward the tile center).
+	let verts = [[0.0, h], [-w, -h * 0.55], [w, -h * 0.55]];
+	let m = TILE_MARK_TRI_EDGE_SAMPLES.max(4);
+	let mut out = Vec::with_capacity((m as usize) * 3);
+	for i in 0..3 {
+		let a = verts[i];
+		let b = verts[(i + 1) % 3];
+		for k in 0..m {
+			let t = k as f32 / m as f32;
+			out.push(plate_local_to_world(
+				plate,
+				theta,
+				rho,
+				a[0] + (b[0] - a[0]) * t,
+				a[1] + (b[1] - a[1]) * t,
+			));
+		}
+	}
+	out
+}
+
 /// Arc of `c,r` from `a_from` to `a_to` whose interior sits inside the
 /// other circle. Includes both endpoints.
 fn sample_arc_inside(
@@ -1045,29 +1164,6 @@ fn sample_arc_inside(
 		.collect()
 }
 
-/// Lens / vesica of two circles: the intersection only. Built from the two
-/// interior arcs between the intersection points, so nothing hangs outside
-/// either disc.
-pub fn vesica_lens(c0: [f32; 2], r0: f32, c1: [f32; 2], r1: f32, samples: u32) -> Vec<[f32; 2]> {
-	let Some((i0, i1)) = circle_intersections(c0, r0, c1, r1) else {
-		return Vec::new();
-	};
-	let a0_from = ang_of(c0, i0);
-	let a0_to = ang_of(c0, i1);
-	let a1_from = ang_of(c1, i1);
-	let a1_to = ang_of(c1, i0);
-	let mut pts = sample_arc_inside(c0, r0, a0_from, a0_to, c1, r1, samples);
-	let mut other = sample_arc_inside(c1, r1, a1_from, a1_to, c0, r0, samples);
-	if other.len() > 1 {
-		other.remove(0);
-	}
-	if other.last().is_some() {
-		other.pop();
-	}
-	pts.extend(other);
-	pts
-}
-
 /// Fan triangulation of a simple closed polygon (bead spindle, etc.).
 pub fn polygon_triangles(pts: &[[f32; 2]]) -> Vec<[[f32; 2]; 3]> {
 	if pts.len() < 3 {
@@ -1089,22 +1185,6 @@ pub fn polygon_triangles(pts: &[[f32; 2]]) -> Vec<[[f32; 2]; 3]> {
 		out.push([c, last, first]);
 	}
 	out
-}
-
-/// Equilateral-ish triangle. `y_up` is +1 in Bevy (tip toward +Y) and −1 in
-/// PNG image space so the mark still points toward the top of the window.
-pub fn capture_triangle(center: [f32; 2], r: f32) -> [[f32; 2]; 3] {
-	capture_triangle_facing(center, r, 1.0)
-}
-
-pub fn capture_triangle_facing(center: [f32; 2], r: f32, y_up: f32) -> [[f32; 2]; 3] {
-	let h = r * 1.25;
-	let w = r * 1.15;
-	[
-		[center[0], center[1] + y_up * h],
-		[center[0] - w, center[1] - y_up * h * 0.55],
-		[center[0] + w, center[1] - y_up * h * 0.55],
-	]
 }
 
 pub fn capture_mark_count(tile: Tile) -> u8 {
@@ -1134,6 +1214,14 @@ pub fn owner_fill_rgb(player: Player) -> [f32; 3] {
 	match player {
 		Player::One => P1_FILL_RGB,
 		Player::Two => P2_FILL_RGB,
+	}
+}
+
+/// Plate-arc stroke: darker on cream P1 tiles, lighter on dark P2 tiles.
+pub fn plate_arc_rgb(player: Player) -> [f32; 3] {
+	match player {
+		Player::One => [0.38, 0.34, 0.28],
+		Player::Two => [0.78, 0.74, 0.64],
 	}
 }
 
@@ -1683,6 +1771,35 @@ fn polyline_is_closed(pts: &[[f64; 2]]) -> bool {
 	dx * dx + dy * dy < 1e-8
 }
 
+fn densify_polyline(pts: &[[f64; 2]], max_seg: f64) -> Vec<[f64; 2]> {
+	if pts.len() < 2 || max_seg <= 1e-9 {
+		return pts.to_vec();
+	}
+	let closed = polyline_is_closed(pts);
+	let last = if closed { pts.len() - 1 } else { pts.len() };
+	let mut out = Vec::new();
+	let count = if closed { last } else { last.saturating_sub(1) };
+	for i in 0..count {
+		let a = pts[i];
+		let b = if closed && i + 1 == last { pts[0] } else { pts[i + 1] };
+		out.push(a);
+		let dx = b[0] - a[0];
+		let dy = b[1] - a[1];
+		let seg = (dx * dx + dy * dy).sqrt();
+		let steps = (seg / max_seg).floor().max(1.0) as i32;
+		for k in 1..steps {
+			let t = f64::from(k) / f64::from(steps);
+			out.push([a[0] + dx * t, a[1] + dy * t]);
+		}
+	}
+	if closed {
+		out.push(pts[0]);
+	} else if let Some(&p) = pts.last() {
+		out.push(p);
+	}
+	out
+}
+
 fn bead_chain_sides(
 	pts: &[[f64; 2]],
 	period: f64,
@@ -1692,7 +1809,9 @@ fn bead_chain_sides(
 	if pts.len() < 2 || half_w <= 0.0 || pinch < 0.0 {
 		return None;
 	}
-	let closed = polyline_is_closed(pts);
+	let max_seg = (period / BEAD_SAMPLES_PER_PERIOD).max(0.55);
+	let pts = densify_polyline(pts, max_seg);
+	let closed = polyline_is_closed(&pts);
 	let n = if closed { pts.len() - 1 } else { pts.len() };
 	if n < 2 {
 		return None;
@@ -1771,7 +1890,7 @@ pub fn bead_chain_ring(
 	samples: u32,
 ) -> Vec<[[f32; 2]; 3]> {
 	let n_beads = n_beads.max(3);
-	let rim = circle_polyline(center, radius, samples.max(48));
+	let rim = circle_polyline(center, radius, samples.max(TILE_BEAD_SAMPLES));
 	let period = 2.0 * PI * radius / f64::from(n_beads);
 	bead_chain_triangles(&rim, period, half_w, pinch)
 }
@@ -3845,19 +3964,33 @@ mod tests {
 	}
 
 	#[test]
-	fn capture_marks_sit_on_the_vesica_lens_inside_the_tile() {
+	fn capture_marks_follow_the_interior_plate_arc() {
 		let r = 22.0;
 		let draw = TileRingDraw::for_radius(r);
-		let plate = draw.plate_center([0.0, 0.0], CAPTURE_DOWN_BEVY);
-		let h = draw.plate_lens_height(r);
-		assert!((h - r * 0.5).abs() < 0.2, "lens height should be ~quarter of the tile, h={h}");
-		let lens = draw.capture_plate_lens([0.0, 0.0], r, CAPTURE_DOWN_BEVY);
-		assert!(lens.len() > 8, "vesica needs both arcs");
-		for p in &lens {
+		let tile = [0.0, 0.0];
+		let plate = draw.plate_center(tile, CAPTURE_DOWN_BEVY);
+		let h = draw.plate_band_height(r);
+		assert!((h - r * 0.5).abs() < 0.2, "band height should be ~quarter of the tile, h={h}");
+		let arc = draw.capture_plate_arc(tile, r, CAPTURE_DOWN_BEVY);
+		assert!(arc.len() > 8, "plate arc needs the interior span");
+		let first = arc.first().copied().unwrap();
+		let last = arc.last().copied().unwrap();
+		assert!(
+			(first[0].hypot(first[1]) - r).abs() < 0.2,
+			"arc must start on the tile edge, {first:?}"
+		);
+		assert!(
+			(last[0].hypot(last[1]) - r).abs() < 0.2,
+			"arc must end on the tile edge, {last:?}"
+		);
+		for p in &arc {
 			let dist = p[0].hypot(p[1]);
-			assert!(dist <= r + 0.15, "lens must stay inside the tile, {p:?} dist={dist}");
+			assert!(dist <= r + 0.15, "arc must stay inside the tile, {p:?} dist={dist}");
 			let d_plate = (p[0] - plate[0]).hypot(p[1] - plate[1]);
-			assert!(d_plate <= draw.plate_r + 0.15, "lens must stay inside the plate circle");
+			assert!(
+				(d_plate - draw.plate_r).abs() < 0.2,
+				"arc must lie on the plate circle, d={d_plate}"
+			);
 		}
 		for n in 1..=3u8 {
 			let mark_r = draw.capture_mark_r(r, n);
@@ -3865,16 +3998,35 @@ mod tests {
 				mark_r > 2.2,
 				"marks must be clearly bigger than the old 1.45, n={n} r={mark_r}"
 			);
-			assert!(mark_r * 2.0 < h * 1.05, "marks must fit in the lens height, n={n}");
+			assert!(mark_r * 2.0 < h * 1.05, "marks must fit in the bottom band, n={n}");
 			for i in 0..n {
-				let p = draw.capture_mark_pos([0.0, 0.0], r, i, n, CAPTURE_DOWN_BEVY);
+				let p = draw.capture_mark_pos(tile, r, i, n, CAPTURE_DOWN_BEVY);
 				let dist = p[0].hypot(p[1]);
-				assert!(dist < r - mark_r * 0.2, "mark {i}/{n} must stay inside the tile, {p:?}");
+				assert!(dist < r - mark_r * 0.15, "mark {i}/{n} must stay inside the tile, {p:?}");
 				assert!(dist > r * 0.45, "mark {i}/{n} must leave the center free, dist={dist}");
 				let d_plate = (p[0] - plate[0]).hypot(p[1] - plate[1]);
-				assert!(d_plate < draw.plate_r, "mark {i}/{n} must sit in the plate circle");
+				assert!(
+					d_plate < draw.plate_r,
+					"mark {i}/{n} must sit in the band (inside the plate circle)"
+				);
+				let poly = draw.capture_mark_poly(tile, r, i, n, CAPTURE_DOWN_BEVY, true);
+				assert!(poly.len() > 6, "warped triangle is a sampled polygon");
+				let tip = poly[0];
+				let d_tip = (tip[0] - plate[0]).hypot(tip[1] - plate[1]);
+				assert!(d_tip > d_plate, "triangle tip must point along the outward arc normal");
 			}
 		}
+		let side = draw.capture_mark_poly(tile, r, 0, 3, CAPTURE_DOWN_BEVY, true);
+		let frame = draw.capture_mark_frame(tile, r, 0, 3, CAPTURE_DOWN_BEVY).unwrap();
+		let tip = side[0];
+		let vx = tip[0] - frame.0[0];
+		let vy = tip[1] - frame.0[1];
+		let down = CAPTURE_DOWN_BEVY;
+		let cross = vx * down[1] - vy * down[0];
+		assert!(
+			cross.abs() > 1.0,
+			"a side triangle must rotate with the arc, not point straight up, cross={cross}"
+		);
 		let layout = ViewLayout::from_window(1280.0, 800.0);
 		let bead = arc_bead_radius(layout.arc_width);
 		assert!(
@@ -3884,7 +4036,10 @@ mod tests {
 		);
 		assert!(bead < 4.0, "arc beads must not dominate the edge, got {bead}");
 		let pinch = bead_pinch(bead);
-		assert!(pinch > 0.4, "pinch must stay connected, pinch={pinch}");
+		assert!(
+			pinch >= 1.1,
+			"pinch must cover a pixel at board scale so the chain stays connected, pinch={pinch}"
+		);
 		assert!(pinch < bead, "pinch must be thinner than the swell");
 	}
 
