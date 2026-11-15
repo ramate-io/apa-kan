@@ -245,10 +245,12 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		let bead_lane = lanes[3].unwrap_or(0.0);
 		let bead_spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(layout.scale);
 		let bead_r = f64::from(visual::arc_bead_radius(layout.arc_width));
+		let half_len = f64::from(visual::bead_half_len(bead_r as f32));
 		if let Some(color) = paint.bead_match {
 			let line = visual::offset_polyline(&pts, bead_lane);
-			for p in visual::bead_centers_along(&line, bead_spacing) {
-				fill_circle(img, (p[0], p[1]), bead_r, rgb_of(visual::tile_rgb(color)));
+			let fill = rgb_of(visual::tile_rgb(color));
+			for poly in visual::bead_spindles_along(&line, bead_spacing, bead_r, half_len) {
+				fill_polygon(img, &poly, fill);
 			}
 		}
 		let n = paint.bead_from_count() + paint.bead_to_count() + paint.bead_mid_count();
@@ -265,8 +267,9 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			};
 			let line =
 				visual::offset_polyline(&pts, bead_lane + fan.get(i).copied().unwrap_or(0.0));
-			for p in visual::bead_centers_along(&line, bead_spacing) {
-				fill_circle(img, (p[0], p[1]), bead_r, rgb_of(visual::tile_rgb(color)));
+			let fill = rgb_of(visual::tile_rgb(color));
+			for poly in visual::bead_spindles_along(&line, bead_spacing, bead_r, half_len) {
+				fill_polygon(img, &poly, fill);
 			}
 			i += 1;
 		}
@@ -597,8 +600,15 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
 			} else if tile.stroke_is_bead(k) {
 				let bead_r = f64::from(draw.bead_r);
-				for p in visual::bead_ring_centers([c.0, c.1], rr, draw.bead_count) {
-					fill_circle(img, (p[0], p[1]), bead_r, rgb_of(visual::tile_rgb(color)));
+				let fill = rgb_of(visual::tile_rgb(color));
+				for poly in visual::bead_ring_spindles(
+					[c.0, c.1],
+					rr,
+					draw.bead_count,
+					bead_r,
+					f64::from(visual::bead_half_len(draw.bead_r)),
+				) {
+					fill_polygon(img, &poly, fill);
 				}
 			} else {
 				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
@@ -629,24 +639,19 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			}
 		}
 	}
-	let band = visual::capture_band_ring(
-		[c.0 as f32, c.1 as f32],
-		r as f32,
-		draw,
-		visual::CAPTURE_DOWN_IMAGE,
-	);
 	let fill = rgb_of(visual::owner_fill_rgb(tile.owner));
-	for tri in visual::polygon_triangles(&band) {
-		fill_triangle(
-			img,
-			(f64::from(tri[0][0]), f64::from(tri[0][1])),
-			(f64::from(tri[1][0]), f64::from(tri[1][1])),
-			(f64::from(tri[2][0]), f64::from(tri[2][1])),
-			fill,
-		);
-	}
+	let plate = draw.plate_center([c.0 as f32, c.1 as f32], r as f32, visual::CAPTURE_DOWN_IMAGE);
+	let plate_c = (f64::from(plate[0]), f64::from(plate[1]));
+	fill_circle(img, plate_c, f64::from(draw.plate_r), fill);
+	stroke_circle(
+		img,
+		plate_c,
+		f64::from(draw.plate_r),
+		rgb_of(visual::BLANK_TOKEN_RIM_RGB),
+		f64::from(draw.plate_rim),
+	);
 	let marks = visual::capture_mark_count(tile);
-	let dot_r = f64::from(draw.dot_r);
+	let dot_r = f64::from(draw.capture_mark_r(marks));
 	for i in 0..marks {
 		let center = draw.capture_mark_pos(
 			[c.0 as f32, c.1 as f32],
@@ -661,7 +666,7 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			crate::game::CaptureMark::Triangle => {
 				let pts = visual::capture_triangle_facing(
 					[center.0 as f32, center.1 as f32],
-					draw.dot_r,
+					draw.capture_mark_r(marks),
 					-1.0,
 				);
 				fill_triangle(
@@ -720,6 +725,18 @@ fn put(img: &mut RgbaImage, x: i32, y: i32, color: Rgba<u8>, a: f64) {
 		return;
 	}
 	blend(&mut img.get_pixel_mut(x as u32, y as u32), color, a);
+}
+
+fn fill_polygon(img: &mut RgbaImage, pts: &[[f32; 2]], color: Rgba<u8>) {
+	for tri in visual::polygon_triangles(pts) {
+		fill_triangle(
+			img,
+			(f64::from(tri[0][0]), f64::from(tri[0][1])),
+			(f64::from(tri[1][0]), f64::from(tri[1][1])),
+			(f64::from(tri[2][0]), f64::from(tri[2][1])),
+			color,
+		);
+	}
 }
 
 fn fill_triangle(
@@ -913,7 +930,7 @@ mod tests {
 			!channel_near(px[0], fill[0], 18)
 				|| !channel_near(px[1], fill[1], 18)
 				|| !channel_near(px[2], fill[2], 18),
-			"last deck slot should show a capture mark on the bottom band, not a blank face, got {px:?}"
+			"last deck slot should show a capture mark on the thumb-plate, not a blank face, got {px:?}"
 		);
 	}
 
@@ -1104,7 +1121,10 @@ mod tests {
 			visual::capture_mark_count(tile),
 			visual::CAPTURE_DOWN_IMAGE,
 		);
-		assert!(mark[1] > p[1] + layout.tile_radius * 0.4, "PNG mark sits toward the bottom");
+		assert!(
+			mark[1] > p[1] + layout.tile_radius,
+			"PNG mark sits on the thumb-plate below the tile"
+		);
 	}
 
 	#[test]
@@ -1607,7 +1627,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_bead_bomb_vs_braid.png"),
-			"bead lane: unmatched orange beads bomb a non-matching braid",
+			"bead lane: unmatched orange spindles bomb a non-matching braid",
 			48.0,
 		);
 		write_cropped(
@@ -1618,7 +1638,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_bead_match.png"),
-			"bead match: one dotted match plus the orange normal highway",
+			"bead match: tapered spindles plus the orange normal highway",
 			48.0,
 		);
 		write_png_sized(
@@ -1672,8 +1692,14 @@ mod tests {
 		write_cropped(
 			&demo_zag_tile(),
 			dir.join("edge_capture_marks.png"),
-			"dot/triangle marks on the bottom tile arc",
-			28.0,
+			"dot/triangle marks on the thumb-plate below the tile",
+			36.0,
+		);
+		write_cropped(
+			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 2),
+			dir.join("bead_ring_tile.png"),
+			"tile bead ring as tapered spindles",
+			36.0,
 		);
 	}
 
@@ -1720,7 +1746,10 @@ mod tests {
 				continue;
 			}
 			let p = layout.board_to_image(board.position(id));
+			let draw = crate::visual::TileRingDraw::for_radius(layout.tile_radius);
 			bump(p[0], p[1], layout.tile_radius + pad, &mut minx, &mut miny, &mut maxx, &mut maxy);
+			let hang = draw.plate_below + draw.plate_r;
+			bump(p[0], p[1] + hang, pad.max(2.0), &mut minx, &mut miny, &mut maxx, &mut maxy);
 		}
 		for arc in board.arcs() {
 			if game.tile_at(arc.from).is_none() && game.tile_at(arc.to).is_none() {

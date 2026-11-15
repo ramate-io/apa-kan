@@ -66,19 +66,25 @@ pub const ZAG_LANE_SPACING_SCALE: f64 = 1.55;
 pub const MAX_TILE_ZAGS: usize = 3;
 /// Two-ended SUM can ink every hitting zag on both tiles (3 + 3).
 pub const MAX_EDGE_ZAGS: usize = MAX_TILE_ZAGS * 2;
-/// Small discs around a bead ring. Same slot count as zag overlays.
+/// Bead-ring slots on a tile. Same slot count as zag overlays.
 pub const MAX_TILE_BEADS: usize = 3;
 /// Unmatched bead rings on both tiles of an edge (3 + 3).
 pub const MAX_EDGE_BEADS: usize = MAX_TILE_BEADS * 2;
-/// Dots on a tile bead ring.
+/// Spindles on a tile bead ring.
 pub const TILE_BEAD_COUNT: u32 = 12;
-/// Bead disc radius in 22px-tile units.
+/// Mid-span half-width of a tile-ring bead spindle, in 22px-tile units.
+/// Modest relative to a normal ring stroke (`2.2`).
 pub const TILE_BEAD_R: f32 = 1.15;
-/// Board-unit spacing between bead discs along an arc lane.
+/// Tip-to-center length as a multiple of mid-span half-width. Elongated
+/// lens / spindle along the path; thin at both ends, widest in the middle.
+pub const BEAD_SPINDLE_ASPECT: f32 = 2.35;
+/// Samples per side of a bead spindle (plus the two tips).
+pub const BEAD_SPINDLE_SAMPLES: u32 = 10;
+/// Board-unit spacing between bead spindles along an arc lane.
 pub const ARC_BEAD_SPACING_UNITS: f64 = 0.10;
-/// Arc-lane bead radius as a fraction of the arc stroke. The previous
-/// `layout.scale * TILE_BEAD_R * 0.35` formula used board-pixel scale and
-/// drew ~40px blobs that swallowed the edge.
+/// Arc-lane bead mid-span half-width as a fraction of the arc stroke. The
+/// previous `layout.scale * TILE_BEAD_R * 0.35` formula used board-pixel
+/// scale and drew ~40px blobs that swallowed the edge.
 pub const ARC_BEAD_RADIUS_SCALE: f32 = 0.52;
 /// Packed unmatched **normal** colors on one half of a conflict diamond.
 pub const MAX_HITCH_COLORS: usize = 3;
@@ -121,9 +127,10 @@ pub const Z_ARC_OVER: f32 = 0.08;
 pub const Z_NODE: f32 = 1.0;
 pub const Z_TILE: f32 = 2.0;
 pub const Z_TILE_RING: f32 = 2.15;
-/// Owner-fill band covering the bottom of the rings so capture marks sit
-/// on empty tile face, not on ring ink.
+/// Thumb-plate disc overlapping the bottom of the tile, above the rings.
 pub const Z_TILE_BAND: f32 = 2.25;
+/// Thin rim on the thumb-plate so a dark P2 plate stays visible.
+pub const Z_TILE_PLATE_RIM: f32 = 2.26;
 pub const Z_TILE_DOT: f32 = 2.3;
 pub const Z_HIGHLIGHT: f32 = 3.0;
 /// Last-move capture freeze-frame in the left gutter, above board arcs.
@@ -180,11 +187,16 @@ pub const CAPTURE_GLOW_RGB: [f32; 3] = [1.00, 0.72, 0.28];
 pub const CAPTURE_GLOW_INNER_RGB: [f32; 3] = [0.99, 0.94, 0.82];
 /// Rim on a blank budget token so dark P2 blanks stay visible.
 pub const BLANK_TOKEN_RIM_RGB: [f32; 3] = [0.55, 0.56, 0.58];
-/// Height of the empty capture-mark band along the bottom tile arc, in
-/// 22px-tile units. Center stays clear for artwork.
-pub const TILE_CAPTURE_BAND: f32 = 3.6;
-/// Half-angle of that bottom band, radians (~41° each side).
-pub const TILE_CAPTURE_BAND_HALF: f32 = 0.72;
+/// Radius of the capture thumb-plate circle, in 22px-tile units. A
+/// separate disc, centered below the tile's bottom edge; its upper cap
+/// shows over the tile as a rounded tab. Marks sit on this plate.
+pub const TILE_PLATE_R: f32 = 9.4;
+/// How far the plate center sits below the tile's bottom edge.
+/// Overlap into the tile is `TILE_PLATE_R - TILE_PLATE_BELOW` = 1.4,
+/// inside [`TILE_RING_INSET`] (1.7) so the outer ring stays visible.
+pub const TILE_PLATE_BELOW: f32 = 8.0;
+/// Thumb-plate rim width in 22px-tile units.
+pub const TILE_PLATE_RIM: f32 = 0.90;
 
 /// Unusable surplus or unfilled blanks: opaque owner-fill face, rim only.
 pub fn budget_slot_is_blank_face(token: &BudgetToken, index: usize, usable: usize) -> bool {
@@ -234,9 +246,14 @@ impl CaptureFlash {
 	}
 }
 
-/// Pixel radius of a bead disc on an arc lane.
+/// Mid-span half-width of a bead spindle on an arc lane, in pixels.
 pub fn arc_bead_radius(arc_width: f32) -> f32 {
 	(arc_width * ARC_BEAD_RADIUS_SCALE).max(1.15)
+}
+
+/// Tip-to-center length of a bead spindle from its mid-span half-width.
+pub fn bead_half_len(half_w: f32) -> f32 {
+	half_w * BEAD_SPINDLE_ASPECT
 }
 
 /// Usable budget, or `usable+surplus` when tokens exceed the remaining deck.
@@ -835,10 +852,9 @@ pub struct TileRingDraw {
 	pub braid_samples: u32,
 	pub bead_r: f32,
 	pub bead_count: u32,
-	pub dot_r: f32,
-	pub dot_spread: f32,
-	pub capture_band: f32,
-	pub capture_band_half: f32,
+	pub plate_r: f32,
+	pub plate_below: f32,
+	pub plate_rim: f32,
 }
 
 impl TileRingDraw {
@@ -858,10 +874,9 @@ impl TileRingDraw {
 			braid_samples: TILE_BRAID_SAMPLES,
 			bead_r: (TILE_BEAD_R * scale).max(0.7),
 			bead_count: TILE_BEAD_COUNT,
-			dot_r: (1.45 * scale).max(1.15),
-			dot_spread: 7.0 * scale,
-			capture_band: (TILE_CAPTURE_BAND * scale).max(3.2),
-			capture_band_half: TILE_CAPTURE_BAND_HALF,
+			plate_r: (TILE_PLATE_R * scale).max(6.0),
+			plate_below: (TILE_PLATE_BELOW * scale).max(5.0),
+			plate_rim: (TILE_PLATE_RIM * scale).max(0.8),
 		}
 	}
 
@@ -869,14 +884,30 @@ impl TileRingDraw {
 		tile_radius - self.inset - f32::from(k) * self.gap
 	}
 
-	pub fn capture_mark_dx(self, i: u8, count: u8) -> f32 {
-		let start = -self.dot_spread * (f32::from(count) - 1.0) / 2.0;
-		start + f32::from(i) * self.dot_spread
+	/// Center of the thumb-plate circle: below the tile's bottom edge along
+	/// `down` (`[0, -1]` in Bevy, `[0, 1]` in the PNG image).
+	pub fn plate_center(self, tile_center: [f32; 2], tile_radius: f32, down: [f32; 2]) -> [f32; 2] {
+		let d = tile_radius + self.plate_below;
+		[tile_center[0] + down[0] * d, tile_center[1] + down[1] * d]
 	}
 
-	/// World-or-image offset of capture mark `i` along the bottom band.
-	/// `down` is the screen-down unit vector (`[0, -1]` in Bevy, `[0, 1]`
-	/// in the PNG image).
+	/// How far the plate's upper cap overlaps the tile disc.
+	pub fn plate_overlap(self) -> f32 {
+		(self.plate_r - self.plate_below).max(0.0)
+	}
+
+	/// Capture-mark radius sized to fill the plate for `count` marks (1–3).
+	pub fn capture_mark_r(self, count: u8) -> f32 {
+		let k = match count {
+			0 | 1 => 0.40,
+			2 => 0.34,
+			_ => 0.32,
+		};
+		(self.plate_r * k).max(2.4 * self.scale.max(0.4))
+	}
+
+	/// World-or-image offset of capture mark `i` on the thumb-plate.
+	/// Marks spread along the plate, perpendicular to `down`.
 	pub fn capture_mark_offset(
 		self,
 		tile_radius: f32,
@@ -884,13 +915,19 @@ impl TileRingDraw {
 		count: u8,
 		down: [f32; 2],
 	) -> [f32; 2] {
-		let r = (tile_radius - self.capture_band * 0.52).max(tile_radius * 0.55);
+		let plate = [
+			down[0] * (tile_radius + self.plate_below),
+			down[1] * (tile_radius + self.plate_below),
+		];
+		let along = [-down[1], down[0]];
 		let n = count.max(1);
-		let span = self.capture_band_half * 0.62;
-		let ang =
-			if n == 1 { 0.0 } else { -span + (2.0 * span) * (f32::from(i) / f32::from(n - 1)) };
-		let dir = rotate2(down, ang);
-		[r * dir[0], r * dir[1]]
+		let span = match n {
+			1 => 0.0,
+			2 => self.plate_r * 0.78,
+			_ => self.plate_r * 1.12,
+		};
+		let t = if n == 1 { 0.0 } else { -0.5 + f32::from(i) / f32::from(n - 1) };
+		[plate[0] + along[0] * span * t, plate[1] + along[1] * span * t]
 	}
 
 	pub fn capture_mark_pos(
@@ -906,43 +943,12 @@ impl TileRingDraw {
 	}
 }
 
-fn rotate2(v: [f32; 2], ang: f32) -> [f32; 2] {
-	let (s, c) = ang.sin_cos();
-	[v[0] * c - v[1] * s, v[0] * s + v[1] * c]
-}
-
 /// Screen-down in Bevy world coordinates (+Y up).
 pub const CAPTURE_DOWN_BEVY: [f32; 2] = [0.0, -1.0];
 /// Screen-down in PNG image coordinates (+Y down).
 pub const CAPTURE_DOWN_IMAGE: [f32; 2] = [0.0, 1.0];
 
-/// Outline of the empty bottom-arc band (outer arc, then inner arc reversed).
-pub fn capture_band_ring(
-	center: [f32; 2],
-	tile_radius: f32,
-	draw: TileRingDraw,
-	down: [f32; 2],
-) -> Vec<[f32; 2]> {
-	let outer = (tile_radius - 0.35 * draw.scale).max(tile_radius * 0.92);
-	let inner = (tile_radius - draw.capture_band).max(outer * 0.62);
-	let a0 = -draw.capture_band_half;
-	let a1 = draw.capture_band_half;
-	let n = 12u32;
-	let mut pts = Vec::with_capacity((2 * n + 2) as usize);
-	for i in 0..=n {
-		let t = i as f32 / n as f32;
-		let dir = rotate2(down, a0 + (a1 - a0) * t);
-		pts.push([center[0] + outer * dir[0], center[1] + outer * dir[1]]);
-	}
-	for i in 0..=n {
-		let t = i as f32 / n as f32;
-		let dir = rotate2(down, a1 + (a0 - a1) * t);
-		pts.push([center[0] + inner * dir[0], center[1] + inner * dir[1]]);
-	}
-	pts
-}
-
-/// Fan triangulation of a simple closed polygon (band outline).
+/// Fan triangulation of a simple closed polygon (bead spindle, etc.).
 pub fn polygon_triangles(pts: &[[f32; 2]]) -> Vec<[[f32; 2]; 3]> {
 	if pts.len() < 3 {
 		return Vec::new();
@@ -1539,26 +1545,78 @@ pub fn for_braid_segments(
 	}
 }
 
-/// Centers of the small discs that make a bead ring on a tile.
-pub fn bead_ring_centers(center: [f64; 2], radius: f64, n: u32) -> Vec<[f64; 2]> {
+/// Lens/spindle polygon: pointed tips along `tangent`, widest across the
+/// midpoint. `half_w` is the mid-span half-width; `half_len` is tip-to-center.
+/// Width follows `sin(π t)` so both ends taper to a point.
+pub fn bead_spindle(
+	center: [f64; 2],
+	tangent: [f64; 2],
+	half_len: f64,
+	half_w: f64,
+	samples: u32,
+) -> Vec<[f32; 2]> {
+	let n = (tangent[0] * tangent[0] + tangent[1] * tangent[1]).sqrt();
+	if n < 1e-12 || half_len <= 0.0 || half_w <= 0.0 {
+		return Vec::new();
+	}
+	let tx = tangent[0] / n;
+	let ty = tangent[1] / n;
+	let nx = -ty;
+	let ny = tx;
+	let samples = samples.max(3);
+	let mut pts = Vec::with_capacity((samples * 2) as usize);
+	for i in 0..=samples {
+		let t = f64::from(i) / f64::from(samples);
+		let along = (t - 0.5) * 2.0 * half_len;
+		let across = half_w * (PI * t).sin();
+		pts.push([
+			(center[0] + tx * along + nx * across) as f32,
+			(center[1] + ty * along + ny * across) as f32,
+		]);
+	}
+	for i in (1..samples).rev() {
+		let t = f64::from(i) / f64::from(samples);
+		let along = (t - 0.5) * 2.0 * half_len;
+		let across = half_w * (PI * t).sin();
+		pts.push([
+			(center[0] + tx * along - nx * across) as f32,
+			(center[1] + ty * along - ny * across) as f32,
+		]);
+	}
+	pts
+}
+
+/// Tile-ring bead spindles, tangent to the ring at each sample.
+pub fn bead_ring_spindles(
+	center: [f64; 2],
+	radius: f64,
+	n: u32,
+	half_w: f64,
+	half_len: f64,
+) -> Vec<Vec<[f32; 2]>> {
 	let n = n.max(3);
 	(0..n)
 		.map(|i| {
 			let ang = f64::from(i) / f64::from(n) * 2.0 * PI;
-			[center[0] + radius * ang.cos(), center[1] + radius * ang.sin()]
+			let c = [center[0] + radius * ang.cos(), center[1] + radius * ang.sin()];
+			bead_spindle(c, [-ang.sin(), ang.cos()], half_len, half_w, BEAD_SPINDLE_SAMPLES)
 		})
+		.filter(|p| p.len() >= 3)
 		.collect()
 }
 
-/// Bead disc centers along a polyline, spaced by `spacing` (board or pixel units).
-pub fn bead_centers_along(pts: &[[f64; 2]], spacing: f64) -> Vec<[f64; 2]> {
+/// (center, unit tangent) along a polyline, spaced by `spacing`.
+pub fn bead_frames_along(pts: &[[f64; 2]], spacing: f64) -> Vec<([f64; 2], [f64; 2])> {
 	if pts.len() < 2 || spacing <= 1e-9 {
 		return Vec::new();
 	}
 	let mut out = Vec::new();
 	let mut acc = 0.0;
 	let mut next = 0.0;
-	out.push(pts[0]);
+	let dx0 = pts[1][0] - pts[0][0];
+	let dy0 = pts[1][1] - pts[0][1];
+	let n0 = (dx0 * dx0 + dy0 * dy0).sqrt().max(1e-12);
+	out.push((pts[0], [dx0 / n0, dy0 / n0]));
 	for w in pts.windows(2) {
 		let dx = w[1][0] - w[0][0];
 		let dy = w[1][1] - w[0][1];
@@ -1566,14 +1624,29 @@ pub fn bead_centers_along(pts: &[[f64; 2]], spacing: f64) -> Vec<[f64; 2]> {
 		if seg <= 1e-12 {
 			continue;
 		}
+		let tan = [dx / seg, dy / seg];
 		while next + spacing <= acc + seg + 1e-12 {
 			next += spacing;
 			let t = ((next - acc) / seg).clamp(0.0, 1.0);
-			out.push([w[0][0] + dx * t, w[0][1] + dy * t]);
+			out.push(([w[0][0] + dx * t, w[0][1] + dy * t], tan));
 		}
 		acc += seg;
 	}
 	out
+}
+
+/// Bead spindle polygons along a polyline, spaced by `spacing`.
+pub fn bead_spindles_along(
+	pts: &[[f64; 2]],
+	spacing: f64,
+	half_w: f64,
+	half_len: f64,
+) -> Vec<Vec<[f32; 2]>> {
+	bead_frames_along(pts, spacing)
+		.into_iter()
+		.map(|(c, tan)| bead_spindle(c, tan, half_len, half_w, BEAD_SPINDLE_SAMPLES))
+		.filter(|p| p.len() >= 3)
+		.collect()
 }
 
 pub fn zigzag_circle(
@@ -3645,20 +3718,41 @@ mod tests {
 	}
 
 	#[test]
-	fn capture_marks_sit_on_the_bottom_band_not_the_center() {
+	fn capture_marks_sit_on_the_thumb_plate_not_the_center() {
 		let r = 22.0;
 		let draw = TileRingDraw::for_radius(r);
-		let n = 3u8;
-		for i in 0..n {
-			let p = draw.capture_mark_pos([0.0, 0.0], r, i, n, CAPTURE_DOWN_BEVY);
-			assert!(p[1] < -r * 0.55, "mark {i} should sit on the bottom arc, got {p:?}");
-			assert!(p[0].abs() < r * 0.55, "mark {i} should stay near the bottom, got {p:?}");
-			let dist = (p[0] * p[0] + p[1] * p[1]).sqrt();
-			assert!(dist > r * 0.6, "mark {i} must leave the center free, dist={dist}");
+		let plate = draw.plate_center([0.0, 0.0], r, CAPTURE_DOWN_BEVY);
+		assert!(plate[1] < -r, "plate center must sit below the tile, got {plate:?}");
+		assert!(
+			draw.plate_overlap() > 0.5,
+			"upper cap must overlap the tile, overlap={}",
+			draw.plate_overlap()
+		);
+		assert!(
+			draw.plate_overlap() < draw.inset,
+			"plate must not cover the outer ring, overlap={} inset={}",
+			draw.plate_overlap(),
+			draw.inset
+		);
+		for n in 1..=3u8 {
+			let mark_r = draw.capture_mark_r(n);
+			assert!(
+				mark_r > 2.4,
+				"marks must be clearly bigger than the old 1.45, n={n} r={mark_r}"
+			);
+			assert!(
+				mark_r * 2.0 < draw.plate_r * 1.15,
+				"marks must fit on the plate, n={n} mark_r={mark_r} plate_r={}",
+				draw.plate_r
+			);
+			for i in 0..n {
+				let p = draw.capture_mark_pos([0.0, 0.0], r, i, n, CAPTURE_DOWN_BEVY);
+				let d_plate = (p[0] - plate[0]).hypot(p[1] - plate[1]);
+				assert!(d_plate < draw.plate_r * 0.85, "mark {i}/{n} must sit on the plate, {p:?}");
+				let dist = (p[0] * p[0] + p[1] * p[1]).sqrt();
+				assert!(dist > r, "mark {i}/{n} must leave the tile center free, dist={dist}");
+			}
 		}
-		let band = capture_band_ring([0.0, 0.0], r, draw, CAPTURE_DOWN_BEVY);
-		assert!(band.len() > 8);
-		assert!(polygon_triangles(&band).len() >= band.len());
 		let layout = ViewLayout::from_window(1280.0, 800.0);
 		let bead = arc_bead_radius(layout.arc_width);
 		assert!(
@@ -3667,6 +3761,32 @@ mod tests {
 			layout.arc_width
 		);
 		assert!(bead < 4.0, "arc beads must not dominate the edge, got {bead}");
+		assert!(
+			bead_half_len(bead) < layout.arc_width * 2.2,
+			"spindle length must stay modest vs the stroke"
+		);
+	}
+
+	#[test]
+	fn bead_spindle_tapers_to_points() {
+		let half_w = 1.5;
+		let half_len = 4.0;
+		let pts = bead_spindle([0.0, 0.0], [1.0, 0.0], half_len, half_w, 10);
+		assert!(pts.len() >= 12);
+		let max_y = pts.iter().map(|p| p[1].abs()).fold(0.0f32, f32::max);
+		assert!((max_y - half_w as f32).abs() < 0.08, "mid-span half-width, max_y={max_y}");
+		let tip_y = pts
+			.iter()
+			.filter(|p| p[0].abs() > half_len as f32 * 0.92)
+			.map(|p| p[1].abs())
+			.fold(0.0f32, f32::max);
+		assert!(tip_y < half_w as f32 * 0.2, "tips must taper in, tip_y={tip_y}");
+		let mid_x = pts
+			.iter()
+			.filter(|p| p[1].abs() > half_w as f32 * 0.9)
+			.map(|p| p[0].abs())
+			.fold(0.0f32, f32::max);
+		assert!(mid_x < half_len as f32 * 0.25, "widest span must sit near the middle");
 	}
 
 	#[test]
