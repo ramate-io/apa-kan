@@ -34,7 +34,7 @@ The 7+4 picker scores capture-mark mix. All-dot benches starve spawn tokens; all
 
 ### Visual, search, logs
 
-Filled circles vs filled up-pointing triangles, 1–3 of them, same primary-color fill as today's dots. All other visual rules (rings, zags, braids, beads, token stack, deck row) stay.
+Filled circles vs filled up-pointing triangles, 1–3 of them, same primary-color fill as today's dots. The deck row lists every live bench tile (opening-deal order, then captured extras), so opponent tiles that flipped onto the mover's bench are selectable there. Triangle captures become spawn tokens on the mover's stack, not hand tiles. The freeze-frame for a bench dest shows the flipped (mover-owned) tiles; a token dest keeps the captured face.
 
 Search packs the mark as an extra bit (`kind | (mark << 16)`, TT `b = dots | (mark << 2)`). `KIND_COUNT` is not doubled (that overflows `u16`). Zobrist XORs a mark table. Eval penalizes starved-token / starved-bench mixes.
 

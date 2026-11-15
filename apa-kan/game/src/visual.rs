@@ -213,7 +213,9 @@ pub fn budget_slot_is_blank_face(token: &BudgetToken, index: usize, usable: usiz
 pub struct CaptureFlash {
 	pub mover: Player,
 	pub dest: Option<CaptureDest>,
-	/// Tiles as they looked at the moment of capture (original owner, rings).
+	/// Bench dest: tiles with mover ownership (the flip onto the hand).
+	/// Tokens dest: original owner on the stored tile; the stack itself is
+	/// the mover's.
 	pub tiles: Vec<Tile>,
 }
 
@@ -226,10 +228,21 @@ impl CaptureFlash {
 		if outcome.removals.is_empty() {
 			return Self::empty();
 		}
+		let dest = outcome.removals.first().map(|r| r.dest);
 		Self {
 			mover: outcome.player,
-			dest: outcome.removals.first().map(|r| r.dest),
-			tiles: outcome.removals.iter().map(|r| r.tile).collect(),
+			dest,
+			tiles: outcome
+				.removals
+				.iter()
+				.map(|r| {
+					let mut t = r.tile;
+					if r.dest == CaptureDest::Bench {
+						t.owner = outcome.player;
+					}
+					t
+				})
+				.collect(),
 		}
 	}
 
@@ -255,9 +268,13 @@ pub fn arc_bead_radius(arc_width: f32) -> f32 {
 	(arc_width * ARC_BEAD_RADIUS_SCALE).max(1.15)
 }
 
-/// Pinch half-width of a bead chain. Stays positive so swells connect.
+/// Pinch half-width of a bead chain. Stays positive so swells connect, but
+/// never thicker than the peak (tiny freeze-frame tiles would otherwise
+/// invert swell and pinch and merge concentric bead rings).
 pub fn bead_pinch(half_w: f32) -> f32 {
-	(half_w * BEAD_PINCH_SCALE).max(BEAD_PINCH_MIN)
+	let peak_cap = (half_w * 0.85).max(0.2);
+	let floor = BEAD_PINCH_MIN.min(peak_cap);
+	(half_w * BEAD_PINCH_SCALE).max(floor).min(peak_cap)
 }
 
 /// Usable budget, or `usable+surplus` when tokens exceed the remaining deck.
@@ -861,10 +878,14 @@ pub struct TileRingDraw {
 impl TileRingDraw {
 	pub fn for_radius(radius: f32) -> Self {
 		let scale = radius / PREV_TILE_RADIUS_PX;
+		let gap = TILE_RING_GAP * scale;
+		let peak = (TILE_BEAD_R * scale).max(0.7);
+		// Two concentric bead chains must leave air between peaks.
+		let fit = (gap * 0.42).max(0.55);
 		Self {
 			scale,
 			inset: TILE_RING_INSET * scale,
-			gap: TILE_RING_GAP * scale,
+			gap,
 			stroke: (2.2 * scale).max(1.6),
 			zag_amp: (TILE_ZAG_AMP * scale).max(0.6),
 			zag_stroke: (TILE_ZAG_STROKE * scale).max(0.5),
@@ -873,7 +894,7 @@ impl TileRingDraw {
 			braid_amp: (TILE_BRAID_AMP * scale).max(0.4),
 			braid_stroke: (TILE_BRAID_STROKE * scale).max(0.28),
 			braid_samples: TILE_BRAID_SAMPLES,
-			bead_r: (TILE_BEAD_R * scale).max(0.7),
+			bead_r: peak.min(fit),
 			bead_count: TILE_BEAD_COUNT,
 		}
 	}
@@ -2677,6 +2698,27 @@ mod tests {
 	}
 
 	#[test]
+	fn tile_bead_rings_keep_concentric_gap() {
+		for radius in [9.0_f32, 22.0, 33.0] {
+			let d = TileRingDraw::for_radius(radius);
+			assert!(
+				2.0 * d.bead_r < d.gap,
+				"two bead peaks must not swallow each other: bead_r={} gap={} at r={}",
+				d.bead_r,
+				d.gap,
+				radius
+			);
+			let pinch = bead_pinch(d.bead_r);
+			assert!(
+				pinch < d.bead_r,
+				"pinch must stay thinner than the peak: pinch={pinch} bead_r={} at r={}",
+				d.bead_r,
+				radius
+			);
+		}
+	}
+
+	#[test]
 	fn zag_on_zag_is_decided_zag_only_not_a_match() {
 		let rings = [(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
 		let a = Tile::with_ring_kinds(1, Player::One, &rings, 3, 1);
@@ -4048,5 +4090,74 @@ mod tests {
 	fn capture_flash_clears_when_the_next_move_has_no_removals() {
 		assert!(CaptureFlash::empty().is_empty());
 		assert!(!CaptureFlash::empty().highlights_dest(CaptureDest::Tokens));
+	}
+
+	#[test]
+	fn capture_flash_bench_dest_flips_opponent_tiles_to_mover() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let opp = game.alloc_tile(Player::Two, TileColor::Green, 2, 1);
+		let opp_id = opp.id;
+		game.place_tile(spawn, opp);
+		let holder = game.alloc_tile(Player::One, TileColor::Orange, 1, 1);
+		game.place_tile(nbs[1], holder);
+		let mover = game
+			.alloc_tile(Player::One, TileColor::Blue, 3, 1)
+			.with_capture(crate::game::CaptureMark::Dot);
+		game.place_tile(from, mover);
+		game.set_current(Player::One);
+		let outcome = game.apply(crate::game::Action::Move { from, to: land }).unwrap();
+		assert!(outcome
+			.removals
+			.iter()
+			.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two));
+		let flash = CaptureFlash::from_outcome(&outcome);
+		assert_eq!(flash.dest, Some(CaptureDest::Bench));
+		assert!(
+			flash.tiles.iter().any(|t| t.id == opp_id && t.owner == Player::One),
+			"freeze-frame must show the flip: {:?}",
+			flash.tiles
+		);
+		assert!(flash.highlights_tile(opp_id, CaptureDest::Bench));
+	}
+
+	#[test]
+	fn capture_flash_token_dest_keeps_original_owner_on_stored_tile() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let opp = game.alloc_tile(Player::Two, TileColor::Green, 2, 1);
+		let opp_id = opp.id;
+		game.place_tile(spawn, opp);
+		let holder = game.alloc_tile(Player::One, TileColor::Orange, 1, 1);
+		game.place_tile(nbs[1], holder);
+		let mover = game
+			.alloc_tile(Player::One, TileColor::Blue, 3, 1)
+			.with_capture(crate::game::CaptureMark::Triangle);
+		game.place_tile(from, mover);
+		game.set_current(Player::One);
+		let outcome = game.apply(crate::game::Action::Move { from, to: land }).unwrap();
+		let flash = CaptureFlash::from_outcome(&outcome);
+		assert_eq!(flash.dest, Some(CaptureDest::Tokens));
+		assert!(
+			flash.tiles.iter().any(|t| t.id == opp_id && t.owner == Player::Two),
+			"token freeze-frame keeps the captured face: {:?}",
+			flash.tiles
+		);
 	}
 }

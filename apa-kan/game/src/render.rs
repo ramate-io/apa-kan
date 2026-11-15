@@ -1734,6 +1734,30 @@ mod tests {
 			28.0,
 		);
 		write_cropped(
+			&demo_typed_tile(
+				&[(TileColor::Blue, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+				2,
+			),
+			dir.join("double_blue_bead_tile.png"),
+			"two concentric same-color bead rings stay distinguishable",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Blue, RingType::Bead)],
+				1,
+				&[
+					(TileColor::Teal, RingType::Normal),
+					(TileColor::Orange, RingType::Normal),
+					(TileColor::Blue, RingType::Zag),
+				],
+				3,
+			),
+			dir.join("one_blue_bead_vs_teal_orange_blue_zag.png"),
+			"1 blue bead vs teal+orange+blue zag: unmatched bead + hitch + zag",
+			28.0,
+		);
+		write_cropped(
 			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 3),
 			dir.join("bead_and_plate_tile.png"),
 			"connected bead chain with a bottom ring notch",

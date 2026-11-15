@@ -931,11 +931,11 @@ pub enum BudgetToken {
 	Captured(Tile),
 }
 
-/// One slot in the visual deck row. Every unplaced deck tile is [`Self::Live`]
-/// and selectable. [`Game::deck_slots`] returns only live tiles, so a placed
-/// tile leaves the row (opening deals still show all [`RuleSet::bag_size`]
-/// tiles, default 11). [`Self::Spent`] / [`Self::Empty`] remain for fixtures
-/// and historical classification.
+/// One slot in the visual deck row. Every unplaced bench tile is [`Self::Live`]
+/// and selectable, including tiles captured onto the bench (opponent dots that
+/// flipped ownership, and the mover's own self-captures). [`Game::deck_slots`]
+/// returns only live tiles, so a placed tile leaves the row. [`Self::Spent`] /
+/// [`Self::Empty`] remain for fixtures and historical classification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeckSlot {
 	Empty,
@@ -2014,31 +2014,27 @@ impl Game {
 		self.budget_tokens[player.index()] = tokens;
 	}
 
-	/// Unplaced deck tiles in opening order. Placed tiles leave the row;
-	/// the opening deal still shows all [`RuleSet::bag_size`] tiles (default 11).
+	/// Unplaced bench tiles: remaining opening-deal tiles in deal order,
+	/// then any tiles captured onto this bench (opponent dots that flipped
+	/// to the mover, self-captures, extras past [`RuleSet::bag_size`]).
+	/// Uses the live bench copies so ownership and capture marks are current.
 	pub fn deck_slots(&self, player: Player) -> Vec<DeckSlot> {
-		let n = self.rules.bag_size.max(1) as usize;
-		let source = if self.opening_deck[player.index()].is_empty() {
-			self.inferred_opening_deck(player)
-		} else {
-			self.opening_deck[player.index()].clone()
-		};
-		source
-			.into_iter()
-			.take(n)
-			.filter_map(|tile| match self.classify_deck_tile(player, tile) {
-				DeckSlot::Live(tile) => Some(DeckSlot::Live(tile)),
-				DeckSlot::Spent(_) | DeckSlot::Empty => None,
-			})
-			.collect()
-	}
-
-	fn classify_deck_tile(&self, player: Player, tile: Tile) -> DeckSlot {
-		if self.bench(player).iter().any(|t| t.id == tile.id) {
-			DeckSlot::Live(tile)
-		} else {
-			DeckSlot::Spent(tile)
+		let bench = self.bench(player);
+		let opening = &self.opening_deck[player.index()];
+		let mut out = Vec::with_capacity(bench.len());
+		let mut seen: Vec<u32> = Vec::with_capacity(bench.len());
+		for orig in opening {
+			if let Some(live) = bench.iter().copied().find(|t| t.id == orig.id) {
+				out.push(DeckSlot::Live(live));
+				seen.push(orig.id);
+			}
 		}
+		for live in bench {
+			if !seen.contains(&live.id) {
+				out.push(DeckSlot::Live(*live));
+			}
+		}
+		out
 	}
 
 	fn inferred_opening_deck(&self, player: Player) -> Vec<Tile> {
@@ -5526,6 +5522,101 @@ mod tests {
 		assert_eq!(game.edge_score(bead, zag), (0, 2));
 	}
 
+	/// Screenshot pairing: dark 1-ring blue bead vs cream teal+orange normals
+	/// plus an inner blue zag. Under zag-color exclusion the blue zag is not
+	/// a bead match, so the edge is unmatched bead + hitch + zag hit.
+	#[test]
+	fn one_blue_bead_vs_teal_orange_and_blue_zag() {
+		let mut game = Game::empty(RuleSet::default());
+		let bead = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Bead)], 1, 1);
+		let cream = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Teal, RingType::Normal),
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Blue, RingType::Zag),
+			],
+			3,
+			1,
+		);
+		assert_eq!(bead.bead_matched_on(cream), 0, "blue zag is not a bead match");
+		assert_eq!(bead.bead_unmatched_on(cream), 1);
+		let ch = game.edge_channels(bead, cream);
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.bead_mismatch, 1);
+		assert_eq!(ch.normal_match, 0);
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(ch.zag_mismatch, 1);
+		assert_eq!(game.edge_score(bead, cream), (0, 3));
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		game.place_tile(spawn, bead);
+		game.place_tile(nb, cream);
+		assert_eq!(game.tile_score(spawn), Some((1, 3)));
+		assert_eq!(game.tile_score(nb), Some((3, 3)));
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
+		assert_eq!(game.collect_removals().len(), 2);
+	}
+
+	#[test]
+	fn two_blue_beads_vs_teal_orange_and_blue_zag() {
+		let mut game = Game::empty(RuleSet::default());
+		let beads = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+			1,
+			1,
+		);
+		let cream = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Teal, RingType::Normal),
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Blue, RingType::Zag),
+			],
+			3,
+			1,
+		);
+		assert_eq!(beads.weight, 2, "weight follows live ring count");
+		assert_eq!(beads.bead_unmatched_on(cream), 2);
+		assert_eq!(game.edge_score(beads, cream), (0, 4));
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		game.place_tile(spawn, beads);
+		game.place_tile(nb, cream);
+		assert_eq!(game.tile_score(spawn), Some((2, 4)));
+		assert_eq!(game.tile_score(nb), Some((3, 4)));
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn non_adjacent_tiles_do_not_score_or_capture_each_other() {
+		let mut game = Game::empty(RuleSet::default());
+		let a = game.board().spawns()[0];
+		let b = game.board().spawns()[4];
+		assert!(!game.board().neighbors(a).contains(&b), "opposite spawns must not share an edge");
+		let bead = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Bead)], 1, 1);
+		let cream = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Teal, RingType::Normal),
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Blue, RingType::Zag),
+			],
+			3,
+			1,
+		);
+		game.place_tile(a, bead);
+		game.place_tile(b, cream);
+		assert_eq!(game.tile_score(a), Some((1, 0)), "no incident edge, only ring weight");
+		assert_eq!(game.tile_score(b), Some((3, 0)));
+		assert!(game.collect_removals().is_empty());
+		assert!(!game.is_overwhelmed(a));
+		assert!(!game.is_overwhelmed(b));
+	}
+
 	#[test]
 	fn zag_vs_zag_still_hits_on_the_full_color_multiset() {
 		let mut game = Game::empty(RuleSet::default());
@@ -7657,6 +7748,140 @@ mod tests {
 			);
 		}
 		assert!(game.budget(Player::One) >= 1.min(game.bench(Player::One).len()));
+		for rem in &outcome.removals {
+			assert_eq!(live_hand_tile(&game, Player::One, rem.tile.id).owner, Player::One);
+		}
+	}
+
+	fn live_hand_tile(game: &Game, player: Player, id: u32) -> Tile {
+		game.deck_slots(player)
+			.iter()
+			.find_map(|s| s.tile().filter(|t| t.id == id))
+			.unwrap_or_else(|| panic!("{player:?} hand is missing tile {id}"))
+	}
+
+	fn free_overwhelm_site(game: &Game, skip: &[NodeId]) -> NodeId {
+		for &node in game.board().spawns() {
+			if skip.contains(&node) || game.tile_at(node).is_some() {
+				continue;
+			}
+			let nbs = game.board().neighbors(node);
+			if nbs.len() < 2 {
+				continue;
+			}
+			let blocked = nbs.iter().any(|&nb| skip.contains(&nb) || game.tile_at(nb).is_some());
+			if !blocked {
+				return node;
+			}
+		}
+		panic!("no free overwhelm site disjoint from {skip:?}")
+	}
+
+	#[test]
+	fn dealt_dot_capture_puts_own_and_opponent_in_mover_hand() {
+		let mut game = Game::new(RuleSet::default(), 1);
+		let spawn = game.board().spawns()[0];
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		let own = take(&mut game, Player::One, TileColor::Green, 1, 1);
+		let own_id = own.id;
+		game.place_tile(spawn, own);
+		let mut skip = vec![spawn];
+		skip.extend(game.board().neighbors(spawn).iter().copied());
+		let opp = free_overwhelm_site(&game, &skip);
+		overwhelm_neighbors(&mut game, opp, Player::One);
+		let opp_tile = take(&mut game, Player::Two, TileColor::Green, 1, 1);
+		let opp_id = opp_tile.id;
+		game.place_tile(opp, opp_tile);
+		skip.push(opp);
+		skip.extend(game.board().neighbors(opp).iter().copied());
+		let from = free_overwhelm_site(&game, &skip);
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 2, CaptureMark::Dot);
+		game.set_current(Player::One);
+		let opening_ids: Vec<u32> = game
+			.deck_slots(Player::One)
+			.iter()
+			.filter_map(|s| s.tile().map(|t| t.id))
+			.collect();
+		assert!(!opening_ids.contains(&opp_id), "opponent tile is not in the opening deal");
+		let to = game.destinations(from).into_iter().next().expect("mover can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(
+			outcome
+				.removals
+				.iter()
+				.any(|r| r.tile.id == own_id && r.tile.owner == Player::One),
+			"own tile must be captured: {:?}",
+			outcome.removals
+		);
+		assert!(
+			outcome
+				.removals
+				.iter()
+				.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two),
+			"opponent tile must be captured: {:?}",
+			outcome.removals
+		);
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
+		assert_eq!(live_hand_tile(&game, Player::One, own_id).owner, Player::One);
+		assert_eq!(live_hand_tile(&game, Player::One, opp_id).owner, Player::One);
+		assert!(
+			game.deck_slots(Player::Two)
+				.iter()
+				.all(|s| s.tile().is_none_or(|t| t.id != opp_id)),
+			"flipped opponent tile must leave the opponent hand"
+		);
+		assert_eq!(game.deck_slots(Player::One).len(), game.bench(Player::One).len());
+		game.set_current(Player::One);
+		assert!(
+			game.legal_adds().iter().any(|a| match a {
+				Action::Add { bench_index, .. } => {
+					game.bench(Player::One)[*bench_index].id == opp_id
+				}
+				_ => false,
+			}),
+			"flipped opponent tile must be an ADD source from the mover hand"
+		);
+	}
+
+	#[test]
+	fn dealt_triangle_capture_earns_mover_tokens_not_hand_tiles() {
+		let mut game = Game::new(RuleSet::default(), 1);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		let opp_id = game.tile_at(spawn).unwrap().id;
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Triangle);
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let bench_n = game.bench(Player::One).len();
+		let hand_n = game.deck_slots(Player::One).len();
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		assert!(outcome
+			.removals
+			.iter()
+			.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two));
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Tokens));
+		assert_eq!(game.budget_token_count(Player::One), tokens + outcome.removals.len());
+		assert_eq!(game.bench(Player::One).len(), bench_n);
+		assert_eq!(game.deck_slots(Player::One).len(), hand_n);
+		assert!(
+			game.deck_slots(Player::One)
+				.iter()
+				.all(|s| s.tile().is_none_or(|t| t.id != opp_id)),
+			"triangle captures become mover tokens, not hand tiles"
+		);
+		assert!(game.budget_tokens(Player::One).iter().any(|tok| match tok {
+			BudgetToken::Captured(t) => t.id == opp_id,
+			BudgetToken::Blank => false,
+		}));
 	}
 
 	#[test]
@@ -7724,6 +7949,7 @@ mod tests {
 				.bench(Player::One)
 				.iter()
 				.any(|t| t.id == rem.tile.id && t.owner == Player::One));
+			assert_eq!(live_hand_tile(&game, Player::One, rem.tile.id).owner, Player::One);
 		}
 	}
 
@@ -7770,6 +7996,10 @@ mod tests {
 		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::Two));
 		assert!(game.bench(Player::One).len() > 11);
 		assert!(crate::deck::zag_ring_count(game.bench(Player::One)) >= 6);
+		assert_eq!(game.deck_slots(Player::One).len(), game.bench(Player::One).len());
+		for rem in &outcome.removals {
+			assert_eq!(live_hand_tile(&game, Player::One, rem.tile.id).owner, Player::One);
+		}
 		assert_eq!(
 			game.budget(Player::One),
 			game.budget_token_count(Player::One).min(game.bench(Player::One).len())
