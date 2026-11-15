@@ -1380,6 +1380,11 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_zag_color_exclusion_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/zag_color_exclusion/h2h.jsonl.gz");
+	}
+
+	#[test]
 	fn committed_work_budget_doubles_disallowed_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays(
 			"benchmark_results/work_budget_doubles_disallowed/h2h.jsonl.gz",
