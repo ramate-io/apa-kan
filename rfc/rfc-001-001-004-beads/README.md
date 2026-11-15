@@ -10,9 +10,9 @@ Beads are like zags in generation and weight (per-ring, weight 1), but the **bea
 
 ### Matching (confirmed)
 
-A bead ring of color `C` on tile `T` is **matched** by neighbor `N` iff `N.has_color(C)`: `C` appears among `N`'s live rings of **any** type (normal, zag, braid, or bead).
+A bead ring of color `C` on tile `T` is **matched** by neighbor `N` iff `N.has_non_zag_color(C)`: `C` appears among `N`'s live **non-zag** rings (normal, braid, or bead). Zag rings never count as a bead match.
 
-This is the same **presence** test the normal channel uses for a normal ring (`Tile::normal_color_in` / `other.has_color(c)`). It is **not**:
+This is the same **presence** test the normal channel uses for a normal ring (`Tile::normal_color_in` / `other.has_non_zag_color(c)`). It is **not**:
 
 - multiset coverage (three orange beads vs one orange = all three matched)
 - the edge-level OR of the normal channel (a bead does not become matched just because some other normal ring on the edge matches)
@@ -40,7 +40,7 @@ Beads do **not** enable pass-through or hops (same as zags). Low-value: beads co
 ### Intended consequences
 
 - Same-color bead vs normal: normal match 1 + bead match 1.
-- Same-color bead vs zag: zag hit 1 + bead match 1 → wash.
+- Same-color bead vs zag: zag hit 1 + unmatched bead 1 (the zag is not a match).
 - Three orange beads vs a blue+teal+green braid: bead +3 + failed-braid +1. A 3-ring braid is overwhelmed. That is the bomb against a highly connected braid of non-matching colors.
 - Three orange beads vs an orange+green braid: all three orange beads are matched (presence) → bead match 1, unmatched 0; the braid still needs green, so it may fail on its own channel.
 
@@ -67,7 +67,7 @@ Signs: match is a positive match-weight; the signed edge is `mismatch − match`
 | 3 orange beads vs blue | 3 orange beads | blue normal | hitch 1 | — | — | unmatched 3 | (0, 4) | +4 |
 | 3 orange beads vs 1 orange | 3 orange beads | orange normal | match 1 | — | — | match 1 | (2, 0) | −2 |
 | mixed orange+green vs orange | orange+green beads | orange normal | match 1 | — | — | match 1 + unmatched 1 | (2, 1) | −1 |
-| bead vs same-color zag | orange bead | orange zag | — | +1 | — | match 1 | (1, 1) | 0 |
+| bead vs same-color zag | orange bead | orange zag | — | +1 | — | unmatched 1 | (0, 2) | +2 |
 | beads vs non-matching 3-braid | 3 orange beads | blue+teal+green braid | — | — | fail 1 | unmatched 3 | (0, 4) | +4 |
 
 Unit tests in `game::tests` (`bead_unmatched_counts_rings_not_color_pairs`, `bead_match_is_capped_at_one_per_edge`, `center_inner_bead_mismatch_scores_per_petal`, …) lock these.

@@ -1221,7 +1221,7 @@ mod tests {
 		use crate::visual::{
 			demo_center_inner_pair, demo_hop_turn, demo_left_cluster, demo_midgame,
 			demo_midgame_capture_flash, demo_pair, demo_pair_with, demo_typed_pair,
-			demo_typed_tile, demo_zag_tile,
+			demo_typed_tile, demo_zag_color_exclusion_board, demo_zag_tile,
 		};
 		let board = demo_midgame();
 		write_png_sized(
@@ -1538,7 +1538,7 @@ mod tests {
 				2,
 			),
 			dir.join("zag_and_normal_mismatch_same_edge.png"),
-			"zag + normal match lanes (orange normal in the zag tile)",
+			"zag hit plus hitch: orange zag is not a match for the orange normal",
 			48.0,
 		);
 		write_cropped(
@@ -1562,7 +1562,7 @@ mod tests {
 		write_cropped(
 			&demo_pair(&[(TileColor::Orange, true)], 1, &[(TileColor::Orange, false)], 1),
 			dir.join("lane_zag_plus_normal.png"),
-			"zag + normal match lanes (same color nets 0)",
+			"zag hit plus hitch: same-color zag is not a match for the normal",
 			48.0,
 		);
 		write_cropped(
@@ -1644,7 +1644,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_braid_failed_plus_lanes.png"),
-			"failed braid plus normal match and zag lanes",
+			"failed braid plus hitch and zag lanes",
 			48.0,
 		);
 		write_cropped(
@@ -1789,6 +1789,36 @@ mod tests {
 				dir.join("bead_arc_normal_zoom.png"),
 			);
 		}
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Zag)],
+				1,
+				&[(TileColor::Orange, RingType::Normal)],
+				1,
+			),
+			dir.join("zag_vs_same_color_normal.png"),
+			"orange zag vs orange normal: hitch + zag hit, no match credit",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Zag)],
+				1,
+				&[(TileColor::Orange, RingType::Bead)],
+				1,
+			),
+			dir.join("zag_vs_same_color_bead.png"),
+			"orange zag vs orange bead: unmatched bead + zag hit, no match",
+			28.0,
+		);
+		write_png_sized(
+			&demo_zag_color_exclusion_board(),
+			dir.join("zag_color_exclusion_board.png"),
+			"board: zag vs same-color normal and bead; zag-on-zag still hits",
+			1280,
+			800,
+		)
+		.unwrap();
 	}
 
 	fn write_tile_closeup(

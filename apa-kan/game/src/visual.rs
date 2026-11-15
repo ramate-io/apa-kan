@@ -468,13 +468,13 @@ pub fn shared_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 }
 
 /// Unique colors that score a normal-channel match: a normal-ring color of
-/// either tile that appears among the other tile's colors (any type).
+/// either tile that appears among the other tile's non-zag colors.
 pub fn matched_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 	let mut out = [None; 2];
 	let mut n = 0usize;
 	for (src, dst) in [(a, b), (b, a)] {
 		for (i, &c) in src.ring_colors().iter().enumerate() {
-			if !src.ring_type[i].is_normal() || !dst.has_color(c) {
+			if !src.ring_type[i].is_normal() || !dst.has_non_zag_color(c) {
 				continue;
 			}
 			if !out.contains(&Some(c)) && n < 2 {
@@ -617,7 +617,7 @@ pub fn tile_bead_strokes(tile: Tile) -> [Option<TileColor>; MAX_TILE_BEADS] {
 
 fn unmatched_bead_colors(tile: Tile, other: Tile) -> impl Iterator<Item = TileColor> {
 	(0..tile.ring_strokes()).filter_map(move |k| {
-		if tile.stroke_is_bead(k) && !other.has_color(tile.stroke_color(k)) {
+		if tile.stroke_is_bead(k) && !other.has_non_zag_color(tile.stroke_color(k)) {
 			Some(tile.stroke_color(k))
 		} else {
 			None
@@ -628,7 +628,7 @@ fn unmatched_bead_colors(tile: Tile, other: Tile) -> impl Iterator<Item = TileCo
 fn first_matched_bead_color(a: Tile, b: Tile) -> Option<TileColor> {
 	for (src, dst) in [(a, b), (b, a)] {
 		for k in 0..src.ring_strokes() {
-			if src.stroke_is_bead(k) && dst.has_color(src.stroke_color(k)) {
+			if src.stroke_is_bead(k) && dst.has_non_zag_color(src.stroke_color(k)) {
 				return Some(src.stroke_color(k));
 			}
 		}
@@ -2409,6 +2409,31 @@ pub fn demo_center_inner_pair(
 	game
 }
 
+/// Orange zag at a spawn, same-color normal and bead on two neighbors.
+pub fn demo_zag_color_exclusion_board() -> Game {
+	let mut game = Game::empty(RuleSet::default());
+	let spawn = game.board().spawns()[0];
+	let nbs = game.board().neighbors(spawn).to_vec();
+	let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+	let normal =
+		game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Normal)], 1, 1);
+	let bead = game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Bead)], 1, 1);
+	game.place_tile(spawn, zag);
+	if let Some(&nb0) = nbs.first() {
+		game.place_tile(nb0, normal);
+	}
+	if let Some(&nb1) = nbs.get(1) {
+		game.place_tile(nb1, bead);
+	}
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let z0 = game.alloc_typed_rings(Player::One, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		let z1 = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		game.place_tile(a, z0);
+		game.place_tile(b, z1);
+	}
+	game
+}
+
 pub fn demo_typed_pair(
 	a_parts: &[(TileColor, RingType)],
 	a_weight: u8,
@@ -3141,10 +3166,9 @@ mod tests {
 		let orange_zag = Tile::with_ring_kinds(6, Player::One, &[(TileColor::Orange, true)], 1, 1);
 		let orange_normal = Tile::mono(7, Player::Two, TileColor::Orange, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(orange_normal));
-		assert_eq!(
-			paint.body,
-			ArcBody::Solid { color: TileColor::Orange, thick: true },
-			"normal match and zag mismatch occupy independent lanes"
+		assert!(
+			matches!(paint.body, ArcBody::Hitch { .. }),
+			"zag color is not a match for the orange normal"
 		);
 		assert_eq!(paint.zag_mid_count(), 1, "one-sided hit still sits on the zag lane");
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
@@ -3257,10 +3281,9 @@ mod tests {
 		let green_zag_only =
 			Tile::with_ring_kinds(20, Player::One, &[(TileColor::Green, true)], 1, 1);
 		let paint = arc_paint(Some(green_zag_only), Some(two_green));
-		assert_eq!(
-			paint.body,
-			ArcBody::Solid { color: TileColor::Green, thick: true },
-			"holder's green normal matches on its own lane"
+		assert!(
+			matches!(paint.body, ArcBody::Hitch { .. }),
+			"holder's green normal does not match a green zag"
 		);
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Green));
 		assert_eq!(paint.zag_mid_count(), 1);
@@ -3281,10 +3304,9 @@ mod tests {
 			1,
 		);
 		let paint = arc_paint(Some(mixed), Some(other));
-		assert_eq!(
-			paint.body,
-			ArcBody::Solid { color: TileColor::Orange, thick: true },
-			"other's orange normal is in mixed's colors: normal match lane plus zag"
+		assert!(
+			matches!(paint.body, ArcBody::Hitch { .. }),
+			"other's orange normal does not match mixed's orange zag"
 		);
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
 		assert_eq!(paint.zag_mid_count(), 1);

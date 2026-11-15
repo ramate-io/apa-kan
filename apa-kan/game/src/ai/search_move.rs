@@ -216,9 +216,10 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 						s += 10;
 					}
 					let braid_hit = view.braid_size >= 2
-						&& (0..6).all(|i| other.color_counts()[i] >= view.braid_counts[i]);
+						&& (0..6)
+							.all(|i| other.non_zag_colors_multiset()[i] >= view.braid_counts[i]);
 					let bead_unmatched =
-						view.bead != 0 && (view.bead & other.color_mask()) != view.bead;
+						view.bead != 0 && (view.bead & other.non_zag_color_mask()) != view.bead;
 					if braid_hit {
 						s += 14 + i32::from(view.braid_size);
 					} else if bead_unmatched {
