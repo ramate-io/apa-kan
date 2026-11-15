@@ -31,3 +31,5 @@ Each RFC directory should contain:
 - [rfc-001-001-003-deck-building](./rfc-001-001-003-deck-building/README.md) — 27-tile collections, 7+4 public bench, reserves never usable, 6-ring-per-type cap (zag, braid, bead; braids count by slots)
 - [rfc-001-001-004-beads](./rfc-001-001-004-beads/README.md) — fourth ring type: beads as a bomb against non-matching colors; unmatched bead rings +1 each, single match −1 per edge
 - [rfc-001-001-005-capture-modifiers](./rfc-001-001-005-capture-modifiers/README.md) — every tile is a dot or a triangle: captures from that tile go to the mover's bench or to spawn tokens
+- [rfc-002-001-002-accounts-ml-dsa](./rfc-002-001-002-accounts-ml-dsa/README.md) — account id, ML-DSA keys, link/approve, recovery cooldowns, signed envelopes (M1/M9)
+- [rfc-002-001-003-store](./rfc-002-001-003-store/README.md) — storage traits, SQLite/Postgres backends, migrations, hybrid state tables (M1/M3+)
