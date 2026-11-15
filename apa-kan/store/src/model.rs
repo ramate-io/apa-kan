@@ -52,6 +52,9 @@ pub struct StoredLinkApproval {
 	pub created_at_unix: i64,
 }
 
+/// Decision #58-Q7: new grants are trade-bound for [`crate::TRADE_BIND_SECS`].
+pub const TRADE_BIND_SECS: i64 = 48 * 3600;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TileInstanceRow {
 	pub instance_id: u64,
@@ -59,6 +62,7 @@ pub struct TileInstanceRow {
 	pub tile_kind_id: TileKindId,
 	pub origin: String,
 	pub frozen: bool,
+	pub trade_bind_until_unix: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

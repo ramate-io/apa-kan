@@ -166,8 +166,10 @@ impl InventoryRepo for MemoryStore {
 		&self,
 		account_id: &AccountId,
 		tiles: &[(TileKindId, String)],
+		granted_at_unix: i64,
 	) -> Result<Vec<TileInstanceRow>, StoreError> {
 		let mut st = self.inner.lock().unwrap();
+		let trade_bind = granted_at_unix + crate::model::TRADE_BIND_SECS;
 		let mut out = Vec::new();
 		for (kind, origin) in tiles {
 			st.next_tile_id += 1;
@@ -177,6 +179,7 @@ impl InventoryRepo for MemoryStore {
 				tile_kind_id: *kind,
 				origin: origin.clone(),
 				frozen: false,
+				trade_bind_until_unix: Some(trade_bind),
 			};
 			st.tiles.push(row.clone());
 			out.push(row);

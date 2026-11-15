@@ -31,6 +31,7 @@ pub struct TileView {
 	pub instance_id: u64,
 	pub tile_kind_id: u32,
 	pub origin: String,
+	pub trade_bind_until_unix: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -152,6 +153,7 @@ async fn get_account(
 				instance_id: t.instance_id,
 				tile_kind_id: t.tile_kind_id,
 				origin: t.origin,
+				trade_bind_until_unix: t.trade_bind_until_unix,
 			})
 			.collect(),
 		elo_milli: rating.elo_milli,

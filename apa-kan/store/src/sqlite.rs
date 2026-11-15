@@ -374,17 +374,20 @@ impl InventoryRepo for SqliteStore {
 		&self,
 		account_id: &AccountId,
 		tiles: &[(TileKindId, String)],
+		granted_at_unix: i64,
 	) -> Result<Vec<TileInstanceRow>, StoreError> {
 		let mut out = Vec::new();
+		let trade_bind = granted_at_unix + crate::model::TRADE_BIND_SECS;
 		for (kind, origin) in tiles {
 			let row = sqlx::query(
-				r#"INSERT INTO tile_instances (account_id, tile_kind_id, origin, frozen)
-                   VALUES (?, ?, ?, 0)
+				r#"INSERT INTO tile_instances (account_id, tile_kind_id, origin, frozen, trade_bind_until_unix)
+                   VALUES (?, ?, ?, 0, ?)
                    RETURNING instance_id"#,
 			)
 			.bind(account_id.as_bytes().as_slice())
 			.bind(*kind as i64)
 			.bind(origin)
+			.bind(trade_bind)
 			.fetch_one(&self.pool)
 			.await
 			.map_err(|e| StoreError::Storage(e.to_string()))?;
@@ -395,6 +398,7 @@ impl InventoryRepo for SqliteStore {
 				tile_kind_id: *kind,
 				origin: origin.clone(),
 				frozen: false,
+				trade_bind_until_unix: Some(trade_bind),
 			});
 		}
 		Ok(out)
@@ -402,7 +406,8 @@ impl InventoryRepo for SqliteStore {
 
 	async fn list_tiles(&self, account_id: &AccountId) -> Result<Vec<TileInstanceRow>, StoreError> {
 		let rows = sqlx::query(
-			r#"SELECT instance_id, tile_kind_id, origin, frozen FROM tile_instances WHERE account_id = ?"#,
+			r#"SELECT instance_id, tile_kind_id, origin, frozen, trade_bind_until_unix
+               FROM tile_instances WHERE account_id = ?"#,
 		)
 		.bind(account_id.as_bytes().as_slice())
 		.fetch_all(&self.pool)
@@ -417,6 +422,7 @@ impl InventoryRepo for SqliteStore {
 				tile_kind_id: row.get::<i64, _>(1) as u32,
 				origin: row.get(2),
 				frozen: row.get::<i64, _>(3) != 0,
+				trade_bind_until_unix: row.get(4),
 			})
 			.collect())
 	}

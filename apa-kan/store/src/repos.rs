@@ -52,6 +52,7 @@ pub trait InventoryRepo: Send + Sync {
 		&self,
 		account_id: &AccountId,
 		tiles: &[(TileKindId, String)],
+		granted_at_unix: i64,
 	) -> Result<Vec<TileInstanceRow>, StoreError>;
 	async fn list_tiles(&self, account_id: &AccountId) -> Result<Vec<TileInstanceRow>, StoreError>;
 }

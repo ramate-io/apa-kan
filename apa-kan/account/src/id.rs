@@ -38,7 +38,7 @@ impl AccountId {
 		&self.0
 	}
 
-	/// URL-safe hex (no `akan1` prefix until OPEN-Q #9 is decided).
+	/// Canonical account id: raw 32-byte value as lowercase hex (Decision #58-Q9).
 	pub fn to_hex(&self) -> String {
 		hex::encode(self.0)
 	}
@@ -51,11 +51,6 @@ impl AccountId {
 		let mut arr = [0u8; 32];
 		arr.copy_from_slice(&bytes);
 		Ok(Self(arr))
-	}
-
-	// OPEN-Q #9: human-readable `akan1` + hex display prefix.
-	pub fn display_human(&self) -> String {
-		format!("akan1{}", self.to_hex())
 	}
 }
 

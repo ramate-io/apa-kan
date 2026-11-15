@@ -2,7 +2,7 @@ use crate::crypto::VerifyingKeyBytes;
 use crate::id::AccountId;
 use serde::{Deserialize, Serialize};
 
-/// Full account recovery via email token (OPEN-Q #8: cooldown only, no 2FA).
+/// Full account recovery via email token (Decision #58-Q8: 72h cooldown only; no 2FA/passkey v1).
 pub const COOLDOWN_RECOVERY_SECS: i64 = 72 * 3600;
 
 /// Email approves an in-flight link request (laptop offline).

@@ -35,7 +35,18 @@ CREATE TABLE IF NOT EXISTS tile_instances (
     account_id BLOB NOT NULL,
     tile_kind_id INTEGER NOT NULL,
     origin TEXT NOT NULL,
-    frozen INTEGER NOT NULL DEFAULT 0
+    frozen INTEGER NOT NULL DEFAULT 0,
+    trade_bind_until_unix INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS rating_division_slots (
+    account_id BLOB NOT NULL,
+    opponent_class TEXT NOT NULL CHECK (opponent_class IN ('human', 'bot')),
+    tile_option TEXT,
+    time_control TEXT,
+    division_id TEXT,
+    enrolled_at_unix INTEGER,
+    PRIMARY KEY (account_id, opponent_class, tile_option, time_control)
 );
 
 CREATE TABLE IF NOT EXISTS ratings (

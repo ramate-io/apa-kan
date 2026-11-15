@@ -1,12 +1,14 @@
+use crate::param::AccountMlDsaParams;
 use ml_dsa::signature::{Signer, Verifier};
-use ml_dsa::{EncodedVerifyingKey, MlDsa44, Signature, SigningKey, VerifyingKey, B32};
+use ml_dsa::{EncodedVerifyingKey, Signature, SigningKey, VerifyingKey, B32};
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha3::{Digest, Sha3_256};
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-pub type Param = MlDsa44;
+/// Alias used across the account crate; change only via [`crate::param::AccountMlDsaParams`].
+pub type Param = AccountMlDsaParams;
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct Seed(pub [u8; 32]);

@@ -62,7 +62,7 @@ where
 			.await?;
 		let tiles: Vec<_> =
 			(1..=STARTER_TILE_COUNT as u32).map(|id| (id, "starter".to_string())).collect();
-		self.store.grant_tiles(&account_id, &tiles).await?;
+		self.store.grant_tiles(&account_id, &tiles, now).await?;
 		self.store.upsert_default_rating(&account_id, DEFAULT_ELO_MILLI).await?;
 		Ok(row)
 	}
