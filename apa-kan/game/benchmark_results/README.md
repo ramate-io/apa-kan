@@ -4,21 +4,35 @@ Release `apa-kan-bench`, 12 games per pairing per seat, seed 1, `--no-depth-prob
 
 **Doubles allowed** (`--no-same-piece-twice off`) is the locked default and the **only configuration that is benchmarked**. `always` / `when-deck-empty` remain as non-default CLI variants; do not run them as the H2H package.
 
-## Current (zag color exclusion, capture modifiers, work budget, doubles allowed)
+## Current (bead count minus one, zag color exclusion, capture modifiers, work budget, doubles allowed)
 
 `--budget nodes:132000,iters:2600` is the default. It is the rounded mean of a **single-threaded** 1000 ms/move calibrate on this VM (4 physical cores), so the same seed replays regardless of load. `--jobs` defaults to `available_parallelism` (4 here); each search stays single-threaded; JSONL is written in pairing-then-game order.
 
 Calibrate log: [`work_budget_calibration.txt`](work_budget_calibration.txt). Command: `apa-kan-bench --calibrate --think-ms 1000 --seed 1` (3 games × 16 moves, minimax vs MCTS). Minimax nodes/move: n=24, mean=131781, min=46720, max=248256, mean completed ID depth=3.58. MCTS iters/move: n=24, mean=2635, min=1327, max=3961. `--think-ms` remains for wall-clock search (not reproducible).
 
-Release `apa-kan-bench`, 12/pairing/seat, seed 1, `--no-depth-probe`, 108 games, `--jobs 4`, `--pick search`, 27-tile collections (`deck_noise=0`), `dot_percent=50`. Wall-clock **1708.8 s** (~28 min). Zag colors are excluded from normal / bead / braid matches.
+Release `apa-kan-bench`, 12/pairing/seat, seed 1, `--no-depth-probe`, 108 games, `--jobs 4`, `--pick search`, 27-tile collections (`deck_noise=0`), `dot_percent=50`. Wall-clock **1882.3 s** (~31 min). Unmatched bead mismatch is `max(count − 1, 0)` per edge.
+
+| Dir | P1 W-D-L | Ends (control/lockout/TL/LV/elim) | Mean avg turns | Opp / self /game | Center opp / self |
+|---|---|---|---|---|---|
+| [`bead_count_minus_one/`](bead_count_minus_one/) | **49-2-57** | 48 / 17 / 0 / 41 (wins 39, draws 2) / 2 | **40.22** | 4.88 (527) / 4.72 (510) | 0.55 (59) / 0.06 (6) |
+
+Capture dest: **482** to bench (4.46/game), **555** to tokens (5.14/game). Mean tokens/side **2.94**, mean live bench/side **6.17** (4454 snapshots). Draws: 2 low-value. Picker (P1 opening dots of 11): 97/108 games had 5 dots (45-2-50); 6 dots 2-0-4; 4 dots 1-0-3; 3 dots 1-0-0.
+
+Of 1037 captures, **60** (5.8%) had bead mismatch > 0 on an incident edge; **28** (2.7%) would not have been overwhelmed with the bead channel zeroed. 342 captures (33.0%) had unmatched bead rings on an incident edge (including the 1-bead cases that now score 0).
+
+Vs [`zag_color_exclusion/`](zag_color_exclusion/) (**52-5-51**, 30/27/3/47/1, mean **41.57**): fewer draws (5→2), no turn-limits (3→0), fewer lockouts (27→17), more control wins (30→48). Captures drop (opp 5.71→4.88, self 5.96→4.72) as a lone unmatched bead no longer stacks with hitch / zag / failed-braid.
+
+## Historical: zag color exclusion (before bead count minus one)
+
+Same search budget and H2H shape, unmatched bead rings still +1 each. Do not overwrite.
 
 | Dir | P1 W-D-L | Ends (control/lockout/TL/LV/elim) | Mean avg turns | Opp / self /game | Center opp / self |
 |---|---|---|---|---|---|
 | [`zag_color_exclusion/`](zag_color_exclusion/) | **52-5-51** | 30 / 27 / 3 / 47 (wins 45, draws 2) / 1 | **41.57** | 5.71 (617) / 5.96 (644) | 0.75 (81) / 0.13 (14) |
 
-Capture dest: **584** to bench (5.41/game), **677** to tokens (6.27/game). Mean tokens/side **3.12**, mean live bench/side **6.26** (4598 snapshots). Draws: 2 low-value + 3 turn-limit. Picker (P1 opening dots of 11): 97/108 games had 5 dots (47-4-46); 6 dots 2-0-4; 4 dots 2-1-1; 3 dots 1-0-0.
+Capture dest: **584** to bench (5.41/game), **677** to tokens (6.27/game). Mean tokens/side **3.12**, mean live bench/side **6.26** (4598 snapshots). Draws: 2 low-value + 3 turn-limit. Wall-clock **1708.8 s**.
 
-Vs [`capture_modifiers/`](capture_modifiers/) (**49-7-52**, 41/18/2/47/0, mean **39.63**): fewer draws (7→5), more lockouts (18→27), fewer control wins (41→30), one elimination. Captures rise (opp 5.17→5.71, self 5.38→5.96) as same-color zag vs normal/bead stops washing out.
+Vs [`capture_modifiers/`](capture_modifiers/) (**49-7-52**, mean **39.63**): fewer draws (7→5), more lockouts (18→27), fewer control wins (41→30), one elimination. Captures rise (opp 5.17→5.71, self 5.38→5.96) as same-color zag vs normal/bead stops washing out.
 
 ## Historical: capture modifiers (before zag-color exclusion)
 

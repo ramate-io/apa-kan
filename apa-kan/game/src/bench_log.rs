@@ -1398,6 +1398,99 @@ mod tests {
 		assert_committed_jsonl_gz_replays("benchmark_results/bead_count_minus_one/h2h.jsonl.gz");
 	}
 
+	/// Count captures whose incident edges had a positive bead mismatch, and
+	/// captures that would not have been overwhelmed with the bead channel
+	/// zeroed. Used for the bead_count_minus_one H2H report.
+	#[test]
+	fn committed_bead_count_minus_one_bead_mismatch_capture_share() {
+		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+			.join("benchmark_results/bead_count_minus_one/h2h.jsonl.gz");
+		if !path.exists() {
+			return;
+		}
+		let logs = decode_jsonl_gz(&std::fs::read(&path).unwrap()).expect("decode gzip jsonl");
+		let mut captures = 0u32;
+		let mut bead_mismatch_captures = 0u32;
+		let mut unmatched_present = 0u32;
+		let mut beads_necessary = 0u32;
+		for (i, log) in logs.iter().enumerate() {
+			let rules = log.rules.to_rules().unwrap();
+			let mut game = if let Some(setup) = &log.setup {
+				Game::from_setup_record(rules, log.seed, setup.to_record().unwrap())
+			} else {
+				let mut game = Game::empty(rules);
+				game.set_bag(Player::One, tiles_from_log(&log.opening.p1_bag).unwrap());
+				game.set_bag(Player::Two, tiles_from_log(&log.opening.p2_bag).unwrap());
+				game.set_bench(Player::One, tiles_from_log(&log.opening.p1_bench).unwrap());
+				game.set_bench(Player::Two, tiles_from_log(&log.opening.p2_bench).unwrap());
+				game
+			};
+			game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; log.opening.p1_tokens]);
+			game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; log.opening.p2_tokens]);
+			game.set_current(Player::One);
+			for (ai, act) in log.actions.iter().enumerate() {
+				let action =
+					act.to_action().unwrap_or_else(|e| panic!("game {i} action {ai}: {e}"));
+				if !act.captures.is_empty() {
+					let mut probe = game.clone();
+					match action {
+						Action::Add { bench_index, node } => {
+							let tile = probe.bench(probe.current_player())[bench_index];
+							probe.place_tile(node, tile);
+						}
+						Action::Move { from, to } => {
+							let tile = probe.clear_tile(from).expect("move from occupied");
+							probe.place_tile(to, tile);
+						}
+						Action::Pass => {}
+					}
+					let removals = probe.collect_removals();
+					assert_eq!(
+						removals.len(),
+						act.captures.len(),
+						"game {} action {} capture count",
+						i + 1,
+						ai
+					);
+					for rem in &removals {
+						captures += 1;
+						let tile = rem.tile;
+						let mut bead_x = 0i32;
+						let mut bead_signed = 0i32;
+						let mut unmatched = 0i32;
+						for nb in probe.board().incident_others(rem.node) {
+							let Some(other) = probe.tile_at(nb) else {
+								continue;
+							};
+							let ch = probe.edge_channels(tile, other);
+							bead_x += ch.bead_mismatch;
+							bead_signed += ch.bead_mismatch - ch.bead_match;
+							unmatched += i32::from(tile.bead_unmatched_on(other))
+								+ i32::from(other.bead_unmatched_on(tile));
+						}
+						if bead_x > 0 {
+							bead_mismatch_captures += 1;
+						}
+						if unmatched > 0 {
+							unmatched_present += 1;
+						}
+						let Some(eff) = probe.tile_effective_weight(rem.node) else {
+							continue;
+						};
+						if eff - bead_signed < i32::from(tile.weight) {
+							beads_necessary += 1;
+						}
+					}
+				}
+				game.apply(action).unwrap_or_else(|e| panic!("game {i} action {ai} apply: {e}"));
+			}
+		}
+		assert_eq!(captures, 1037, "527 opp + 510 self from committed h2h.txt");
+		assert_eq!(bead_mismatch_captures, 60);
+		assert_eq!(unmatched_present, 342);
+		assert_eq!(beads_necessary, 28);
+	}
+
 	#[test]
 	fn committed_work_budget_doubles_disallowed_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays(
