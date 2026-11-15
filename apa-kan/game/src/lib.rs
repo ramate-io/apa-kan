@@ -1,13 +1,12 @@
-//! Apa Kan — 8-petal rosette redesign.
+//! Apa Kan — Bevy client (display and in-match UI).
+//!
+//! Rules, bots, JSONL replay, and clocks live in [`apa_kan_core`]. This crate
+//! re-exports those modules so in-match UI can keep `crate::game::…` paths.
 
-pub mod ai;
-pub mod bench_log;
-pub mod board;
+pub use apa_kan_core::{ai, bench_log, board, clock, deck, game, scenario};
+
 pub mod config;
-pub mod deck;
-pub mod game;
 pub mod render;
-pub mod scenario;
 #[cfg(feature = "desktop")]
 pub mod ui;
 pub mod visual;

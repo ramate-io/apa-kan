@@ -7,6 +7,7 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 
 use crate::board::{Board, NodeId};
+pub use crate::clock::{Clock, ClockTick, TimeControl};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Player {
@@ -1056,6 +1057,12 @@ pub enum EndReason {
 	/// tiebreak). A missing piece is maximum value, so more surviving tiles
 	/// win; a draw only if the counts match and every pair ties on both passes.
 	LowValue,
+	/// Player to move ran out of clock. OPEN-Q #23: may instead be
+	/// [`Self::FlagDraw`] when the opponent cannot possibly win.
+	Flag,
+	/// Flag-fall draw: opponent cannot win by cheap checks (issue #50 rec).
+	/// OPEN-Q #23.
+	FlagDraw,
 }
 
 /// Restriction on moving the same tile on two consecutive own turns.
@@ -1617,6 +1624,9 @@ pub struct Game {
 	/// Reconstructible 27-tile collections and 7+4 picks. `None` on
 	/// constructed [`Self::empty`] fixtures.
 	setup: Option<crate::deck::SetupRecord>,
+	/// Match clock. `None` on today's unclocked games and fixtures so
+	/// [`Self::apply`] is unchanged.
+	clock: Option<Clock>,
 }
 
 impl Game {
@@ -1719,6 +1729,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
+			clock: None,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -1769,6 +1780,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
+			clock: None,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -1823,6 +1835,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: None,
+			clock: None,
 		}
 	}
 
@@ -1880,6 +1893,104 @@ impl Game {
 
 	pub fn status(&self) -> GameStatus {
 		self.status
+	}
+
+	pub fn clock(&self) -> Option<&Clock> {
+		self.clock.as_ref()
+	}
+
+	pub fn remaining_ms(&self, player: Player) -> Option<u64> {
+		self.clock.as_ref().map(|c| c.remaining_ms(player))
+	}
+
+	pub fn with_time_control(mut self, time_control: TimeControl) -> Self {
+		self.clock = Some(Clock::new(time_control));
+		self
+	}
+
+	pub fn set_time_control(&mut self, time_control: TimeControl) {
+		self.clock = Some(Clock::new(time_control));
+	}
+
+	/// Deduct `elapsed_ms` from `player`'s remaining time.
+	///
+	/// No-op when this game has no clock. OPEN-Q #26: core never pauses; the
+	/// caller chooses which elapsed value to pass (including a disconnect
+	/// window).
+	pub fn apply_elapsed(&mut self, player: Player, elapsed_ms: u64) -> Result<ClockTick, String> {
+		if self.clock.is_none() {
+			return Ok(ClockTick::Ok);
+		}
+		if self.status.is_over() {
+			return Err("game is over".into());
+		}
+		if player != self.current {
+			return Err("elapsed applies to the player to move".into());
+		}
+		let tick = self
+			.clock
+			.as_mut()
+			.map(|clock| clock.apply_elapsed(player, elapsed_ms))
+			.unwrap_or(ClockTick::Ok);
+		if tick == ClockTick::Flagged {
+			self.status = self.flag_status(player);
+		}
+		Ok(tick)
+	}
+
+	/// Add the time-control increment after a completed ADD, MOVE, or legal PASS.
+	pub fn credit_increment(&mut self, player: Player) {
+		if let Some(clock) = self.clock.as_mut() {
+			clock.credit_increment(player);
+		}
+	}
+
+	/// Deduct elapsed time, apply `action` if the player has not flagged, then
+	/// credit the increment.
+	pub fn apply_timed(
+		&mut self,
+		action: Action,
+		elapsed_ms: u64,
+	) -> Result<ActionOutcome, String> {
+		let player = self.current;
+		if self.apply_elapsed(player, elapsed_ms)? == ClockTick::Flagged {
+			return Err("flag-fall".into());
+		}
+		let outcome = self.apply(action)?;
+		self.credit_increment(player);
+		Ok(outcome)
+	}
+
+	fn flag_status(&self, flagged: Player) -> GameStatus {
+		if self.flag_opponent_cannot_win(flagged.other()) {
+			GameStatus::Draw { reason: EndReason::FlagDraw }
+		} else {
+			GameStatus::Won { winner: flagged.other(), reason: EndReason::Flag }
+		}
+	}
+
+	/// OPEN-Q #23: cheap checks only (not a search). Issue #50 recommendation.
+	fn flag_opponent_cannot_win(&self, opponent: Player) -> bool {
+		if !self.is_alive(opponent) {
+			return true;
+		}
+		if self.rules.no_moves_loses {
+			let mut probe = self.clone();
+			probe.clock = None;
+			probe.status = GameStatus::InProgress;
+			probe.current = opponent;
+			if !probe.has_add_or_move() {
+				return true;
+			}
+		}
+		if self.low_value_applies() {
+			match self.low_value_resolution() {
+				LowValueResolution::Draw => return true,
+				LowValueResolution::Win { winner, .. } if winner != opponent => return true,
+				_ => {}
+			}
+		}
+		false
 	}
 
 	pub fn turn_count(&self) -> u32 {
