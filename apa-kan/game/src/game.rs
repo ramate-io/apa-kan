@@ -747,8 +747,9 @@ impl Tile {
 
 	/// Bead-channel scores on the undirected edge `self`–`other`.
 	///
-	/// Mismatch is +1 per unmatched bead ring on **either** tile (count the
-	/// rings, not each mismatching color pair). If any bead ring on either
+	/// Count unmatched bead rings on **either** tile (rings, not color-pairs).
+	/// Mismatch is `max(count − 1, 0)` for that edge total: 1, 2, or 3
+	/// unmatched rings contribute 0, 1, or 2. If any bead ring on either
 	/// side is matched, the channel also scores a single match of 1 (one −1
 	/// at most per edge, like the normal channel — not per bead). Both can
 	/// fire together when some beads match and others do not.
@@ -756,7 +757,7 @@ impl Tile {
 		let unmatched =
 			i32::from(self.bead_unmatched_on(other)) + i32::from(other.bead_unmatched_on(self));
 		let matched = self.bead_matched_on(other) > 0 || other.bead_matched_on(self) > 0;
-		(if matched { 1 } else { 0 }, unmatched)
+		(if matched { 1 } else { 0 }, (unmatched - 1).max(0))
 	}
 
 	/// This tile's braid is satisfied when `other`'s
@@ -2267,10 +2268,11 @@ impl Game {
 	///   count), covering from the neighbor's non-zag colors. If none is
 	///   fulfilled, one mismatch of [`RuleSet::braid_fail_mismatch`]
 	///   (default 1).
-	/// - **Bead:** +1 mismatch per unmatched bead ring on either tile (count
-	///   the rings, not color-pairs). If any bead is matched — same presence
-	///   test as the normal channel, `other.has_non_zag_color(bead_color)` —
-	///   a single match of 1 (one −1 at most per edge). Mixed edges can
+	/// - **Bead:** count unmatched bead rings on either tile (rings, not
+	///   color-pairs); mismatch is `max(count − 1, 0)` so 1/2/3 unmatched
+	///   contribute 0/1/2. If any bead is matched — same presence test as
+	///   the normal channel, `other.has_non_zag_color(bead_color)` — a
+	///   single match of 1 (one −1 at most per edge). Mixed edges can
 	///   score both.
 	pub fn edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
 		let mut ch = EdgeChannels::default();
@@ -5514,17 +5516,17 @@ mod tests {
 		assert_eq!(zag.zag_hits_on(bead), 1);
 		let ch = game.edge_channels(zag, bead);
 		assert_eq!(ch.bead_match, 0);
-		assert_eq!(ch.bead_mismatch, 1);
+		assert_eq!(ch.bead_mismatch, 0, "one unmatched bead is max(1-1,0)=0");
 		assert_eq!(ch.zag_mismatch, 1);
 		assert_eq!(ch.normal_match, 0);
 		assert_eq!(ch.normal_mismatch, 0);
-		assert_eq!(game.edge_score(zag, bead), (0, 2));
-		assert_eq!(game.edge_score(bead, zag), (0, 2));
+		assert_eq!(game.edge_score(zag, bead), (0, 1));
+		assert_eq!(game.edge_score(bead, zag), (0, 1));
 	}
 
 	/// Screenshot pairing: dark 1-ring blue bead vs cream teal+orange normals
 	/// plus an inner blue zag. Under zag-color exclusion the blue zag is not
-	/// a bead match, so the edge is unmatched bead + hitch + zag hit.
+	/// a bead match. One unmatched bead scores 0, so the edge is hitch + zag.
 	#[test]
 	fn one_blue_bead_vs_teal_orange_and_blue_zag() {
 		let mut game = Game::empty(RuleSet::default());
@@ -5543,20 +5545,23 @@ mod tests {
 		assert_eq!(bead.bead_unmatched_on(cream), 1);
 		let ch = game.edge_channels(bead, cream);
 		assert_eq!(ch.bead_match, 0);
-		assert_eq!(ch.bead_mismatch, 1);
+		assert_eq!(ch.bead_mismatch, 0, "one unmatched bead does not double the hitch");
 		assert_eq!(ch.normal_match, 0);
 		assert_eq!(ch.normal_mismatch, 1);
 		assert_eq!(ch.zag_mismatch, 1);
-		assert_eq!(game.edge_score(bead, cream), (0, 3));
+		assert_eq!(game.edge_score(bead, cream), (0, 2));
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		game.place_tile(spawn, bead);
 		game.place_tile(nb, cream);
-		assert_eq!(game.tile_score(spawn), Some((1, 3)));
-		assert_eq!(game.tile_score(nb), Some((3, 3)));
+		assert_eq!(game.tile_score(spawn), Some((1, 2)));
+		assert_eq!(game.tile_score(nb), Some((3, 2)));
 		assert!(game.is_overwhelmed(spawn));
-		assert!(game.is_overwhelmed(nb));
-		assert_eq!(game.collect_removals().len(), 2);
+		assert!(
+			!game.is_overwhelmed(nb),
+			"3-ring cream survives hitch+zag once the bead no longer stacks"
+		);
+		assert_eq!(game.collect_removals().len(), 1);
 	}
 
 	#[test]
@@ -5580,13 +5585,13 @@ mod tests {
 		);
 		assert_eq!(beads.weight, 2, "weight follows live ring count");
 		assert_eq!(beads.bead_unmatched_on(cream), 2);
-		assert_eq!(game.edge_score(beads, cream), (0, 4));
+		assert_eq!(game.edge_score(beads, cream), (0, 3), "bead max(2-1,0)=1 + hitch + zag");
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		game.place_tile(spawn, beads);
 		game.place_tile(nb, cream);
-		assert_eq!(game.tile_score(spawn), Some((2, 4)));
-		assert_eq!(game.tile_score(nb), Some((3, 4)));
+		assert_eq!(game.tile_score(spawn), Some((2, 3)));
+		assert_eq!(game.tile_score(nb), Some((3, 3)));
 		assert!(game.is_overwhelmed(spawn));
 		assert!(game.is_overwhelmed(nb));
 	}
@@ -7133,10 +7138,13 @@ mod tests {
 		let miss = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
 		let ch = game.edge_channels(three, miss);
 		assert_eq!(ch.bead_match, 0);
-		assert_eq!(ch.bead_mismatch, 3, "three unmatched orange beads, not 3×1 color pairs");
+		assert_eq!(
+			ch.bead_mismatch, 2,
+			"three unmatched orange beads, not 3×1 color pairs; max(3-1,0)=2"
+		);
 		assert_eq!(ch.normal_mismatch, 1);
-		assert_eq!(game.edge_score(three, miss), (0, 4));
-		assert_eq!(game.edge_score(miss, three), (0, 4));
+		assert_eq!(game.edge_score(three, miss), (0, 3));
+		assert_eq!(game.edge_score(miss, three), (0, 3));
 	}
 
 	#[test]
@@ -7158,6 +7166,133 @@ mod tests {
 		assert_eq!(game.edge_score(three, hit), (2, 0));
 	}
 
+	/// Unmatched bead mismatch is `max(count − 1, 0)` on the edge total
+	/// (both tiles). A matched bead is still a single −1.
+	#[test]
+	fn bead_unmatched_mismatch_is_count_minus_one() {
+		struct Row {
+			name: &'static str,
+			a: &'static [(TileColor, RingType)],
+			b: &'static [(TileColor, RingType)],
+			unmatched: u8,
+			bead_match: i32,
+			bead_mismatch: i32,
+			want: (i32, i32),
+		}
+		let rows = [
+			Row {
+				name: "1 unmatched bead vs blue normal",
+				a: &[(TileColor::Orange, RingType::Bead)],
+				b: &[(TileColor::Blue, RingType::Normal)],
+				unmatched: 1,
+				bead_match: 0,
+				bead_mismatch: 0,
+				want: (0, 1),
+			},
+			Row {
+				name: "2 unmatched beads vs blue normal",
+				a: &[(TileColor::Orange, RingType::Bead), (TileColor::Orange, RingType::Bead)],
+				b: &[(TileColor::Blue, RingType::Normal)],
+				unmatched: 2,
+				bead_match: 0,
+				bead_mismatch: 1,
+				want: (0, 2),
+			},
+			Row {
+				name: "3 unmatched beads vs blue normal",
+				a: &[
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Orange, RingType::Bead),
+				],
+				b: &[(TileColor::Blue, RingType::Normal)],
+				unmatched: 3,
+				bead_match: 0,
+				bead_mismatch: 2,
+				want: (0, 3),
+			},
+			Row {
+				name: "matched 3 orange beads vs 1 orange",
+				a: &[
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Orange, RingType::Bead),
+				],
+				b: &[(TileColor::Orange, RingType::Normal)],
+				unmatched: 0,
+				bead_match: 1,
+				bead_mismatch: 0,
+				want: (2, 0),
+			},
+			Row {
+				name: "1 unmatched bead plus failed braid",
+				a: &[(TileColor::Blue, RingType::Bead)],
+				b: &[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+				unmatched: 1,
+				bead_match: 0,
+				bead_mismatch: 0,
+				want: (0, 1),
+			},
+			Row {
+				name: "3 unmatched beads plus failed braid",
+				a: &[
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Orange, RingType::Bead),
+				],
+				b: &[
+					(TileColor::Blue, RingType::Braid),
+					(TileColor::Teal, RingType::Braid),
+					(TileColor::Green, RingType::Braid),
+				],
+				unmatched: 3,
+				bead_match: 0,
+				bead_mismatch: 2,
+				want: (0, 3),
+			},
+			Row {
+				name: "1 unmatched bead plus zag hit",
+				a: &[(TileColor::Orange, RingType::Bead)],
+				b: &[(TileColor::Orange, RingType::Zag)],
+				unmatched: 1,
+				bead_match: 0,
+				bead_mismatch: 0,
+				want: (0, 1),
+			},
+			Row {
+				name: "2 unmatched beads plus hitch plus zag",
+				a: &[(TileColor::Blue, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+				b: &[
+					(TileColor::Teal, RingType::Normal),
+					(TileColor::Orange, RingType::Normal),
+					(TileColor::Blue, RingType::Zag),
+				],
+				unmatched: 2,
+				bead_match: 0,
+				bead_mismatch: 1,
+				want: (0, 3),
+			},
+		];
+		for row in rows {
+			let mut game = Game::empty(RuleSet::default());
+			let a = game.alloc_typed_rings(Player::One, row.a, 1, 1);
+			let b = game.alloc_typed_rings(Player::Two, row.b, 1, 1);
+			let unmatched = a.bead_unmatched_on(b) + b.bead_unmatched_on(a);
+			assert_eq!(unmatched, row.unmatched, "{} unmatched count", row.name);
+			let ch = game.edge_channels(a, b);
+			assert_eq!(ch.bead_match, row.bead_match, "{} bead_match", row.name);
+			assert_eq!(ch.bead_mismatch, row.bead_mismatch, "{} bead_mismatch", row.name);
+			assert_eq!(
+				ch.bead_mismatch,
+				(i32::from(unmatched) - 1).max(0),
+				"{} max(count-1,0)",
+				row.name
+			);
+			assert_eq!(game.edge_score(a, b), row.want, "{}", row.name);
+			assert_eq!(game.edge_score(b, a), row.want, "{} sym", row.name);
+		}
+	}
+
 	#[test]
 	fn bead_matching_uses_normal_channel_presence() {
 		let mut game = Game::empty(RuleSet::default());
@@ -7174,9 +7309,13 @@ mod tests {
 		assert_eq!(bead.bead_matched_on(braid), 1, "braid orange is in non-zag Colors_B");
 		assert_eq!(bead.bead_matched_on(other_bead), 1, "bead orange is in non-zag Colors_B");
 		assert_eq!(game.edge_channels(bead, zag).bead_match, 0);
-		assert_eq!(game.edge_channels(bead, zag).bead_mismatch, 1);
+		assert_eq!(game.edge_channels(bead, zag).bead_mismatch, 0);
 		assert_eq!(game.edge_channels(bead, zag).zag_mismatch, 1);
-		assert_eq!(game.edge_score(bead, zag), (0, 2), "same-color bead vs zag is hitch + zag hit");
+		assert_eq!(
+			game.edge_score(bead, zag),
+			(0, 1),
+			"same-color bead vs zag is a zag hit; one unmatched bead adds 0"
+		);
 	}
 
 	#[test]
@@ -7186,8 +7325,8 @@ mod tests {
 		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
 		let ch = game.edge_channels(mixed, hit);
 		assert_eq!(ch.bead_match, 1);
-		assert_eq!(ch.bead_mismatch, 1, "green unmatched; orange matched");
-		assert_eq!(game.edge_score(mixed, hit), (2, 1));
+		assert_eq!(ch.bead_mismatch, 0, "green unmatched (1) scores max(1-1,0)=0; orange matched");
+		assert_eq!(game.edge_score(mixed, hit), (2, 0));
 	}
 
 	#[test]
@@ -7209,11 +7348,11 @@ mod tests {
 			1,
 		);
 		let ch = game.edge_channels(bomb, braid);
-		assert_eq!(ch.bead_mismatch, 3);
+		assert_eq!(ch.bead_mismatch, 2, "max(3-1,0)=2");
 		assert_eq!(ch.bead_match, 0);
 		assert_eq!(ch.braid_mismatch, 1);
 		assert_eq!(ch.braid_match, 0);
-		assert_eq!(game.edge_score(bomb, braid), (0, 4));
+		assert_eq!(game.edge_score(bomb, braid), (0, 3));
 		assert_eq!(bomb.weight, 3);
 		assert_eq!(braid.weight, 3);
 	}
@@ -7230,11 +7369,11 @@ mod tests {
 		let b = game.alloc_rings(Player::Two, &[TileColor::Blue, TileColor::Green], 1, 1);
 		let ch = game.edge_channels(a, b);
 		assert_eq!(ch.zag_mismatch, 1, "blue zag hits");
-		assert_eq!(ch.bead_mismatch, 1, "orange bead unmatched");
+		assert_eq!(ch.bead_mismatch, 0, "one unmatched bead is max(1-1,0)=0");
 		assert_eq!(ch.bead_match, 0);
 		assert_eq!(ch.normal_match, 0, "A's blue zag is not a match for B's blue normal");
 		assert_eq!(ch.normal_mismatch, 1);
-		assert_eq!(game.edge_score(a, b), (0, 3));
+		assert_eq!(game.edge_score(a, b), (0, 2));
 	}
 
 	#[test]
@@ -7244,13 +7383,13 @@ mod tests {
 		let inner = game.board().inner_ring()[0];
 		let a = beads(&mut game, Player::One, &[TileColor::Orange, TileColor::Orange]);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
-		assert_eq!(game.edge_channels(a, b).bead_mismatch, 2);
-		assert_eq!(game.edge_score(a, b), (0, 3), "2 unmatched beads + 1 normal hitch");
+		assert_eq!(game.edge_channels(a, b).bead_mismatch, 1, "max(2-1,0)=1");
+		assert_eq!(game.edge_score(a, b), (0, 2), "bead 1 + 1 normal hitch");
 		game.place_tile(center, a);
 		game.place_tile(inner, b);
-		assert_eq!(game.tile_effective_weight(center), Some(6), "two petals: +3 + +3");
-		assert_eq!(game.tile_effective_weight(inner), Some(6));
-		assert_eq!(game.tile_score(center), Some((2, 6)));
+		assert_eq!(game.tile_effective_weight(center), Some(4), "two petals: +2 + +2");
+		assert_eq!(game.tile_effective_weight(inner), Some(4));
+		assert_eq!(game.tile_score(center), Some((2, 4)));
 		assert!(game.is_overwhelmed(center));
 		assert!(game.is_overwhelmed(inner));
 	}
@@ -7261,7 +7400,7 @@ mod tests {
 		let a = beads(&mut game, Player::One, &[TileColor::Orange]);
 		let b = beads(&mut game, Player::Two, &[TileColor::Green, TileColor::Blue]);
 		let ch = game.edge_channels(a, b);
-		assert_eq!(ch.bead_mismatch, 3, "1 + 2 unmatched bead rings");
+		assert_eq!(ch.bead_mismatch, 2, "1 + 2 unmatched bead rings, then max(3-1,0)=2");
 		assert_eq!(ch.bead_match, 0);
 		assert_eq!(game.edge_channels(a, b), game.edge_channels(b, a));
 	}
@@ -7291,14 +7430,14 @@ mod tests {
 		assert_eq!(ch.braid_match, 0);
 		assert_eq!(ch.braid_mismatch, 1, "failed braid is flat +1, not per thread");
 		assert_eq!(ch.bead_match, 0);
-		assert_eq!(ch.bead_mismatch, 1, "one unmatched bead ring, not per braid thread");
-		assert_eq!(game.edge_score(bead, braid), (0, 2));
+		assert_eq!(ch.bead_mismatch, 0, "one unmatched bead ring scores 0, not per braid thread");
+		assert_eq!(game.edge_score(bead, braid), (0, 1));
 		assert_eq!(
 			game.edge_score(braid, bead),
-			(0, 2),
+			(0, 1),
 			"undirected: both tiles take the same totals"
 		);
-		assert_eq!(ch.effective(), 2);
+		assert_eq!(ch.effective(), 1);
 
 		let spawn = game.board().spawns()[0];
 		let outer = *game
@@ -7317,14 +7456,17 @@ mod tests {
 
 		game.place_tile(outer, bead);
 		game.place_tile(spawn, braid);
-		assert_eq!(game.tile_score(spawn), Some((2, 2)), "braid: rings 2 + match 0 vs mismatch 2");
-		assert_eq!(game.tile_score(outer), Some((1, 2)), "bead: rings 1 + match 0 vs mismatch 2");
-		assert_eq!(game.tile_effective_weight(spawn), Some(2));
-		assert_eq!(game.tile_effective_weight(outer), Some(2));
-		assert!(game.is_overwhelmed(spawn), "braid: mismatch−match 2 >= ring count 2");
-		assert!(game.is_overwhelmed(outer), "bead also: 2 >= 1");
+		assert_eq!(game.tile_score(spawn), Some((2, 1)), "braid: rings 2 + match 0 vs mismatch 1");
+		assert_eq!(game.tile_score(outer), Some((1, 1)), "bead: rings 1 + match 0 vs mismatch 1");
+		assert_eq!(game.tile_effective_weight(spawn), Some(1));
+		assert_eq!(game.tile_effective_weight(outer), Some(1));
+		assert!(
+			!game.is_overwhelmed(spawn),
+			"braid: mismatch−match 1 < ring count 2 once the bead no longer stacks"
+		);
+		assert!(game.is_overwhelmed(outer), "bead: 1 >= 1");
 		let gone: Vec<_> = game.collect_removals().into_iter().map(|r| r.node).collect();
-		assert!(gone.contains(&spawn) && gone.contains(&outer), "simultaneous: both leave");
+		assert!(gone.contains(&outer) && !gone.contains(&spawn), "only the 1-ring bead leaves");
 	}
 
 	#[test]
