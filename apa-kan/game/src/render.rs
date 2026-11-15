@@ -575,6 +575,9 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(tile.owner)));
 	let primary = rgb_of(visual::tile_rgb(tile.primary()));
 	let draw = visual::TileRingDraw::for_radius(r as f32);
+	let marks = visual::capture_mark_count(tile);
+	let notch = visual::tile_ring_notch(marks);
+	let down = visual::CAPTURE_DOWN_IMAGE;
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
 		if tile.stroke_is_braid(k) {
@@ -586,41 +589,57 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			let width =
 				f64::from(if tile.stroke_is_zag(k) { draw.zag_stroke } else { draw.stroke });
 			if tile.stroke_is_zag(k) {
-				let zig = visual::zigzag_circle(
+				let zig = visual::zigzag_arc(
 					[c.0, c.1],
 					rr,
 					f64::from(draw.zag_amp),
 					draw.zag_teeth,
-					draw.zag_samples,
+					down,
+					notch,
 				);
 				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
 			} else if tile.stroke_is_bead(k) {
 				let bead_r = f64::from(draw.bead_r);
 				let pinch = f64::from(visual::bead_pinch(draw.bead_r));
 				let fill = rgb_of(visual::tile_rgb(color));
+				let rim =
+					visual::tile_ring_arc([c.0, c.1], rr, down, notch, visual::TILE_BEAD_SAMPLES);
 				fill_tris(
 					img,
-					&visual::bead_chain_ring(
+					&visual::bead_chain_arc(
 						[c.0, c.1],
 						rr,
 						draw.bead_count,
 						bead_r,
 						pinch,
 						visual::TILE_BEAD_SAMPLES,
+						down,
+						notch,
 					),
 					fill,
 				);
+				for p in [rim.first(), rim.last()].into_iter().flatten() {
+					fill_circle(img, (p[0], p[1]), pinch, fill);
+				}
 			} else {
-				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
+				let rim = visual::tile_ring_arc(
+					[c.0, c.1],
+					rr,
+					down,
+					notch,
+					visual::TILE_RING_ARC_SAMPLES,
+				);
+				stroke_polyline(img, &rim, rgb_of(visual::tile_rgb(color)), width);
 			}
 		}
 	}
 	if tile.braid_ring_count() >= 2 {
 		let rr = f64::from(draw.ring_radius(r as f32, 0));
 		if rr > 4.0 * f64::from(draw.scale) {
-			let rim = visual::circle_polyline([c.0, c.1], rr, draw.braid_samples);
+			let rim = visual::tile_ring_arc([c.0, c.1], rr, down, notch, draw.braid_samples);
 			let amp = f64::from(draw.braid_amp);
-			let turns = visual::tile_braid_turns(rr);
+			let sweep = 2.0 * std::f64::consts::PI - f64::from(notch);
+			let turns = visual::tile_braid_turns(rr) * sweep / (2.0 * std::f64::consts::PI);
 			let w = f64::from(draw.braid_stroke);
 			let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
 			let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
@@ -639,19 +658,6 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			}
 		}
 	}
-	let plate_arc =
-		draw.capture_plate_arc([c.0 as f32, c.1 as f32], r as f32, visual::CAPTURE_DOWN_IMAGE);
-	if plate_arc.len() >= 2 {
-		let pts: Vec<[f64; 2]> =
-			plate_arc.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
-		stroke_polyline(
-			img,
-			&pts,
-			rgb_of(visual::plate_arc_rgb(tile.owner)),
-			f64::from(draw.plate_stroke),
-		);
-	}
-	let marks = visual::capture_mark_count(tile);
 	for i in 0..marks {
 		let triangle = matches!(tile.capture, crate::game::CaptureMark::Triangle);
 		let poly = draw.capture_mark_poly(
@@ -923,7 +929,7 @@ mod tests {
 			!channel_near(px[0], fill[0], 18)
 				|| !channel_near(px[1], fill[1], 18)
 				|| !channel_near(px[2], fill[2], 18),
-			"last deck slot should show a capture mark in the plate-arc band, not a blank face, got {px:?}"
+			"last deck slot should show a capture mark in the ring notch, not a blank face, got {px:?}"
 		);
 	}
 
@@ -1718,7 +1724,7 @@ mod tests {
 		write_cropped(
 			&demo_zag_tile(),
 			dir.join("edge_capture_marks.png"),
-			"dot/triangle marks along the interior plate arc",
+			"dot/triangle marks in the bottom ring notch",
 			28.0,
 		);
 		write_cropped(
@@ -1730,19 +1736,48 @@ mod tests {
 		write_cropped(
 			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 3),
 			dir.join("bead_and_plate_tile.png"),
-			"connected bead chain and stroked interior plate arc",
+			"connected bead chain with a bottom ring notch",
 			28.0,
 		);
 		{
 			let mut g = crate::game::Game::empty(RuleSet::default());
 			let dot = g
-				.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Bead)], 1, 3)
+				.alloc_typed_rings(
+					Player::One,
+					&[
+						(TileColor::Orange, RingType::Bead),
+						(TileColor::Blue, RingType::Zag),
+						(TileColor::Green, RingType::Normal),
+					],
+					1,
+					3,
+				)
 				.with_capture(CaptureMark::Dot);
 			let tri = g
-				.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Bead)], 1, 3)
+				.alloc_typed_rings(
+					Player::One,
+					&[
+						(TileColor::Orange, RingType::Braid),
+						(TileColor::Green, RingType::Braid),
+						(TileColor::Blue, RingType::Zag),
+					],
+					1,
+					3,
+				)
 				.with_capture(CaptureMark::Triangle);
-			write_tile_closeup(dot, dir.join("closeup_bead_plate_dot.png"), 880, 330.0);
-			write_tile_closeup(tri, dir.join("closeup_bead_plate_triangle.png"), 880, 330.0);
+			write_tile_closeup(dot, dir.join("closeup_notch_dot.png"), 880, 330.0);
+			write_tile_closeup(tri, dir.join("closeup_notch_triangle.png"), 880, 330.0);
+			write_cropped(
+				&demo_typed_pair(
+					&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Zag)],
+					1,
+					&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+					1,
+				),
+				dir.join("board_ring_notch.png"),
+				"normal-zoom board crop: C-notch rings, no plate",
+				36.0,
+			);
 			write_arc_bead_closeup(
 				&demo_typed_pair(
 					&[(TileColor::Orange, RingType::Bead)],

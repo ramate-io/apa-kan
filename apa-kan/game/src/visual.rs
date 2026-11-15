@@ -133,8 +133,6 @@ pub const Z_ARC_OVER: f32 = 0.08;
 pub const Z_NODE: f32 = 1.0;
 pub const Z_TILE: f32 = 2.0;
 pub const Z_TILE_RING: f32 = 2.15;
-/// Stroked interior plate arc, above ring ink.
-pub const Z_TILE_BAND: f32 = 2.25;
 pub const Z_TILE_DOT: f32 = 2.3;
 pub const Z_HIGHLIGHT: f32 = 3.0;
 /// Last-move capture freeze-frame in the left gutter, above board arcs.
@@ -191,20 +189,17 @@ pub const CAPTURE_GLOW_RGB: [f32; 3] = [1.00, 0.72, 0.28];
 pub const CAPTURE_GLOW_INNER_RGB: [f32; 3] = [0.99, 0.94, 0.82];
 /// Rim on a blank budget token so dark P2 blanks stay visible.
 pub const BLANK_TOKEN_RIM_RGB: [f32; 3] = [0.55, 0.56, 0.58];
-/// Plate circle radius as a fraction of the tile radius. Similar size,
-/// so the interior arc cuts a classic lens-height band along the bottom.
-pub const TILE_PLATE_R_SCALE: f32 = 1.0;
-/// Distance from the tile center to the plate-circle center, as a
-/// fraction of the tile radius. For equal radii the band between the
-/// interior plate arc and the tile's bottom edge is `0.5 R`.
-pub const TILE_PLATE_SEP: f32 = 1.50;
-/// Samples along the interior plate arc (intersection to intersection).
-pub const TILE_PLATE_SAMPLES: u32 = 48;
-/// Plate-arc stroke in 22px-tile units. Thinner than a color ring.
-pub const TILE_PLATE_STROKE: f32 = 1.55;
-/// Samples around a capture-dot warped through plate polar coordinates.
+/// Bottom notch in a 1-mark tile ring (~64°). Rings are a C opening down.
+pub const TILE_RING_NOTCH_1: f32 = 64.0 * std::f32::consts::PI / 180.0;
+/// Notch for 2 marks (~72°).
+pub const TILE_RING_NOTCH_2: f32 = 72.0 * std::f32::consts::PI / 180.0;
+/// Notch for 3 marks (~80°), wide enough that marks do not overlap the ends.
+pub const TILE_RING_NOTCH_3: f32 = 80.0 * std::f32::consts::PI / 180.0;
+/// Samples along an open tile-ring arc.
+pub const TILE_RING_ARC_SAMPLES: u32 = 96;
+/// Samples around a capture-dot warped through tile polar coordinates.
 pub const TILE_MARK_DOT_SAMPLES: u32 = 28;
-/// Samples along each triangle edge so the sides follow the plate arc.
+/// Samples along each triangle edge so the sides follow the tile arc.
 pub const TILE_MARK_TRI_EDGE_SAMPLES: u32 = 10;
 
 /// Unusable surplus or unfilled blanks: opaque owner-fill face, rim only.
@@ -861,9 +856,6 @@ pub struct TileRingDraw {
 	pub braid_samples: u32,
 	pub bead_r: f32,
 	pub bead_count: u32,
-	pub plate_r: f32,
-	pub plate_sep: f32,
-	pub plate_stroke: f32,
 }
 
 impl TileRingDraw {
@@ -883,9 +875,6 @@ impl TileRingDraw {
 			braid_samples: TILE_BRAID_SAMPLES,
 			bead_r: (TILE_BEAD_R * scale).max(0.7),
 			bead_count: TILE_BEAD_COUNT,
-			plate_r: radius * TILE_PLATE_R_SCALE,
-			plate_sep: radius * TILE_PLATE_SEP,
-			plate_stroke: (TILE_PLATE_STROKE * scale).max(1.15),
 		}
 	}
 
@@ -893,31 +882,21 @@ impl TileRingDraw {
 		tile_radius - self.inset - f32::from(k) * self.gap
 	}
 
-	/// Center of the (undrawn) plate circle, along `down` from the tile
-	/// center (`[0, -1]` in Bevy, `[0, 1]` in the PNG image).
-	pub fn plate_center(self, tile_center: [f32; 2], down: [f32; 2]) -> [f32; 2] {
-		[tile_center[0] + down[0] * self.plate_sep, tile_center[1] + down[1] * self.plate_sep]
-	}
-
-	/// Band height at the midpoint: plate arc to the tile's bottom edge.
-	pub fn plate_band_height(self, tile_radius: f32) -> f32 {
-		(tile_radius + self.plate_r - self.plate_sep).max(0.0)
-	}
-
-	/// Capture-mark radius sized to the bottom band for `count` marks (1–3).
+	/// Capture-mark radius sized to the bottom notch for `count` marks (1–3).
 	pub fn capture_mark_r(self, tile_radius: f32, count: u8) -> f32 {
-		let h = self.plate_band_height(tile_radius);
+		let notch = tile_ring_notch(count);
+		let rho = self.ring_radius(tile_radius, 0).max(tile_radius * 0.55);
+		let slot = rho * notch / f32::from(count.max(1));
 		let k = match count {
-			0 | 1 => 0.38,
-			2 => 0.30,
-			_ => 0.26,
+			0 | 1 => 0.22,
+			2 => 0.18,
+			_ => 0.15,
 		};
-		(h * k).max(2.2 * self.scale.max(0.4))
+		(slot * k).max(2.35 * self.scale.max(0.4))
 	}
 
-	/// Polar frame of capture mark `i`: plate center, angle, and radius
-	/// from that center. Marks sit in the band between the interior plate
-	/// arc and the tile's bottom edge.
+	/// Polar frame of capture mark `i`: tile center, angle, and radius.
+	/// Marks sit in the bottom ring-notch, on the outermost ring's circle.
 	pub fn capture_mark_frame(
 		self,
 		tile_center: [f32; 2],
@@ -926,25 +905,20 @@ impl TileRingDraw {
 		count: u8,
 		down: [f32; 2],
 	) -> Option<([f32; 2], f32, f32)> {
-		let plate = self.plate_center(tile_center, down);
-		let Some((p0, p1)) = circle_intersections(tile_center, tile_radius, plate, self.plate_r)
-		else {
-			return None;
-		};
-		let mid = ang_of(plate, tile_center);
-		let half = ang_dist(mid, ang_of(plate, p0)).min(ang_dist(mid, ang_of(plate, p1)));
 		let n = count.max(1);
-		let span = match n {
-			1 => 0.0,
-			2 => half * 0.50,
-			_ => half * 0.55,
-		};
+		let notch = tile_ring_notch(n);
+		let mid = down_angle(down);
+		let half = notch * 0.5;
+		let mark_r = self.capture_mark_r(tile_radius, n);
+		let rho_track = self.ring_radius(tile_radius, 0).max(tile_radius * 0.55);
+		let rho = (rho_track - mark_r * 0.12)
+			.min(tile_radius - mark_r * 1.05)
+			.max(tile_radius * 0.45);
+		let pad = (mark_r / rho.max(1e-4)) + 0.08;
+		let usable = (half - pad).max(0.0);
 		let t = if n == 1 { 0.0 } else { -0.5 + f32::from(i) / f32::from(n - 1) };
-		let theta = mid + span * 2.0 * t;
-		let rho_near = ray_circle_near(plate, theta, tile_center, tile_radius)?;
-		let band = (self.plate_r - rho_near).max(0.0);
-		let rho = rho_near + band * 0.52;
-		Some((plate, theta, rho))
+		let theta = mid + usable * 2.0 * t;
+		Some((tile_center, theta, rho))
 	}
 
 	pub fn capture_mark_pos(
@@ -956,37 +930,13 @@ impl TileRingDraw {
 		down: [f32; 2],
 	) -> [f32; 2] {
 		match self.capture_mark_frame(center, tile_radius, i, count, down) {
-			Some((plate, theta, rho)) => plate_polar(plate, theta, rho),
+			Some((origin, theta, rho)) => polar_point(origin, theta, rho),
 			None => center,
 		}
 	}
 
-	/// Interior arc of the plate circle: the single stroke that lies
-	/// inside the tile, ending on the two intersection points.
-	pub fn capture_plate_arc(
-		self,
-		tile_center: [f32; 2],
-		tile_radius: f32,
-		down: [f32; 2],
-	) -> Vec<[f32; 2]> {
-		let plate = self.plate_center(tile_center, down);
-		let Some((i0, i1)) = circle_intersections(tile_center, tile_radius, plate, self.plate_r)
-		else {
-			return Vec::new();
-		};
-		sample_arc_inside(
-			plate,
-			self.plate_r,
-			ang_of(plate, i0),
-			ang_of(plate, i1),
-			tile_center,
-			tile_radius,
-			TILE_PLATE_SAMPLES,
-		)
-	}
-
-	/// Dot or triangle built in plate polar coordinates so the shape
-	/// follows the arc's tangent and normal.
+	/// Dot or triangle built in tile polar coordinates so the shape
+	/// follows the ring's tangent and normal.
 	pub fn capture_mark_poly(
 		self,
 		tile_center: [f32; 2],
@@ -996,16 +946,16 @@ impl TileRingDraw {
 		down: [f32; 2],
 		triangle: bool,
 	) -> Vec<[f32; 2]> {
-		let Some((plate, theta, rho)) =
+		let Some((origin, theta, rho)) =
 			self.capture_mark_frame(tile_center, tile_radius, i, count, down)
 		else {
 			return Vec::new();
 		};
 		let r = self.capture_mark_r(tile_radius, count);
 		if triangle {
-			capture_triangle_on_arc(plate, theta, rho, r)
+			capture_triangle_on_arc(origin, theta, rho, r)
 		} else {
-			capture_dot_on_arc(plate, theta, rho, r)
+			capture_dot_on_arc(origin, theta, rho, r)
 		}
 	}
 }
@@ -1015,41 +965,20 @@ pub const CAPTURE_DOWN_BEVY: [f32; 2] = [0.0, -1.0];
 /// Screen-down in PNG image coordinates (+Y down).
 pub const CAPTURE_DOWN_IMAGE: [f32; 2] = [0.0, 1.0];
 
-fn circle_intersections(
-	c0: [f32; 2],
-	r0: f32,
-	c1: [f32; 2],
-	r1: f32,
-) -> Option<([f32; 2], [f32; 2])> {
-	let dx = c1[0] - c0[0];
-	let dy = c1[1] - c0[1];
-	let d = dx.hypot(dy);
-	if d < 1e-5 || d >= r0 + r1 - 1e-4 || d <= (r0 - r1).abs() + 1e-4 {
-		return None;
+/// Bottom notch width so rings open like a C. Wider for more marks.
+pub fn tile_ring_notch(count: u8) -> f32 {
+	match count.max(1) {
+		1 => TILE_RING_NOTCH_1,
+		2 => TILE_RING_NOTCH_2,
+		_ => TILE_RING_NOTCH_3,
 	}
-	let a = (d * d + r0 * r0 - r1 * r1) / (2.0 * d);
-	let h = (r0 * r0 - a * a).max(0.0).sqrt();
-	let mx = c0[0] + dx * a / d;
-	let my = c0[1] + dy * a / d;
-	let ix = -dy * h / d;
-	let iy = dx * h / d;
-	Some(([mx + ix, my + iy], [mx - ix, my - iy]))
 }
 
-fn point_on_circle(c: [f32; 2], r: f32, ang: f32) -> [f32; 2] {
-	[c[0] + r * ang.cos(), c[1] + r * ang.sin()]
+pub fn down_angle(down: [f32; 2]) -> f32 {
+	down[1].atan2(down[0])
 }
 
-fn ang_of(c: [f32; 2], p: [f32; 2]) -> f32 {
-	(p[1] - c[1]).atan2(p[0] - c[0])
-}
-
-fn inside_circle(p: [f32; 2], c: [f32; 2], r: f32) -> bool {
-	let dx = p[0] - c[0];
-	let dy = p[1] - c[1];
-	dx * dx + dy * dy <= r * r + 1e-3
-}
-
+#[cfg(test)]
 fn ang_dist(a: f32, b: f32) -> f32 {
 	use std::f32::consts::PI;
 	let mut d = (b - a).abs();
@@ -1059,56 +988,33 @@ fn ang_dist(a: f32, b: f32) -> f32 {
 	d
 }
 
-/// Smallest positive hit of the ray `origin + t·(cos θ, sin θ)` on circle `c,r`.
-fn ray_circle_near(origin: [f32; 2], theta: f32, c: [f32; 2], r: f32) -> Option<f32> {
-	let ux = theta.cos();
-	let uy = theta.sin();
-	let dx = origin[0] - c[0];
-	let dy = origin[1] - c[1];
-	let b = 2.0 * (dx * ux + dy * uy);
-	let cc = dx * dx + dy * dy - r * r;
-	let disc = b * b - 4.0 * cc;
-	if disc < 0.0 {
-		return None;
-	}
-	let s = disc.sqrt();
-	let t0 = (-b - s) * 0.5;
-	let t1 = (-b + s) * 0.5;
-	match (t0 > 1e-4, t1 > 1e-4) {
-		(true, true) => Some(t0.min(t1)),
-		(true, false) => Some(t0),
-		(false, true) => Some(t1),
-		_ => None,
-	}
-}
-
-fn plate_polar(origin: [f32; 2], theta: f32, rho: f32) -> [f32; 2] {
+fn polar_point(origin: [f32; 2], theta: f32, rho: f32) -> [f32; 2] {
 	[origin[0] + rho * theta.cos(), origin[1] + rho * theta.sin()]
 }
 
-/// `(s, n)` is arc-length along the plate tangent and radius away from the
-/// plate center. Mapping through polar coords bends the shape with the ring.
-fn plate_local_to_world(origin: [f32; 2], theta: f32, rho: f32, s: f32, n: f32) -> [f32; 2] {
+/// `(s, n)` is arc-length along the tangent and signed radius from the
+/// tile center. Mapping through polar coords bends the shape with the ring.
+fn polar_local_to_world(origin: [f32; 2], theta: f32, rho: f32, s: f32, n: f32) -> [f32; 2] {
 	let th = theta + s / rho.max(1e-4);
-	plate_polar(origin, th, (rho + n).max(0.05))
+	polar_point(origin, th, (rho + n).max(0.05))
 }
 
-fn capture_dot_on_arc(plate: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
+fn capture_dot_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
 	use std::f32::consts::TAU;
 	let n = TILE_MARK_DOT_SAMPLES.max(8);
 	(0..n)
 		.map(|i| {
 			let a = TAU * i as f32 / n as f32;
-			plate_local_to_world(plate, theta, rho, r * a.cos(), r * a.sin())
+			polar_local_to_world(origin, theta, rho, r * a.cos(), r * a.sin())
 		})
 		.collect()
 }
 
-fn capture_triangle_on_arc(plate: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
+fn capture_triangle_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
 	let h = r * 1.25;
 	let w = r * 1.15;
-	// Tip along +radial (the arc normal pointing toward the tile center).
-	let verts = [[0.0, h], [-w, -h * 0.55], [w, -h * 0.55]];
+	// Tip along −radial (toward the tile center, the inward arc normal).
+	let verts = [[0.0, -h], [-w, h * 0.55], [w, h * 0.55]];
 	let m = TILE_MARK_TRI_EDGE_SAMPLES.max(4);
 	let mut out = Vec::with_capacity((m as usize) * 3);
 	for i in 0..3 {
@@ -1116,8 +1022,8 @@ fn capture_triangle_on_arc(plate: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec
 		let b = verts[(i + 1) % 3];
 		for k in 0..m {
 			let t = k as f32 / m as f32;
-			out.push(plate_local_to_world(
-				plate,
+			out.push(polar_local_to_world(
+				origin,
 				theta,
 				rho,
 				a[0] + (b[0] - a[0]) * t,
@@ -1126,42 +1032,6 @@ fn capture_triangle_on_arc(plate: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec
 		}
 	}
 	out
-}
-
-/// Arc of `c,r` from `a_from` to `a_to` whose interior sits inside the
-/// other circle. Includes both endpoints.
-fn sample_arc_inside(
-	c: [f32; 2],
-	r: f32,
-	a_from: f32,
-	a_to: f32,
-	other_c: [f32; 2],
-	other_r: f32,
-	n: u32,
-) -> Vec<[f32; 2]> {
-	use std::f32::consts::PI;
-	let mut d = a_to - a_from;
-	while d <= -PI {
-		d += 2.0 * PI;
-	}
-	while d > PI {
-		d -= 2.0 * PI;
-	}
-	let mid_short = point_on_circle(c, r, a_from + d * 0.5);
-	let sweep = if inside_circle(mid_short, other_c, other_r) {
-		d
-	} else if d >= 0.0 {
-		d - 2.0 * PI
-	} else {
-		d + 2.0 * PI
-	};
-	let n = n.max(4);
-	(0..=n)
-		.map(|i| {
-			let t = i as f32 / n as f32;
-			point_on_circle(c, r, a_from + sweep * t)
-		})
-		.collect()
 }
 
 /// Fan triangulation of a simple closed polygon (bead spindle, etc.).
@@ -1214,14 +1084,6 @@ pub fn owner_fill_rgb(player: Player) -> [f32; 3] {
 	match player {
 		Player::One => P1_FILL_RGB,
 		Player::Two => P2_FILL_RGB,
-	}
-}
-
-/// Plate-arc stroke: darker on cream P1 tiles, lighter on dark P2 tiles.
-pub fn plate_arc_rgb(player: Player) -> [f32; 3] {
-	match player {
-		Player::One => [0.38, 0.34, 0.28],
-		Player::Two => [0.78, 0.74, 0.64],
 	}
 }
 
@@ -1698,6 +1560,64 @@ pub fn circle_polyline(center: [f64; 2], radius: f64, samples: u32) -> Vec<[f64;
 	pts
 }
 
+/// Open circular arc, `sweep` radians from `from` (not closed).
+pub fn circle_arc_polyline(
+	center: [f64; 2],
+	radius: f64,
+	from: f64,
+	sweep: f64,
+	samples: u32,
+) -> Vec<[f64; 2]> {
+	let n = samples.max(8);
+	(0..=n)
+		.map(|i| {
+			let t = f64::from(i) / f64::from(n);
+			let ang = from + sweep * t;
+			[center[0] + radius * ang.cos(), center[1] + radius * ang.sin()]
+		})
+		.collect()
+}
+
+/// C-shaped ring: the full circle minus a bottom notch around `down`.
+pub fn tile_ring_arc(
+	center: [f64; 2],
+	radius: f64,
+	down: [f32; 2],
+	notch: f32,
+	samples: u32,
+) -> Vec<[f64; 2]> {
+	let mid = f64::from(down_angle(down));
+	let half = f64::from(notch) * 0.5;
+	circle_arc_polyline(center, radius, mid + half, 2.0 * PI - f64::from(notch), samples)
+}
+
+/// Angular zag along the same C-shaped ring. Starts and ends on a trough
+/// so the stroke finishes on the ring track.
+pub fn zigzag_arc(
+	center: [f64; 2],
+	radius: f64,
+	amplitude: f64,
+	teeth: u32,
+	down: [f32; 2],
+	notch: f32,
+) -> Vec<[f64; 2]> {
+	let mid = f64::from(down_angle(down));
+	let half = f64::from(notch) * 0.5;
+	let from = mid + half;
+	let sweep = 2.0 * PI - f64::from(notch);
+	let n_teeth = ((f64::from(teeth.max(2)) * sweep / (2.0 * PI)).round() as u32).max(3);
+	let n = n_teeth * 2;
+	let mut pts = Vec::with_capacity(n as usize + 1);
+	for i in 0..=n {
+		let t = f64::from(i) / f64::from(n);
+		let ang = from + sweep * t;
+		let wave = if i % 2 == 0 { -1.0 } else { 1.0 };
+		let rr = radius + amplitude * wave;
+		pts.push([center[0] + rr * ang.cos(), center[1] + rr * ang.sin()]);
+	}
+	pts
+}
+
 /// Old conflict braid: opposite sines for two slots (`0` and `π`), 120°
 /// spacing for three. Each slot is one thread in that slot's color.
 pub fn braid_threads(
@@ -1892,6 +1812,25 @@ pub fn bead_chain_ring(
 	let n_beads = n_beads.max(3);
 	let rim = circle_polyline(center, radius, samples.max(TILE_BEAD_SAMPLES));
 	let period = 2.0 * PI * radius / f64::from(n_beads);
+	bead_chain_triangles(&rim, period, half_w, pinch)
+}
+
+/// Open bead-chain along the C-shaped ring. Period is chosen so both ends
+/// land on a pinch.
+pub fn bead_chain_arc(
+	center: [f64; 2],
+	radius: f64,
+	n_beads: u32,
+	half_w: f64,
+	pinch: f64,
+	samples: u32,
+	down: [f32; 2],
+	notch: f32,
+) -> Vec<[[f32; 2]; 3]> {
+	let sweep = 2.0 * PI - f64::from(notch);
+	let rim = tile_ring_arc(center, radius, down, notch, samples.max(TILE_BEAD_SAMPLES));
+	let n_beads = ((f64::from(n_beads.max(3)) * sweep / (2.0 * PI)).round() as u32).max(6);
+	let period = radius * sweep / f64::from(n_beads);
 	bead_chain_triangles(&rim, period, half_w, pinch)
 }
 
@@ -3964,56 +3903,47 @@ mod tests {
 	}
 
 	#[test]
-	fn capture_marks_follow_the_interior_plate_arc() {
+	fn capture_marks_sit_in_the_bottom_ring_notch() {
 		let r = 22.0;
 		let draw = TileRingDraw::for_radius(r);
 		let tile = [0.0, 0.0];
-		let plate = draw.plate_center(tile, CAPTURE_DOWN_BEVY);
-		let h = draw.plate_band_height(r);
-		assert!((h - r * 0.5).abs() < 0.2, "band height should be ~quarter of the tile, h={h}");
-		let arc = draw.capture_plate_arc(tile, r, CAPTURE_DOWN_BEVY);
-		assert!(arc.len() > 8, "plate arc needs the interior span");
-		let first = arc.first().copied().unwrap();
-		let last = arc.last().copied().unwrap();
-		assert!(
-			(first[0].hypot(first[1]) - r).abs() < 0.2,
-			"arc must start on the tile edge, {first:?}"
-		);
-		assert!(
-			(last[0].hypot(last[1]) - r).abs() < 0.2,
-			"arc must end on the tile edge, {last:?}"
-		);
-		for p in &arc {
-			let dist = p[0].hypot(p[1]);
-			assert!(dist <= r + 0.15, "arc must stay inside the tile, {p:?} dist={dist}");
-			let d_plate = (p[0] - plate[0]).hypot(p[1] - plate[1]);
-			assert!(
-				(d_plate - draw.plate_r).abs() < 0.2,
-				"arc must lie on the plate circle, d={d_plate}"
-			);
-		}
 		for n in 1..=3u8 {
+			let notch = tile_ring_notch(n);
+			assert!(notch > 1.0 && notch < 1.6, "notch should be ~60–80°, n={n} rad={notch}");
+			let ring = tile_ring_arc([0.0, 0.0], 10.0, CAPTURE_DOWN_BEVY, notch, 64);
+			assert!(ring.len() > 8, "open ring needs the C span");
+			let first = ring.first().copied().unwrap();
+			let last = ring.last().copied().unwrap();
+			let close = (first[0] - last[0]).hypot(first[1] - last[1]);
+			assert!(close > 4.0, "C-ring must stay open at the bottom, gap={close}");
+			let mid = down_angle(CAPTURE_DOWN_BEVY);
+			for p in &ring {
+				let ang = (p[1] as f32).atan2(p[0] as f32);
+				assert!(
+					ang_dist(ang, mid) > notch * 0.5 - 0.08,
+					"ring must not enter the notch, p={p:?}"
+				);
+			}
 			let mark_r = draw.capture_mark_r(r, n);
 			assert!(
 				mark_r > 2.2,
 				"marks must be clearly bigger than the old 1.45, n={n} r={mark_r}"
 			);
-			assert!(mark_r * 2.0 < h * 1.05, "marks must fit in the bottom band, n={n}");
 			for i in 0..n {
 				let p = draw.capture_mark_pos(tile, r, i, n, CAPTURE_DOWN_BEVY);
 				let dist = p[0].hypot(p[1]);
-				assert!(dist < r - mark_r * 0.15, "mark {i}/{n} must stay inside the tile, {p:?}");
-				assert!(dist > r * 0.45, "mark {i}/{n} must leave the center free, dist={dist}");
-				let d_plate = (p[0] - plate[0]).hypot(p[1] - plate[1]);
+				assert!(dist < r - mark_r * 0.1, "mark {i}/{n} must stay inside the tile, {p:?}");
+				assert!(dist > r * 0.4, "mark {i}/{n} must leave the center free, dist={dist}");
+				let ang = p[1].atan2(p[0]);
 				assert!(
-					d_plate < draw.plate_r,
-					"mark {i}/{n} must sit in the band (inside the plate circle)"
+					ang_dist(ang, mid) < notch * 0.5,
+					"mark {i}/{n} must sit in the notch, ang={ang}"
 				);
 				let poly = draw.capture_mark_poly(tile, r, i, n, CAPTURE_DOWN_BEVY, true);
 				assert!(poly.len() > 6, "warped triangle is a sampled polygon");
 				let tip = poly[0];
-				let d_tip = (tip[0] - plate[0]).hypot(tip[1] - plate[1]);
-				assert!(d_tip > d_plate, "triangle tip must point along the outward arc normal");
+				let d_tip = tip[0].hypot(tip[1]);
+				assert!(d_tip < dist, "triangle tip must point toward the tile center");
 			}
 		}
 		let side = draw.capture_mark_poly(tile, r, 0, 3, CAPTURE_DOWN_BEVY, true);

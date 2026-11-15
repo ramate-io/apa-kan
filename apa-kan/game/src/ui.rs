@@ -1692,6 +1692,27 @@ fn spawn_stroke(
 	));
 }
 
+fn spawn_stroke_capped(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f64; 2]],
+	width: f32,
+	color: Color,
+	z: f32,
+) {
+	spawn_stroke(commands, meshes, materials, pts, width, color, z);
+	let cap = (width * 0.5).max(0.35);
+	for p in [pts.first(), pts.last()].into_iter().flatten() {
+		commands.spawn((
+			DynamicView,
+			Mesh2d(meshes.add(Circle::new(cap))),
+			MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+			Transform::from_translation(Vec2::new(p[0] as f32, p[1] as f32).extend(z)),
+		));
+	}
+}
+
 fn spawn_filled_poly(
 	commands: &mut Commands,
 	meshes: &mut Assets<Mesh>,
@@ -1890,6 +1911,9 @@ fn spawn_tile_at(
 	));
 	let draw = visual::TileRingDraw::for_radius(radius);
 	let ring_half = draw.stroke * 0.5;
+	let marks = visual::capture_mark_count(tile);
+	let notch = visual::tile_ring_notch(marks);
+	let down = visual::CAPTURE_DOWN_BEVY;
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
 		if tile.stroke_is_braid(k) {
@@ -1899,15 +1923,17 @@ fn spawn_tile_at(
 		if r > 6.0 * draw.scale {
 			let color = tile.stroke_color(k);
 			let z = visual::Z_TILE_RING + f32::from(k) * 0.02;
+			let center = [f64::from(pos.x), f64::from(pos.y)];
 			if tile.stroke_is_zag(k) {
-				let zig = visual::zigzag_circle(
-					[f64::from(pos.x), f64::from(pos.y)],
+				let zig = visual::zigzag_arc(
+					center,
 					f64::from(r - ring_half * 0.5),
 					f64::from(draw.zag_amp),
 					draw.zag_teeth,
-					draw.zag_samples,
+					down,
+					notch,
 				);
-				spawn_stroke(
+				spawn_stroke_capped(
 					commands,
 					meshes,
 					materials,
@@ -1919,30 +1945,43 @@ fn spawn_tile_at(
 			} else if tile.stroke_is_bead(k) {
 				let bead_r = f64::from(draw.bead_r.max(0.7));
 				let pinch = f64::from(visual::bead_pinch(bead_r as f32));
-				let tris = visual::bead_chain_ring(
-					[f64::from(pos.x), f64::from(pos.y)],
-					f64::from(r - ring_half * 0.5),
+				let rr = f64::from(r - ring_half * 0.5);
+				let color = rgb(visual::tile_rgb(color));
+				let tris = visual::bead_chain_arc(
+					center,
+					rr,
 					draw.bead_count,
 					bead_r,
 					pinch,
 					visual::TILE_BEAD_SAMPLES,
+					down,
+					notch,
 				);
-				spawn_filled_tris(
-					commands,
-					meshes,
-					materials,
-					&tris,
-					rgb(visual::tile_rgb(color)),
-					z,
-				);
+				spawn_filled_tris(commands, meshes, materials, &tris, color, z);
+				let rim = visual::tile_ring_arc(center, rr, down, notch, visual::TILE_BEAD_SAMPLES);
+				let cap = (pinch as f32).max(0.4);
+				for p in [rim.first(), rim.last()].into_iter().flatten() {
+					commands.spawn((
+						DynamicView,
+						Mesh2d(meshes.add(Circle::new(cap))),
+						MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+						Transform::from_translation(Vec2::new(p[0] as f32, p[1] as f32).extend(z)),
+					));
+				}
 			} else {
-				spawn_ring(
+				let rim = visual::tile_ring_arc(
+					center,
+					f64::from(r - ring_half * 0.5),
+					down,
+					notch,
+					visual::TILE_RING_ARC_SAMPLES,
+				);
+				spawn_stroke_capped(
 					commands,
 					meshes,
 					materials,
-					pos,
-					(r - ring_half).max(1.0),
-					r,
+					&rim,
+					draw.stroke.max(1.2),
 					rgb(visual::tile_rgb(color)),
 					z,
 				);
@@ -1953,11 +1992,13 @@ fn spawn_tile_at(
 		let r = f64::from(draw.ring_radius(radius, 0) - ring_half * 0.5);
 		if r > 6.0 * f64::from(draw.scale) {
 			let center = [f64::from(pos.x), f64::from(pos.y)];
-			let rim = visual::circle_polyline(center, r, draw.braid_samples);
+			let rim = visual::tile_ring_arc(center, r, down, notch, draw.braid_samples);
 			let amp = f64::from(draw.braid_amp);
-			let turns = visual::tile_braid_turns(r);
+			let sweep = 2.0 * std::f64::consts::PI - f64::from(notch);
+			let turns = visual::tile_braid_turns(r) * sweep / (2.0 * std::f64::consts::PI);
 			let w = draw.braid_stroke.max(0.28);
 			for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
+				let color = rgb(visual::tile_rgb(thread.color));
 				spawn_braid_strand(
 					commands,
 					meshes,
@@ -1965,28 +2006,24 @@ fn spawn_tile_at(
 					&thread.pts,
 					&thread.phase,
 					w,
-					rgb(visual::tile_rgb(thread.color)),
+					color,
 					visual::Z_TILE_RING,
 					visual::Z_TILE_RING + 0.08,
 				);
+				let cap = (w * 0.5).max(0.28);
+				for p in [thread.pts.first(), thread.pts.last()].into_iter().flatten() {
+					commands.spawn((
+						DynamicView,
+						Mesh2d(meshes.add(Circle::new(cap))),
+						MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+						Transform::from_translation(
+							Vec2::new(p[0] as f32, p[1] as f32).extend(visual::Z_TILE_RING + 0.08),
+						),
+					));
+				}
 			}
 		}
 	}
-	let plate_arc = draw.capture_plate_arc([pos.x, pos.y], radius, visual::CAPTURE_DOWN_BEVY);
-	if plate_arc.len() >= 2 {
-		let pts: Vec<[f64; 2]> =
-			plate_arc.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
-		spawn_stroke(
-			commands,
-			meshes,
-			materials,
-			&pts,
-			draw.plate_stroke,
-			rgb(visual::plate_arc_rgb(tile.owner)),
-			visual::Z_TILE_BAND,
-		);
-	}
-	let marks = visual::capture_mark_count(tile);
 	for i in 0..marks {
 		let triangle = matches!(tile.capture, CaptureMark::Triangle);
 		let poly = draw.capture_mark_poly(
