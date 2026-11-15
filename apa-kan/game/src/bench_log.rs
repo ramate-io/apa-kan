@@ -270,6 +270,11 @@ pub struct RulesLog {
 	/// those is skipped because capture outcomes differ.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub zag_match_non_zag: Option<bool>,
+	/// Present (`true`) once unmatched bead mismatch is `max(count − 1, 0)`
+	/// per edge. Older logs omit it (+1 per unmatched bead ring); full
+	/// replay of those is skipped because capture outcomes differ.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub bead_unmatched_minus_one: Option<bool>,
 }
 
 impl RulesLog {
@@ -312,6 +317,7 @@ impl RulesLog {
 			braid_fail_mismatch: Some(r.braid_fail_mismatch.name().into()),
 			score_incident_arcs: Some(true),
 			zag_match_non_zag: Some(true),
+			bead_unmatched_minus_one: Some(true),
 		}
 	}
 
@@ -1265,6 +1271,8 @@ mod tests {
 		let incident_arc_scoring =
 			logs.iter().all(|log| log.rules.score_incident_arcs == Some(true));
 		let zag_match_non_zag = logs.iter().all(|log| log.rules.zag_match_non_zag == Some(true));
+		let bead_unmatched_minus_one =
+			logs.iter().all(|log| log.rules.bead_unmatched_minus_one == Some(true));
 		for (i, log) in logs.iter().enumerate() {
 			assert_eq!(log.v, SCHEMA_VERSION);
 			assert_eq!(log.rules.bag_size, 11, "{rel}");
@@ -1276,6 +1284,7 @@ mod tests {
 				|| !independent_channels
 				|| !incident_arc_scoring
 				|| !zag_match_non_zag
+				|| !bead_unmatched_minus_one
 			{
 				continue;
 			}
@@ -1382,6 +1391,11 @@ mod tests {
 	#[test]
 	fn committed_zag_color_exclusion_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays("benchmark_results/zag_color_exclusion/h2h.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_bead_count_minus_one_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/bead_count_minus_one/h2h.jsonl.gz");
 	}
 
 	#[test]

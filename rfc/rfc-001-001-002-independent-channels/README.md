@@ -44,7 +44,7 @@ A channel contributes on an edge only if **at least one** of the two tiles has a
 | **Normal** | some ring on A or B is normal | 1, if some normal-ring color of A is in NonZag_B **or** some normal-ring color of B is in NonZag_A | 1 otherwise (`mismatch_uses_neighbor_weight` still uses the neighbor's ring count) |
 | **Zag** | some ring on A or B is a zag | never | +1 for each zag color on one side that appears among the other side's **full** colors, counted as a multiset union over both directions (`zag_mismatch` `sum` / `max`, same formula as today) |
 | **Braid** | some tile has a 2- or 3-slot braid | the single largest fulfillable braid on either side (`−2` or `−3`). Tied sizes pick either | if **no** braid on the edge can be fulfilled: **exactly one** mismatch of weight **+1** (`one`, **accepted default**). `weight` / `sum` are research variants ([issue #39](https://github.com/ramate-io/apa-kan/issues/39)) |
-| **Bead** | some ring on A or B is a bead | 1, if any bead ring on either tile is matched (`other.has_non_zag_color(bead_color)`, same presence test as a normal ring). One −1 at most per edge, not per bead | +1 per unmatched **bead ring** on either tile (count rings, not color-pairs). Mixed edges can score both. See [`rfc-001-001-004`](../rfc-001-001-004-beads/README.md) |
+| **Bead** | some ring on A or B is a bead | 1, if any bead ring on either tile is matched (`other.has_non_zag_color(bead_color)`, same presence test as a normal ring). One −1 at most per edge, not per bead | `max(count − 1, 0)` over unmatched **bead rings** on either tile (count rings, not color-pairs). 1/2/3 unmatched → 0/1/2. Mixed edges can score both. See [`rfc-001-001-004`](../rfc-001-001-004-beads/README.md) |
 
 A braid is fulfilled when the other tile's **non-zag** color multiset covers the braid's color multiset (orange+orange needs two orange non-zag rings). Zag rings never count toward that cover.
 
@@ -82,7 +82,7 @@ Capture is simultaneous: `collect_removals` scores every occupied node on the cu
 - **Normal.** If either tile has a normal ring, the edge either likes the pair (they "see" a shared color from a normal into the neighbor's **non-zag** rings) or it doesn't. One point either way. Leftover extra colors do not add extra hitch points once a match exists. A zag of the same color is not a match.
 - **Zag.** Zags only punish. Count every hitting zag stroke on the edge (SUM by default) against the neighbor's **full** colors, including other zags. They never make a match of their own.
 - **Braid.** Look at both braids, keep the biggest one that the neighbor can cover, and score that hitch as a match of its size. If neither braid is covered, the edge takes a single +1 (`one`, the accepted default). Heavier `weight` / `sum` costs are tracked in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
-- **Bead.** Count unmatched bead rings on both tiles (+1 each). If any bead is matched — the neighbor holds that color on a **non-zag** ring, same as a normal — the edge also takes a single −1. Beads bomb non-matching colors, especially braids whose colors they do not hold. A same-color zag is not a bead match.
+- **Bead.** Count unmatched bead rings on both tiles; mismatch is `max(count − 1, 0)` so a lone unmatched bead adds 0. If any bead is matched — the neighbor holds that color on a **non-zag** ring, same as a normal — the edge also takes a single −1. Beads bomb non-matching colors, especially braids whose colors they do not hold, without doubling hitch / zag / failed-braid. A same-color zag is not a bead match.
 
 ## Worked table
 
@@ -140,7 +140,7 @@ Tile-rim weave period is unchanged (`TILE_BRAID_TURN_UNITS = 0.21`). Tile-rim br
 - Overwhelm, `tile_score`, and `would_overwhelm_add` walk `Board::incident_others` (generating-circle arcs). Unique `neighbors()` is occupancy only. Inner↔center is two scoring edges.
 - `BraidFailMismatch` on `RuleSet` (`--braid-fail-mismatch one|weight|sum`)
 - `ArcPaint.braid: Option<BraidLane>` plus lane offsets in `visual.rs`; renderers in `render.rs` / `ui.rs` already iterate `board.arcs()`, so both center-petal petals paint
-- JSONL writes `braid_fail_mismatch` and `score_incident_arcs`. Historical logs omit those fields; full replay of those games is skipped because captures used old overrides or unique-neighbor scoring
+- JSONL writes `braid_fail_mismatch`, `score_incident_arcs`, `zag_match_non_zag`, and `bead_unmatched_minus_one`. Historical logs omit those fields; full replay of those games is skipped because captures used old overrides, unique-neighbor scoring, zag-as-match, or +1-per-unmatched-bead scoring
 - Current H2H (doubles allowed only): [`zag_color_exclusion`](../../apa-kan/game/benchmark_results/zag_color_exclusion) (P1 **52-5-51**). Previous: [`capture_modifiers`](../../apa-kan/game/benchmark_results/capture_modifiers) (P1 **49-7-52**). PR #40 baseline: [`work_budget_doubles_allowed`](../../apa-kan/game/benchmark_results/work_budget_doubles_allowed) (P1 **45-17-46**). Historical time-based allowed: [`center_double_edge_doubles_allowed`](../../apa-kan/game/benchmark_results/center_double_edge_doubles_allowed) (P1 **53-8-47**). Doubles-disallowed logs are historical and not rerun; see [`benchmark_results/README.md`](../../apa-kan/game/benchmark_results/README.md)
 
 ## Alternatives considered

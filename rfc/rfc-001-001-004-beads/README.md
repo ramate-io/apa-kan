@@ -6,7 +6,7 @@ Zags punish a **matching** color (a countable hit on one particular color). High
 
 ## Proposed solution
 
-Beads are like zags in generation and weight (per-ring, weight 1), but the **bead channel** inverts the color test: unmatched bead rings punish, and a match is a single −1 like the normal channel.
+Beads are like zags in generation and weight (per-ring, weight 1), but the **bead channel** inverts the color test: unmatched bead rings punish at `max(count − 1, 0)` on the edge, and a match is a single −1 like the normal channel.
 
 ### Matching (confirmed)
 
@@ -26,11 +26,12 @@ The channel fires only if at least one tile on the edge has a bead ring. Indepen
 
 | | Match | Mismatch |
 |---|---|---|
-| **Bead** | 1, if **any** bead ring on either tile is matched | +1 per **unmatched bead ring** on either tile |
+| **Bead** | 1, if **any** bead ring on either tile is matched | `max(count − 1, 0)` over unmatched **bead rings** on either tile |
 
-- Count unmatched **bead rings**, not each mismatching color pair. Three unmatched orange beads vs blue is +3, not 3×(blue,green,…) pairs.
+- Count unmatched **bead rings**, not each mismatching color pair. Three unmatched orange beads vs blue is count 3 → mismatch 2, not 3×(blue,green,…) pairs.
+- 1, 2, or 3 unmatched rings on an edge contribute **0, 1, or 2** mismatch. A lone unmatched bead does not stack with a hitch, zag hit, or failed braid.
 - If any bead is matched, the channel also scores **one** match of 1 (one −1 at most per edge, like normals — not per bead).
-- Mixed edges can score both: orange+green beads vs orange-only is match 1 + unmatched 1.
+- Mixed edges can score both: orange+green beads vs orange-only is match 1 + unmatched count 1 → mismatch 0.
 - Both tiles take the same undirected totals (`bead_channel(a,b) == bead_channel(b,a)`).
 - Center double edges count **per arc** as today: each inner↔center petal is a separate edge.
 - Weight: every bead ring weighs 1. `ring_weight` is still the live ring-slot count.
@@ -40,9 +41,10 @@ Beads do **not** enable pass-through or hops (same as zags). Low-value: beads co
 ### Intended consequences
 
 - Same-color bead vs normal: normal match 1 + bead match 1.
-- Same-color bead vs zag: zag hit 1 + unmatched bead 1 (the zag is not a match).
-- Three orange beads vs a blue+teal+green braid: bead +3 + failed-braid +1. A 3-ring braid is overwhelmed. That is the bomb against a highly connected braid of non-matching colors.
+- Same-color bead vs zag: zag hit 1 + unmatched bead count 1 → bead mismatch 0 (the zag is not a match).
+- Three orange beads vs a blue+teal+green braid: bead max(3−1,0)=2 + failed-braid +1. A 3-ring braid is still overwhelmed. That is the bomb against a highly connected braid of non-matching colors.
 - Three orange beads vs an orange+green braid: all three orange beads are matched (presence) → bead match 1, unmatched 0; the braid still needs green, so it may fail on its own channel.
+- One unmatched bead vs a hitch, zag hit, or failed braid adds 0 on the bead channel, so it does not double those other mismatches.
 
 ### Generation and cap
 
@@ -64,25 +66,28 @@ Signs: match is a positive match-weight; the signed edge is `mismatch − match`
 
 | Case | A | B | Normal | Zag | Braid | Bead | Edge `(m, x)` | signed |
 |---|---|---|---|---|---|---|---|---|
-| 3 orange beads vs blue | 3 orange beads | blue normal | hitch 1 | — | — | unmatched 3 | (0, 4) | +4 |
+| 1 orange bead vs blue | 1 orange bead | blue normal | hitch 1 | — | — | unmatched 1 → 0 | (0, 1) | +1 |
+| 2 orange beads vs blue | 2 orange beads | blue normal | hitch 1 | — | — | unmatched 2 → 1 | (0, 2) | +2 |
+| 3 orange beads vs blue | 3 orange beads | blue normal | hitch 1 | — | — | unmatched 3 → 2 | (0, 3) | +3 |
 | 3 orange beads vs 1 orange | 3 orange beads | orange normal | match 1 | — | — | match 1 | (2, 0) | −2 |
-| mixed orange+green vs orange | orange+green beads | orange normal | match 1 | — | — | match 1 + unmatched 1 | (2, 1) | −1 |
-| bead vs same-color zag | orange bead | orange zag | — | +1 | — | unmatched 1 | (0, 2) | +2 |
-| beads vs non-matching 3-braid | 3 orange beads | blue+teal+green braid | — | — | fail 1 | unmatched 3 | (0, 4) | +4 |
+| mixed orange+green vs orange | orange+green beads | orange normal | match 1 | — | — | match 1 + unmatched 1 → 0 | (2, 0) | −2 |
+| bead vs same-color zag | orange bead | orange zag | — | +1 | — | unmatched 1 → 0 | (0, 1) | +1 |
+| beads vs non-matching 3-braid | 3 orange beads | blue+teal+green braid | — | — | fail 1 | unmatched 3 → 2 | (0, 3) | +3 |
 
-Unit tests in `game::tests` (`bead_unmatched_counts_rings_not_color_pairs`, `bead_match_is_capped_at_one_per_edge`, `center_inner_bead_mismatch_scores_per_petal`, …) lock these.
+Unit tests in `game::tests` (`bead_unmatched_mismatch_is_count_minus_one`, `bead_unmatched_counts_rings_not_color_pairs`, `bead_match_is_capped_at_one_per_edge`, `center_inner_bead_mismatch_scores_per_petal`, …) lock these.
 
 ## Implementation
 
 - `RingType::Bead`, `Tile::bead_channel`, `EdgeChannels::{bead_match,bead_mismatch}` in `apa-kan/game/src/game.rs`
 - `--bead-chance` / `--beads`; `RuleSet::bead_numer` (default 1)
 - Cap DP in `deck.rs` is 3-dimensional (zag, braid, bead)
-- JSONL: ring flag `e`, `bead_rings`, `bead_numer` (absent/0 on older logs)
+- JSONL: ring flag `e`, `bead_rings`, `bead_numer` (absent/0 on older logs); `bead_unmatched_minus_one` marks the `max(count − 1, 0)` mismatch (older logs omit it and skip full replay)
 - Visual: `bead_ring_centers` / bead lane in `visual.rs`, `ui.rs`, `render.rs`
 
 ## Alternatives considered
 
 - Count each mismatching color pair (3 beads × 3 braid colors = 9) — rejected. Confirmed: unmatched **bead rings**.
+- +1 mismatch per unmatched bead ring — rejected. Too aggressive: a lone bead doubled hitch, zag, and failed-braid costs. Confirmed: `max(count − 1, 0)` on the edge total.
 - Match −1 per matched bead — rejected. One −1 at most per edge, like normals.
 - Multiset coverage (orange+orange beads need two oranges) — rejected. Same presence test as the normal channel.
 - Piece-level bead roll like braids — rejected. Beads are like zags: per remaining normal ring, 1/7.
