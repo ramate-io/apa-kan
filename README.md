@@ -2,6 +2,8 @@
 
 A turn-based game of colors and adjacency on an 8-petal rosette, built with Rust and Bevy 0.19.1.
 
+Rules, bots, JSONL replay, and match clocks live in `apa-kan-core` (`apa-kan/core`). The `apa-kan` crate is the Bevy client (display and in-match UI) and depends on core; core does not depend on Bevy.
+
 ## Rules (defaults)
 
 See [rfc/rfc-001-001-001-rosette-redesign](rfc/rfc-001-001-001-rosette-redesign/README.md) for the full spec and every `RuleSet` knob.
@@ -76,7 +78,7 @@ A plain `cargo run -p apa-kan` uses the settled defaults (independent channels, 
 
 Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`.
 
-Deck scenarios (see [`apa-kan/game/scenarios/`](apa-kan/game/scenarios/)): `--scenario same` is the default mirrored generative 27-tile collection; `--scenario independent` samples each player's collection separately; `--scenario complementary` gives P1 green+orange and P2 blue+orange (18 one-ring tiles each, same dots order; weight is ring count; 11-tile bench + 7 reserves); `--scenario complementary-swapped` flips the exclusive colors. Tiles may list `colors = ["green", "teal"]` for multiple normal rings.
+Deck scenarios (see [`apa-kan/core/scenarios/`](apa-kan/core/scenarios/)): `--scenario same` is the default mirrored generative 27-tile collection; `--scenario independent` samples each player's collection separately; `--scenario complementary` gives P1 green+orange and P2 blue+orange (18 one-ring tiles each, same dots order; weight is ring count; 11-tile bench + 7 reserves); `--scenario complementary-swapped` flips the exclusive colors. Tiles may list `colors = ["green", "teal"]` for multiple normal rings.
 
 Watch minimax vs MCTS in the GUI (1 s/move):
 
