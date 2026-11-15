@@ -6856,6 +6856,67 @@ mod tests {
 		assert_eq!(game.edge_channels(a, b), game.edge_channels(b, a));
 	}
 
+	/// Screenshot: dark 1-ring blue bead vs light orange 2-thread braid on one
+	/// outer (non-center) edge, no other neighbors.
+	#[test]
+	fn one_blue_bead_vs_two_thread_orange_braid_on_one_outer_edge() {
+		let mut game = Game::empty(RuleSet::default());
+		let bead = beads(&mut game, Player::Two, &[TileColor::Blue]);
+		let braid = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_eq!(bead.weight, 1);
+		assert_eq!(braid.weight, 2);
+		assert_eq!(bead.bead_matched_on(braid), 0);
+		assert_eq!(bead.bead_unmatched_on(braid), 1);
+		assert!(braid.braid_fulfilled_by(bead).is_none());
+
+		let ch = game.edge_channels(bead, braid);
+		assert_eq!(ch.normal_match, 0);
+		assert_eq!(ch.normal_mismatch, 0, "neither tile has a normal ring");
+		assert_eq!(ch.zag_mismatch, 0);
+		assert_eq!(ch.braid_match, 0);
+		assert_eq!(ch.braid_mismatch, 1, "failed braid is flat +1, not per thread");
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.bead_mismatch, 1, "one unmatched bead ring, not per braid thread");
+		assert_eq!(game.edge_score(bead, braid), (0, 2));
+		assert_eq!(
+			game.edge_score(braid, bead),
+			(0, 2),
+			"undirected: both tiles take the same totals"
+		);
+		assert_eq!(ch.effective(), 2);
+
+		let spawn = game.board().spawns()[0];
+		let outer = *game
+			.board()
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| n != game.board().center() && !game.board().inner_ring().contains(&n))
+			.expect("spawn attaches to an outer petal node");
+		assert_eq!(
+			game.board().connecting_arc_indices(spawn, outer).count(),
+			1,
+			"outer edge is one arc, not a doubled center petal"
+		);
+		assert_eq!(game.board().incident_others(spawn).filter(|&n| n == outer).count(), 1);
+		assert_eq!(game.board().incident_others(outer).filter(|&n| n == spawn).count(), 1);
+
+		game.place_tile(outer, bead);
+		game.place_tile(spawn, braid);
+		assert_eq!(game.tile_score(spawn), Some((2, 2)), "braid: rings 2 + match 0 vs mismatch 2");
+		assert_eq!(game.tile_score(outer), Some((1, 2)), "bead: rings 1 + match 0 vs mismatch 2");
+		assert_eq!(game.tile_effective_weight(spawn), Some(2));
+		assert_eq!(game.tile_effective_weight(outer), Some(2));
+		assert!(game.is_overwhelmed(spawn), "braid: mismatch−match 2 >= ring count 2");
+		assert!(game.is_overwhelmed(outer), "bead also: 2 >= 1");
+		let gone: Vec<_> = game.collect_removals().into_iter().map(|r| r.node).collect();
+		assert!(gone.contains(&spawn) && gone.contains(&outer), "simultaneous: both leave");
+	}
+
 	#[test]
 	fn bead_off_deal_has_no_bead_rings() {
 		let mut off = RuleSet::default();
