@@ -1360,6 +1360,68 @@ fn spawn_arc(
 			visual::Z_ARC_OVER + 0.03 * i as f32,
 		);
 	}
+	spawn_bead_lane(
+		commands,
+		meshes,
+		materials,
+		&pts,
+		&paint,
+		lanes[3].unwrap_or(0.0),
+		layout.scale,
+	);
+}
+
+fn spawn_bead_lane(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f64; 2]],
+	paint: &visual::ArcPaint,
+	lane: f64,
+	scale: f32,
+) {
+	if !paint.has_bead_lane() {
+		return;
+	}
+	let spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(scale);
+	let bead_r = (f32::from(scale) * visual::TILE_BEAD_R * 0.35).max(1.1);
+	let mut z = visual::Z_ARC_OVER + 0.04;
+	let push = |commands: &mut Commands,
+	            meshes: &mut Assets<Mesh>,
+	            materials: &mut Assets<ColorMaterial>,
+	            color: crate::game::TileColor,
+	            off: f64,
+	            z: f32| {
+		let line = visual::offset_polyline(pts, lane + off);
+		for c in visual::bead_centers_along(&line, spacing) {
+			commands.spawn((
+				DynamicView,
+				Mesh2d(meshes.add(Circle::new(bead_r))),
+				MeshMaterial2d(materials.add(ColorMaterial::from(rgb(visual::tile_rgb(color))))),
+				Transform::from_translation(Vec2::new(c[0] as f32, c[1] as f32).extend(z)),
+			));
+		}
+	};
+	if let Some(color) = paint.bead_match {
+		push(commands, meshes, materials, color, 0.0, z);
+		z += 0.01;
+	}
+	let n = paint.bead_from_count() + paint.bead_to_count() + paint.bead_mid_count();
+	let fan = visual::zag_center_offsets(n.max(1), spacing.max(1.0));
+	let mut i = 0usize;
+	for color in paint
+		.beads_from
+		.iter()
+		.chain(paint.beads_to.iter())
+		.chain(paint.beads_mid.iter())
+	{
+		let Some(color) = *color else {
+			continue;
+		};
+		push(commands, meshes, materials, color, fan.get(i).copied().unwrap_or(0.0), z);
+		z += 0.01;
+		i += 1;
+	}
 }
 
 fn spawn_hitch_diamond(
@@ -1731,6 +1793,23 @@ fn spawn_tile_at(
 					rgb(visual::tile_rgb(color)),
 					z,
 				);
+			} else if tile.stroke_is_bead(k) {
+				let centers = visual::bead_ring_centers(
+					[f64::from(pos.x), f64::from(pos.y)],
+					f64::from(r - ring_half * 0.5),
+					draw.bead_count,
+				);
+				let bead_r = draw.bead_r.max(0.7);
+				for c in centers {
+					commands.spawn((
+						DynamicView,
+						Mesh2d(meshes.add(Circle::new(bead_r))),
+						MeshMaterial2d(
+							materials.add(ColorMaterial::from(rgb(visual::tile_rgb(color)))),
+						),
+						Transform::from_translation(Vec2::new(c[0] as f32, c[1] as f32).extend(z)),
+					));
+				}
 			} else {
 				spawn_ring(
 					commands,

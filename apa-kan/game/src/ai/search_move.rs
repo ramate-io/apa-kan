@@ -174,7 +174,7 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 		SearchMove::Add { kind, node } => {
 			let mut s = 12;
 			let view = crate::game::decode_color_state((kind / KIND_DOTS as u16) as usize);
-			let add_all = view.normal | view.zag | view.braid;
+			let add_all = view.normal | view.zag | view.braid | view.bead;
 			for nb in game.board().incident_others(node) {
 				if let Some(other) = game.tile_at(nb) {
 					if other.owner == game.current_player() {
@@ -182,8 +182,12 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 					}
 					let braid_hit = view.braid_size >= 2
 						&& (0..6).all(|i| other.color_counts()[i] >= view.braid_counts[i]);
+					let bead_unmatched =
+						view.bead != 0 && (view.bead & other.color_mask()) != view.bead;
 					if braid_hit {
 						s += 14 + i32::from(view.braid_size);
+					} else if bead_unmatched {
+						s += 20;
 					} else if other.normal_mask() & view.normal != 0 {
 						s += 16;
 					} else if other.color_mask() & view.zag != 0
@@ -194,8 +198,10 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 							.any(|(i, c)| other.ring_is_zag(i) && add_all & c.bit() != 0)
 					{
 						s += 18;
-					} else if (view.normal != 0 || view.braid_size >= 2)
-						&& (other.normal_mask() != 0 || other.braid_ring_count() >= 2)
+					} else if (view.normal != 0 || view.braid_size >= 2 || view.bead != 0)
+						&& (other.normal_mask() != 0
+							|| other.braid_ring_count() >= 2
+							|| other.bead_ring_count() > 0)
 					{
 						s += 6;
 					}

@@ -27,5 +27,6 @@ Each RFC directory should contain:
 ## Index
 
 - [rfc-001-001-001-rosette-redesign](./rfc-001-001-001-rosette-redesign/README.md) — 8-petal rosette board, color overwhelm, bench/bag, exact-`d` MOVE, stall-prevention RuleSet options
-- [rfc-001-001-002-independent-channels](./rfc-001-001-002-independent-channels/README.md) — independent additive normal / zag / braid edge channels; accepted default: channels + flat-1 failed braids + 11-tile public bench with spawn tokens + doubles allowed
-- [rfc-001-001-003-deck-building](./rfc-001-001-003-deck-building/README.md) — 27-tile collections, 7+4 public bench, reserves never usable, 6-ring-per-type cap (braids count by slots)
+- [rfc-001-001-002-independent-channels](./rfc-001-001-002-independent-channels/README.md) — independent additive normal / zag / braid / bead edge channels; accepted default: channels + flat-1 failed braids + 11-tile public bench with spawn tokens + doubles allowed
+- [rfc-001-001-003-deck-building](./rfc-001-001-003-deck-building/README.md) — 27-tile collections, 7+4 public bench, reserves never usable, 6-ring-per-type cap (zag, braid, bead; braids count by slots)
+- [rfc-001-001-004-beads](./rfc-001-001-004-beads/README.md) — fourth ring type: beads as a bomb against non-matching colors; unmatched bead rings +1 each, single match −1 per edge

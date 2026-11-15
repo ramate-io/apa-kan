@@ -26,15 +26,15 @@ ADD, usable budget, and spawn tokens are unchanged:
 
 ### Ring-type cap (confirmed)
 
-The full 11-tile bench may have at most **6 rings of each non-normal type** (zag and braid in this PR; beads in a later PR). **Normal rings are uncapped.**
+The full 11-tile bench may have at most **6 rings of each non-normal type** (zag, braid, and bead). **Normal rings are uncapped.**
 
 **Braids count by ring slots toward that cap.** A 3-braid uses 3 of the 6. Two 3-braids use 6 of 6 and are legal; a third braid of any size is illegal. This is a confirmed rule, not an assumption.
 
-The cap is enforced at both the 7-pick and the +4 extension: a set that would exceed the cap on the eventual 11 (or on the 7 alone) is illegal. The UI shows `zag n/6 braid n/6` and refuses an illegal click. AI pickers never emit an illegal set.
+The cap is enforced at both the 7-pick and the +4 extension: a set that would exceed the cap on the eventual 11 (or on the 7 alone) is illegal. The UI shows `zag n/6 braid n/6 bead n/6` and refuses an illegal click. AI pickers never emit an illegal set.
 
 ### Generation and picking
 
-Default collections are sampled from the existing ring/color/zag/braid vocabulary (`sample_tile`). Mirrored collections (`identical_bags`, default true) copy P1's kinds onto P2 with new ids. `--deck-noise 0..100` independently resamples that percent of the mirrored copy. Generation retries until a 11-subset under the cap exists, then repairs leftover specials to normal if needed.
+Default collections are sampled from the ring/color/zag/braid/bead vocabulary (`sample_tile`). Mirrored collections (`identical_bags`, default true) copy P1's kinds onto P2 with new ids. `--deck-noise 0..100` independently resamples that percent of the mirrored copy. Generation retries until a 11-subset under the cap exists, then repairs leftover specials to normal if needed.
 
 Picking is **never uniform-random**. `--pick heuristic|search|greedy`:
 
@@ -71,5 +71,4 @@ Humans walk the 7-pick, reveal, and +4 on a collection grid. The cap is shown an
 
 ## Open questions
 
-- Beads join the same 6-slot cap in a later PR; no other types are capped here.
-- Range modifier is a later PR and is not part of this draft.
+- Range modifier is a later PR and is not part of this draft. Beads are specified in [`rfc-001-001-004`](../rfc-001-001-004-beads/README.md) and share this 6-slot cap.

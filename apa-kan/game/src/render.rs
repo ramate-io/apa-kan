@@ -212,6 +212,52 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	for (pts, color, width) in back.into_iter().chain(front) {
 		stroke_polyline(img, &pts, color, width);
 	}
+	for arc in board.arcs() {
+		let samples = arc.sample(visual::ARC_SAMPLES);
+		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
+		let paint = visual::arc_paint_with(
+			game.tile_at(arc.from),
+			game.tile_at(arc.to),
+			game.rules().zag_mismatch,
+		);
+		if !paint.has_bead_lane() {
+			continue;
+		}
+		let stripe_off = if visual::arc_touches_center(arc, board.center()) {
+			f64::from(layout.stripe_off_center)
+		} else {
+			f64::from(layout.stripe_off)
+		};
+		let lanes = paint.lane_offsets(visual::channel_lane_pitch(stripe_off));
+		let bead_lane = lanes[3].unwrap_or(0.0);
+		let bead_spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(layout.scale);
+		let bead_r = (f64::from(layout.scale) * f64::from(visual::TILE_BEAD_R) * 0.35).max(1.1);
+		if let Some(color) = paint.bead_match {
+			let line = visual::offset_polyline(&pts, bead_lane);
+			for p in visual::bead_centers_along(&line, bead_spacing) {
+				fill_circle(img, (p[0], p[1]), bead_r, rgb_of(visual::tile_rgb(color)));
+			}
+		}
+		let n = paint.bead_from_count() + paint.bead_to_count() + paint.bead_mid_count();
+		let fan = visual::zag_center_offsets(n.max(1), bead_spacing.max(1.0));
+		let mut i = 0usize;
+		for color in paint
+			.beads_from
+			.iter()
+			.chain(paint.beads_to.iter())
+			.chain(paint.beads_mid.iter())
+		{
+			let Some(color) = *color else {
+				continue;
+			};
+			let line =
+				visual::offset_polyline(&pts, bead_lane + fan.get(i).copied().unwrap_or(0.0));
+			for p in visual::bead_centers_along(&line, bead_spacing) {
+				fill_circle(img, (p[0], p[1]), bead_r, rgb_of(visual::tile_rgb(color)));
+			}
+			i += 1;
+		}
+	}
 }
 
 fn split_braid(
@@ -499,6 +545,11 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 					draw.zag_samples,
 				);
 				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
+			} else if tile.stroke_is_bead(k) {
+				let bead_r = f64::from(draw.bead_r);
+				for p in visual::bead_ring_centers([c.0, c.1], rr, draw.bead_count) {
+					fill_circle(img, (p[0], p[1]), bead_r, rgb_of(visual::tile_rgb(color)));
+				}
 			} else {
 				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
 			}
@@ -1329,6 +1380,32 @@ mod tests {
 			),
 			dir.join("lane_braid_failed_plus_lanes.png"),
 			"failed braid plus normal match and zag lanes",
+			48.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Orange, RingType::Bead),
+				],
+				1,
+				&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+				1,
+			),
+			dir.join("lane_bead_bomb_vs_braid.png"),
+			"bead lane: unmatched orange beads bomb a non-matching braid",
+			48.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Bead)],
+				1,
+				&[(TileColor::Orange, RingType::Normal)],
+				1,
+			),
+			dir.join("lane_bead_match.png"),
+			"bead match: one dotted match plus the orange normal highway",
 			48.0,
 		);
 		write_png_sized(

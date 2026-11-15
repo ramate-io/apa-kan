@@ -16,7 +16,7 @@ pub const BENCH_OPENING: usize = 7;
 pub const BENCH_EXTEND: usize = 4;
 /// Public in-game bench. Replaces the old 11-tile public deck.
 pub const BENCH_SIZE: usize = BENCH_OPENING + BENCH_EXTEND;
-/// Max rings of each **non-normal** type (zag, braid; beads later) on the
+/// Max rings of each **non-normal** type (zag, braid, bead) on the
 /// full 11-tile bench. Counted by **ring slots** (confirmed rule, not an
 /// assumption): a 3-braid uses 3 of the 6. Normal rings are uncapped.
 /// Enforced at the 7-pick and the +4 extension.
@@ -144,10 +144,14 @@ pub fn braid_ring_count(tiles: &[Tile]) -> u8 {
 	type_ring_count(tiles, RingType::Braid)
 }
 
-/// Non-normal types currently capped: zag and braid. Beads join this list
-/// in a later PR. Normal rings are never capped.
+pub fn bead_ring_count(tiles: &[Tile]) -> u8 {
+	type_ring_count(tiles, RingType::Bead)
+}
+
+/// Non-normal types capped on the 11-tile bench: zag, braid, and bead.
+/// Normal rings are never capped.
 pub fn capped_ring_types() -> &'static [RingType] {
-	&[RingType::Zag, RingType::Braid]
+	&[RingType::Zag, RingType::Braid, RingType::Bead]
 }
 
 pub fn respects_type_cap(tiles: &[Tile]) -> bool {
@@ -190,32 +194,36 @@ pub fn find_legal_subset(tiles: &[Tile], k: usize) -> Option<Vec<usize>> {
 		return respects_type_cap(tiles).then(|| (0..n).collect());
 	}
 	let cap = RING_TYPE_CAP as usize;
-	let mut parent: Vec<Option<(usize, usize, usize, usize)>> =
-		vec![None; (n + 1) * (k + 1) * (cap + 1) * (cap + 1)];
-	let idx = |i: usize, taken: usize, z: usize, b: usize| {
-		(((i * (k + 1) + taken) * (cap + 1) + z) * (cap + 1)) + b
+	let cap1 = cap + 1;
+	let mut parent: Vec<Option<(usize, usize, usize, usize, usize)>> =
+		vec![None; (n + 1) * (k + 1) * cap1 * cap1 * cap1];
+	let idx = |i: usize, taken: usize, z: usize, b: usize, e: usize| {
+		((((i * (k + 1) + taken) * cap1 + z) * cap1 + b) * cap1) + e
 	};
 	let mut reach = vec![false; parent.len()];
-	reach[idx(0, 0, 0, 0)] = true;
+	reach[idx(0, 0, 0, 0, 0)] = true;
 	for i in 0..n {
 		let z_add = tiles[i].zag_ring_count() as usize;
 		let b_add = tiles[i].braid_ring_count() as usize;
+		let e_add = tiles[i].bead_ring_count() as usize;
 		for taken in (0..=k.min(i)).rev() {
 			for z in 0..=cap {
 				for b in 0..=cap {
-					if !reach[idx(i, taken, z, b)] {
-						continue;
-					}
-					let skip = idx(i + 1, taken, z, b);
-					if !reach[skip] {
-						reach[skip] = true;
-						parent[skip] = Some((i, taken, z, b));
-					}
-					if taken < k && z + z_add <= cap && b + b_add <= cap {
-						let take = idx(i + 1, taken + 1, z + z_add, b + b_add);
-						if !reach[take] {
-							reach[take] = true;
-							parent[take] = Some((i, taken, z, b));
+					for e in 0..=cap {
+						if !reach[idx(i, taken, z, b, e)] {
+							continue;
+						}
+						let skip = idx(i + 1, taken, z, b, e);
+						if !reach[skip] {
+							reach[skip] = true;
+							parent[skip] = Some((i, taken, z, b, e));
+						}
+						if taken < k && z + z_add <= cap && b + b_add <= cap && e + e_add <= cap {
+							let take = idx(i + 1, taken + 1, z + z_add, b + b_add, e + e_add);
+							if !reach[take] {
+								reach[take] = true;
+								parent[take] = Some((i, taken, z, b, e));
+							}
 						}
 					}
 				}
@@ -225,17 +233,19 @@ pub fn find_legal_subset(tiles: &[Tile], k: usize) -> Option<Vec<usize>> {
 	let mut end = None;
 	'find: for z in 0..=cap {
 		for b in 0..=cap {
-			if reach[idx(n, k, z, b)] {
-				end = Some((k, z, b));
-				break 'find;
+			for e in 0..=cap {
+				if reach[idx(n, k, z, b, e)] {
+					end = Some((k, z, b, e));
+					break 'find;
+				}
 			}
 		}
 	}
-	let (mut taken, mut z, mut b) = end?;
+	let (mut taken, mut z, mut b, mut e) = end?;
 	let mut i = n;
 	let mut out = Vec::with_capacity(k);
 	while i > 0 {
-		let Some((pi, pt, pz, pb)) = parent[idx(i, taken, z, b)] else {
+		let Some((pi, pt, pz, pb, pe)) = parent[idx(i, taken, z, b, e)] else {
 			break;
 		};
 		if pt < taken {
@@ -245,12 +255,13 @@ pub fn find_legal_subset(tiles: &[Tile], k: usize) -> Option<Vec<usize>> {
 		taken = pt;
 		z = pz;
 		b = pb;
+		e = pe;
 	}
 	out.reverse();
 	(out.len() == k).then_some(out)
 }
 
-/// Sample a viable `size`-tile collection from the ring/color/zag/braid process.
+/// Sample a viable `size`-tile collection from the ring/color/zag/braid/bead process.
 pub fn generate_collection(
 	owner: Player,
 	size: usize,
@@ -269,6 +280,7 @@ pub fn generate_collection(
 				rules.max_rings,
 				rules.zag_numer,
 				rules.braid_numer,
+				rules.bead_numer,
 				next_id,
 				rng,
 			));
@@ -295,6 +307,7 @@ fn repair_collection(
 			rules.max_rings,
 			rules.zag_numer,
 			rules.braid_numer,
+			rules.bead_numer,
 			next_id,
 			rng,
 		));
@@ -305,7 +318,9 @@ fn repair_collection(
 		let Some(i) = deck
 			.iter()
 			.enumerate()
-			.max_by_key(|(_, t)| (t.zag_ring_count() + t.braid_ring_count(), t.id))
+			.max_by_key(|(_, t)| {
+				(t.zag_ring_count() + t.braid_ring_count() + t.bead_ring_count(), t.id)
+			})
 			.map(|(i, _)| i)
 		else {
 			break;
@@ -347,6 +362,7 @@ pub fn apply_deck_noise(
 				rules.max_rings,
 				rules.zag_numer,
 				rules.braid_numer,
+				rules.bead_numer,
 				next_id,
 				rng,
 			));
@@ -393,6 +409,7 @@ fn tile_score(tile: Tile) -> i32 {
 	s += 6 * i32::from(tile.normal_ring_count());
 	s += 4 * i32::from(tile.zag_ring_count());
 	s += 5 * i32::from(tile.braid_ring_count());
+	s += 6 * i32::from(tile.bead_ring_count());
 	for &c in tile.ring_colors() {
 		s += match c as u8 {
 			5 => 18,
@@ -417,14 +434,21 @@ fn set_score(tiles: &[Tile], opponent: &[Tile]) -> i32 {
 	s += 10 * dots.iter().skip(1).filter(|d| **d).count() as i32;
 	let zag = i32::from(zag_ring_count(tiles));
 	let braid = i32::from(braid_ring_count(tiles));
+	let bead = i32::from(bead_ring_count(tiles));
 	let cap = i32::from(RING_TYPE_CAP);
 	s += 8 * (cap - zag).max(0);
 	s += 8 * (cap - braid).max(0);
+	s += 8 * (cap - bead).max(0);
 	if !opponent.is_empty() {
 		for &mine in tiles {
 			for &opp in opponent {
 				s += 12 * mine.zag_hits_on(opp);
 				s += 10 * opp.zag_hits_on(mine);
+				s += 11 * i32::from(mine.bead_unmatched_on(opp));
+				s += 9 * i32::from(opp.bead_unmatched_on(mine));
+				if mine.bead_matched_on(opp) > 0 || opp.bead_matched_on(mine) > 0 {
+					s += 5;
+				}
 				if mine.shares_normal(opp) {
 					s += 6;
 				}
@@ -514,24 +538,30 @@ fn has_legal_prefixed(prefix: &[Tile], rest: &[Tile], k: usize) -> bool {
 	let cap = RING_TYPE_CAP as usize;
 	let pz = zag_ring_count(prefix) as usize;
 	let pb = braid_ring_count(prefix) as usize;
-	if pz > cap || pb > cap {
+	let pe = bead_ring_count(prefix) as usize;
+	if pz > cap || pb > cap || pe > cap {
 		return false;
 	}
 	let n = rest.len();
-	let mut reach = vec![false; (k + 1) * (cap + 1) * (cap + 1)];
-	let idx = |taken: usize, z: usize, b: usize| (taken * (cap + 1) + z) * (cap + 1) + b;
-	reach[idx(0, pz, pb)] = true;
+	let cap1 = cap + 1;
+	let mut reach = vec![false; (k + 1) * cap1 * cap1 * cap1];
+	let idx =
+		|taken: usize, z: usize, b: usize, e: usize| ((taken * cap1 + z) * cap1 + b) * cap1 + e;
+	reach[idx(0, pz, pb, pe)] = true;
 	for tile in rest {
 		let za = tile.zag_ring_count() as usize;
 		let ba = tile.braid_ring_count() as usize;
+		let ea = tile.bead_ring_count() as usize;
 		for taken in (0..k).rev() {
 			for z in 0..=cap {
 				for b in 0..=cap {
-					if !reach[idx(taken, z, b)] {
-						continue;
-					}
-					if z + za <= cap && b + ba <= cap {
-						reach[idx(taken + 1, z + za, b + ba)] = true;
+					for e in 0..=cap {
+						if !reach[idx(taken, z, b, e)] {
+							continue;
+						}
+						if z + za <= cap && b + ba <= cap && e + ea <= cap {
+							reach[idx(taken + 1, z + za, b + ba, e + ea)] = true;
+						}
 					}
 				}
 			}
@@ -539,8 +569,10 @@ fn has_legal_prefixed(prefix: &[Tile], rest: &[Tile], k: usize) -> bool {
 	}
 	for z in 0..=cap {
 		for b in 0..=cap {
-			if reach[idx(k.min(n), z, b)] {
-				return true;
+			for e in 0..=cap {
+				if reach[idx(k.min(n), z, b, e)] {
+					return true;
+				}
 			}
 		}
 	}
@@ -959,6 +991,17 @@ mod tests {
 		Tile::with_typed_rings(id, Player::One, &parts, n, 1)
 	}
 
+	fn bead_tile(id: u32, n_bead: u8) -> Tile {
+		let n = n_bead.clamp(1, 3);
+		let parts: Vec<(TileColor, RingType)> = (0..n)
+			.map(|i| {
+				let c = TileColor::ALL[i as usize];
+				(c, RingType::Bead)
+			})
+			.collect();
+		Tile::with_typed_rings(id, Player::One, &parts, n, 1)
+	}
+
 	fn normal_tile(id: u32, color: TileColor) -> Tile {
 		Tile::with_typed_rings(id, Player::One, &[(color, RingType::Normal)], 1, 1)
 	}
@@ -1005,6 +1048,33 @@ mod tests {
 		assert_eq!(zag_ring_count(&mixed), 6);
 		assert_eq!(braid_ring_count(&mixed), 6);
 		assert!(respects_type_cap(&mixed));
+	}
+
+	#[test]
+	fn bead_cap_is_six_rings_not_six_tiles() {
+		let six: Vec<Tile> = (0..6).map(|i| bead_tile(i + 1, 1)).collect();
+		assert!(respects_type_cap(&six));
+		assert_eq!(bead_ring_count(&six), 6);
+		let seven: Vec<Tile> = (0..7).map(|i| bead_tile(i + 1, 1)).collect();
+		assert_eq!(capped_overflow(&seven), Some((RingType::Bead, 7)));
+		let two_triples = vec![bead_tile(1, 3), bead_tile(2, 3)];
+		assert!(respects_type_cap(&two_triples));
+		let three_triples = vec![bead_tile(1, 3), bead_tile(2, 3), bead_tile(3, 3)];
+		assert_eq!(capped_overflow(&three_triples), Some((RingType::Bead, 9)));
+		let mixed = vec![
+			zag_tile(1, 3),
+			zag_tile(2, 3),
+			braid_tile(3, 3),
+			braid_tile(4, 3),
+			bead_tile(5, 3),
+			bead_tile(6, 3),
+		];
+		assert_eq!(zag_ring_count(&mixed), 6);
+		assert_eq!(braid_ring_count(&mixed), 6);
+		assert_eq!(bead_ring_count(&mixed), 6);
+		assert!(respects_type_cap(&mixed));
+		assert!(!would_respect_cap(&mixed, bead_tile(7, 1)));
+		assert!(would_respect_cap(&six, zag_tile(7, 2)));
 	}
 
 	#[test]
