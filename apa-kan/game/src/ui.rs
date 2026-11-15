@@ -15,7 +15,7 @@ use crate::deck::{
 	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
 };
 use crate::game::{
-	Action, BudgetToken, CaptureMark, DeckSlot, Game, Player, Tile, ZagMismatchCount,
+	Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile, ZagMismatchCount,
 };
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
@@ -70,6 +70,7 @@ pub fn run_app(cfg: GameConfig) {
 			},
 			warning: String::new(),
 			last_removals: String::new(),
+			flash: visual::CaptureFlash::empty(),
 			fingerprint: 0,
 		})
 		.insert_resource(RngRes(rng))
@@ -121,6 +122,7 @@ struct PlayState {
 	log: String,
 	warning: String,
 	last_removals: String,
+	flash: visual::CaptureFlash,
 	fingerprint: u64,
 }
 
@@ -727,6 +729,7 @@ fn attempt_add(play: &mut PlayState, bench_index: usize, node: NodeId) {
 fn apply_action(play: &mut PlayState, action: Action) {
 	match play.game.apply(action) {
 		Ok(outcome) => {
+			play.flash = visual::CaptureFlash::from_outcome(&outcome);
 			play.log = outcome.log_line;
 			if outcome.removals.is_empty() {
 				play.last_removals.clear();
@@ -1008,6 +1011,7 @@ fn refresh_view(
 				world_v(layout, board.position(id)),
 				tile,
 				matches!(play.selection, Selection::Piece(n) if n == id),
+				false,
 				layout.tile_radius,
 			);
 		} else if board.is_spawn(id) && matches!(play.selection, Selection::Bench(_)) {
@@ -1034,6 +1038,7 @@ fn refresh_view(
 					player,
 					layout.bench_tile_radius,
 					0,
+					false,
 				),
 				DeckSlot::Live(tile) => {
 					let bench_i = play.game.bench(player).iter().position(|t| t.id == tile.id);
@@ -1041,6 +1046,7 @@ fn refresh_view(
 						&& bench_i
 							.map(|idx| play.selection == Selection::Bench(idx))
 							.unwrap_or(false);
+					let just_captured = play.flash.highlights_tile(tile.id, CaptureDest::Bench);
 					spawn_tile_at(
 						&mut commands,
 						&mut meshes,
@@ -1048,15 +1054,23 @@ fn refresh_view(
 						Vec2::new(p[0], p[1]),
 						*tile,
 						highlight,
+						just_captured,
 						layout.bench_tile_radius,
 					);
 				}
 				DeckSlot::Spent(_) => {}
 			}
 		}
-		let n = play.game.budget_tokens(player).len();
+		let tokens = play.game.budget_tokens(player);
+		let n = tokens.len();
 		for i in 0..n {
 			let p = layout.budget_stack_pos(player, i, n);
+			let just_captured = match tokens[i] {
+				BudgetToken::Captured(tile) => {
+					play.flash.highlights_tile(tile.id, CaptureDest::Tokens)
+				}
+				BudgetToken::Blank => false,
+			};
 			spawn_solid_token(
 				&mut commands,
 				&mut meshes,
@@ -1065,6 +1079,25 @@ fn refresh_view(
 				player,
 				layout.bench_tile_radius,
 				i,
+				just_captured,
+			);
+		}
+	}
+
+	if !play.flash.is_empty() {
+		let n = play.flash.tiles.len();
+		let r = layout.capture_flash_radius();
+		for (i, tile) in play.flash.tiles.iter().enumerate() {
+			let p = layout.capture_flash_pos(i, n);
+			spawn_tile_at(
+				&mut commands,
+				&mut meshes,
+				&mut materials,
+				Vec2::new(p[0], p[1]),
+				*tile,
+				false,
+				false,
+				r,
 			);
 		}
 	}
@@ -1089,6 +1122,7 @@ fn draw_setup_view(
 			Vec2::new(p[0], p[1]),
 			*tile,
 			selected,
+			false,
 			layout.bench_tile_radius,
 		);
 	}
@@ -1103,6 +1137,7 @@ fn draw_setup_view(
 				materials,
 				Vec2::new(p[0], p[1]),
 				*tile,
+				false,
 				false,
 				layout.bench_tile_radius,
 			);
@@ -1370,6 +1405,7 @@ fn spawn_arc(
 		&paint,
 		lanes[3].unwrap_or(0.0),
 		layout.scale,
+		layout.arc_width,
 	);
 }
 
@@ -1381,12 +1417,13 @@ fn spawn_bead_lane(
 	paint: &visual::ArcPaint,
 	lane: f64,
 	scale: f32,
+	arc_width: f32,
 ) {
 	if !paint.has_bead_lane() {
 		return;
 	}
 	let spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(scale);
-	let bead_r = (f32::from(scale) * visual::TILE_BEAD_R * 0.35).max(1.1);
+	let bead_r = visual::arc_bead_radius(arc_width);
 	let mut z = visual::Z_ARC_OVER + 0.04;
 	let push = |commands: &mut Commands,
 	            meshes: &mut Assets<Mesh>,
@@ -1660,6 +1697,28 @@ fn spawn_stroke(
 	));
 }
 
+fn polygon_mesh(pts: &[[f32; 2]]) -> Mesh {
+	let tris = visual::polygon_triangles(pts);
+	let mut positions: Vec<[f32; 3]> = Vec::with_capacity(tris.len() * 3);
+	let mut normals: Vec<[f32; 3]> = Vec::with_capacity(tris.len() * 3);
+	let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(tris.len() * 3);
+	let mut indices: Vec<u32> = Vec::with_capacity(tris.len() * 3);
+	for tri in tris {
+		let i0 = positions.len() as u32;
+		for p in tri {
+			positions.push([p[0], p[1], 0.0]);
+			normals.push([0.0, 0.0, 1.0]);
+			uvs.push([0.0, 0.0]);
+		}
+		indices.extend_from_slice(&[i0, i0 + 1, i0 + 2]);
+	}
+	Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+		.with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+		.with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+		.with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+		.with_inserted_indices(Indices::U32(indices))
+}
+
 fn polyline_mesh(pts: &[[f64; 2]], width: f32) -> Mesh {
 	let n = pts.len();
 	let hw = f64::from(width) / 2.0;
@@ -1724,6 +1783,7 @@ fn spawn_solid_token(
 	player: Player,
 	radius: f32,
 	stack_index: usize,
+	just_captured: bool,
 ) {
 	let fill_z = visual::token_stack_fill_z(stack_index);
 	let rim_z = visual::token_stack_rim_z(stack_index);
@@ -1747,6 +1807,39 @@ fn spawn_solid_token(
 		rgb(visual::BLANK_TOKEN_RIM_RGB),
 		rim_z,
 	);
+	if just_captured {
+		spawn_capture_glow(commands, meshes, materials, pos, radius);
+	}
+}
+
+fn spawn_capture_glow(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pos: Vec2,
+	radius: f32,
+) {
+	let scale = (radius / visual::PREV_TILE_RADIUS_PX).max(0.4);
+	spawn_ring(
+		commands,
+		meshes,
+		materials,
+		pos,
+		radius + 1.6 * scale,
+		radius + 3.2 * scale,
+		rgb(visual::CAPTURE_GLOW_INNER_RGB),
+		visual::Z_HIGHLIGHT,
+	);
+	spawn_ring(
+		commands,
+		meshes,
+		materials,
+		pos,
+		radius + 3.4 * scale,
+		radius + 5.6 * scale,
+		rgb(visual::CAPTURE_GLOW_RGB),
+		visual::Z_HIGHLIGHT + 0.01,
+	);
 }
 
 fn spawn_tile_at(
@@ -1756,6 +1849,7 @@ fn spawn_tile_at(
 	pos: Vec2,
 	tile: Tile,
 	highlight: bool,
+	just_captured: bool,
 	radius: f32,
 ) {
 	let fill = rgb(visual::owner_fill_rgb(tile.owner));
@@ -1849,18 +1943,27 @@ fn spawn_tile_at(
 			}
 		}
 	}
+	let band = visual::capture_band_ring([pos.x, pos.y], radius, draw, visual::CAPTURE_DOWN_BEVY);
+	if band.len() >= 3 {
+		commands.spawn((
+			DynamicView,
+			Mesh2d(meshes.add(polygon_mesh(&band))),
+			MeshMaterial2d(materials.add(ColorMaterial::from(fill))),
+			Transform::from_xyz(0.0, 0.0, visual::Z_TILE_BAND),
+		));
+	}
 	let marks = visual::capture_mark_count(tile);
-	let dot_r = draw.dot_r.max(2.0);
+	let dot_r = draw.dot_r.max(1.15);
 	for i in 0..marks {
-		let dx = draw.capture_mark_dx(i, marks);
-		let at = (pos + Vec2::new(dx, 0.0)).extend(visual::Z_TILE_DOT);
+		let at = draw.capture_mark_pos([pos.x, pos.y], radius, i, marks, visual::CAPTURE_DOWN_BEVY);
+		let z = visual::Z_TILE_DOT;
 		match tile.capture {
 			CaptureMark::Dot => {
 				commands.spawn((
 					DynamicView,
 					Mesh2d(meshes.add(Circle::new(dot_r))),
 					MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
-					Transform::from_translation(at),
+					Transform::from_translation(Vec2::new(at[0], at[1]).extend(z)),
 				));
 			}
 			CaptureMark::Triangle => {
@@ -1873,7 +1976,7 @@ fn spawn_tile_at(
 						Vec2::new(pts[2][0], pts[2][1]),
 					))),
 					MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
-					Transform::from_translation(at),
+					Transform::from_translation(Vec2::new(at[0], at[1]).extend(z)),
 				));
 			}
 		}
@@ -1889,6 +1992,8 @@ fn spawn_tile_at(
 			rgb(visual::HIGHLIGHT_RGB),
 			visual::Z_HIGHLIGHT,
 		);
+	} else if just_captured {
+		spawn_capture_glow(commands, meshes, materials, pos, radius);
 	}
 }
 
@@ -2036,6 +2141,12 @@ fn view_fingerprint(play: &PlayState, layout: &ViewLayout) -> u64 {
 		session.extend.hash(&mut h);
 	} else {
 		0u8.hash(&mut h);
+	}
+	play.flash.mover.hash(&mut h);
+	play.flash.dest.hash(&mut h);
+	play.flash.tiles.len().hash(&mut h);
+	for t in &play.flash.tiles {
+		t.id.hash(&mut h);
 	}
 	h.finish()
 }

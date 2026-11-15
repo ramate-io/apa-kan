@@ -4,8 +4,8 @@ use std::path::Path;
 
 use image::{Rgba, RgbaImage};
 
-use crate::game::{DeckSlot, Game, Player, Tile};
-use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
+use crate::game::{BudgetToken, CaptureDest, DeckSlot, Game, Player, Tile};
+use crate::visual::{self, ArcBody, BraidLane, CaptureFlash, ViewLayout};
 
 pub fn write_png(game: &Game, path: impl AsRef<Path>, caption: &str) -> Result<(), String> {
 	write_png_sized(game, path, caption, 1280, 960)
@@ -29,6 +29,18 @@ pub fn write_png_view(
 	height: u32,
 	selected: Option<crate::board::NodeId>,
 ) -> Result<(), String> {
+	write_png_view_flash(game, path, caption, width, height, selected, None)
+}
+
+pub fn write_png_view_flash(
+	game: &Game,
+	path: impl AsRef<Path>,
+	caption: &str,
+	width: u32,
+	height: u32,
+	selected: Option<crate::board::NodeId>,
+	flash: Option<&CaptureFlash>,
+) -> Result<(), String> {
 	let layout = ViewLayout::from_window_with_deck(
 		width as f32,
 		height as f32,
@@ -40,7 +52,8 @@ pub fn write_png_view(
 	draw_nodes(&mut img, game, &layout);
 	draw_tiles(&mut img, game, &layout);
 	draw_marks(&mut img, game, &layout, selected);
-	draw_benches(&mut img, game, &layout);
+	draw_benches(&mut img, game, &layout, flash);
+	draw_flash(&mut img, &layout, flash);
 	draw_hud(&mut img, game, &layout, caption);
 	img.save(path.as_ref()).map_err(|e| e.to_string())
 }
@@ -231,7 +244,7 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		let lanes = paint.lane_offsets(visual::channel_lane_pitch(stripe_off));
 		let bead_lane = lanes[3].unwrap_or(0.0);
 		let bead_spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(layout.scale);
-		let bead_r = (f64::from(layout.scale) * f64::from(visual::TILE_BEAD_R) * 0.35).max(1.1);
+		let bead_r = f64::from(visual::arc_bead_radius(layout.arc_width));
 		if let Some(color) = paint.bead_match {
 			let line = visual::offset_polyline(&pts, bead_lane);
 			for p in visual::bead_centers_along(&line, bead_spacing) {
@@ -476,7 +489,12 @@ fn draw_marks(
 	);
 }
 
-fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
+fn draw_benches(
+	img: &mut RgbaImage,
+	game: &Game,
+	layout: &ViewLayout,
+	flash: Option<&CaptureFlash>,
+) {
 	for player in [Player::Two, Player::One] {
 		let deck = game.deck_slots(player);
 		let n = deck.len();
@@ -487,7 +505,12 @@ fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let r = f64::from(layout.bench_tile_radius);
 			match slot {
 				DeckSlot::Empty => draw_solid_token(img, c, r, player),
-				DeckSlot::Live(tile) => draw_tile(img, c, r, *tile),
+				DeckSlot::Live(tile) => {
+					draw_tile(img, c, r, *tile);
+					if flash.is_some_and(|f| f.highlights_tile(tile.id, CaptureDest::Bench)) {
+						draw_capture_glow(img, c, r);
+					}
+				}
 				DeckSlot::Spent(_) => {}
 			}
 		}
@@ -502,8 +525,35 @@ fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let c = (f64::from(q[0]), f64::from(q[1]));
 			let r = f64::from(layout.bench_tile_radius);
 			draw_solid_token(img, c, r, player);
+			if let BudgetToken::Captured(tile) = tokens[i] {
+				if flash.is_some_and(|f| f.highlights_tile(tile.id, CaptureDest::Tokens)) {
+					draw_capture_glow(img, c, r);
+				}
+			}
 		}
 	}
+}
+
+fn draw_flash(img: &mut RgbaImage, layout: &ViewLayout, flash: Option<&CaptureFlash>) {
+	let Some(flash) = flash else {
+		return;
+	};
+	if flash.is_empty() {
+		return;
+	}
+	let n = flash.tiles.len();
+	let r = f64::from(layout.capture_flash_radius());
+	for (i, tile) in flash.tiles.iter().enumerate() {
+		let p = layout.capture_flash_pos(i, n);
+		let q = layout.world_to_image(p);
+		draw_tile(img, (f64::from(q[0]), f64::from(q[1])), r, *tile);
+	}
+}
+
+fn draw_capture_glow(img: &mut RgbaImage, c: (f64, f64), r: f64) {
+	let scale = (r / f64::from(visual::PREV_TILE_RADIUS_PX)).max(0.4);
+	stroke_circle(img, c, r + 2.4 * scale, rgb_of(visual::CAPTURE_GLOW_INNER_RGB), 1.6 * scale);
+	stroke_circle(img, c, r + 4.6 * scale, rgb_of(visual::CAPTURE_GLOW_RGB), 2.2 * scale);
 }
 
 fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str) {
@@ -579,15 +629,41 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			}
 		}
 	}
+	let band = visual::capture_band_ring(
+		[c.0 as f32, c.1 as f32],
+		r as f32,
+		draw,
+		visual::CAPTURE_DOWN_IMAGE,
+	);
+	let fill = rgb_of(visual::owner_fill_rgb(tile.owner));
+	for tri in visual::polygon_triangles(&band) {
+		fill_triangle(
+			img,
+			(f64::from(tri[0][0]), f64::from(tri[0][1])),
+			(f64::from(tri[1][0]), f64::from(tri[1][1])),
+			(f64::from(tri[2][0]), f64::from(tri[2][1])),
+			fill,
+		);
+	}
 	let marks = visual::capture_mark_count(tile);
 	let dot_r = f64::from(draw.dot_r);
 	for i in 0..marks {
-		let dx = f64::from(draw.capture_mark_dx(i, marks));
-		let center = (c.0 + dx, c.1);
+		let center = draw.capture_mark_pos(
+			[c.0 as f32, c.1 as f32],
+			r as f32,
+			i,
+			marks,
+			visual::CAPTURE_DOWN_IMAGE,
+		);
+		let center = (f64::from(center[0]), f64::from(center[1]));
 		match tile.capture {
 			crate::game::CaptureMark::Dot => fill_circle(img, center, dot_r, primary),
 			crate::game::CaptureMark::Triangle => {
-				let pts = visual::capture_triangle([center.0 as f32, center.1 as f32], draw.dot_r);
+				let pts = visual::capture_triangle_facing(
+					[center.0 as f32, center.1 as f32],
+					draw.dot_r,
+					-1.0,
+				);
 				fill_triangle(
 					img,
 					(f64::from(pts[0][0]), f64::from(pts[0][1])),
@@ -822,13 +898,22 @@ mod tests {
 		let img = image::open(&path).unwrap().to_rgba8();
 		let layout = ViewLayout::from_window_with_deck(w as f32, h as f32, 11);
 		let p = layout.world_to_image(layout.bench_pos(Player::One, 10, 11));
-		let px = img.get_pixel(p[0] as u32, p[1] as u32);
 		let fill = visual::rgb8(visual::owner_fill_rgb(Player::One));
+		let tile = slots[10].tile().expect("last opening slot is a live tile");
+		let draw = visual::TileRingDraw::for_radius(layout.bench_tile_radius);
+		let mark = draw.capture_mark_pos(
+			p,
+			layout.bench_tile_radius,
+			0,
+			visual::capture_mark_count(tile),
+			visual::CAPTURE_DOWN_IMAGE,
+		);
+		let px = img.get_pixel(mark[0] as u32, mark[1] as u32);
 		assert!(
 			!channel_near(px[0], fill[0], 18)
 				|| !channel_near(px[1], fill[1], 18)
 				|| !channel_near(px[2], fill[2], 18),
-			"last deck slot should be a live tile, not a blank face, got {px:?}"
+			"last deck slot should show a capture mark on the bottom band, not a blank face, got {px:?}"
 		);
 	}
 
@@ -990,15 +1075,101 @@ mod tests {
 	}
 
 	#[test]
+	fn capture_marks_leave_the_tile_center_empty() {
+		use crate::game::Player;
+		use crate::visual::{self, ViewLayout};
+		let game = crate::visual::demo_zag_tile();
+		let w = 1280u32;
+		let h = 800u32;
+		let path = std::env::temp_dir().join("apa-kan-edge-marks.png");
+		write_png_sized(&game, &path, "edge marks", w, h).unwrap();
+		let img = image::open(&path).unwrap().to_rgba8();
+		let layout =
+			ViewLayout::from_window_with_deck(w as f32, h as f32, game.rules().bag_size as usize);
+		let (id, tile) = game.tiles().next().expect("zag tile");
+		let p = layout.board_to_image(game.board().position(id));
+		let px = img.get_pixel(p[0] as u32, p[1] as u32);
+		let fill = visual::rgb8(visual::owner_fill_rgb(Player::One));
+		assert!(
+			channel_near(px[0], fill[0], 28)
+				&& channel_near(px[1], fill[1], 28)
+				&& channel_near(px[2], fill[2], 28),
+			"tile center must stay empty for artwork, fill {fill:?} got {px:?}"
+		);
+		let draw = visual::TileRingDraw::for_radius(layout.tile_radius);
+		let mark = draw.capture_mark_pos(
+			p,
+			layout.tile_radius,
+			0,
+			visual::capture_mark_count(tile),
+			visual::CAPTURE_DOWN_IMAGE,
+		);
+		assert!(mark[1] > p[1] + layout.tile_radius * 0.4, "PNG mark sits toward the bottom");
+	}
+
+	#[test]
+	fn last_capture_flash_paints_between_the_stacks() {
+		use crate::game::CaptureDest;
+		use crate::visual::{self, ViewLayout};
+		let (game, flash) = visual::demo_midgame_capture_flash(CaptureDest::Tokens);
+		assert!(!flash.is_empty());
+		let w = 1280u32;
+		let h = 800u32;
+		let path = std::env::temp_dir().join("apa-kan-capture-flash.png");
+		write_png_view_flash(&game, &path, "flash", w, h, None, Some(&flash)).unwrap();
+		let img = image::open(&path).unwrap().to_rgba8();
+		let layout =
+			ViewLayout::from_window_with_deck(w as f32, h as f32, game.rules().bag_size as usize);
+		let p = layout.world_to_image(layout.capture_flash_pos(0, flash.tiles.len()));
+		let px = img.get_pixel(p[0] as u32, p[1] as u32);
+		let bg = visual::rgb8(visual::BG_RGB);
+		assert!(
+			!channel_near(px[0], bg[0], 12)
+				|| !channel_near(px[1], bg[1], 12)
+				|| !channel_near(px[2], bg[2], 12),
+			"freeze-frame tile should not be the background, got {px:?}"
+		);
+		let glow = visual::rgb8(visual::CAPTURE_GLOW_RGB);
+		let tokens = game.budget_tokens(crate::game::Player::One);
+		let n = tokens.len();
+		let mut found_glow = false;
+		for i in 0..n {
+			if let crate::game::BudgetToken::Captured(tile) = tokens[i] {
+				if flash.contains_id(tile.id) {
+					let q = layout.world_to_image(layout.budget_stack_pos(
+						crate::game::Player::One,
+						i,
+						n,
+					));
+					let r = layout.bench_tile_radius;
+					for extra in [3.0, 4.0, 5.0, 6.0, 7.0] {
+						let gx = (q[0] + r + extra).clamp(0.0, w as f32 - 1.0) as u32;
+						let gy = q[1].clamp(0.0, h as f32 - 1.0) as u32;
+						let gpx = img.get_pixel(gx, gy);
+						if channel_near(gpx[0], glow[0], 48)
+							&& channel_near(gpx[1], glow[1], 60)
+							&& channel_near(gpx[2], glow[2], 60)
+						{
+							found_glow = true;
+						}
+					}
+				}
+			}
+		}
+		assert!(found_glow, "triangle-capture landing should glow on the token stack");
+	}
+
+	#[test]
 	fn dump_hitch_and_zag_artifacts() {
 		let dir = std::path::Path::new("/opt/cursor/artifacts");
 		if !dir.is_dir() {
 			return;
 		}
-		use crate::game::{RingType, RuleSet, TileColor, ZagMismatchCount};
+		use crate::game::{CaptureDest, RingType, RuleSet, TileColor, ZagMismatchCount};
 		use crate::visual::{
-			demo_center_inner_pair, demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair,
-			demo_pair_with, demo_typed_pair, demo_typed_tile, demo_zag_tile,
+			demo_center_inner_pair, demo_hop_turn, demo_left_cluster, demo_midgame,
+			demo_midgame_capture_flash, demo_pair, demo_pair_with, demo_typed_pair,
+			demo_typed_tile, demo_zag_tile,
 		};
 		let board = demo_midgame();
 		write_png_sized(
@@ -1476,6 +1647,34 @@ mod tests {
 			800,
 		)
 		.unwrap();
+		let (flash_game, token_flash) = demo_midgame_capture_flash(CaptureDest::Tokens);
+		write_png_view_flash(
+			&flash_game,
+			dir.join("capture_flash_tokens.png"),
+			"freeze-frame of last captures between the token stacks",
+			1280,
+			800,
+			None,
+			Some(&token_flash),
+		)
+		.unwrap();
+		let (flash_game, bench_flash) = demo_midgame_capture_flash(CaptureDest::Bench);
+		write_png_view_flash(
+			&flash_game,
+			dir.join("capture_flash_bench.png"),
+			"dot-capture landing glow on the mover bench",
+			1280,
+			800,
+			None,
+			Some(&bench_flash),
+		)
+		.unwrap();
+		write_cropped(
+			&demo_zag_tile(),
+			dir.join("edge_capture_marks.png"),
+			"dot/triangle marks on the bottom tile arc",
+			28.0,
+		);
 	}
 
 	fn write_cropped(game: &Game, path: impl AsRef<std::path::Path>, caption: &str, pad: f32) {
