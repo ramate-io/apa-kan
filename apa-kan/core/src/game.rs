@@ -1058,7 +1058,7 @@ pub enum EndReason {
 	/// win; a draw only if the counts match and every pair ties on both passes.
 	LowValue,
 	/// Player to move ran out of clock. OPEN-Q #23: may instead be
-	/// [`Self::FlagDraw`] when the opponent cannot possibly win.
+	/// [`Self::FlagDraw`] when [`Game::flag_opponent_cannot_win`] is true.
 	Flag,
 	/// Flag-fall draw: opponent cannot win by cheap checks (issue #50 rec).
 	/// OPEN-Q #23.
@@ -1914,9 +1914,9 @@ impl Game {
 
 	/// Deduct `elapsed_ms` from `player`'s remaining time.
 	///
-	/// No-op when this game has no clock. OPEN-Q #26: core never pauses; the
-	/// caller chooses which elapsed value to pass (including a disconnect
-	/// window).
+	/// No-op when this game has no clock. Decision (#58 Q26): core never
+	/// pauses; the caller chooses which elapsed value to pass, including a
+	/// reconnect window that still consumes time.
 	pub fn apply_elapsed(&mut self, player: Player, elapsed_ms: u64) -> Result<ClockTick, String> {
 		if self.clock.is_none() {
 			return Ok(ClockTick::Ok);
@@ -1970,7 +1970,11 @@ impl Game {
 	}
 
 	/// OPEN-Q #23: cheap checks only (not a search). Issue #50 recommendation.
-	fn flag_opponent_cannot_win(&self, opponent: Player) -> bool {
+	///
+	/// Return `true` when a flag should be a draw because `opponent` cannot
+	/// win from this position. Flip this to always `false` if flag-fall
+	/// becomes a loss in every case.
+	pub fn flag_opponent_cannot_win(&self, opponent: Player) -> bool {
 		if !self.is_alive(opponent) {
 			return true;
 		}

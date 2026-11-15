@@ -6,16 +6,16 @@
 
 use crate::game::Player;
 
-/// OPEN-Q #21: 5-minute is Fischer 5+0 (issue #50 / #58 Proposal).
+/// Decision (#58 Q21): 5-minute is Fischer 5+0.
 pub const FIVE_MIN_INITIAL_MS: u64 = 5 * 60 * 1000;
 pub const FIVE_MIN_INCREMENT_MS: u64 = 0;
-/// OPEN-Q #21: "2 + 1" is 2:00 + 1 s increment per completed move.
+/// Decision (#58 Q21): "2 + 1" is 2:00 + 1 s increment per completed move.
 pub const TWO_PLUS_ONE_INITIAL_MS: u64 = 2 * 60 * 1000;
 pub const TWO_PLUS_ONE_INCREMENT_MS: u64 = 1000;
 
 /// Shipped Head-to-Head time controls.
 ///
-/// OPEN-Q #21: labels follow the issue Proposal (5+0 and 2:00 + 1 s/move).
+/// Decision (#58 Q21): 5-minute = 5+0; 2 + 1 = 2:00 + 1 s/move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TimeControl {
 	/// Fischer 5+0: 5:00 each, no increment.
@@ -65,8 +65,9 @@ pub enum ClockTick {
 
 /// Remaining time per player plus the increment of a [`TimeControl`].
 ///
-/// OPEN-Q #26: this type never pauses. A disconnect window is the caller's
-/// choice of which `elapsed_ms` to pass into [`Clock::apply_elapsed`].
+/// Decision (#58 Q26): the clock does not pause during a reconnect window.
+/// A disconnect is the caller's choice of which `elapsed_ms` to pass into
+/// [`Clock::apply_elapsed`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Clock {
 	time_control: TimeControl,
@@ -134,7 +135,6 @@ mod tests {
 
 	#[test]
 	fn five_min_is_five_plus_zero() {
-		// OPEN-Q #21
 		let tc = TimeControl::FiveMin;
 		assert_eq!(tc.name(), "5+0");
 		assert_eq!(tc.initial_ms(), 300_000);
@@ -145,7 +145,6 @@ mod tests {
 
 	#[test]
 	fn two_plus_one_is_two_minutes_plus_one_second() {
-		// OPEN-Q #21
 		let tc = TimeControl::TwoPlusOne;
 		assert_eq!(tc.name(), "2+1");
 		assert_eq!(tc.initial_ms(), 120_000);

@@ -33,9 +33,9 @@ Arrows point toward the Bevy-free library. The Bevy crate never reaches a store 
 
 ### Clocks (rules only)
 
-[Issue #50](https://github.com/ramate-io/apa-kan/issues/50) **Decision:** ship **5-minute** and **2 + 1**. Interpretation is still **Open question #21**; this RFC uses the issue **Proposal** because it is cheap to change the two constants later:
+[Issue #50](https://github.com/ramate-io/apa-kan/issues/50) **Decision:** ship **5-minute** and **2 + 1**. [Issue #58](https://github.com/ramate-io/apa-kan/issues/58) **Q21 Decision:** those labels are Fischer **5+0** and **2:00 + 1 s/move**.
 
-| Label | Interpretation (Proposal, OPEN-Q #21) |
+| Label | Interpretation (**Decision**, #58 Q21) |
 |---|---|
 | 5-minute | Fischer **5+0**: 5:00 each, no increment |
 | 2 + 1 | Fischer **2+1**: 2:00 each, **+1 second after every completed ADD, MOVE, or legal PASS** |
@@ -63,9 +63,14 @@ Using **exactly** the remaining milliseconds leaves 0 and is still a legal move;
 
 These sit behind `Game::flag_opponent_cannot_win` so "flag is always a loss" is a one-function change.
 
-**Disconnect (OPEN-Q #26):** core does not pause. A 60 s reconnect window is a caller/server choice of which `elapsed_ms` to pass. Not implemented here.
+**Disconnect (#58 Q26 Decision):** the clock does **not** pause during a reconnect window. Core never pauses; a 60 s reconnect is a caller/server choice of which `elapsed_ms` to pass. Not implemented here.
 
-**Ratings × time control (OPEN-Q #22):** out of scope. Core does not rate games.
+**Ratings and seasons (not stored in this crate):** recorded so a later `apa-kan-rating` crate does not fight core.
+
+- **Q1 Decision:** one Elo ladder for now, not split by tile option or deck option.
+- **Q2 Decision:** wagered games **do** write Elo.
+- **Divisions / seasons Decision:** Elo-per-game percentiles are confined to games within each mode and kept separate for human and bot games (a human division is distinct from a bot division). Starting-Elo bands are approved.
+- **Q22** (split the ladder by time control) is unanswered and unused here. `TimeControl` is a match-clock axis, not a rating key.
 
 Draft clocks (60 s / 45 s / 60 s) are a later lobby concern and do not consume match time.
 
@@ -97,17 +102,22 @@ No rules change to overwhelm, beads, capture marks, 7+4, or zag color exclusion.
 - `no_std` on day one — rejected. `alloc` + `std` (rand, flate2, serde) matches today's modules. `no_std`-capable later if it is cheap.
 - Move `visual` / `render` into core or `apa-kan-view` — rejected. Painters are client; they do not block extraction.
 
-## Open questions (from #58; what this RFC assumed)
+## Decisions from #58 (this RFC)
 
-Owner has not answered the tracking-issue list. Assumptions used in code are marked `// OPEN-Q #N` and listed here. Cheap to change later.
+| # | Decision |
+|---|---|
+| **21** | 5-minute = Fischer **5+0**; **2 + 1** = 2:00 + **1 s increment per move**. Constants in `clock.rs`. |
+| **26** | Reconnect does **not** pause the clock. `apply_elapsed` always deducts the given `elapsed_ms`. |
+| **1** | One Elo ladder for now, not split by tile or deck option. No rating types in this crate. |
+| **2** | Wagered games **do** affect Elo. Rating storage is `apa-kan-rating`, not core. |
+| Divisions / seasons | Elo-per-game percentiles stay inside each mode and are separate for human vs bot games. Starting-Elo bands are approved. Not stored here. |
+
+## Remaining open question
 
 | # | Question | Assumed in this RFC |
 |---|---|---|
-| 21 | Confirm clock interpretation: 5-minute = 5+0; 2+1 = 2:00 + 1 s/move? | **Yes**, the issue Proposal. Constants in `clock.rs`. |
-| 22 | Ratings and seasons split by time control? | **Not in this crate.** No rating code. |
-| 23 | Flag-fall always a loss, or draw when the opponent cannot win (cheap checks)? | **Draw** in those cases (`FlagDraw`), issue Proposal. Function-local. |
-| 26 | Does the 60 s reconnect pause the clock? | **Core never pauses.** Caller supplies `elapsed_ms`. |
+| **23** | Flag-fall always a loss, or draw when the opponent cannot win (cheap checks)? | **Draw** in those cases (`EndReason::FlagDraw`), issue #50 recommendation. Lives in `Game::flag_opponent_cannot_win` so "always a loss" is a one-function change. Marked `// OPEN-Q #23`. |
 
-Questions 1–20 and 24–25 are accounts, seasons, market, and wrapping. They do not change this split.
+Q22 (ladder split by time control) is unanswered; core does not rate games.
 
 Server-authoritative clocks, signed `ClockEvent` envelopes, and lag budget remain [`rfc-002-003-002`](https://github.com/ramate-io/apa-kan/issues/57) / M3.
