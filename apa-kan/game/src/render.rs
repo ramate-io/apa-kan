@@ -4,8 +4,8 @@ use std::path::Path;
 
 use image::{Rgba, RgbaImage};
 
-use crate::game::{DeckSlot, Game, Player, Tile};
-use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
+use crate::game::{BudgetToken, CaptureDest, DeckSlot, Game, Player, Tile};
+use crate::visual::{self, ArcBody, BraidLane, CaptureFlash, ViewLayout};
 
 pub fn write_png(game: &Game, path: impl AsRef<Path>, caption: &str) -> Result<(), String> {
 	write_png_sized(game, path, caption, 1280, 960)
@@ -29,6 +29,18 @@ pub fn write_png_view(
 	height: u32,
 	selected: Option<crate::board::NodeId>,
 ) -> Result<(), String> {
+	write_png_view_flash(game, path, caption, width, height, selected, None)
+}
+
+pub fn write_png_view_flash(
+	game: &Game,
+	path: impl AsRef<Path>,
+	caption: &str,
+	width: u32,
+	height: u32,
+	selected: Option<crate::board::NodeId>,
+	flash: Option<&CaptureFlash>,
+) -> Result<(), String> {
 	let layout = ViewLayout::from_window_with_deck(
 		width as f32,
 		height as f32,
@@ -40,7 +52,8 @@ pub fn write_png_view(
 	draw_nodes(&mut img, game, &layout);
 	draw_tiles(&mut img, game, &layout);
 	draw_marks(&mut img, game, &layout, selected);
-	draw_benches(&mut img, game, &layout);
+	draw_benches(&mut img, game, &layout, flash);
+	draw_flash(&mut img, &layout, flash);
 	draw_hud(&mut img, game, &layout, caption);
 	img.save(path.as_ref()).map_err(|e| e.to_string())
 }
@@ -231,12 +244,12 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		let lanes = paint.lane_offsets(visual::channel_lane_pitch(stripe_off));
 		let bead_lane = lanes[3].unwrap_or(0.0);
 		let bead_spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(layout.scale);
-		let bead_r = (f64::from(layout.scale) * f64::from(visual::TILE_BEAD_R) * 0.35).max(1.1);
+		let bead_r = f64::from(visual::arc_bead_radius(layout.arc_width));
+		let pinch = f64::from(visual::bead_pinch(bead_r as f32));
 		if let Some(color) = paint.bead_match {
 			let line = visual::offset_polyline(&pts, bead_lane);
-			for p in visual::bead_centers_along(&line, bead_spacing) {
-				fill_circle(img, (p[0], p[1]), bead_r, rgb_of(visual::tile_rgb(color)));
-			}
+			let fill = rgb_of(visual::tile_rgb(color));
+			fill_tris(img, &visual::bead_chain_triangles(&line, bead_spacing, bead_r, pinch), fill);
 		}
 		let n = paint.bead_from_count() + paint.bead_to_count() + paint.bead_mid_count();
 		let fan = visual::zag_center_offsets(n.max(1), bead_spacing.max(1.0));
@@ -252,9 +265,8 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			};
 			let line =
 				visual::offset_polyline(&pts, bead_lane + fan.get(i).copied().unwrap_or(0.0));
-			for p in visual::bead_centers_along(&line, bead_spacing) {
-				fill_circle(img, (p[0], p[1]), bead_r, rgb_of(visual::tile_rgb(color)));
-			}
+			let fill = rgb_of(visual::tile_rgb(color));
+			fill_tris(img, &visual::bead_chain_triangles(&line, bead_spacing, bead_r, pinch), fill);
 			i += 1;
 		}
 	}
@@ -476,7 +488,12 @@ fn draw_marks(
 	);
 }
 
-fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
+fn draw_benches(
+	img: &mut RgbaImage,
+	game: &Game,
+	layout: &ViewLayout,
+	flash: Option<&CaptureFlash>,
+) {
 	for player in [Player::Two, Player::One] {
 		let deck = game.deck_slots(player);
 		let n = deck.len();
@@ -487,7 +504,12 @@ fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let r = f64::from(layout.bench_tile_radius);
 			match slot {
 				DeckSlot::Empty => draw_solid_token(img, c, r, player),
-				DeckSlot::Live(tile) => draw_tile(img, c, r, *tile),
+				DeckSlot::Live(tile) => {
+					draw_tile(img, c, r, *tile);
+					if flash.is_some_and(|f| f.highlights_tile(tile.id, CaptureDest::Bench)) {
+						draw_capture_glow(img, c, r);
+					}
+				}
 				DeckSlot::Spent(_) => {}
 			}
 		}
@@ -502,8 +524,35 @@ fn draw_benches(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 			let c = (f64::from(q[0]), f64::from(q[1]));
 			let r = f64::from(layout.bench_tile_radius);
 			draw_solid_token(img, c, r, player);
+			if let BudgetToken::Captured(tile) = tokens[i] {
+				if flash.is_some_and(|f| f.highlights_tile(tile.id, CaptureDest::Tokens)) {
+					draw_capture_glow(img, c, r);
+				}
+			}
 		}
 	}
+}
+
+fn draw_flash(img: &mut RgbaImage, layout: &ViewLayout, flash: Option<&CaptureFlash>) {
+	let Some(flash) = flash else {
+		return;
+	};
+	if flash.is_empty() {
+		return;
+	}
+	let n = flash.tiles.len();
+	let r = f64::from(layout.capture_flash_radius());
+	for (i, tile) in flash.tiles.iter().enumerate() {
+		let p = layout.capture_flash_pos(i, n);
+		let q = layout.world_to_image(p);
+		draw_tile(img, (f64::from(q[0]), f64::from(q[1])), r, *tile);
+	}
+}
+
+fn draw_capture_glow(img: &mut RgbaImage, c: (f64, f64), r: f64) {
+	let scale = (r / f64::from(visual::PREV_TILE_RADIUS_PX)).max(0.4);
+	stroke_circle(img, c, r + 2.4 * scale, rgb_of(visual::CAPTURE_GLOW_INNER_RGB), 1.6 * scale);
+	stroke_circle(img, c, r + 4.6 * scale, rgb_of(visual::CAPTURE_GLOW_RGB), 2.2 * scale);
 }
 
 fn draw_hud(img: &mut RgbaImage, game: &Game, layout: &ViewLayout, caption: &str) {
@@ -526,6 +575,9 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(tile.owner)));
 	let primary = rgb_of(visual::tile_rgb(tile.primary()));
 	let draw = visual::TileRingDraw::for_radius(r as f32);
+	let marks = visual::capture_mark_count(tile);
+	let notch = visual::tile_ring_notch(marks);
+	let down = visual::CAPTURE_DOWN_IMAGE;
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
 		if tile.stroke_is_braid(k) {
@@ -537,30 +589,57 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			let width =
 				f64::from(if tile.stroke_is_zag(k) { draw.zag_stroke } else { draw.stroke });
 			if tile.stroke_is_zag(k) {
-				let zig = visual::zigzag_circle(
+				let zig = visual::zigzag_arc(
 					[c.0, c.1],
 					rr,
 					f64::from(draw.zag_amp),
 					draw.zag_teeth,
-					draw.zag_samples,
+					down,
+					notch,
 				);
 				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
 			} else if tile.stroke_is_bead(k) {
 				let bead_r = f64::from(draw.bead_r);
-				for p in visual::bead_ring_centers([c.0, c.1], rr, draw.bead_count) {
-					fill_circle(img, (p[0], p[1]), bead_r, rgb_of(visual::tile_rgb(color)));
+				let pinch = f64::from(visual::bead_pinch(draw.bead_r));
+				let fill = rgb_of(visual::tile_rgb(color));
+				let rim =
+					visual::tile_ring_arc([c.0, c.1], rr, down, notch, visual::TILE_BEAD_SAMPLES);
+				fill_tris(
+					img,
+					&visual::bead_chain_arc(
+						[c.0, c.1],
+						rr,
+						draw.bead_count,
+						bead_r,
+						pinch,
+						visual::TILE_BEAD_SAMPLES,
+						down,
+						notch,
+					),
+					fill,
+				);
+				for p in [rim.first(), rim.last()].into_iter().flatten() {
+					fill_circle(img, (p[0], p[1]), pinch, fill);
 				}
 			} else {
-				stroke_circle(img, c, rr, rgb_of(visual::tile_rgb(color)), width);
+				let rim = visual::tile_ring_arc(
+					[c.0, c.1],
+					rr,
+					down,
+					notch,
+					visual::TILE_RING_ARC_SAMPLES,
+				);
+				stroke_polyline(img, &rim, rgb_of(visual::tile_rgb(color)), width);
 			}
 		}
 	}
 	if tile.braid_ring_count() >= 2 {
 		let rr = f64::from(draw.ring_radius(r as f32, 0));
 		if rr > 4.0 * f64::from(draw.scale) {
-			let rim = visual::circle_polyline([c.0, c.1], rr, draw.braid_samples);
+			let rim = visual::tile_ring_arc([c.0, c.1], rr, down, notch, draw.braid_samples);
 			let amp = f64::from(draw.braid_amp);
-			let turns = visual::tile_braid_turns(rr);
+			let sweep = 2.0 * std::f64::consts::PI - f64::from(notch);
+			let turns = visual::tile_braid_turns(rr) * sweep / (2.0 * std::f64::consts::PI);
 			let w = f64::from(draw.braid_stroke);
 			let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
 			let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
@@ -579,24 +658,17 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			}
 		}
 	}
-	let marks = visual::capture_mark_count(tile);
-	let dot_r = f64::from(draw.dot_r);
 	for i in 0..marks {
-		let dx = f64::from(draw.capture_mark_dx(i, marks));
-		let center = (c.0 + dx, c.1);
-		match tile.capture {
-			crate::game::CaptureMark::Dot => fill_circle(img, center, dot_r, primary),
-			crate::game::CaptureMark::Triangle => {
-				let pts = visual::capture_triangle([center.0 as f32, center.1 as f32], draw.dot_r);
-				fill_triangle(
-					img,
-					(f64::from(pts[0][0]), f64::from(pts[0][1])),
-					(f64::from(pts[1][0]), f64::from(pts[1][1])),
-					(f64::from(pts[2][0]), f64::from(pts[2][1])),
-					primary,
-				);
-			}
-		}
+		let triangle = matches!(tile.capture, crate::game::CaptureMark::Triangle);
+		let poly = draw.capture_mark_poly(
+			[c.0 as f32, c.1 as f32],
+			r as f32,
+			i,
+			marks,
+			visual::CAPTURE_DOWN_IMAGE,
+			triangle,
+		);
+		fill_polygon(img, &poly, primary);
 	}
 }
 
@@ -646,6 +718,22 @@ fn put(img: &mut RgbaImage, x: i32, y: i32, color: Rgba<u8>, a: f64) {
 	blend(&mut img.get_pixel_mut(x as u32, y as u32), color, a);
 }
 
+fn fill_polygon(img: &mut RgbaImage, pts: &[[f32; 2]], color: Rgba<u8>) {
+	fill_tris(img, &visual::polygon_triangles(pts), color);
+}
+
+fn fill_tris(img: &mut RgbaImage, tris: &[[[f32; 2]; 3]], color: Rgba<u8>) {
+	for tri in tris {
+		fill_triangle(
+			img,
+			(f64::from(tri[0][0]), f64::from(tri[0][1])),
+			(f64::from(tri[1][0]), f64::from(tri[1][1])),
+			(f64::from(tri[2][0]), f64::from(tri[2][1])),
+			color,
+		);
+	}
+}
+
 fn fill_triangle(
 	img: &mut RgbaImage,
 	a: (f64, f64),
@@ -668,6 +756,10 @@ fn fill_triangle(
 			let w0 = ((b.0 - px) * (c.1 - py) - (c.0 - px) * (b.1 - py)) / area;
 			let w1 = ((c.0 - px) * (a.1 - py) - (a.0 - px) * (c.1 - py)) / area;
 			let w2 = 1.0 - w0 - w1;
+			if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+				put(img, x, y, color, 1.0);
+				continue;
+			}
 			let d = (-w0).max(-w1).max(-w2);
 			let alpha = (0.55 - d * 8.0).clamp(0.0, 1.0);
 			if alpha > 0.0 {
@@ -822,13 +914,22 @@ mod tests {
 		let img = image::open(&path).unwrap().to_rgba8();
 		let layout = ViewLayout::from_window_with_deck(w as f32, h as f32, 11);
 		let p = layout.world_to_image(layout.bench_pos(Player::One, 10, 11));
-		let px = img.get_pixel(p[0] as u32, p[1] as u32);
 		let fill = visual::rgb8(visual::owner_fill_rgb(Player::One));
+		let tile = slots[10].tile().expect("last opening slot is a live tile");
+		let draw = visual::TileRingDraw::for_radius(layout.bench_tile_radius);
+		let mark = draw.capture_mark_pos(
+			p,
+			layout.bench_tile_radius,
+			0,
+			visual::capture_mark_count(tile),
+			visual::CAPTURE_DOWN_IMAGE,
+		);
+		let px = img.get_pixel(mark[0] as u32, mark[1] as u32);
 		assert!(
 			!channel_near(px[0], fill[0], 18)
 				|| !channel_near(px[1], fill[1], 18)
 				|| !channel_near(px[2], fill[2], 18),
-			"last deck slot should be a live tile, not a blank face, got {px:?}"
+			"last deck slot should show a capture mark in the ring notch, not a blank face, got {px:?}"
 		);
 	}
 
@@ -990,15 +1091,137 @@ mod tests {
 	}
 
 	#[test]
+	fn capture_marks_leave_the_tile_center_empty() {
+		use crate::game::Player;
+		use crate::visual::{self, ViewLayout};
+		let game = crate::visual::demo_zag_tile();
+		let w = 1280u32;
+		let h = 800u32;
+		let path = std::env::temp_dir().join("apa-kan-edge-marks.png");
+		write_png_sized(&game, &path, "edge marks", w, h).unwrap();
+		let img = image::open(&path).unwrap().to_rgba8();
+		let layout =
+			ViewLayout::from_window_with_deck(w as f32, h as f32, game.rules().bag_size as usize);
+		let (id, tile) = game.tiles().next().expect("zag tile");
+		let p = layout.board_to_image(game.board().position(id));
+		let px = img.get_pixel(p[0] as u32, p[1] as u32);
+		let fill = visual::rgb8(visual::owner_fill_rgb(Player::One));
+		assert!(
+			channel_near(px[0], fill[0], 28)
+				&& channel_near(px[1], fill[1], 28)
+				&& channel_near(px[2], fill[2], 28),
+			"tile center must stay empty for artwork, fill {fill:?} got {px:?}"
+		);
+		let draw = visual::TileRingDraw::for_radius(layout.tile_radius);
+		let mark = draw.capture_mark_pos(
+			p,
+			layout.tile_radius,
+			0,
+			visual::capture_mark_count(tile),
+			visual::CAPTURE_DOWN_IMAGE,
+		);
+		assert!(
+			mark[1] > p[1] + layout.tile_radius * 0.4,
+			"PNG mark sits toward the bottom of the tile"
+		);
+		assert!(
+			mark[1] < p[1] + layout.tile_radius,
+			"PNG mark must stay inside the tile, not hang below it"
+		);
+	}
+
+	#[test]
+	fn bead_pinches_stay_inked_at_board_scale() {
+		use crate::game::TileColor;
+		use crate::visual::{self, ViewLayout};
+		let layout = ViewLayout::from_window(1280.0, 800.0);
+		let peak = f64::from(visual::arc_bead_radius(layout.arc_width));
+		let pinch = f64::from(visual::bead_pinch(visual::arc_bead_radius(layout.arc_width)));
+		let period = visual::ARC_BEAD_SPACING_UNITS * f64::from(layout.scale);
+		let y = 24.5;
+		let pts: Vec<[f64; 2]> = (0..=220).map(|i| [f64::from(i), y]).collect();
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img = image::RgbaImage::from_pixel(240, 48, rgba(bg[0], bg[1], bg[2], 255));
+		fill_tris(
+			&mut img,
+			&visual::bead_chain_triangles(&pts, period, peak, pinch),
+			rgb_of(visual::tile_rgb(TileColor::Orange)),
+		);
+		for k in 1..=8 {
+			let x = (period * f64::from(k)).round() as u32;
+			let px = img.get_pixel(x, 24);
+			assert!(
+				px[0] > 80,
+				"pinch {k} at x={x} must stay connected at board scale, pixel={px:?} peak={peak:.2} pinch={pinch:.2}"
+			);
+		}
+	}
+
+	#[test]
+	fn last_capture_flash_paints_between_the_stacks() {
+		use crate::game::CaptureDest;
+		use crate::visual::{self, ViewLayout};
+		let (game, flash) = visual::demo_midgame_capture_flash(CaptureDest::Tokens);
+		assert!(!flash.is_empty());
+		let w = 1280u32;
+		let h = 800u32;
+		let path = std::env::temp_dir().join("apa-kan-capture-flash.png");
+		write_png_view_flash(&game, &path, "flash", w, h, None, Some(&flash)).unwrap();
+		let img = image::open(&path).unwrap().to_rgba8();
+		let layout =
+			ViewLayout::from_window_with_deck(w as f32, h as f32, game.rules().bag_size as usize);
+		let p = layout.world_to_image(layout.capture_flash_pos(0, flash.tiles.len()));
+		let px = img.get_pixel(p[0] as u32, p[1] as u32);
+		let bg = visual::rgb8(visual::BG_RGB);
+		assert!(
+			!channel_near(px[0], bg[0], 12)
+				|| !channel_near(px[1], bg[1], 12)
+				|| !channel_near(px[2], bg[2], 12),
+			"freeze-frame tile should not be the background, got {px:?}"
+		);
+		let glow = visual::rgb8(visual::CAPTURE_GLOW_RGB);
+		let tokens = game.budget_tokens(crate::game::Player::One);
+		let n = tokens.len();
+		let mut found_glow = false;
+		for i in 0..n {
+			if let crate::game::BudgetToken::Captured(tile) = tokens[i] {
+				if flash.contains_id(tile.id) {
+					let q = layout.world_to_image(layout.budget_stack_pos(
+						crate::game::Player::One,
+						i,
+						n,
+					));
+					let r = layout.bench_tile_radius;
+					for extra in [3.0, 4.0, 5.0, 6.0, 7.0] {
+						let gx = (q[0] + r + extra).clamp(0.0, w as f32 - 1.0) as u32;
+						let gy = q[1].clamp(0.0, h as f32 - 1.0) as u32;
+						let gpx = img.get_pixel(gx, gy);
+						if channel_near(gpx[0], glow[0], 48)
+							&& channel_near(gpx[1], glow[1], 60)
+							&& channel_near(gpx[2], glow[2], 60)
+						{
+							found_glow = true;
+						}
+					}
+				}
+			}
+		}
+		assert!(found_glow, "triangle-capture landing should glow on the token stack");
+	}
+
+	#[test]
 	fn dump_hitch_and_zag_artifacts() {
 		let dir = std::path::Path::new("/opt/cursor/artifacts");
 		if !dir.is_dir() {
 			return;
 		}
-		use crate::game::{RingType, RuleSet, TileColor, ZagMismatchCount};
+		use crate::game::{
+			CaptureDest, CaptureMark, Player, RingType, RuleSet, TileColor, ZagMismatchCount,
+		};
 		use crate::visual::{
-			demo_center_inner_pair, demo_hop_turn, demo_left_cluster, demo_midgame, demo_pair,
-			demo_pair_with, demo_typed_pair, demo_typed_tile, demo_zag_tile,
+			demo_center_inner_pair, demo_hop_turn, demo_left_cluster, demo_midgame,
+			demo_midgame_capture_flash, demo_pair, demo_pair_with, demo_typed_pair,
+			demo_typed_tile, demo_zag_color_exclusion_board, demo_zag_tile,
 		};
 		let board = demo_midgame();
 		write_png_sized(
@@ -1315,7 +1538,7 @@ mod tests {
 				2,
 			),
 			dir.join("zag_and_normal_mismatch_same_edge.png"),
-			"zag + normal match lanes (orange normal in the zag tile)",
+			"zag hit plus hitch: orange zag is not a match for the orange normal",
 			48.0,
 		);
 		write_cropped(
@@ -1339,7 +1562,7 @@ mod tests {
 		write_cropped(
 			&demo_pair(&[(TileColor::Orange, true)], 1, &[(TileColor::Orange, false)], 1),
 			dir.join("lane_zag_plus_normal.png"),
-			"zag + normal match lanes (same color nets 0)",
+			"zag hit plus hitch: same-color zag is not a match for the normal",
 			48.0,
 		);
 		write_cropped(
@@ -1421,7 +1644,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_braid_failed_plus_lanes.png"),
-			"failed braid plus normal match and zag lanes",
+			"failed braid plus hitch and zag lanes",
 			48.0,
 		);
 		write_cropped(
@@ -1436,7 +1659,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_bead_bomb_vs_braid.png"),
-			"bead lane: unmatched orange beads bomb a non-matching braid",
+			"bead lane: unmatched orange bead-chain bombs a non-matching braid",
 			48.0,
 		);
 		write_cropped(
@@ -1447,7 +1670,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_bead_match.png"),
-			"bead match: one dotted match plus the orange normal highway",
+			"bead match: connected bead chain plus the orange normal highway",
 			48.0,
 		);
 		write_png_sized(
@@ -1475,6 +1698,256 @@ mod tests {
 			1280,
 			800,
 		)
+		.unwrap();
+		let (flash_game, token_flash) = demo_midgame_capture_flash(CaptureDest::Tokens);
+		write_png_view_flash(
+			&flash_game,
+			dir.join("capture_flash_tokens.png"),
+			"freeze-frame of last captures between the token stacks",
+			1280,
+			800,
+			None,
+			Some(&token_flash),
+		)
+		.unwrap();
+		let (flash_game, bench_flash) = demo_midgame_capture_flash(CaptureDest::Bench);
+		write_png_view_flash(
+			&flash_game,
+			dir.join("capture_flash_bench.png"),
+			"dot-capture landing glow on the mover bench",
+			1280,
+			800,
+			None,
+			Some(&bench_flash),
+		)
+		.unwrap();
+		write_cropped(
+			&demo_zag_tile(),
+			dir.join("edge_capture_marks.png"),
+			"dot/triangle marks in the bottom ring notch",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 2),
+			dir.join("bead_ring_tile.png"),
+			"tile bead ring as a connected bead chain",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_tile(
+				&[(TileColor::Blue, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+				2,
+			),
+			dir.join("double_blue_bead_tile.png"),
+			"two concentric same-color bead rings stay distinguishable",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Blue, RingType::Bead)],
+				1,
+				&[
+					(TileColor::Teal, RingType::Normal),
+					(TileColor::Orange, RingType::Normal),
+					(TileColor::Blue, RingType::Zag),
+				],
+				3,
+			),
+			dir.join("one_blue_bead_vs_teal_orange_blue_zag.png"),
+			"1 blue bead vs teal+orange+blue zag: unmatched bead + hitch + zag",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 3),
+			dir.join("bead_and_plate_tile.png"),
+			"connected bead chain with a bottom ring notch",
+			28.0,
+		);
+		{
+			let mut g = crate::game::Game::empty(RuleSet::default());
+			let dot = g
+				.alloc_typed_rings(
+					Player::One,
+					&[
+						(TileColor::Orange, RingType::Bead),
+						(TileColor::Blue, RingType::Zag),
+						(TileColor::Green, RingType::Normal),
+					],
+					1,
+					3,
+				)
+				.with_capture(CaptureMark::Dot);
+			let tri = g
+				.alloc_typed_rings(
+					Player::One,
+					&[
+						(TileColor::Orange, RingType::Braid),
+						(TileColor::Green, RingType::Braid),
+						(TileColor::Blue, RingType::Zag),
+					],
+					1,
+					3,
+				)
+				.with_capture(CaptureMark::Triangle);
+			write_tile_closeup(dot, dir.join("closeup_notch_dot.png"), 880, 330.0);
+			write_tile_closeup(tri, dir.join("closeup_notch_triangle.png"), 880, 330.0);
+			write_cropped(
+				&demo_typed_pair(
+					&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Zag)],
+					1,
+					&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+					1,
+				),
+				dir.join("board_ring_notch.png"),
+				"normal-zoom board crop: C-notch rings, no plate",
+				36.0,
+			);
+			write_arc_bead_closeup(
+				&demo_typed_pair(
+					&[(TileColor::Orange, RingType::Bead)],
+					1,
+					&[(TileColor::Orange, RingType::Normal)],
+					1,
+				),
+				dir.join("closeup_bead_arc.png"),
+				dir.join("bead_arc_normal_zoom.png"),
+			);
+		}
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Zag)],
+				1,
+				&[(TileColor::Orange, RingType::Normal)],
+				1,
+			),
+			dir.join("zag_vs_same_color_normal.png"),
+			"orange zag vs orange normal: hitch + zag hit, no match credit",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_pair(
+				&[(TileColor::Orange, RingType::Zag)],
+				1,
+				&[(TileColor::Orange, RingType::Bead)],
+				1,
+			),
+			dir.join("zag_vs_same_color_bead.png"),
+			"orange zag vs orange bead: unmatched bead + zag hit, no match",
+			28.0,
+		);
+		write_png_sized(
+			&demo_zag_color_exclusion_board(),
+			dir.join("zag_color_exclusion_board.png"),
+			"board: zag vs same-color normal and bead; zag-on-zag still hits",
+			1280,
+			800,
+		)
+		.unwrap();
+	}
+
+	fn write_tile_closeup(
+		tile: crate::game::Tile,
+		path: impl AsRef<std::path::Path>,
+		size: u32,
+		radius: f64,
+	) {
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img = image::RgbaImage::from_pixel(size, size, rgba(bg[0], bg[1], bg[2], 255));
+		let c = (f64::from(size) * 0.5, f64::from(size) * 0.5);
+		draw_tile(&mut img, c, radius, tile);
+		img.save(path.as_ref()).unwrap();
+	}
+
+	fn write_arc_bead_closeup(
+		game: &Game,
+		closeup: impl AsRef<std::path::Path>,
+		normal: impl AsRef<std::path::Path>,
+	) {
+		use crate::visual::ViewLayout;
+		let layout = ViewLayout::from_window(1280.0, 800.0);
+		let board = game.board();
+		let mut line: Option<Vec<[f64; 2]>> = None;
+		let mut color = crate::game::TileColor::Orange;
+		for arc in board.arcs() {
+			let paint = visual::arc_paint_with(
+				game.tile_at(arc.from),
+				game.tile_at(arc.to),
+				game.rules().zag_mismatch,
+			);
+			if !paint.has_bead_lane() {
+				continue;
+			}
+			let samples = arc.sample(visual::ARC_SAMPLES);
+			let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(&layout, *p)).collect();
+			let stripe_off = if visual::arc_touches_center(arc, board.center()) {
+				f64::from(layout.stripe_off_center)
+			} else {
+				f64::from(layout.stripe_off)
+			};
+			let lanes = paint.lane_offsets(visual::channel_lane_pitch(stripe_off));
+			let bead_lane = lanes[3].unwrap_or(0.0);
+			line = Some(visual::offset_polyline(&pts, bead_lane));
+			if let Some(c) = paint.bead_match {
+				color = c;
+			} else if let Some(c) = paint.beads_from.iter().copied().flatten().next() {
+				color = c;
+			}
+			break;
+		}
+		let pts = line.expect("bead arc for close-up");
+		let minx = pts.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+		let maxx = pts.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+		let miny = pts.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+		let maxy = pts.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+		let bw = (maxx - minx).max(1.0);
+		let bh = (maxy - miny).max(1.0);
+		let mag = (920.0 / bw).min(380.0 / bh);
+		let pad = 36.0;
+		let w = (bw * mag + 2.0 * pad).ceil() as u32;
+		let h = (bh * mag + 2.0 * pad).ceil() as u32;
+		let mapped: Vec<[f64; 2]> = pts
+			.iter()
+			.map(|p| [(p[0] - minx) * mag + pad, (p[1] - miny) * mag + pad])
+			.collect();
+		let peak = f64::from(visual::arc_bead_radius(layout.arc_width)) * mag;
+		let pinch = f64::from(visual::bead_pinch(visual::arc_bead_radius(layout.arc_width))) * mag;
+		let spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(layout.scale) * mag;
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img =
+			image::RgbaImage::from_pixel(w.max(8), h.max(8), rgba(bg[0], bg[1], bg[2], 255));
+		fill_tris(
+			&mut img,
+			&visual::bead_chain_triangles(&mapped, spacing, peak, pinch),
+			rgb_of(visual::tile_rgb(color)),
+		);
+		img.save(closeup.as_ref()).unwrap();
+		write_png_sized(
+			game,
+			&std::env::temp_dir().join("apa-kan-bead-arc-src.png"),
+			"bead arc",
+			1280,
+			800,
+		)
+		.unwrap();
+		let src = image::open(std::env::temp_dir().join("apa-kan-bead-arc-src.png"))
+			.unwrap()
+			.to_rgba8();
+		let pad = 18.0;
+		let nx = (minx - pad).max(0.0).floor() as u32;
+		let ny = (miny - pad).max(0.0).floor() as u32;
+		let nw =
+			((maxx + pad).min(f64::from(src.width() - 1)) - f64::from(nx)).ceil().max(8.0) as u32;
+		let nh =
+			((maxy + pad).min(f64::from(src.height() - 1)) - f64::from(ny)).ceil().max(8.0) as u32;
+		image::imageops::crop_imm(
+			&src,
+			nx,
+			ny,
+			nw.min(src.width() - nx),
+			nh.min(src.height() - ny),
+		)
+		.to_image()
+		.save(normal.as_ref())
 		.unwrap();
 	}
 

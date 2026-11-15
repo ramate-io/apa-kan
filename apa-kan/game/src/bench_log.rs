@@ -265,6 +265,11 @@ pub struct RulesLog {
 	/// omit it (unique-neighbor scoring); full replay of those is skipped.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub score_incident_arcs: Option<bool>,
+	/// Present (`true`) once normal/bead/braid matches ignore zag colors.
+	/// Older logs omit it (zag colors counted as matches); full replay of
+	/// those is skipped because capture outcomes differ.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub zag_match_non_zag: Option<bool>,
 }
 
 impl RulesLog {
@@ -306,6 +311,7 @@ impl RulesLog {
 			zag_mismatch: r.zag_mismatch.name().into(),
 			braid_fail_mismatch: Some(r.braid_fail_mismatch.name().into()),
 			score_incident_arcs: Some(true),
+			zag_match_non_zag: Some(true),
 		}
 	}
 
@@ -1258,6 +1264,7 @@ mod tests {
 		let independent_channels = logs.iter().all(|log| log.rules.braid_fail_mismatch.is_some());
 		let incident_arc_scoring =
 			logs.iter().all(|log| log.rules.score_incident_arcs == Some(true));
+		let zag_match_non_zag = logs.iter().all(|log| log.rules.zag_match_non_zag == Some(true));
 		for (i, log) in logs.iter().enumerate() {
 			assert_eq!(log.v, SCHEMA_VERSION);
 			assert_eq!(log.rules.bag_size, 11, "{rel}");
@@ -1265,7 +1272,11 @@ mod tests {
 			assert_eq!(log.search_rng_seed, search_rng_seed(log.seed));
 			assert!(!log.opening.p1_bench.is_empty());
 			assert!(!log.actions.is_empty() || log.turns == 0);
-			if !derived_weight || !independent_channels || !incident_arc_scoring {
+			if !derived_weight
+				|| !independent_channels
+				|| !incident_arc_scoring
+				|| !zag_match_non_zag
+			{
 				continue;
 			}
 			let replayed =
@@ -1366,6 +1377,11 @@ mod tests {
 	#[test]
 	fn committed_capture_modifiers_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays("benchmark_results/capture_modifiers/h2h.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_zag_color_exclusion_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/zag_color_exclusion/h2h.jsonl.gz");
 	}
 
 	#[test]

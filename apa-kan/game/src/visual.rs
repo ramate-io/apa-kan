@@ -8,8 +8,8 @@ use std::f64::consts::PI;
 
 use crate::board::{ArcEdge, Board, NodeId};
 use crate::game::{
-	selected_braid, BudgetToken, Game, GameStatus, Player, RingType, RuleSet, Tile, TileColor,
-	ZagMismatchCount, BAG_SIZE_DEFAULT,
+	selected_braid, ActionOutcome, BudgetToken, CaptureDest, Game, GameStatus, Player, RingType,
+	RuleSet, Tile, TileColor, ZagMismatchCount, BAG_SIZE_DEFAULT,
 };
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
@@ -66,16 +66,32 @@ pub const ZAG_LANE_SPACING_SCALE: f64 = 1.55;
 pub const MAX_TILE_ZAGS: usize = 3;
 /// Two-ended SUM can ink every hitting zag on both tiles (3 + 3).
 pub const MAX_EDGE_ZAGS: usize = MAX_TILE_ZAGS * 2;
-/// Small discs around a bead ring. Same slot count as zag overlays.
+/// Bead-ring slots on a tile. Same slot count as zag overlays.
 pub const MAX_TILE_BEADS: usize = 3;
 /// Unmatched bead rings on both tiles of an edge (3 + 3).
 pub const MAX_EDGE_BEADS: usize = MAX_TILE_BEADS * 2;
-/// Dots on a tile bead ring.
+/// Swells on a tile bead-chain ring.
 pub const TILE_BEAD_COUNT: u32 = 12;
-/// Bead disc radius in 22px-tile units.
-pub const TILE_BEAD_R: f32 = 1.15;
-/// Board-unit spacing between bead discs along an arc lane.
+/// Peak half-width of a tile-ring bead chain, in 22px-tile units.
+/// Modest relative to a normal ring stroke (`2.2`).
+pub const TILE_BEAD_R: f32 = 1.85;
+/// Pinch half-width as a fraction of the peak. Thin, but the strand
+/// never breaks — pinch points still touch.
+pub const BEAD_PINCH_SCALE: f32 = 0.52;
+/// Floor on pinch half-width so a connected strand covers a pixel at
+/// board scale (~25px tiles, ~3px arcs).
+pub const BEAD_PINCH_MIN: f32 = 1.15;
+/// Board-unit spacing between bead *swells* along an arc lane (peak to peak).
 pub const ARC_BEAD_SPACING_UNITS: f64 = 0.10;
+/// Arc-lane bead peak half-width as a fraction of the arc stroke. The
+/// previous `layout.scale * TILE_BEAD_R * 0.35` formula used board-pixel
+/// scale and drew ~40px blobs that swallowed the edge.
+pub const ARC_BEAD_RADIUS_SCALE: f32 = 0.78;
+/// Samples along a tile bead-chain ring so pinches stay smooth.
+pub const TILE_BEAD_SAMPLES: u32 = 192;
+/// At least this many samples per swell so a pinch is a short ribbon,
+/// not a single vanishing quad.
+pub const BEAD_SAMPLES_PER_PERIOD: f64 = 8.0;
 /// Packed unmatched **normal** colors on one half of a conflict diamond.
 pub const MAX_HITCH_COLORS: usize = 3;
 pub const ARC_SAMPLES: usize = 96;
@@ -83,16 +99,19 @@ pub const ARC_SAMPLES: usize = 96;
 pub const TILE_RING_INSET: f32 = 1.7;
 pub const TILE_RING_GAP: f32 = 3.3;
 pub const TILE_ZAG_AMP: f32 = 0.80;
-/// Tile zag stroke in 22px-tile units; 1.3× the previous 0.90, still thinner
-/// than a normal ring so concentric zags keep air inside the rim.
-pub const TILE_ZAG_STROKE: f32 = 0.90 * 1.3;
+/// Tile zag stroke in 22px-tile units. 1.3× the previous `0.90 * 1.3`, still
+/// thinner than a normal ring so concentric zags keep air inside the rim.
+/// Arc zag stroke is unchanged.
+pub const TILE_ZAG_STROKE: f32 = 0.90 * 1.3 * 1.3;
 pub const TILE_ZAG_TEETH: u32 = 16;
+/// Kept for call-site compatibility; tile zags emit `2 * teeth` sharp corners
+/// rather than a densely sampled wave.
 pub const TILE_ZAG_SAMPLES: u32 = 96;
 /// Tile-rim braid: the old conflict weave, one thread per braid slot.
 pub const TILE_BRAID_AMP: f32 = 1.6;
 /// Thinner than a zag ring so over/under threads keep visible air between them.
-/// 1.3× the previous 0.70. Arc braid stroke is unchanged.
-pub const TILE_BRAID_STROKE: f32 = 0.70 * 1.3;
+/// 1.3× the previous `0.70 * 1.3`. Arc braid stroke is unchanged.
+pub const TILE_BRAID_STROKE: f32 = 0.70 * 1.3 * 1.3;
 pub const TILE_BRAID_SAMPLES: u32 = 128;
 /// Tile-rim weave period: half the arc conflict period (~2× frequency).
 pub const TILE_BRAID_TURN_UNITS: f64 = BRAID_TURN_UNITS * 0.5;
@@ -116,6 +135,8 @@ pub const Z_TILE: f32 = 2.0;
 pub const Z_TILE_RING: f32 = 2.15;
 pub const Z_TILE_DOT: f32 = 2.3;
 pub const Z_HIGHLIGHT: f32 = 3.0;
+/// Last-move capture freeze-frame in the left gutter, above board arcs.
+pub const Z_FLASH: f32 = 2.35;
 pub const Z_MARKER: f32 = 4.0;
 /// Budget-token stack sits above tile rims. Later discs (higher index, toward
 /// the board) must have fill **and** rim above the previous disc, or Bevy's
@@ -162,12 +183,98 @@ pub const NODE_RGB: [f32; 3] = [0.75, 0.75, 0.75];
 pub const CENTER_RGB: [f32; 3] = [0.85, 0.85, 0.85];
 pub const HIGHLIGHT_RGB: [f32; 3] = [0.95, 0.85, 0.25];
 pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
+/// Amber outline on a tile that just landed (token stack or bench) after
+/// a capture. Distinct from selection gold.
+pub const CAPTURE_GLOW_RGB: [f32; 3] = [1.00, 0.72, 0.28];
+pub const CAPTURE_GLOW_INNER_RGB: [f32; 3] = [0.99, 0.94, 0.82];
 /// Rim on a blank budget token so dark P2 blanks stay visible.
 pub const BLANK_TOKEN_RIM_RGB: [f32; 3] = [0.55, 0.56, 0.58];
+/// Bottom notch in a 1-mark tile ring (~64°). Rings are a C opening down.
+pub const TILE_RING_NOTCH_1: f32 = 64.0 * std::f32::consts::PI / 180.0;
+/// Notch for 2 marks (~72°).
+pub const TILE_RING_NOTCH_2: f32 = 72.0 * std::f32::consts::PI / 180.0;
+/// Notch for 3 marks (~80°), wide enough that marks do not overlap the ends.
+pub const TILE_RING_NOTCH_3: f32 = 80.0 * std::f32::consts::PI / 180.0;
+/// Samples along an open tile-ring arc.
+pub const TILE_RING_ARC_SAMPLES: u32 = 96;
+/// Samples around a capture-dot warped through tile polar coordinates.
+pub const TILE_MARK_DOT_SAMPLES: u32 = 28;
+/// Samples along each triangle edge so the sides follow the tile arc.
+pub const TILE_MARK_TRI_EDGE_SAMPLES: u32 = 10;
 
 /// Unusable surplus or unfilled blanks: opaque owner-fill face, rim only.
 pub fn budget_slot_is_blank_face(token: &BudgetToken, index: usize, usable: usize) -> bool {
 	index >= usable || matches!(token, BudgetToken::Blank)
+}
+
+/// Visual-only snapshot of captures from the last applied action. Not part of
+/// game rules: UI and the PNG renderer keep this beside `Game`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureFlash {
+	pub mover: Player,
+	pub dest: Option<CaptureDest>,
+	/// Bench dest: tiles with mover ownership (the flip onto the hand).
+	/// Tokens dest: original owner on the stored tile; the stack itself is
+	/// the mover's.
+	pub tiles: Vec<Tile>,
+}
+
+impl CaptureFlash {
+	pub fn empty() -> Self {
+		Self { mover: Player::One, dest: None, tiles: Vec::new() }
+	}
+
+	pub fn from_outcome(outcome: &ActionOutcome) -> Self {
+		if outcome.removals.is_empty() {
+			return Self::empty();
+		}
+		let dest = outcome.removals.first().map(|r| r.dest);
+		Self {
+			mover: outcome.player,
+			dest,
+			tiles: outcome
+				.removals
+				.iter()
+				.map(|r| {
+					let mut t = r.tile;
+					if r.dest == CaptureDest::Bench {
+						t.owner = outcome.player;
+					}
+					t
+				})
+				.collect(),
+		}
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.tiles.is_empty()
+	}
+
+	pub fn contains_id(&self, id: u32) -> bool {
+		self.tiles.iter().any(|t| t.id == id)
+	}
+
+	pub fn highlights_dest(&self, dest: CaptureDest) -> bool {
+		self.dest == Some(dest) && !self.tiles.is_empty()
+	}
+
+	pub fn highlights_tile(&self, id: u32, dest: CaptureDest) -> bool {
+		self.highlights_dest(dest) && self.contains_id(id)
+	}
+}
+
+/// Peak half-width of a bead chain on an arc lane, in pixels.
+pub fn arc_bead_radius(arc_width: f32) -> f32 {
+	(arc_width * ARC_BEAD_RADIUS_SCALE).max(1.15)
+}
+
+/// Pinch half-width of a bead chain. Stays positive so swells connect, but
+/// never thicker than the peak (tiny freeze-frame tiles would otherwise
+/// invert swell and pinch and merge concentric bead rings).
+pub fn bead_pinch(half_w: f32) -> f32 {
+	let peak_cap = (half_w * 0.85).max(0.2);
+	let floor = BEAD_PINCH_MIN.min(peak_cap);
+	(half_w * BEAD_PINCH_SCALE).max(floor).min(peak_cap)
 }
 
 /// Usable budget, or `usable+surplus` when tokens exceed the remaining deck.
@@ -378,13 +485,13 @@ pub fn shared_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 }
 
 /// Unique colors that score a normal-channel match: a normal-ring color of
-/// either tile that appears among the other tile's colors (any type).
+/// either tile that appears among the other tile's non-zag colors.
 pub fn matched_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 	let mut out = [None; 2];
 	let mut n = 0usize;
 	for (src, dst) in [(a, b), (b, a)] {
 		for (i, &c) in src.ring_colors().iter().enumerate() {
-			if !src.ring_type[i].is_normal() || !dst.has_color(c) {
+			if !src.ring_type[i].is_normal() || !dst.has_non_zag_color(c) {
 				continue;
 			}
 			if !out.contains(&Some(c)) && n < 2 {
@@ -527,7 +634,7 @@ pub fn tile_bead_strokes(tile: Tile) -> [Option<TileColor>; MAX_TILE_BEADS] {
 
 fn unmatched_bead_colors(tile: Tile, other: Tile) -> impl Iterator<Item = TileColor> {
 	(0..tile.ring_strokes()).filter_map(move |k| {
-		if tile.stroke_is_bead(k) && !other.has_color(tile.stroke_color(k)) {
+		if tile.stroke_is_bead(k) && !other.has_non_zag_color(tile.stroke_color(k)) {
 			Some(tile.stroke_color(k))
 		} else {
 			None
@@ -538,7 +645,7 @@ fn unmatched_bead_colors(tile: Tile, other: Tile) -> impl Iterator<Item = TileCo
 fn first_matched_bead_color(a: Tile, b: Tile) -> Option<TileColor> {
 	for (src, dst) in [(a, b), (b, a)] {
 		for k in 0..src.ring_strokes() {
-			if src.stroke_is_bead(k) && dst.has_color(src.stroke_color(k)) {
+			if src.stroke_is_bead(k) && dst.has_non_zag_color(src.stroke_color(k)) {
 				return Some(src.stroke_color(k));
 			}
 		}
@@ -766,17 +873,19 @@ pub struct TileRingDraw {
 	pub braid_samples: u32,
 	pub bead_r: f32,
 	pub bead_count: u32,
-	pub dot_r: f32,
-	pub dot_spread: f32,
 }
 
 impl TileRingDraw {
 	pub fn for_radius(radius: f32) -> Self {
 		let scale = radius / PREV_TILE_RADIUS_PX;
+		let gap = TILE_RING_GAP * scale;
+		let peak = (TILE_BEAD_R * scale).max(0.7);
+		// Two concentric bead chains must leave air between peaks.
+		let fit = (gap * 0.42).max(0.55);
 		Self {
 			scale,
 			inset: TILE_RING_INSET * scale,
-			gap: TILE_RING_GAP * scale,
+			gap,
 			stroke: (2.2 * scale).max(1.6),
 			zag_amp: (TILE_ZAG_AMP * scale).max(0.6),
 			zag_stroke: (TILE_ZAG_STROKE * scale).max(0.5),
@@ -785,10 +894,8 @@ impl TileRingDraw {
 			braid_amp: (TILE_BRAID_AMP * scale).max(0.4),
 			braid_stroke: (TILE_BRAID_STROKE * scale).max(0.28),
 			braid_samples: TILE_BRAID_SAMPLES,
-			bead_r: (TILE_BEAD_R * scale).max(0.7),
+			bead_r: peak.min(fit),
 			bead_count: TILE_BEAD_COUNT,
-			dot_r: (2.6 * scale).max(1.8),
-			dot_spread: 7.0 * scale,
 		}
 	}
 
@@ -796,21 +903,179 @@ impl TileRingDraw {
 		tile_radius - self.inset - f32::from(k) * self.gap
 	}
 
-	pub fn capture_mark_dx(self, i: u8, count: u8) -> f32 {
-		let start = -self.dot_spread * (f32::from(count) - 1.0) / 2.0;
-		start + f32::from(i) * self.dot_spread
+	/// Capture-mark radius sized to the bottom notch for `count` marks (1–3).
+	pub fn capture_mark_r(self, tile_radius: f32, count: u8) -> f32 {
+		let notch = tile_ring_notch(count);
+		let rho = self.ring_radius(tile_radius, 0).max(tile_radius * 0.55);
+		let slot = rho * notch / f32::from(count.max(1));
+		let k = match count {
+			0 | 1 => 0.22,
+			2 => 0.18,
+			_ => 0.15,
+		};
+		(slot * k).max(2.35 * self.scale.max(0.4))
+	}
+
+	/// Polar frame of capture mark `i`: tile center, angle, and radius.
+	/// Marks sit in the bottom ring-notch, on the outermost ring's circle.
+	pub fn capture_mark_frame(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		i: u8,
+		count: u8,
+		down: [f32; 2],
+	) -> Option<([f32; 2], f32, f32)> {
+		let n = count.max(1);
+		let notch = tile_ring_notch(n);
+		let mid = down_angle(down);
+		let half = notch * 0.5;
+		let mark_r = self.capture_mark_r(tile_radius, n);
+		let rho_track = self.ring_radius(tile_radius, 0).max(tile_radius * 0.55);
+		let rho = (rho_track - mark_r * 0.12)
+			.min(tile_radius - mark_r * 1.05)
+			.max(tile_radius * 0.45);
+		let pad = (mark_r / rho.max(1e-4)) + 0.08;
+		let usable = (half - pad).max(0.0);
+		let t = if n == 1 { 0.0 } else { -0.5 + f32::from(i) / f32::from(n - 1) };
+		let theta = mid + usable * 2.0 * t;
+		Some((tile_center, theta, rho))
+	}
+
+	pub fn capture_mark_pos(
+		self,
+		center: [f32; 2],
+		tile_radius: f32,
+		i: u8,
+		count: u8,
+		down: [f32; 2],
+	) -> [f32; 2] {
+		match self.capture_mark_frame(center, tile_radius, i, count, down) {
+			Some((origin, theta, rho)) => polar_point(origin, theta, rho),
+			None => center,
+		}
+	}
+
+	/// Dot or triangle built in tile polar coordinates so the shape
+	/// follows the ring's tangent and normal.
+	pub fn capture_mark_poly(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		i: u8,
+		count: u8,
+		down: [f32; 2],
+		triangle: bool,
+	) -> Vec<[f32; 2]> {
+		let Some((origin, theta, rho)) =
+			self.capture_mark_frame(tile_center, tile_radius, i, count, down)
+		else {
+			return Vec::new();
+		};
+		let r = self.capture_mark_r(tile_radius, count);
+		if triangle {
+			capture_triangle_on_arc(origin, theta, rho, r)
+		} else {
+			capture_dot_on_arc(origin, theta, rho, r)
+		}
 	}
 }
 
-/// Equilateral-ish triangle pointing up, sized like a filled circle of radius `r`.
-pub fn capture_triangle(center: [f32; 2], r: f32) -> [[f32; 2]; 3] {
+/// Screen-down in Bevy world coordinates (+Y up).
+pub const CAPTURE_DOWN_BEVY: [f32; 2] = [0.0, -1.0];
+/// Screen-down in PNG image coordinates (+Y down).
+pub const CAPTURE_DOWN_IMAGE: [f32; 2] = [0.0, 1.0];
+
+/// Bottom notch width so rings open like a C. Wider for more marks.
+pub fn tile_ring_notch(count: u8) -> f32 {
+	match count.max(1) {
+		1 => TILE_RING_NOTCH_1,
+		2 => TILE_RING_NOTCH_2,
+		_ => TILE_RING_NOTCH_3,
+	}
+}
+
+pub fn down_angle(down: [f32; 2]) -> f32 {
+	down[1].atan2(down[0])
+}
+
+#[cfg(test)]
+fn ang_dist(a: f32, b: f32) -> f32 {
+	use std::f32::consts::PI;
+	let mut d = (b - a).abs();
+	if d > PI {
+		d = 2.0 * PI - d;
+	}
+	d
+}
+
+fn polar_point(origin: [f32; 2], theta: f32, rho: f32) -> [f32; 2] {
+	[origin[0] + rho * theta.cos(), origin[1] + rho * theta.sin()]
+}
+
+/// `(s, n)` is arc-length along the tangent and signed radius from the
+/// tile center. Mapping through polar coords bends the shape with the ring.
+fn polar_local_to_world(origin: [f32; 2], theta: f32, rho: f32, s: f32, n: f32) -> [f32; 2] {
+	let th = theta + s / rho.max(1e-4);
+	polar_point(origin, th, (rho + n).max(0.05))
+}
+
+fn capture_dot_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
+	use std::f32::consts::TAU;
+	let n = TILE_MARK_DOT_SAMPLES.max(8);
+	(0..n)
+		.map(|i| {
+			let a = TAU * i as f32 / n as f32;
+			polar_local_to_world(origin, theta, rho, r * a.cos(), r * a.sin())
+		})
+		.collect()
+}
+
+fn capture_triangle_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
 	let h = r * 1.25;
 	let w = r * 1.15;
-	[
-		[center[0], center[1] + h],
-		[center[0] - w, center[1] - h * 0.55],
-		[center[0] + w, center[1] - h * 0.55],
-	]
+	// Tip along −radial (toward the tile center, the inward arc normal).
+	let verts = [[0.0, -h], [-w, h * 0.55], [w, h * 0.55]];
+	let m = TILE_MARK_TRI_EDGE_SAMPLES.max(4);
+	let mut out = Vec::with_capacity((m as usize) * 3);
+	for i in 0..3 {
+		let a = verts[i];
+		let b = verts[(i + 1) % 3];
+		for k in 0..m {
+			let t = k as f32 / m as f32;
+			out.push(polar_local_to_world(
+				origin,
+				theta,
+				rho,
+				a[0] + (b[0] - a[0]) * t,
+				a[1] + (b[1] - a[1]) * t,
+			));
+		}
+	}
+	out
+}
+
+/// Fan triangulation of a simple closed polygon (bead spindle, etc.).
+pub fn polygon_triangles(pts: &[[f32; 2]]) -> Vec<[[f32; 2]; 3]> {
+	if pts.len() < 3 {
+		return Vec::new();
+	}
+	let mut cx = 0.0;
+	let mut cy = 0.0;
+	for p in pts {
+		cx += p[0];
+		cy += p[1];
+	}
+	let n = pts.len() as f32;
+	let c = [cx / n, cy / n];
+	let mut out = Vec::with_capacity(pts.len());
+	for w in pts.windows(2) {
+		out.push([c, w[0], w[1]]);
+	}
+	if let (Some(&first), Some(&last)) = (pts.first(), pts.last()) {
+		out.push([c, last, first]);
+	}
+	out
 }
 
 pub fn capture_mark_count(tile: Tile) -> u8 {
@@ -1031,6 +1296,29 @@ impl ViewLayout {
 		[x, y + toward_board * i * step]
 	}
 
+	/// Mini-tile radius for the last-move capture freeze-frame.
+	pub fn capture_flash_radius(&self) -> f32 {
+		(self.bench_tile_radius * 0.55).max(9.0)
+	}
+
+	/// Column of freeze-frame tiles between the two budget-token stacks.
+	pub fn capture_flash_pos(&self, index: usize, count: usize) -> [f32; 2] {
+		let r = self.capture_flash_radius();
+		let x = self.budget_stack_pos(Player::One, 0, 1)[0];
+		let top = self.p2_bench_y - self.bench_tile_radius - BOARD_GAP_PX;
+		let bot = self.p1_bench_y + self.bench_tile_radius + BOARD_GAP_PX;
+		let mid = 0.5 * (top + bot);
+		let n = count.max(1) as f32;
+		let gap = (r * 0.28).max(3.0);
+		let mut step = 2.0 * r + gap;
+		let avail = (top - bot).abs();
+		if n > 1.0 && step * (n - 1.0) > (avail - 2.0 * r).max(step) {
+			step = ((avail - 2.0 * r) / (n - 1.0)).max(2.0 * r * 0.52);
+		}
+		let total = step * (n - 1.0);
+		[x, mid + total / 2.0 - index as f32 * step]
+	}
+
 	pub fn board_top(&self) -> f32 {
 		self.origin_y + self.visual_radius()
 	}
@@ -1219,23 +1507,50 @@ pub fn hitch_clearance(hitch_r: f64) -> f64 {
 }
 
 /// Tight zigzag that traces `centerline`, optionally shifted alongside it.
+/// Vertices sit only at triangle-wave peaks and troughs so the stroke is a
+/// sharp, straight-segment zigzag rather than a sampled smooth wave.
 pub fn zigzag_alongside(
 	centerline: &[[f64; 2]],
 	side_offset: f64,
 	amplitude: f64,
 	teeth: f64,
 ) -> Vec<[f64; 2]> {
-	let mut out = Vec::with_capacity(centerline.len());
-	let n = centerline.len();
+	if centerline.len() < 2 {
+		return centerline.to_vec();
+	}
+	let corners = ((teeth * 2.0).round() as usize).max(2);
+	let n = corners + 1;
+	let mut out = Vec::with_capacity(n);
 	for i in 0..n {
-		let t = if n <= 1 { 0.0 } else { i as f64 / (n - 1) as f64 };
-		let wave = triangle_wave(t * teeth);
-		let (nx, ny) = polyline_normal(centerline, i);
-		let p = centerline[i];
+		let t = i as f64 / (n - 1) as f64;
+		let (p, (nx, ny)) = polyline_sample(centerline, t);
+		let wave = if i % 2 == 0 { -1.0 } else { 1.0 };
 		let off = side_offset + amplitude * wave;
 		out.push([p[0] + nx * off, p[1] + ny * off]);
 	}
 	out
+}
+
+/// Point and path-normal at normalized arc-length `t` in \[0, 1\].
+fn polyline_sample(pts: &[[f64; 2]], t: f64) -> ([f64; 2], (f64, f64)) {
+	if pts.len() < 2 {
+		return (pts.first().copied().unwrap_or([0.0, 0.0]), (0.0, 1.0));
+	}
+	let total = polyline_length(pts);
+	if total <= 1e-12 {
+		return (pts[0], polyline_normal(pts, 0));
+	}
+	let mut remain = t.clamp(0.0, 1.0) * total;
+	let last = pts.len() - 2;
+	for i in 0..=last {
+		let d = polyline_dist(pts[i], pts[i + 1]);
+		if remain <= d || i == last {
+			let u = if d <= 1e-12 { 0.0 } else { (remain / d).clamp(0.0, 1.0) };
+			return (polyline_lerp(pts[i], pts[i + 1], u), polyline_normal(pts, i));
+		}
+		remain -= d;
+	}
+	(pts[pts.len() - 1], polyline_normal(pts, pts.len() - 1))
 }
 
 pub fn zigzag_polyline(centerline: &[[f64; 2]], amplitude: f64, teeth: f64) -> Vec<[f64; 2]> {
@@ -1262,6 +1577,64 @@ pub fn circle_polyline(center: [f64; 2], radius: f64, samples: u32) -> Vec<[f64;
 	for i in 0..=n {
 		let ang = f64::from(i) / f64::from(n) * 2.0 * PI;
 		pts.push([center[0] + radius * ang.cos(), center[1] + radius * ang.sin()]);
+	}
+	pts
+}
+
+/// Open circular arc, `sweep` radians from `from` (not closed).
+pub fn circle_arc_polyline(
+	center: [f64; 2],
+	radius: f64,
+	from: f64,
+	sweep: f64,
+	samples: u32,
+) -> Vec<[f64; 2]> {
+	let n = samples.max(8);
+	(0..=n)
+		.map(|i| {
+			let t = f64::from(i) / f64::from(n);
+			let ang = from + sweep * t;
+			[center[0] + radius * ang.cos(), center[1] + radius * ang.sin()]
+		})
+		.collect()
+}
+
+/// C-shaped ring: the full circle minus a bottom notch around `down`.
+pub fn tile_ring_arc(
+	center: [f64; 2],
+	radius: f64,
+	down: [f32; 2],
+	notch: f32,
+	samples: u32,
+) -> Vec<[f64; 2]> {
+	let mid = f64::from(down_angle(down));
+	let half = f64::from(notch) * 0.5;
+	circle_arc_polyline(center, radius, mid + half, 2.0 * PI - f64::from(notch), samples)
+}
+
+/// Angular zag along the same C-shaped ring. Starts and ends on a trough
+/// so the stroke finishes on the ring track.
+pub fn zigzag_arc(
+	center: [f64; 2],
+	radius: f64,
+	amplitude: f64,
+	teeth: u32,
+	down: [f32; 2],
+	notch: f32,
+) -> Vec<[f64; 2]> {
+	let mid = f64::from(down_angle(down));
+	let half = f64::from(notch) * 0.5;
+	let from = mid + half;
+	let sweep = 2.0 * PI - f64::from(notch);
+	let n_teeth = ((f64::from(teeth.max(2)) * sweep / (2.0 * PI)).round() as u32).max(3);
+	let n = n_teeth * 2;
+	let mut pts = Vec::with_capacity(n as usize + 1);
+	for i in 0..=n {
+		let t = f64::from(i) / f64::from(n);
+		let ang = from + sweep * t;
+		let wave = if i % 2 == 0 { -1.0 } else { 1.0 };
+		let rr = radius + amplitude * wave;
+		pts.push([center[0] + rr * ang.cos(), center[1] + rr * ang.sin()]);
 	}
 	pts
 }
@@ -1321,41 +1694,165 @@ pub fn for_braid_segments(
 	}
 }
 
-/// Centers of the small discs that make a bead ring on a tile.
-pub fn bead_ring_centers(center: [f64; 2], radius: f64, n: u32) -> Vec<[f64; 2]> {
-	let n = n.max(3);
-	(0..n)
-		.map(|i| {
-			let ang = f64::from(i) / f64::from(n) * 2.0 * PI;
-			[center[0] + radius * ang.cos(), center[1] + radius * ang.sin()]
-		})
-		.collect()
+/// Half-width of the bead chain at arc-length `s`. Cosine swell: pinch at
+/// phase 0, peak at π. Never hits zero, so the strand stays connected.
+pub fn bead_half_width_at(s: f64, period: f64, half_w: f64, pinch: f64) -> f64 {
+	let phase = 2.0 * PI * (s / period.max(1e-9));
+	pinch + (half_w - pinch) * 0.5 * (1.0 - phase.cos())
 }
 
-/// Bead disc centers along a polyline, spaced by `spacing` (board or pixel units).
-pub fn bead_centers_along(pts: &[[f64; 2]], spacing: f64) -> Vec<[f64; 2]> {
-	if pts.len() < 2 || spacing <= 1e-9 {
-		return Vec::new();
+fn polyline_is_closed(pts: &[[f64; 2]]) -> bool {
+	if pts.len() < 3 {
+		return false;
 	}
+	let a = pts[0];
+	let b = pts[pts.len() - 1];
+	let dx = a[0] - b[0];
+	let dy = a[1] - b[1];
+	dx * dx + dy * dy < 1e-8
+}
+
+fn densify_polyline(pts: &[[f64; 2]], max_seg: f64) -> Vec<[f64; 2]> {
+	if pts.len() < 2 || max_seg <= 1e-9 {
+		return pts.to_vec();
+	}
+	let closed = polyline_is_closed(pts);
+	let last = if closed { pts.len() - 1 } else { pts.len() };
 	let mut out = Vec::new();
-	let mut acc = 0.0;
-	let mut next = 0.0;
-	out.push(pts[0]);
-	for w in pts.windows(2) {
-		let dx = w[1][0] - w[0][0];
-		let dy = w[1][1] - w[0][1];
+	let count = if closed { last } else { last.saturating_sub(1) };
+	for i in 0..count {
+		let a = pts[i];
+		let b = if closed && i + 1 == last { pts[0] } else { pts[i + 1] };
+		out.push(a);
+		let dx = b[0] - a[0];
+		let dy = b[1] - a[1];
 		let seg = (dx * dx + dy * dy).sqrt();
-		if seg <= 1e-12 {
-			continue;
+		let steps = (seg / max_seg).floor().max(1.0) as i32;
+		for k in 1..steps {
+			let t = f64::from(k) / f64::from(steps);
+			out.push([a[0] + dx * t, a[1] + dy * t]);
 		}
-		while next + spacing <= acc + seg + 1e-12 {
-			next += spacing;
-			let t = ((next - acc) / seg).clamp(0.0, 1.0);
-			out.push([w[0][0] + dx * t, w[0][1] + dy * t]);
-		}
-		acc += seg;
+	}
+	if closed {
+		out.push(pts[0]);
+	} else if let Some(&p) = pts.last() {
+		out.push(p);
 	}
 	out
+}
+
+fn bead_chain_sides(
+	pts: &[[f64; 2]],
+	period: f64,
+	half_w: f64,
+	pinch: f64,
+) -> Option<(Vec<[f32; 2]>, Vec<[f32; 2]>, bool)> {
+	if pts.len() < 2 || half_w <= 0.0 || pinch < 0.0 {
+		return None;
+	}
+	let max_seg = (period / BEAD_SAMPLES_PER_PERIOD).max(0.55);
+	let pts = densify_polyline(pts, max_seg);
+	let closed = polyline_is_closed(&pts);
+	let n = if closed { pts.len() - 1 } else { pts.len() };
+	if n < 2 {
+		return None;
+	}
+	let mut s = vec![0.0; n];
+	for i in 1..n {
+		let dx = pts[i][0] - pts[i - 1][0];
+		let dy = pts[i][1] - pts[i - 1][1];
+		s[i] = s[i - 1] + (dx * dx + dy * dy).sqrt();
+	}
+	let mut left = Vec::with_capacity(n);
+	let mut right = Vec::with_capacity(n);
+	for i in 0..n {
+		let prev = if i == 0 {
+			if closed {
+				pts[n - 1]
+			} else {
+				pts[0]
+			}
+		} else {
+			pts[i - 1]
+		};
+		let next = if i + 1 >= n {
+			if closed {
+				pts[0]
+			} else {
+				pts[i]
+			}
+		} else {
+			pts[i + 1]
+		};
+		let dx = next[0] - prev[0];
+		let dy = next[1] - prev[1];
+		let len = (dx * dx + dy * dy).sqrt();
+		let (nx, ny) = if len <= 1e-12 { (0.0, 1.0) } else { (-dy / len, dx / len) };
+		let w = bead_half_width_at(s[i], period, half_w, pinch);
+		let p = pts[i];
+		left.push([(p[0] + nx * w) as f32, (p[1] + ny * w) as f32]);
+		right.push([(p[0] - nx * w) as f32, (p[1] - ny * w) as f32]);
+	}
+	Some((left, right, closed))
+}
+
+/// Triangle strip for a connected bead-chain ribbon along `pts`.
+pub fn bead_chain_triangles(
+	pts: &[[f64; 2]],
+	period: f64,
+	half_w: f64,
+	pinch: f64,
+) -> Vec<[[f32; 2]; 3]> {
+	let Some((left, right, closed)) = bead_chain_sides(pts, period, half_w, pinch) else {
+		return Vec::new();
+	};
+	let n = left.len();
+	if n < 2 {
+		return Vec::new();
+	}
+	let segs = if closed { n } else { n - 1 };
+	let mut out = Vec::with_capacity(segs * 2);
+	for i in 0..segs {
+		let j = (i + 1) % n;
+		out.push([left[i], left[j], right[i]]);
+		out.push([left[j], right[j], right[i]]);
+	}
+	out
+}
+
+/// Closed bead-chain ring: `n_beads` swells around `radius`, pinch points
+/// still connected.
+pub fn bead_chain_ring(
+	center: [f64; 2],
+	radius: f64,
+	n_beads: u32,
+	half_w: f64,
+	pinch: f64,
+	samples: u32,
+) -> Vec<[[f32; 2]; 3]> {
+	let n_beads = n_beads.max(3);
+	let rim = circle_polyline(center, radius, samples.max(TILE_BEAD_SAMPLES));
+	let period = 2.0 * PI * radius / f64::from(n_beads);
+	bead_chain_triangles(&rim, period, half_w, pinch)
+}
+
+/// Open bead-chain along the C-shaped ring. Period is chosen so both ends
+/// land on a pinch.
+pub fn bead_chain_arc(
+	center: [f64; 2],
+	radius: f64,
+	n_beads: u32,
+	half_w: f64,
+	pinch: f64,
+	samples: u32,
+	down: [f32; 2],
+	notch: f32,
+) -> Vec<[[f32; 2]; 3]> {
+	let sweep = 2.0 * PI - f64::from(notch);
+	let rim = tile_ring_arc(center, radius, down, notch, samples.max(TILE_BEAD_SAMPLES));
+	let n_beads = ((f64::from(n_beads.max(3)) * sweep / (2.0 * PI)).round() as u32).max(6);
+	let period = radius * sweep / f64::from(n_beads);
+	bead_chain_triangles(&rim, period, half_w, pinch)
 }
 
 pub fn zigzag_circle(
@@ -1363,27 +1860,18 @@ pub fn zigzag_circle(
 	radius: f64,
 	amplitude: f64,
 	teeth: u32,
-	samples: u32,
+	_samples: u32,
 ) -> Vec<[f64; 2]> {
-	let n = samples.max(8);
+	let n = teeth.max(2) * 2;
 	let mut pts = Vec::with_capacity(n as usize + 1);
 	for i in 0..=n {
 		let t = f64::from(i) / f64::from(n);
 		let ang = t * 2.0 * PI;
-		let wave = triangle_wave(t * f64::from(teeth));
+		let wave = if i % 2 == 0 { -1.0 } else { 1.0 };
 		let rr = radius + amplitude * wave;
 		pts.push([center[0] + rr * ang.cos(), center[1] + rr * ang.sin()]);
 	}
 	pts
-}
-
-fn triangle_wave(t: f64) -> f64 {
-	let phase = t.rem_euclid(1.0);
-	if phase < 0.5 {
-		4.0 * phase - 1.0
-	} else {
-		3.0 - 4.0 * phase
-	}
 }
 
 pub fn arc_length(arc: &ArcEdge) -> f64 {
@@ -1880,6 +2368,23 @@ pub fn demo_midgame() -> Game {
 	game
 }
 
+/// Mid-game board plus a freeze-frame of captured tiles (visual fixture).
+pub fn demo_midgame_capture_flash(dest: CaptureDest) -> (Game, CaptureFlash) {
+	let game = demo_midgame();
+	let tiles = match dest {
+		CaptureDest::Tokens => game
+			.budget_tokens(Player::One)
+			.iter()
+			.filter_map(|t| match t {
+				BudgetToken::Captured(tile) => Some(*tile),
+				BudgetToken::Blank => None,
+			})
+			.collect(),
+		CaptureDest::Bench => game.bench(Player::One).iter().copied().take(2).collect(),
+	};
+	(game, CaptureFlash { mover: Player::One, dest: Some(dest), tiles })
+}
+
 /// Two neighboring tiles only, for close-up screenshots of a single edge.
 pub fn demo_pair(
 	a_kinds: &[(TileColor, bool)],
@@ -1922,6 +2427,31 @@ pub fn demo_center_inner_pair(
 	let u = game.alloc_typed_rings(Player::Two, b_parts, b_weight, 1);
 	game.place_tile(center, t);
 	game.place_tile(inner, u);
+	game
+}
+
+/// Orange zag at a spawn, same-color normal and bead on two neighbors.
+pub fn demo_zag_color_exclusion_board() -> Game {
+	let mut game = Game::empty(RuleSet::default());
+	let spawn = game.board().spawns()[0];
+	let nbs = game.board().neighbors(spawn).to_vec();
+	let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+	let normal =
+		game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Normal)], 1, 1);
+	let bead = game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Bead)], 1, 1);
+	game.place_tile(spawn, zag);
+	if let Some(&nb0) = nbs.first() {
+		game.place_tile(nb0, normal);
+	}
+	if let Some(&nb1) = nbs.get(1) {
+		game.place_tile(nb1, bead);
+	}
+	if let Some((a, b)) = empty_neighbor_pair(&game) {
+		let z0 = game.alloc_typed_rings(Player::One, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		let z1 = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		game.place_tile(a, z0);
+		game.place_tile(b, z1);
+	}
 	game
 }
 
@@ -2168,6 +2698,27 @@ mod tests {
 	}
 
 	#[test]
+	fn tile_bead_rings_keep_concentric_gap() {
+		for radius in [9.0_f32, 22.0, 33.0] {
+			let d = TileRingDraw::for_radius(radius);
+			assert!(
+				2.0 * d.bead_r < d.gap,
+				"two bead peaks must not swallow each other: bead_r={} gap={} at r={}",
+				d.bead_r,
+				d.gap,
+				radius
+			);
+			let pinch = bead_pinch(d.bead_r);
+			assert!(
+				pinch < d.bead_r,
+				"pinch must stay thinner than the peak: pinch={pinch} bead_r={} at r={}",
+				d.bead_r,
+				radius
+			);
+		}
+	}
+
+	#[test]
 	fn zag_on_zag_is_decided_zag_only_not_a_match() {
 		let rings = [(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
 		let a = Tile::with_ring_kinds(1, Player::One, &rings, 3, 1);
@@ -2390,8 +2941,12 @@ mod tests {
 		);
 		assert!((TILE_BRAID_TURN_UNITS - BRAID_TURN_UNITS * 0.5).abs() < 1e-12);
 		assert!(
-			(TILE_BRAID_STROKE - 0.70 * 1.3).abs() < 1e-6,
+			(TILE_BRAID_STROKE - 0.70 * 1.3 * 1.3).abs() < 1e-6,
 			"tile-rim braid threads stay thinner than a zag ring"
+		);
+		assert!(
+			(TILE_ZAG_STROKE - 0.90 * 1.3 * 1.3).abs() < 1e-6,
+			"tile zag stroke is 1.3× the previous 0.90*1.3"
 		);
 		assert!(TILE_BRAID_STROKE < TILE_ZAG_STROKE);
 		assert_eq!(
@@ -2653,10 +3208,9 @@ mod tests {
 		let orange_zag = Tile::with_ring_kinds(6, Player::One, &[(TileColor::Orange, true)], 1, 1);
 		let orange_normal = Tile::mono(7, Player::Two, TileColor::Orange, 1, 1);
 		let paint = arc_paint(Some(orange_zag), Some(orange_normal));
-		assert_eq!(
-			paint.body,
-			ArcBody::Solid { color: TileColor::Orange, thick: true },
-			"normal match and zag mismatch occupy independent lanes"
+		assert!(
+			matches!(paint.body, ArcBody::Hitch { .. }),
+			"zag color is not a match for the orange normal"
 		);
 		assert_eq!(paint.zag_mid_count(), 1, "one-sided hit still sits on the zag lane");
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
@@ -2769,10 +3323,9 @@ mod tests {
 		let green_zag_only =
 			Tile::with_ring_kinds(20, Player::One, &[(TileColor::Green, true)], 1, 1);
 		let paint = arc_paint(Some(green_zag_only), Some(two_green));
-		assert_eq!(
-			paint.body,
-			ArcBody::Solid { color: TileColor::Green, thick: true },
-			"holder's green normal matches on its own lane"
+		assert!(
+			matches!(paint.body, ArcBody::Hitch { .. }),
+			"holder's green normal does not match a green zag"
 		);
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Green));
 		assert_eq!(paint.zag_mid_count(), 1);
@@ -2793,10 +3346,9 @@ mod tests {
 			1,
 		);
 		let paint = arc_paint(Some(mixed), Some(other));
-		assert_eq!(
-			paint.body,
-			ArcBody::Solid { color: TileColor::Orange, thick: true },
-			"other's orange normal is in mixed's colors: normal match lane plus zag"
+		assert!(
+			matches!(paint.body, ArcBody::Hitch { .. }),
+			"other's orange normal does not match mixed's orange zag"
 		);
 		assert_eq!(paint.zags_mid[0], Some(TileColor::Orange));
 		assert_eq!(paint.zag_mid_count(), 1);
@@ -3378,19 +3930,234 @@ mod tests {
 		let pts: Vec<[f64; 2]> = (0..80).map(|i| [i as f64 * 0.05, 0.0]).collect();
 		let amp = 0.04;
 		let zig = zigzag_alongside(&pts, 0.0, amp, 4.0);
-		assert_eq!(zig.len(), pts.len());
+		assert_eq!(zig.len(), 9, "4 teeth → 8 corners + close");
 		let max_dev = zig.iter().map(|p| p[1].abs()).fold(0.0, f64::max);
 		assert!(max_dev <= amp + 1e-9, "zag departed from the path: {max_dev} > {amp}");
 		assert!(zig.iter().any(|p| p[1].abs() > amp * 0.5));
+		assert!(
+			zig.windows(3).any(|w| {
+				let v1 = [w[1][0] - w[0][0], w[1][1] - w[0][1]];
+				let v2 = [w[2][0] - w[1][0], w[2][1] - w[1][1]];
+				let cr = v1[0] * v2[1] - v1[1] * v2[0];
+				cr.abs() > 1e-6
+			}),
+			"sharp zags must turn at corners, not stay collinear"
+		);
 		let side = zigzag_alongside(&pts, 0.2, amp, 4.0);
 		let mean_y: f64 = side.iter().map(|p| p[1]).sum::<f64>() / side.len() as f64;
 		assert!(mean_y > 0.1, "alongside zag should sit beside the path, got mean {mean_y}");
 		let ring = zigzag_circle([0.0, 0.0], 10.0, 0.4, 16, 96);
-		assert!(ring.len() > 8);
+		assert_eq!(ring.len(), 33, "16 teeth → 32 corners plus close");
 		assert!((ring[0][0] - ring[ring.len() - 1][0]).abs() < 1e-9);
 		let rs: Vec<f64> = ring.iter().map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt()).collect();
 		let rmin = rs.iter().copied().fold(f64::INFINITY, f64::min);
 		let rmax = rs.iter().copied().fold(0.0, f64::max);
 		assert!(rmax - rmin <= 0.8 + 1e-6, "tile zag amplitude too wide: {}", rmax - rmin);
+		let turn = (0..ring.len() - 2)
+			.map(|i| {
+				let a = ring[i];
+				let b = ring[i + 1];
+				let c = ring[i + 2];
+				let v1 = [b[0] - a[0], b[1] - a[1]];
+				let v2 = [c[0] - b[0], c[1] - b[1]];
+				(v1[0] * v2[1] - v1[1] * v2[0]).abs()
+			})
+			.fold(0.0, f64::max);
+		assert!(turn > 0.5, "tile zag corners must be angular, max cross={turn}");
+	}
+
+	#[test]
+	fn capture_marks_sit_in_the_bottom_ring_notch() {
+		let r = 22.0;
+		let draw = TileRingDraw::for_radius(r);
+		let tile = [0.0, 0.0];
+		for n in 1..=3u8 {
+			let notch = tile_ring_notch(n);
+			assert!(notch > 1.0 && notch < 1.6, "notch should be ~60–80°, n={n} rad={notch}");
+			let ring = tile_ring_arc([0.0, 0.0], 10.0, CAPTURE_DOWN_BEVY, notch, 64);
+			assert!(ring.len() > 8, "open ring needs the C span");
+			let first = ring.first().copied().unwrap();
+			let last = ring.last().copied().unwrap();
+			let close = (first[0] - last[0]).hypot(first[1] - last[1]);
+			assert!(close > 4.0, "C-ring must stay open at the bottom, gap={close}");
+			let mid = down_angle(CAPTURE_DOWN_BEVY);
+			for p in &ring {
+				let ang = (p[1] as f32).atan2(p[0] as f32);
+				assert!(
+					ang_dist(ang, mid) > notch * 0.5 - 0.08,
+					"ring must not enter the notch, p={p:?}"
+				);
+			}
+			let mark_r = draw.capture_mark_r(r, n);
+			assert!(
+				mark_r > 2.2,
+				"marks must be clearly bigger than the old 1.45, n={n} r={mark_r}"
+			);
+			for i in 0..n {
+				let p = draw.capture_mark_pos(tile, r, i, n, CAPTURE_DOWN_BEVY);
+				let dist = p[0].hypot(p[1]);
+				assert!(dist < r - mark_r * 0.1, "mark {i}/{n} must stay inside the tile, {p:?}");
+				assert!(dist > r * 0.4, "mark {i}/{n} must leave the center free, dist={dist}");
+				let ang = p[1].atan2(p[0]);
+				assert!(
+					ang_dist(ang, mid) < notch * 0.5,
+					"mark {i}/{n} must sit in the notch, ang={ang}"
+				);
+				let poly = draw.capture_mark_poly(tile, r, i, n, CAPTURE_DOWN_BEVY, true);
+				assert!(poly.len() > 6, "warped triangle is a sampled polygon");
+				let tip = poly[0];
+				let d_tip = tip[0].hypot(tip[1]);
+				assert!(d_tip < dist, "triangle tip must point toward the tile center");
+			}
+		}
+		let side = draw.capture_mark_poly(tile, r, 0, 3, CAPTURE_DOWN_BEVY, true);
+		let frame = draw.capture_mark_frame(tile, r, 0, 3, CAPTURE_DOWN_BEVY).unwrap();
+		let tip = side[0];
+		let vx = tip[0] - frame.0[0];
+		let vy = tip[1] - frame.0[1];
+		let down = CAPTURE_DOWN_BEVY;
+		let cross = vx * down[1] - vy * down[0];
+		assert!(
+			cross.abs() > 1.0,
+			"a side triangle must rotate with the arc, not point straight up, cross={cross}"
+		);
+		let layout = ViewLayout::from_window(1280.0, 800.0);
+		let bead = arc_bead_radius(layout.arc_width);
+		assert!(
+			bead < layout.arc_width * 0.8,
+			"arc beads must sit on the stroke (bead={bead} arc={})",
+			layout.arc_width
+		);
+		assert!(bead < 4.0, "arc beads must not dominate the edge, got {bead}");
+		let pinch = bead_pinch(bead);
+		assert!(
+			pinch >= 1.1,
+			"pinch must cover a pixel at board scale so the chain stays connected, pinch={pinch}"
+		);
+		assert!(pinch < bead, "pinch must be thinner than the swell");
+	}
+
+	#[test]
+	fn bead_chain_swells_but_never_breaks() {
+		let half_w = 1.5;
+		let pinch = 0.5;
+		let period = 8.0;
+		let min = bead_half_width_at(0.0, period, half_w, pinch);
+		let max = bead_half_width_at(period * 0.5, period, half_w, pinch);
+		assert!((min - pinch).abs() < 1e-9, "phase 0 is a pinch, min={min}");
+		assert!((max - half_w).abs() < 1e-9, "phase π is a swell, max={max}");
+		let line: Vec<[f64; 2]> = (0..=40).map(|i| [f64::from(i), 0.0]).collect();
+		let tris = bead_chain_triangles(&line, period, half_w, pinch);
+		assert!(tris.len() > 16, "connected chain is one ribbon, not separate spindles");
+		let mut min_w = f64::INFINITY;
+		let mut max_w = 0.0f64;
+		for t in 0..40 {
+			let w = bead_half_width_at(f64::from(t), period, half_w, pinch);
+			min_w = min_w.min(w);
+			max_w = max_w.max(w);
+		}
+		assert!(min_w >= pinch - 1e-9, "pinch points still have width, min_w={min_w}");
+		assert!(max_w <= half_w + 1e-9);
+		let ring = bead_chain_ring([0.0, 0.0], 10.0, 12, half_w, pinch, 96);
+		assert!(ring.len() > 24, "tile ring is one closed chain");
+	}
+
+	#[test]
+	fn capture_flash_column_sits_between_token_stacks() {
+		let layout = ViewLayout::from_window(1280.0, 800.0);
+		let p1 = layout.budget_stack_pos(Player::One, 0, 7);
+		let p2 = layout.budget_stack_pos(Player::Two, 0, 7);
+		let n = 3usize;
+		for i in 0..n {
+			let p = layout.capture_flash_pos(i, n);
+			assert!(
+				p[1] < p2[1] && p[1] > p1[1],
+				"flash[{i}] must sit between stacks, p={p:?} p1={p1:?} p2={p2:?}"
+			);
+			assert!((p[0] - p1[0]).abs() < 1.0, "flash x should match the stack gutter");
+			assert!(
+				p[0] + layout.capture_flash_radius()
+					< layout.origin_x - layout.visual_radius() * 0.15,
+				"flash must stay in the left gutter, not on the board"
+			);
+		}
+		let a = layout.capture_flash_pos(0, n);
+		let b = layout.capture_flash_pos(1, n);
+		assert!(a[1] > b[1], "flash column reads top-to-bottom");
+	}
+
+	#[test]
+	fn capture_flash_clears_when_the_next_move_has_no_removals() {
+		assert!(CaptureFlash::empty().is_empty());
+		assert!(!CaptureFlash::empty().highlights_dest(CaptureDest::Tokens));
+	}
+
+	#[test]
+	fn capture_flash_bench_dest_flips_opponent_tiles_to_mover() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let opp = game.alloc_tile(Player::Two, TileColor::Green, 2, 1);
+		let opp_id = opp.id;
+		game.place_tile(spawn, opp);
+		let holder = game.alloc_tile(Player::One, TileColor::Orange, 1, 1);
+		game.place_tile(nbs[1], holder);
+		let mover = game
+			.alloc_tile(Player::One, TileColor::Blue, 3, 1)
+			.with_capture(crate::game::CaptureMark::Dot);
+		game.place_tile(from, mover);
+		game.set_current(Player::One);
+		let outcome = game.apply(crate::game::Action::Move { from, to: land }).unwrap();
+		assert!(outcome
+			.removals
+			.iter()
+			.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two));
+		let flash = CaptureFlash::from_outcome(&outcome);
+		assert_eq!(flash.dest, Some(CaptureDest::Bench));
+		assert!(
+			flash.tiles.iter().any(|t| t.id == opp_id && t.owner == Player::One),
+			"freeze-frame must show the flip: {:?}",
+			flash.tiles
+		);
+		assert!(flash.highlights_tile(opp_id, CaptureDest::Bench));
+	}
+
+	#[test]
+	fn capture_flash_token_dest_keeps_original_owner_on_stored_tile() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let opp = game.alloc_tile(Player::Two, TileColor::Green, 2, 1);
+		let opp_id = opp.id;
+		game.place_tile(spawn, opp);
+		let holder = game.alloc_tile(Player::One, TileColor::Orange, 1, 1);
+		game.place_tile(nbs[1], holder);
+		let mover = game
+			.alloc_tile(Player::One, TileColor::Blue, 3, 1)
+			.with_capture(crate::game::CaptureMark::Triangle);
+		game.place_tile(from, mover);
+		game.set_current(Player::One);
+		let outcome = game.apply(crate::game::Action::Move { from, to: land }).unwrap();
+		let flash = CaptureFlash::from_outcome(&outcome);
+		assert_eq!(flash.dest, Some(CaptureDest::Tokens));
+		assert!(
+			flash.tiles.iter().any(|t| t.id == opp_id && t.owner == Player::Two),
+			"token freeze-frame keeps the captured face: {:?}",
+			flash.tiles
+		);
 	}
 }

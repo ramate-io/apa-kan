@@ -216,9 +216,10 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 						s += 10;
 					}
 					let braid_hit = view.braid_size >= 2
-						&& (0..6).all(|i| other.color_counts()[i] >= view.braid_counts[i]);
+						&& (0..6)
+							.all(|i| other.non_zag_colors_multiset()[i] >= view.braid_counts[i]);
 					let bead_unmatched =
-						view.bead != 0 && (view.bead & other.color_mask()) != view.bead;
+						view.bead != 0 && (view.bead & other.non_zag_color_mask()) != view.bead;
 					if braid_hit {
 						s += 14 + i32::from(view.braid_size);
 					} else if bead_unmatched {
@@ -350,5 +351,39 @@ mod tests {
 		rules.no_moves_loses = false;
 		let game = Game::empty(rules);
 		assert_eq!(legal_search_moves(&game), vec![SearchMove::Pass]);
+	}
+
+	#[test]
+	fn apply_move_dot_capture_flips_opponent_onto_mover_bench() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let opp = game.alloc_tile(crate::game::Player::Two, crate::game::TileColor::Green, 2, 1);
+		let opp_id = opp.id;
+		game.place_tile(spawn, opp);
+		let holder =
+			game.alloc_tile(crate::game::Player::One, crate::game::TileColor::Orange, 1, 1);
+		game.place_tile(nbs[1], holder);
+		let mover = game
+			.alloc_tile(crate::game::Player::One, crate::game::TileColor::Blue, 3, 1)
+			.with_capture(CaptureMark::Dot);
+		game.place_tile(from, mover);
+		game.set_current(crate::game::Player::One);
+		let outcome = apply_move(&mut game, SearchMove::Move { from, to: land }).unwrap();
+		assert!(outcome.removals.iter().any(|r| r.tile.id == opp_id));
+		assert!(game
+			.bench(crate::game::Player::One)
+			.iter()
+			.any(|t| t.id == opp_id && t.owner == crate::game::Player::One));
+		assert!(game.deck_slots(crate::game::Player::One).iter().any(|s| s
+			.tile()
+			.is_some_and(|t| t.id == opp_id && t.owner == crate::game::Player::One)));
 	}
 }
