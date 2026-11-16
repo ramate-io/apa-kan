@@ -1,4 +1,5 @@
-//! Iterative-deepening alpha-beta with TT, killers/history, and quiescence.
+//! Iterative-deepening alpha-beta with optional TT, killers/history, LMR, PVS,
+//! and quiescence. Levers live on [`super::SearchConfig`].
 
 use std::time::Instant;
 
@@ -9,7 +10,7 @@ use crate::game::{Action, Game, Player};
 use super::eval::{evaluate, evaluate_legacy, terminal_score, WIN};
 use super::search_move::{apply_move, cheap_order, is_capture, legal_search_moves, SearchMove};
 use super::zobrist;
-use super::{count_repeats, HistoryTable, SearchLimit, SearchStats};
+use super::{count_repeats, HistoryTable, SearchConfig, SearchLimit, SearchStats};
 
 enum Stop {
 	Time(Instant),
@@ -19,6 +20,10 @@ enum Stop {
 pub const MAX_PLY: usize = 48;
 const TT_MASK: usize = (1 << 18) - 1;
 const Q_DEPTH: u8 = 4;
+/// Do not reduce the first this-many ordered moves.
+const LMR_MOVE_SKIP: usize = 3;
+/// Interior depth must be at least this before LMR applies.
+const LMR_MIN_DEPTH: u8 = 3;
 
 #[derive(Clone, Copy)]
 enum Bound {
@@ -79,16 +84,18 @@ pub struct MinimaxState {
 	pub history: HistoryTable,
 	pub last_move: Option<SearchMove>,
 	pub legacy: bool,
+	pub config: SearchConfig,
 }
 
 impl MinimaxState {
-	pub fn new() -> Self {
+	pub fn with_config(config: SearchConfig) -> Self {
 		Self {
 			tt: TranspositionTable::new(),
 			killers: [[None; 2]; MAX_PLY],
 			history: HistoryTable::new(),
 			last_move: None,
 			legacy: false,
+			config,
 		}
 	}
 }
@@ -105,6 +112,7 @@ struct Ctx<'a> {
 	path_occ: Vec<u64>,
 	last_move: Option<SearchMove>,
 	legacy: bool,
+	config: SearchConfig,
 }
 
 impl Ctx<'_> {
@@ -167,6 +175,7 @@ pub fn search(
 		path_occ: Vec::with_capacity(16),
 		last_move: state.last_move,
 		legacy: state.legacy,
+		config: state.config,
 	};
 
 	let me = game.current_player();
@@ -179,37 +188,31 @@ pub fn search(
 		}
 		ctx.abort = false;
 		let mut ordered = legal.clone();
-		order_moves(
-			game,
-			&mut ordered,
-			Some(best_move),
-			0,
-			ctx.killers,
-			ctx.history,
-			ctx.last_move,
-		);
+		order_root(&mut ctx, game, &mut ordered, Some(best_move));
 		let mut alpha = -WIN;
 		let beta = WIN;
 		let mut best = -WIN - 1;
 		let mut pick = best_move;
 		let mut completed = true;
-		for &mv in &ordered {
+		for (i, &mv) in ordered.iter().enumerate() {
 			if ctx.exhausted() {
 				completed = false;
 				break;
 			}
-			let Some(mut child) = child_pos(game, mv) else {
+			let Some((mut child, capture)) = child_pos(game, mv) else {
 				continue;
 			};
 			ctx.path.push(zobrist::hash(&child));
 			ctx.path_occ.push(zobrist::occupancy_hash(&child));
-			let mut score = score_from_mover(
+			let mut score = search_child(
 				&mut child,
 				me,
 				depth.saturating_sub(1),
-				-beta,
-				-alpha,
+				alpha,
+				beta,
 				1,
+				i,
+				capture,
 				&mut ctx,
 			);
 			ctx.path.pop();
@@ -241,10 +244,84 @@ pub fn search(
 	(action, SearchStats { depth: completed_depth, nodes: ctx.nodes, ..SearchStats::default() })
 }
 
-fn child_pos(game: &Game, mv: SearchMove) -> Option<Game> {
+/// Fixed-depth root value from the side to move. No iterative deepening,
+/// reverse-move penalty, or node abort (the budget is effectively infinite).
+/// Used to check that TT / ordering / PVS / LMR match plain alpha-beta.
+#[cfg(test)]
+fn value_at_depth(game: &Game, depth: u8, played: &[u64], config: SearchConfig) -> Option<i32> {
+	let legal = legal_search_moves(game);
+	if legal.is_empty() {
+		return terminal_score(game, game.current_player()).or(Some(0));
+	}
+	let mut state = MinimaxState::with_config(config);
+	let mut ctx = Ctx {
+		stop: Stop::Nodes(u64::MAX / 4),
+		abort: false,
+		nodes: 0,
+		tt: &mut state.tt,
+		killers: &mut state.killers,
+		history: &mut state.history,
+		played,
+		path: Vec::with_capacity(16),
+		path_occ: Vec::with_capacity(16),
+		last_move: None,
+		legacy: false,
+		config,
+	};
+	let me = game.current_player();
+	let mut ordered = legal;
+	order_root(&mut ctx, game, &mut ordered, None);
+	let mut alpha = -WIN;
+	let beta = WIN;
+	let mut best = -WIN - 1;
+	for (i, &mv) in ordered.iter().enumerate() {
+		let Some((mut child, capture)) = child_pos(game, mv) else {
+			continue;
+		};
+		ctx.path.push(zobrist::hash(&child));
+		ctx.path_occ.push(zobrist::occupancy_hash(&child));
+		let score = search_child(
+			&mut child,
+			me,
+			depth.saturating_sub(1),
+			alpha,
+			beta,
+			1,
+			i,
+			capture,
+			&mut ctx,
+		);
+		ctx.path.pop();
+		ctx.path_occ.pop();
+		if ctx.abort {
+			return None;
+		}
+		if score > best {
+			best = score;
+		}
+		if best > alpha {
+			alpha = best;
+		}
+	}
+	if best < -WIN {
+		None
+	} else {
+		Some(best)
+	}
+}
+
+fn child_pos(game: &Game, mv: SearchMove) -> Option<(Game, bool)> {
 	let mut child = game.clone();
-	apply_move(&mut child, mv).ok()?;
-	Some(child)
+	let out = apply_move(&mut child, mv).ok()?;
+	let cap = is_capture(&out, game.current_player());
+	Some((child, cap))
+}
+
+fn order_root(ctx: &mut Ctx<'_>, game: &Game, moves: &mut [SearchMove], pv: Option<SearchMove>) {
+	if !ctx.config.move_ordering {
+		return;
+	}
+	order_moves(game, moves, pv, 0, ctx.killers, ctx.history, ctx.last_move, ctx.config);
 }
 
 fn negamax(
@@ -276,43 +353,68 @@ fn negamax(
 	}
 
 	if depth == 0 {
-		return quiesce(game, alpha, beta, 0, ply, ctx);
+		if ctx.config.quiescence {
+			return quiesce(game, alpha, beta, 0, ply, ctx);
+		}
+		return eval_now(game, ctx);
 	}
 
 	let mut tt_move = None;
-	if let Some(e) = ctx.tt.probe(hash) {
-		if e.depth >= depth {
-			let sc = e.score;
-			match e.flag {
-				x if x == Bound::Exact as u8 => return sc,
-				x if x == Bound::Lower as u8 && sc >= beta => return sc,
-				x if x == Bound::Upper as u8 && sc <= alpha => return sc,
-				_ => {}
+	if ctx.config.transposition {
+		if let Some(e) = ctx.tt.probe(hash) {
+			if e.depth >= depth {
+				let sc = e.score;
+				match e.flag {
+					x if x == Bound::Exact as u8 => return sc,
+					x if x == Bound::Lower as u8 && sc >= beta => return sc,
+					x if x == Bound::Upper as u8 && sc <= alpha => return sc,
+					_ => {}
+				}
 			}
+			tt_move = SearchMove::unpack(e.kind, e.a, e.b);
 		}
-		tt_move = SearchMove::unpack(e.kind, e.a, e.b);
 	}
 
 	let mut moves = legal_search_moves(game);
 	if moves.is_empty() {
 		return eval_now(game, ctx);
 	}
-	order_moves(game, &mut moves, tt_move, ply, ctx.killers, ctx.history, ctx.last_move);
+	if ctx.config.move_ordering || tt_move.is_some() {
+		order_moves(
+			game,
+			&mut moves,
+			tt_move,
+			ply,
+			ctx.killers,
+			ctx.history,
+			ctx.last_move,
+			ctx.config,
+		);
+	}
 
 	let mut best = -WIN;
 	let mut best_mv = moves[0];
 	let original_alpha = alpha;
-	for &mv in &moves {
+	for (i, &mv) in moves.iter().enumerate() {
 		if ctx.exhausted() {
 			break;
 		}
-		let Some(mut child) = child_pos(game, mv) else {
+		let Some((mut child, capture)) = child_pos(game, mv) else {
 			continue;
 		};
 		ctx.path.push(zobrist::hash(&child));
 		ctx.path_occ.push(zobrist::occupancy_hash(&child));
-		let score =
-			score_from_mover(&mut child, me, depth.saturating_sub(1), -beta, -alpha, ply + 1, ctx);
+		let score = search_child(
+			&mut child,
+			me,
+			depth.saturating_sub(1),
+			alpha,
+			beta,
+			ply + 1,
+			i,
+			capture,
+			ctx,
+		);
 		ctx.path.pop();
 		ctx.path_occ.pop();
 		if ctx.abort {
@@ -326,13 +428,15 @@ fn negamax(
 			alpha = best;
 		}
 		if alpha >= beta {
-			store_killer(ctx.killers, ply, mv);
-			ctx.history.bump(mv, depth);
+			if ctx.config.move_ordering {
+				store_killer(ctx.killers, ply, mv);
+				ctx.history.bump(mv, depth);
+			}
 			break;
 		}
 	}
 
-	if !ctx.abort {
+	if !ctx.abort && ctx.config.transposition {
 		let flag = if best <= original_alpha {
 			Bound::Upper
 		} else if best >= beta {
@@ -343,6 +447,54 @@ fn negamax(
 		ctx.tt.store(hash, depth, best, flag, Some(best_mv));
 	}
 	best
+}
+
+/// Search `child` from `mover`'s point of view, applying LMR / PVS according
+/// to `ctx.config`. `child_depth` is the unreduced remaining depth.
+fn search_child(
+	child: &mut Game,
+	mover: Player,
+	child_depth: u8,
+	alpha: i32,
+	beta: i32,
+	ply: usize,
+	move_index: usize,
+	capture: bool,
+	ctx: &mut Ctx<'_>,
+) -> i32 {
+	if let Some(term) = terminal_score(child, mover) {
+		return term;
+	}
+
+	let in_pv = move_index == 0;
+	let mut depth = child_depth;
+	let reduce = ctx.config.lmr
+		&& !in_pv
+		&& !capture
+		&& ply > 0
+		&& child_depth >= LMR_MIN_DEPTH
+		&& move_index >= LMR_MOVE_SKIP;
+	if reduce {
+		depth = child_depth.saturating_sub(1);
+		if move_index >= 8 && child_depth >= 5 {
+			depth = child_depth.saturating_sub(2);
+		}
+	}
+
+	let (search_alpha, search_beta) =
+		if ctx.config.pvs && !in_pv { (-alpha - 1, -alpha) } else { (-beta, -alpha) };
+	let mut score = -negamax(child, depth, search_alpha, search_beta, ply, ctx);
+	if ctx.abort {
+		return score;
+	}
+
+	let reduced = depth < child_depth;
+	let needs_full =
+		(reduced && score > alpha) || (ctx.config.pvs && !in_pv && score > alpha && score < beta);
+	if needs_full && (reduced || search_alpha != -beta || search_beta != -alpha) {
+		score = -negamax(child, child_depth, -beta, -alpha, ply, ctx);
+	}
+	score
 }
 
 fn quiesce(
@@ -425,30 +577,6 @@ fn eval_now(game: &Game, ctx: &Ctx<'_>) -> i32 {
 	}
 }
 
-/// Score `child` from `mover`'s point of view.
-///
-/// Center-hold, petal-majority, and control wins are applied in `finish_turn`
-/// *before* the side-to-move flips, so the child's `current_player()` is still
-/// the winner. Insufficient-tiles losses are also set before the switch (the
-/// loser may still be to-move). Negating a terminal scored from STM would turn
-/// our own win into a loss (the recorded failure mode: vacating the center on
-/// the turn that would have completed the hold). Lockouts already switch STM
-/// to the loser, so both conventions agree there.
-fn score_from_mover(
-	child: &mut Game,
-	mover: Player,
-	depth: u8,
-	alpha: i32,
-	beta: i32,
-	ply: usize,
-	ctx: &mut Ctx<'_>,
-) -> i32 {
-	if let Some(term) = terminal_score(child, mover) {
-		return term;
-	}
-	-negamax(child, depth, alpha, beta, ply, ctx)
-}
-
 fn center_relevant(game: &Game, mv: SearchMove) -> bool {
 	let center = game.board().center();
 	match mv {
@@ -481,6 +609,56 @@ fn is_reverse(mv: SearchMove, last: Option<SearchMove>) -> bool {
 	}
 }
 
+/// Cheap capture-first hint: adjacent enemy with a mismatch lead.
+fn capture_hint(game: &Game, mv: SearchMove) -> i32 {
+	match mv {
+		SearchMove::Move { from, to } => {
+			let Some(tile) = game.tile_at(from) else {
+				return 0;
+			};
+			let mut adj = false;
+			for nb in game.board().incident_others(to) {
+				let Some(other) = game.tile_at(nb) else {
+					continue;
+				};
+				if other.owner == tile.owner {
+					continue;
+				}
+				adj = true;
+				let (matched, mismatches) = game.edge_score(tile, other);
+				if mismatches > matched {
+					return 250_000;
+				}
+			}
+			if adj {
+				120_000
+			} else {
+				0
+			}
+		}
+		SearchMove::Add { kind, node } => {
+			let me = game.current_player();
+			let mut adj = false;
+			for nb in game.board().incident_others(node) {
+				let Some(other) = game.tile_at(nb) else {
+					continue;
+				};
+				if other.owner == me {
+					continue;
+				}
+				adj = true;
+				let _ = kind;
+			}
+			if adj {
+				80_000
+			} else {
+				0
+			}
+		}
+		SearchMove::Pass => 0,
+	}
+}
+
 fn order_moves(
 	game: &Game,
 	moves: &mut [SearchMove],
@@ -489,9 +667,19 @@ fn order_moves(
 	killers: &[[Option<SearchMove>; 2]; MAX_PLY],
 	history: &HistoryTable,
 	last_move: Option<SearchMove>,
+	config: SearchConfig,
 ) {
+	if !config.move_ordering {
+		if let Some(pv) = tt_move {
+			if let Some(i) = moves.iter().position(|m| *m == pv) {
+				moves.swap(0, i);
+			}
+		}
+		return;
+	}
 	moves.sort_by_cached_key(|mv| {
 		let mut s = cheap_order(game, *mv);
+		s += capture_hint(game, *mv);
 		if Some(*mv) == tt_move {
 			s += 1_000_000;
 		}
@@ -511,4 +699,86 @@ fn order_moves(
 		s += history.get(*mv);
 		-s
 	});
+}
+
+#[cfg(test)]
+mod tests {
+	#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+	use super::*;
+	use crate::game::{Player, RuleSet, TileColor};
+	use rand::rngs::StdRng;
+	use rand::SeedableRng;
+
+	fn sample_positions() -> Vec<Game> {
+		let mut out = vec![Game::new(RuleSet::default(), 1), Game::new(RuleSet::default(), 11)];
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = true;
+		rules.center_hold_n = 3;
+		rules.no_same_piece_twice = crate::game::SamePieceTwice::Off;
+		let mut tactic = Game::empty(rules);
+		let center = tactic.board().center();
+		let from = tactic.board().neighbors(center)[0];
+		let mover = tactic.alloc_tile(Player::One, TileColor::Blue, 3, 1);
+		tactic.place_tile(from, mover);
+		let extra = tactic.alloc_tile(Player::One, TileColor::Green, 2, 1);
+		tactic.set_bench(Player::One, vec![extra]);
+		let opp = tactic.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+		tactic.set_bench(Player::Two, vec![opp]);
+		tactic.pad_above_low_value();
+		tactic.set_current(Player::One);
+		out.push(tactic);
+
+		let mut mid = Game::new(RuleSet::default(), 4);
+		let mut rng = StdRng::seed_from_u64(4);
+		for _ in 0..6 {
+			if mid.status().is_over() {
+				break;
+			}
+			let moves = legal_search_moves(&mid);
+			if moves.is_empty() {
+				break;
+			}
+			let mv = moves[rng.gen_range(0..moves.len())];
+			let _ = apply_move(&mut mid, mv);
+		}
+		out.push(mid);
+		out
+	}
+
+	fn assert_same_value(game: &Game, depth: u8, cfg: SearchConfig) {
+		let plain = value_at_depth(game, depth, &[], SearchConfig::plain())
+			.expect("plain alpha-beta completed");
+		let got = value_at_depth(game, depth, &[], cfg).expect("pruned search completed");
+		assert_eq!(
+			got,
+			plain,
+			"depth={depth} cfg={} plain={plain} got={got} legal={}",
+			cfg.label(),
+			legal_search_moves(game).len()
+		);
+	}
+
+	#[test]
+	fn tt_ordering_pvs_lmr_match_plain_alpha_beta() {
+		let tt_ord =
+			SearchConfig { move_ordering: true, transposition: true, ..SearchConfig::plain() };
+		let with_pvs = SearchConfig { pvs: true, ..tt_ord };
+		let with_lmr = SearchConfig { lmr: true, pvs: true, ..tt_ord };
+		for game in sample_positions() {
+			for depth in 1..=3u8 {
+				assert_same_value(&game, depth, tt_ord);
+				assert_same_value(&game, depth, with_pvs);
+				assert_same_value(&game, depth, with_lmr);
+			}
+		}
+	}
+
+	#[test]
+	fn enhanced_without_quiescence_matches_plain_at_depth_two() {
+		let mut cfg = SearchConfig::enhanced();
+		cfg.quiescence = false;
+		let game = Game::new(RuleSet::default(), 2);
+		assert_same_value(&game, 2, cfg);
+	}
 }

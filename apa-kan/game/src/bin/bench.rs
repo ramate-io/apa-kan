@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apa_kan::ai::{
-	self, Actor, BranchingReport, SearchLimit, Searcher, CALIBRATED_ITERS_PER_MOVE,
+	self, Actor, BranchingReport, SearchConfig, SearchLimit, Searcher, CALIBRATED_ITERS_PER_MOVE,
 	CALIBRATED_NODES_PER_MOVE,
 };
 use apa_kan::bench_log::{self, GameLog};
@@ -51,6 +51,13 @@ struct BenchConfig {
 	pairings: Option<Vec<(Actor, Actor)>>,
 	/// Archetype matchups. Default is one row from `--p1-deck`/`--p2-deck`.
 	matchups: Vec<(DeckArchetype, DeckArchetype)>,
+	search: SearchConfig,
+	p1_search: Option<SearchConfig>,
+	p2_search: Option<SearchConfig>,
+	/// Opening/midgame depth table for each search lever, then exit.
+	ablate: bool,
+	/// Time a handful of positions trying to complete this minimax ID depth.
+	ply_probe: Option<u8>,
 }
 
 fn usage() -> &'static str {
@@ -63,7 +70,15 @@ fn usage() -> &'static str {
 	                        Pass `calibrated` for the documented 1000 ms single-thread means.\n\
 	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
 	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
-	                        Each search stays single-threaded.\n\
+	                        Each search stays single-threaded unless --search-threads > 1.\n\
+	   --search-profile <enhanced|classic|plain>  Search levers (default: enhanced)\n\
+	   --search <k=v,...>   Overlay ordering|tt|lmr|pvs|quiescence|pw|heuristic-playouts|threads\n\
+	   --p1-search-profile / --p2-search-profile  Per-seat profile (default: --search-profile)\n\
+	   --p1-search / --p2-search                  Per-seat overlay\n\
+	   --search-threads <1..32>  MCTS root-parallel trees (default: 1; keep 1 for deterministic --jobs benches).\n\
+	                             Worker t is seeded with rng.gen() XOR (t+1)*golden; threads=1 draws nothing extra.\n\
+	   --ablate-search      Depth/node table for each lever on opening + short midgame, then exit\n\
+	   --ply-probe <n>      Time minimax completing ID depth n on a handful of positions, then exit\n\
 	   --calibrate          Measure nodes/iters per move at --think-ms (default 1000), jobs=1, then exit\n\
 	   --seed <u64>         Base seed (default: 1)\n\
 	   --deck-seed <u64>    Collection generation seed (default: --seed)\n\
@@ -128,6 +143,11 @@ where
 		setup: SetupConfig::default(),
 		pairings: None,
 		matchups: Vec::new(),
+		search: SearchConfig::enhanced(),
+		p1_search: None,
+		p2_search: None,
+		ablate: false,
+		ply_probe: None,
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -226,6 +246,43 @@ where
 			"--bots" => cfg.bots = parse_bots(&need("--bots", it.next())?)?,
 			"--depth-probe" => cfg.depth_probe = true,
 			"--no-depth-probe" => cfg.depth_probe = false,
+			"--search-profile" => {
+				cfg.search = SearchConfig::parse_profile(&need("--search-profile", it.next())?)?;
+			}
+			"--search" => {
+				cfg.search = cfg.search.with_spec(&need("--search", it.next())?)?;
+			}
+			"--p1-search-profile" => {
+				cfg.p1_search =
+					Some(SearchConfig::parse_profile(&need("--p1-search-profile", it.next())?)?);
+			}
+			"--p2-search-profile" => {
+				cfg.p2_search =
+					Some(SearchConfig::parse_profile(&need("--p2-search-profile", it.next())?)?);
+			}
+			"--p1-search" => {
+				let base = cfg.p1_search.unwrap_or(cfg.search);
+				cfg.p1_search = Some(base.with_spec(&need("--p1-search", it.next())?)?);
+			}
+			"--p2-search" => {
+				let base = cfg.p2_search.unwrap_or(cfg.search);
+				cfg.p2_search = Some(base.with_spec(&need("--p2-search", it.next())?)?);
+			}
+			"--search-threads" => {
+				let n = parse_u64("--search-threads", &need("--search-threads", it.next())?)?;
+				if n == 0 || n > 32 {
+					return Err("invalid --search-threads (expected 1..32)".into());
+				}
+				cfg.search = cfg.search.with_threads(n as u8);
+			}
+			"--ablate-search" => cfg.ablate = true,
+			"--ply-probe" => {
+				let n = parse_u64("--ply-probe", &need("--ply-probe", it.next())?)?;
+				if n == 0 || n > 32 {
+					return Err("invalid --ply-probe (expected 1..32)".into());
+				}
+				cfg.ply_probe = Some(n as u8);
+			}
 			"--turn-limit" => {
 				let n = parse_u64("--turn-limit", &need("--turn-limit", it.next())?)?;
 				if n == 0 {
@@ -481,9 +538,25 @@ fn on_off(v: bool) -> &'static str {
 	}
 }
 
+fn seat_search(cfg: &BenchConfig, p1: bool) -> SearchConfig {
+	let mut s = if p1 { cfg.p1_search } else { cfg.p2_search }.unwrap_or(cfg.search);
+	if s.mcts_root_threads == 1 && cfg.search.mcts_root_threads > 1 {
+		s.mcts_root_threads = cfg.search.mcts_root_threads;
+	}
+	s
+}
+
 fn run(cfg: BenchConfig) {
 	if cfg.calibrate {
 		run_calibrate(&cfg);
+		return;
+	}
+	if cfg.ablate {
+		run_ablate(&cfg);
+		return;
+	}
+	if cfg.ply_probe.is_some() {
+		run_ply_probe(&cfg);
 		return;
 	}
 	let started = Instant::now();
@@ -499,12 +572,24 @@ fn run(cfg: BenchConfig) {
 	);
 	push_branching(&mut lines, &cfg, &branching, rules.turn_limit);
 	if cfg.depth_probe {
-		probe_minimax_depths(&mut lines, rules, cfg.seed, cfg.scenario.as_ref(), cfg.setup);
+		probe_minimax_depths(
+			&mut lines,
+			rules,
+			cfg.seed,
+			cfg.scenario.as_ref(),
+			cfg.setup,
+			seat_search(&cfg, true),
+		);
 	}
 
 	lines.push(String::new());
 	lines.push(format!("# {}", cfg.label));
 	lines.push(limit_header(&cfg, rules.turn_limit));
+	lines.push(format!(
+		"# search  p1={}  p2={}",
+		seat_search(&cfg, true).label(),
+		seat_search(&cfg, false).label()
+	));
 	lines.push(format!(
 		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} dot_percent={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
@@ -589,6 +674,8 @@ fn run(cfg: BenchConfig) {
 	let scenario = cfg.scenario.clone();
 	let limit = cfg.limit;
 	let setup = cfg.setup;
+	let p1_search = seat_search(&cfg, true);
+	let p2_search = seat_search(&cfg, false);
 	let outs = run_parallel(cfg.jobs, jobs, |job| {
 		let mut job_setup = setup;
 		job_setup.p1_deck = job.p1_deck;
@@ -603,6 +690,8 @@ fn run(cfg: BenchConfig) {
 			keep_log,
 			scenario.as_ref(),
 			job_setup,
+			p1_search,
+			p2_search,
 		);
 		{
 			let _g = stdout.lock().unwrap_or_else(|e| e.into_inner());
@@ -1027,8 +1116,8 @@ fn run_calibrate(cfg: &BenchConfig) {
 				std::process::exit(1);
 			});
 		let mut rng = StdRng::seed_from_u64(bench_log::search_rng_seed(seed));
-		let mut s1 = Searcher::new();
-		let mut s2 = Searcher::new();
+		let mut s1 = Searcher::with_config(seat_search(cfg, true));
+		let mut s2 = Searcher::with_config(seat_search(cfg, false));
 		for _ in 0..moves_per {
 			if game.status().is_over() {
 				break;
@@ -1338,23 +1427,197 @@ fn probe_minimax_depths(
 	seed: u64,
 	scenario: Option<&Scenario>,
 	setup: SetupConfig,
+	search: SearchConfig,
 ) {
 	use apa_kan::ai::Searcher;
 	lines.push(String::new());
-	lines.push("# minimax iterative-deepening depth probe (opening position)".into());
+	lines.push(format!(
+		"# minimax iterative-deepening depth probe (opening position) search={}",
+		search.label()
+	));
 	let game = Game::start_with(rules, seed, scenario, setup).unwrap_or_else(|e| {
 		eprintln!("{e}");
 		std::process::exit(1);
 	});
 	for ms in [1000u64, 3000] {
 		println!("minimax depth probe {ms} ms...");
-		let mut searcher = Searcher::new();
+		let mut searcher = Searcher::with_config(search);
 		let mut rng = StdRng::seed_from_u64(seed ^ 0xDE97);
 		let _ = searcher.choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(ms));
 		let st = searcher.stats();
 		lines.push(format!("# think_ms={} completed_depth={} nodes={}", ms, st.depth, st.nodes));
 		println!("  depth={} nodes={}", st.depth, st.nodes);
 	}
+}
+
+fn ablation_profiles() -> Vec<(&'static str, SearchConfig)> {
+	let mut rows = Vec::new();
+	rows.push(("plain", SearchConfig::plain()));
+	let mut cfg = SearchConfig::plain();
+	cfg.move_ordering = true;
+	rows.push(("+ordering", cfg));
+	cfg.transposition = true;
+	rows.push(("+tt", cfg));
+	cfg.lmr = true;
+	rows.push(("+lmr", cfg));
+	cfg.pvs = true;
+	rows.push(("+pvs", cfg));
+	cfg.quiescence = true;
+	rows.push(("+quiescence", cfg));
+	rows.push(("classic", SearchConfig::classic()));
+	rows.push(("enhanced", SearchConfig::enhanced()));
+	let mut mcts_pw = SearchConfig::classic();
+	mcts_pw.mcts_progressive_widening = true;
+	rows.push(("classic+pw", mcts_pw));
+	let mut mcts_rand = SearchConfig::classic();
+	mcts_rand.mcts_heuristic_playouts = false;
+	rows.push(("classic+random_playouts", mcts_rand));
+	rows
+}
+
+fn run_ablate(cfg: &BenchConfig) {
+	let started = Instant::now();
+	let mut lines: Vec<String> = Vec::new();
+	lines.push(format!("# search ablation  {}", cfg.limit.label()));
+	lines.push(format!(
+		"# positions: opening seeds 1,2,3 and 6 greedy plies from seed 4. jobs={}",
+		cfg.jobs
+	));
+	let header =
+		"# profile  pos  mm_depth  mm_nodes  mcts_avg  mcts_max  mcts_iters  mm_ms  mcts_ms";
+	lines.push(header.into());
+	println!("{header}");
+	let mut positions = Vec::new();
+	for seed in [cfg.seed, cfg.seed.wrapping_add(1), cfg.seed.wrapping_add(2)] {
+		let game = Game::start_with(cfg.rules, seed, cfg.scenario.as_ref(), cfg.setup)
+			.unwrap_or_else(|e| {
+				eprintln!("{e}");
+				std::process::exit(1);
+			});
+		positions.push((format!("open{seed}"), game));
+	}
+	let mut mid =
+		Game::start_with(cfg.rules, cfg.seed.wrapping_add(3), cfg.scenario.as_ref(), cfg.setup)
+			.unwrap_or_else(|e| {
+				eprintln!("{e}");
+				std::process::exit(1);
+			});
+	let mut rng = StdRng::seed_from_u64(cfg.seed ^ 0xAB1A);
+	for _ in 0..6 {
+		if mid.status().is_over() {
+			break;
+		}
+		let action = ai::choose(&mid, Actor::Greedy, &mut rng, Duration::from_millis(1));
+		if mid.apply(action).is_err() {
+			break;
+		}
+	}
+	positions.push(("mid6".into(), mid));
+
+	for (name, profile) in ablation_profiles() {
+		for (pos_name, game) in &positions {
+			let mut mm = Searcher::with_config(profile);
+			let mut mcts = Searcher::with_config(profile);
+			let mut rng_mm = StdRng::seed_from_u64(cfg.seed ^ 0x11);
+			let mut rng_mc = StdRng::seed_from_u64(cfg.seed ^ 0x22);
+			let t0 = Instant::now();
+			let _ = mm.choose_with(game, Actor::Minimax, &mut rng_mm, cfg.limit);
+			let mm_ms = t0.elapsed().as_secs_f64() * 1000.0;
+			let st = mm.stats();
+			let t1 = Instant::now();
+			let _ = mcts.choose_with(game, Actor::Mcts, &mut rng_mc, cfg.limit);
+			let mcts_ms = t1.elapsed().as_secs_f64() * 1000.0;
+			let mt = mcts.stats();
+			let line = format!(
+				"{name}  {pos_name}  mm_depth={} mm_nodes={}  mcts_avg={:.2} mcts_max={} mcts_iters={}  mm_ms={mm_ms:.0} mcts_ms={mcts_ms:.0}",
+				st.depth, st.nodes, mt.mcts_avg_depth, mt.mcts_max_depth, mt.iterations
+			);
+			println!("{line}");
+			lines.push(line);
+		}
+	}
+	lines.push(format!("# elapsed_sec={:.1}", started.elapsed().as_secs_f64()));
+	let body = lines.join("\n") + "\n";
+	if let Err(err) = fs::write(&cfg.out, &body) {
+		eprintln!("failed to write {}: {err}", cfg.out.display());
+		std::process::exit(1);
+	}
+	println!("wrote {}", cfg.out.display());
+}
+
+fn run_ply_probe(cfg: &BenchConfig) {
+	let target = cfg.ply_probe.unwrap_or(10);
+	let started = Instant::now();
+	let mut lines: Vec<String> = Vec::new();
+	lines.push(format!(
+		"# minimax ply probe target={} search={}",
+		target,
+		seat_search(cfg, true).label()
+	));
+	lines.push(
+		"# Each row times one searcher.choose at the work/time limit on that position.".into(),
+	);
+	let mut positions: Vec<(String, Game)> = Vec::new();
+	for (tag, seed) in [("open", cfg.seed), ("open2", cfg.seed.wrapping_add(5))] {
+		let game = Game::start_with(cfg.rules, seed, cfg.scenario.as_ref(), cfg.setup)
+			.unwrap_or_else(|e| {
+				eprintln!("{e}");
+				std::process::exit(1);
+			});
+		positions.push((tag.into(), game));
+	}
+	let mut late = Game::start_with(cfg.rules, cfg.seed.wrapping_add(9), cfg.scenario.as_ref(), {
+		let mut s = cfg.setup;
+		s.p1_deck = DeckArchetype::BraidHeavy;
+		s.p2_deck = DeckArchetype::BeadHeavy;
+		s
+	})
+	.unwrap_or_else(|e| {
+		eprintln!("{e}");
+		std::process::exit(1);
+	});
+	let mut rng = StdRng::seed_from_u64(cfg.seed ^ 0x10);
+	let mut searcher = Searcher::with_config(seat_search(cfg, true));
+	for _ in 0..24 {
+		if late.status().is_over() {
+			break;
+		}
+		let actor = match late.current_player() {
+			Player::One => Actor::Minimax,
+			Player::Two => Actor::Mcts,
+		};
+		let action = searcher.choose_with(&late, actor, &mut rng, cfg.limit);
+		if late.apply(action).is_err() {
+			break;
+		}
+		searcher.advance(&late);
+	}
+	positions.push((format!("braid_vs_bead_ply{}", late.turn_count()), late));
+
+	for (name, game) in &positions {
+		let mut searcher = Searcher::with_config(seat_search(cfg, true));
+		let mut rng = StdRng::seed_from_u64(cfg.seed ^ 0x33);
+		let t0 = Instant::now();
+		let _ = searcher.choose_with(game, Actor::Minimax, &mut rng, cfg.limit);
+		let ms = t0.elapsed().as_secs_f64() * 1000.0;
+		let st = searcher.stats();
+		let line = format!(
+			"{name}  completed_depth={} nodes={} ms={ms:.0} legal={} target={target} reached={}",
+			st.depth,
+			st.nodes,
+			game.legal_actions().len(),
+			st.depth >= target
+		);
+		println!("{line}");
+		lines.push(line);
+	}
+	lines.push(format!("# elapsed_sec={:.1}", started.elapsed().as_secs_f64()));
+	let body = lines.join("\n") + "\n";
+	if let Err(err) = fs::write(&cfg.out, &body) {
+		eprintln!("failed to write {}: {err}", cfg.out.display());
+		std::process::exit(1);
+	}
+	println!("wrote {}", cfg.out.display());
 }
 
 #[derive(Clone)]
@@ -1453,6 +1716,8 @@ fn play_game(
 	keep_log: bool,
 	scenario: Option<&Scenario>,
 	setup: SetupConfig,
+	p1_search: SearchConfig,
+	p2_search: SearchConfig,
 ) -> PlayResult {
 	let mut game = Game::start_with(rules, seed, scenario, setup).unwrap_or_else(|e| {
 		eprintln!("{e}");
@@ -1470,8 +1735,8 @@ fn play_game(
 		&mut color_n,
 	);
 	let mut rng = StdRng::seed_from_u64(bench_log::search_rng_seed(seed));
-	let mut s1 = Searcher::new();
-	let mut s2 = Searcher::new();
+	let mut s1 = Searcher::with_config(p1_search);
+	let mut s2 = Searcher::with_config(p2_search);
 	let mut visible: HashMap<u64, u32> = HashMap::new();
 	let mut occupancy: HashMap<u64, u32> = HashMap::new();
 	let mut max_repeat = 0u32;
@@ -1497,6 +1762,8 @@ fn play_game(
 		);
 		log.budget_nodes = limit.nodes();
 		log.budget_iters = limit.iters();
+		log.p1_search = p1_search.label();
+		log.p2_search = p2_search.label();
 		log
 	});
 	let mut captures = 0u32;
@@ -2174,6 +2441,25 @@ mod tests {
 		assert_eq!(cfg.limit, SearchLimit::calibrated());
 		assert!(cfg.jobs >= 1);
 		assert_eq!(cfg.matchups, vec![(DeckArchetype::Mixed, DeckArchetype::Mixed)]);
+	}
+
+	#[test]
+	fn parse_search_profile_and_per_seat() {
+		let cfg = parse(vec![
+			"--search-profile".to_string(),
+			"classic".to_string(),
+			"--p1-search".to_string(),
+			"lmr=on,pvs=on".to_string(),
+			"--search-threads".to_string(),
+			"4".to_string(),
+		])
+		.unwrap();
+		assert_eq!(cfg.search.profile_name(), "classic");
+		assert_eq!(cfg.search.mcts_root_threads, 4);
+		let p1 = seat_search(&cfg, true);
+		assert!(p1.lmr && p1.pvs);
+		assert_eq!(p1.mcts_root_threads, 4);
+		assert_eq!(seat_search(&cfg, false).profile_name(), "classic");
 	}
 
 	#[test]

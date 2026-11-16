@@ -827,6 +827,11 @@ pub struct GameLog {
 	pub mcts_depth_avg: f64,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub mcts_depth_max: u8,
+	/// Search-lever label for P1 (empty on logs from before search profiles).
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub p1_search: String,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub p2_search: String,
 }
 
 impl GameLog {
@@ -868,6 +873,8 @@ impl GameLog {
 			mm_depth_max: 0,
 			mcts_depth_avg: 0.0,
 			mcts_depth_max: 0,
+			p1_search: String::new(),
+			p2_search: String::new(),
 		}
 	}
 

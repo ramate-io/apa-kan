@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 
-use crate::ai::Actor;
+use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	BeadScoring, BraidFailMismatch, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp,
@@ -29,6 +29,7 @@ pub struct GameConfig {
 	pub rules: RuleSet,
 	pub scenario: Option<Scenario>,
 	pub setup: SetupConfig,
+	pub search: SearchConfig,
 }
 
 impl Default for GameConfig {
@@ -46,6 +47,7 @@ impl Default for GameConfig {
 			rules: RuleSet::default(),
 			scenario: None,
 			setup: SetupConfig::default(),
+			search: SearchConfig::default(),
 		}
 	}
 }
@@ -139,6 +141,25 @@ impl GameConfig {
 				}
 				"--height" => {
 					cfg.height = parse_u32("--height", &require_value("--height", it.next())?)?;
+				}
+				"--search-profile" => {
+					cfg.search = SearchConfig::parse_profile(&require_value(
+						"--search-profile",
+						it.next(),
+					)?)?;
+				}
+				"--search" => {
+					cfg.search = cfg.search.with_spec(&require_value("--search", it.next())?)?;
+				}
+				"--search-threads" => {
+					let n = parse_u64(
+						"--search-threads",
+						&require_value("--search-threads", it.next())?,
+					)?;
+					if n == 0 || n > 32 {
+						return Err("invalid --search-threads (expected 1..32)".into());
+					}
+					cfg.search = cfg.search.with_threads(n as u8);
 				}
 				"--actions" => {
 					let n = parse_u64("--actions", &require_value("--actions", it.next())?)?;
@@ -379,6 +400,9 @@ pub fn usage() -> &'static str {
 	 Options:\n\
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
+	   --search-profile <enhanced|classic|plain>  Search levers (default: enhanced)\n\
+	   --search <k=v,...>                         Overlay ordering|tt|lmr|pvs|quiescence|pw|heuristic-playouts|threads\n\
+	   --search-threads <1..32>                   MCTS root-parallel trees (default: 1; 1 keeps benches deterministic)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
 	   --deck-noise <0..100>                      Resample that percent of a mirrored collection (default: 0)\n\
@@ -446,6 +470,24 @@ mod tests {
 		assert_eq!(cfg.bot1, Actor::Mcts);
 		assert_eq!(cfg.bot2, Actor::Minimax);
 		assert_eq!(cfg.seed, 42);
+		assert_eq!(cfg.search, SearchConfig::enhanced());
+	}
+
+	#[test]
+	fn parses_search_profile_and_spec() {
+		let cfg = GameConfig::parse([
+			"--search-profile",
+			"classic",
+			"--search",
+			"lmr=on,pvs=on",
+			"--search-threads",
+			"4",
+		])
+		.unwrap();
+		assert!(cfg.search.transposition);
+		assert!(cfg.search.lmr && cfg.search.pvs);
+		assert_eq!(cfg.search.mcts_root_threads, 4);
+		assert_eq!(cfg.search.profile_name(), "custom");
 	}
 
 	#[test]

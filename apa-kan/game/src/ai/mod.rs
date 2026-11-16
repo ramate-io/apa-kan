@@ -3,6 +3,7 @@
 mod eval;
 mod mcts;
 mod minimax;
+mod search_config;
 mod search_move;
 mod zobrist;
 
@@ -13,6 +14,7 @@ use rand::Rng;
 use crate::game::{Action, Game, Player, RuleSet};
 
 pub use eval::{evaluate, terminal_score, WIN};
+pub use search_config::SearchConfig;
 pub use search_move::legal_search_moves;
 pub use zobrist::{hash as visible_hash, occupancy_hash};
 
@@ -188,6 +190,7 @@ pub struct Searcher {
 	mcts: Option<mcts::MctsTree>,
 	played_hashes: Vec<u64>,
 	stats: SearchStats,
+	config: SearchConfig,
 }
 
 impl Default for Searcher {
@@ -198,11 +201,16 @@ impl Default for Searcher {
 
 impl Searcher {
 	pub fn new() -> Self {
+		Self::with_config(SearchConfig::default())
+	}
+
+	pub fn with_config(config: SearchConfig) -> Self {
 		Self {
-			minimax: minimax::MinimaxState::new(),
+			minimax: minimax::MinimaxState::with_config(config),
 			mcts: None,
 			played_hashes: Vec::new(),
 			stats: SearchStats::default(),
+			config,
 		}
 	}
 
@@ -252,6 +260,7 @@ impl Searcher {
 			Actor::Greedy => greedy(game, rng, &self.played_hashes),
 			Actor::Minimax | Actor::MinimaxLegacy => {
 				self.minimax.legacy = actor == Actor::MinimaxLegacy;
+				self.minimax.config = self.config;
 				let (action, stats) =
 					minimax::search(&mut self.minimax, game, &self.played_hashes, rng, limit);
 				self.stats = stats;
@@ -265,6 +274,7 @@ impl Searcher {
 					self.minimax.last_move,
 					rng,
 					limit,
+					self.config,
 				);
 				self.stats = stats;
 				action
@@ -695,6 +705,18 @@ mod tests {
 		let action = searcher.choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(40));
 		assert!(game.legal_actions().contains(&action));
 		assert!(searcher.stats().depth >= 1);
+	}
+
+	#[test]
+	fn mcts_root_parallel_returns_a_legal_move() {
+		let game = Game::new(RuleSet::default(), 8);
+		let mut cfg = SearchConfig::enhanced();
+		cfg.mcts_root_threads = 2;
+		let mut searcher = Searcher::with_config(cfg);
+		let mut rng = StdRng::seed_from_u64(8);
+		let action = searcher.choose_with(&game, Actor::Mcts, &mut rng, SearchLimit::work(80, 16));
+		assert!(game.legal_actions().contains(&action));
+		assert_eq!(searcher.stats().iterations, 16);
 	}
 
 	#[test]
