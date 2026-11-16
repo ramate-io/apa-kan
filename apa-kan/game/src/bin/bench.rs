@@ -1577,20 +1577,14 @@ fn run_ply_probe(cfg: &BenchConfig) {
 		std::process::exit(1);
 	});
 	let mut rng = StdRng::seed_from_u64(cfg.seed ^ 0x10);
-	let mut searcher = Searcher::with_config(seat_search(cfg, true));
 	for _ in 0..24 {
 		if late.status().is_over() {
 			break;
 		}
-		let actor = match late.current_player() {
-			Player::One => Actor::Minimax,
-			Player::Two => Actor::Mcts,
-		};
-		let action = searcher.choose_with(&late, actor, &mut rng, cfg.limit);
+		let action = ai::choose(&late, Actor::Greedy, &mut rng, Duration::from_millis(1));
 		if late.apply(action).is_err() {
 			break;
 		}
-		searcher.advance(&late);
 	}
 	positions.push((format!("braid_vs_bead_ply{}", late.turn_count()), late));
 
