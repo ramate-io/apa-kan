@@ -915,9 +915,14 @@ fn bot_turn(
 		return;
 	}
 	clock.wait = cfg.delay.as_secs_f32();
-	let action = match play.game.current_player() {
-		Player::One => play.search1.choose(&play.game, actor, &mut rng.0, cfg.think),
-		Player::Two => play.search2.choose(&play.game, actor, &mut rng.0, cfg.think),
+	let player = play.game.current_player();
+	let think = cfg.think;
+	let action = {
+		let PlayState { game, search1, search2, .. } = &mut *play;
+		match player {
+			Player::One => search1.choose(game, actor, &mut rng.0, think),
+			Player::Two => search2.choose(game, actor, &mut rng.0, think),
+		}
 	};
 	apply_action(&mut play, action);
 }
