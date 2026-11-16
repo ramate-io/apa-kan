@@ -34,6 +34,104 @@ pub enum PickStrategy {
 	Greedy,
 }
 
+/// Collection-generation bias. Picking (7+4) still uses [`PickStrategy`].
+///
+/// Generation uses the same ring/color/zag/braid/bead process as the default
+/// deal, with the numerators below, then retries until a quota is met so the
+/// intelligent picker actually sees the intended opportunities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum DeckArchetype {
+	/// Default noisy mix: `braid_numer=1`, `bead_numer=1`, `zag_numer` from
+	/// the live rules (zags on).
+	#[default]
+	Mixed,
+	/// Strong braid opportunities: `braid_numer=5`, `bead_numer=0`, zags on.
+	/// Multi-braid tiles (2–3 slots) and leftover braid+normal packing.
+	BraidHeavy,
+	/// Strong bead opportunities: `bead_numer=5`, `braid_numer=0`, zags on.
+	/// Mix of stacked 1-bead tiles and 2–3 bead tiles.
+	BeadHeavy,
+}
+
+/// Braid roll used for [`DeckArchetype::BraidHeavy`] (5/7).
+pub const ARCHETYPE_BRAID_NUMER: u8 = 5;
+/// Bead roll used for [`DeckArchetype::BeadHeavy`] (5/7 of remaining normals).
+pub const ARCHETYPE_BEAD_NUMER: u8 = 5;
+/// Minimum braid rings in a 27-tile braid-heavy collection.
+pub const BRAID_HEAVY_MIN_RINGS: u8 = 10;
+/// Minimum bead rings in a 27-tile bead-heavy collection.
+pub const BEAD_HEAVY_MIN_RINGS: u8 = 10;
+/// At least this many 1-bead tiles in a bead-heavy collection.
+pub const BEAD_HEAVY_MIN_SINGLE: usize = 2;
+/// At least this many tiles with 2+ bead rings in a bead-heavy collection.
+pub const BEAD_HEAVY_MIN_STACKED: usize = 1;
+/// At least this many tiles whose braid occupies 2–3 slots.
+pub const BRAID_HEAVY_MIN_MULTI: usize = 2;
+
+impl DeckArchetype {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"mixed" | "noise" | "noisy" | "default" => Ok(Self::Mixed),
+			"braid" | "braid-heavy" | "braid_heavy" | "braids" => Ok(Self::BraidHeavy),
+			"bead" | "bead-heavy" | "bead_heavy" | "beads" => Ok(Self::BeadHeavy),
+			other => Err(format!("unknown deck archetype '{other}' (expected mixed|braid|bead)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Mixed => "mixed",
+			Self::BraidHeavy => "braid",
+			Self::BeadHeavy => "bead",
+		}
+	}
+
+	pub fn label(self) -> &'static str {
+		match self {
+			Self::Mixed => "mixed",
+			Self::BraidHeavy => "braid-heavy",
+			Self::BeadHeavy => "bead-heavy",
+		}
+	}
+
+	/// Sampling numerators overlaid on `base`. Zag chance is never changed
+	/// (standing rule: zags on).
+	pub fn sampling_rules(self, base: &RuleSet) -> RuleSet {
+		let mut rules = *base;
+		match self {
+			Self::Mixed => {}
+			Self::BraidHeavy => {
+				rules.braid_numer = ARCHETYPE_BRAID_NUMER;
+				rules.bead_numer = 0;
+			}
+			Self::BeadHeavy => {
+				rules.bead_numer = ARCHETYPE_BEAD_NUMER;
+				rules.braid_numer = 0;
+			}
+		}
+		rules
+	}
+
+	pub fn meets_quota(self, tiles: &[Tile]) -> bool {
+		match self {
+			Self::Mixed => true,
+			Self::BraidHeavy => {
+				let rings = braid_ring_count(tiles);
+				let multi = tiles.iter().filter(|t| t.braid_ring_count() >= 2).count();
+				rings >= BRAID_HEAVY_MIN_RINGS && multi >= BRAID_HEAVY_MIN_MULTI
+			}
+			Self::BeadHeavy => {
+				let rings = bead_ring_count(tiles);
+				let single = tiles.iter().filter(|t| t.bead_ring_count() == 1).count();
+				let stacked = tiles.iter().filter(|t| t.bead_ring_count() >= 2).count();
+				rings >= BEAD_HEAVY_MIN_RINGS
+					&& single >= BEAD_HEAVY_MIN_SINGLE
+					&& stacked >= BEAD_HEAVY_MIN_STACKED
+			}
+		}
+	}
+}
+
 impl PickStrategy {
 	pub fn parse(s: &str) -> Result<Self, String> {
 		match s.to_ascii_lowercase().as_str() {
@@ -64,6 +162,11 @@ pub struct SetupConfig {
 	pub pick: PickStrategy,
 	/// Caps hill-climb steps (`nodes`) and rollout count (`iters`).
 	pub limit: SearchLimit,
+	/// P1 collection bias. Default mixed (the usual noisy deal).
+	pub p1_deck: DeckArchetype,
+	/// P2 collection bias. When this differs from [`Self::p1_deck`], the
+	/// collections are generated independently even if `identical_bags`.
+	pub p2_deck: DeckArchetype,
 }
 
 impl Default for SetupConfig {
@@ -73,6 +176,8 @@ impl Default for SetupConfig {
 			deck_noise: 0,
 			pick: PickStrategy::Heuristic,
 			limit: SearchLimit::calibrated(),
+			p1_deck: DeckArchetype::Mixed,
+			p2_deck: DeckArchetype::Mixed,
 		}
 	}
 }
@@ -96,6 +201,8 @@ pub struct SetupRecord {
 	pub strategy: PickStrategy,
 	pub deck_seed: u64,
 	pub deck_noise: u8,
+	pub p1_deck: DeckArchetype,
+	pub p2_deck: DeckArchetype,
 }
 
 impl SetupRecord {
@@ -269,9 +376,24 @@ pub fn generate_collection(
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Vec<Tile> {
+	generate_archetype_collection(owner, size, rules, DeckArchetype::Mixed, next_id, rng)
+}
+
+/// Sample a collection biased toward `archetype`, then pick as usual.
+pub fn generate_archetype_collection(
+	owner: Player,
+	size: usize,
+	base: &RuleSet,
+	archetype: DeckArchetype,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+) -> Vec<Tile> {
+	let rules = archetype.sampling_rules(base);
 	let size = size.clamp(1, DECK_SIZE_MAX);
 	let (_, target) = pick_plan(size);
 	let want = BENCH_SIZE.min(size).max(target);
+	let mut best: Option<Vec<Tile>> = None;
+	let mut best_score = -1i32;
 	for _ in 0..128 {
 		let mut deck = Vec::with_capacity(size);
 		for _ in 0..size {
@@ -286,11 +408,19 @@ pub fn generate_collection(
 				rng,
 			));
 		}
-		if has_legal_subset(&deck, want) {
+		if !has_legal_subset(&deck, want) {
+			continue;
+		}
+		if archetype.meets_quota(&deck) {
 			return deck;
 		}
+		let score = i32::from(braid_ring_count(&deck)) + i32::from(bead_ring_count(&deck));
+		if score > best_score {
+			best_score = score;
+			best = Some(deck);
+		}
 	}
-	repair_collection(owner, size, rules, next_id, rng, want)
+	best.unwrap_or_else(|| repair_collection(owner, size, &rules, next_id, rng, want))
 }
 
 fn repair_collection(
@@ -394,11 +524,14 @@ pub fn generate_both_collections(
 ) -> [Vec<Tile>; 2] {
 	let size = (rules.deck_size as usize).clamp(1, DECK_SIZE_MAX);
 	let mut rng = StdRng::seed_from_u64(setup.deck_seed(game_seed) ^ 0xDEC0);
-	let p1 = generate_collection(Player::One, size, rules, next_id, &mut rng);
-	let p2 = if rules.identical_bags {
-		apply_deck_noise(&p1, Player::Two, setup.deck_noise, rules, next_id, &mut rng)
+	let p1 =
+		generate_archetype_collection(Player::One, size, rules, setup.p1_deck, next_id, &mut rng);
+	let same_arch = setup.p1_deck == setup.p2_deck;
+	let p2 = if rules.identical_bags && same_arch {
+		let sample = setup.p2_deck.sampling_rules(rules);
+		apply_deck_noise(&p1, Player::Two, setup.deck_noise, &sample, next_id, &mut rng)
 	} else {
-		generate_collection(Player::Two, size, rules, next_id, &mut rng)
+		generate_archetype_collection(Player::Two, size, rules, setup.p2_deck, next_id, &mut rng)
 	};
 	[p1, p2]
 }
@@ -899,6 +1032,8 @@ pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) 
 			strategy: setup.pick,
 			deck_seed: seed,
 			deck_noise: setup.deck_noise,
+			p1_deck: setup.p1_deck,
+			p2_deck: setup.p2_deck,
 		};
 	}
 	let mut pick7 = [Vec::new(), Vec::new()];
@@ -946,6 +1081,8 @@ pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) 
 		strategy: setup.pick,
 		deck_seed: seed,
 		deck_noise: setup.deck_noise,
+		p1_deck: setup.p1_deck,
+		p2_deck: setup.p2_deck,
 	}
 }
 
@@ -1209,5 +1346,62 @@ mod tests {
 		assert_eq!(PickStrategy::parse("search").unwrap(), PickStrategy::Search);
 		assert_eq!(PickStrategy::parse("greedy").unwrap(), PickStrategy::Greedy);
 		assert!(PickStrategy::parse("random").is_err());
+	}
+
+	#[test]
+	fn parse_deck_archetype() {
+		assert_eq!(DeckArchetype::parse("mixed").unwrap(), DeckArchetype::Mixed);
+		assert_eq!(DeckArchetype::parse("braid-heavy").unwrap(), DeckArchetype::BraidHeavy);
+		assert_eq!(DeckArchetype::parse("bead").unwrap(), DeckArchetype::BeadHeavy);
+		assert!(DeckArchetype::parse("zag").is_err());
+	}
+
+	#[test]
+	fn braid_heavy_collection_meets_quota_and_picker_stays_under_cap() {
+		let rules = RuleSet::default();
+		let mut setup = SetupConfig::for_seed(13);
+		setup.p1_deck = DeckArchetype::BraidHeavy;
+		setup.p2_deck = DeckArchetype::BraidHeavy;
+		setup.pick = PickStrategy::Search;
+		setup.limit = SearchLimit::work(48, 2);
+		let mut next = 1u32;
+		let rec = deal_and_pick(&rules, &setup, 13, &mut next);
+		assert!(DeckArchetype::BraidHeavy.meets_quota(&rec.decks[0]));
+		assert!(braid_ring_count(&rec.decks[0]) >= BRAID_HEAVY_MIN_RINGS);
+		assert_eq!(bead_ring_count(&rec.decks[0]), 0, "braid-heavy rolls beads off");
+		assert!(respects_type_cap(&rec.bench(Player::One)));
+		assert!(braid_ring_count(&rec.bench(Player::One)) > 0);
+	}
+
+	#[test]
+	fn bead_heavy_collection_has_singles_and_stacks() {
+		let rules = RuleSet::default();
+		let mut setup = SetupConfig::for_seed(21);
+		setup.p1_deck = DeckArchetype::BeadHeavy;
+		setup.p2_deck = DeckArchetype::BeadHeavy;
+		setup.pick = PickStrategy::Search;
+		setup.limit = SearchLimit::work(48, 2);
+		let mut next = 1u32;
+		let rec = deal_and_pick(&rules, &setup, 21, &mut next);
+		assert!(DeckArchetype::BeadHeavy.meets_quota(&rec.decks[0]));
+		assert_eq!(braid_ring_count(&rec.decks[0]), 0, "bead-heavy rolls braids off");
+		assert!(respects_type_cap(&rec.bench(Player::One)));
+		assert!(bead_ring_count(&rec.bench(Player::One)) > 0);
+	}
+
+	#[test]
+	fn differing_archetypes_are_independent_even_when_bags_would_mirror() {
+		let mut rules = RuleSet::default();
+		rules.identical_bags = true;
+		let mut setup = SetupConfig::for_seed(8);
+		setup.p1_deck = DeckArchetype::BraidHeavy;
+		setup.p2_deck = DeckArchetype::BeadHeavy;
+		setup.pick = PickStrategy::Greedy;
+		let mut next = 1u32;
+		let rec = deal_and_pick(&rules, &setup, 8, &mut next);
+		assert!(DeckArchetype::BraidHeavy.meets_quota(&rec.decks[0]));
+		assert!(DeckArchetype::BeadHeavy.meets_quota(&rec.decks[1]));
+		assert!(braid_ring_count(&rec.decks[0]) > bead_ring_count(&rec.decks[0]));
+		assert!(bead_ring_count(&rec.decks[1]) > braid_ring_count(&rec.decks[1]));
 	}
 }

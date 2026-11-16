@@ -77,8 +77,13 @@ Unit tests in `game::tests` (`bead_unmatched_counts_rings_not_color_pairs`, `bea
 - `RingType::Bead`, `Tile::bead_channel`, `EdgeChannels::{bead_match,bead_mismatch}` in `apa-kan/game/src/game.rs`
 - `--bead-chance` / `--beads`; `RuleSet::bead_numer` (default 1)
 - Cap DP in `deck.rs` is 3-dimensional (zag, braid, bead)
-- JSONL: ring flag `e`, `bead_rings`, `bead_numer` (absent/0 on older logs)
+- JSONL: ring flag `e`, `bead_rings`, `bead_numer` (absent/0 on older logs), `bead_scoring`
 - Visual: `bead_ring_centers` / bead lane in `visual.rs`, `ui.rs`, `render.rs`
+- CLI: `--bead-scoring independent|shared` (default independent)
+
+### Shared-channel variant (rule B, experimental)
+
+`--bead-scoring shared` keeps the same bead matching rule (presence, −1 at most once) but **does not add** the bead channel to the normal channel. On each edge the normal/bead contribution is `max(normal match, bead match)` and `max(normal mismatch, bead mismatch)`. Zag and braid still add. Default remains independent (rule A).
 
 ## Alternatives considered
 
