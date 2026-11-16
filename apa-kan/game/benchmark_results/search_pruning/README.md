@@ -59,8 +59,10 @@ committed log files.
 
 | Log | Budget | Games | mm_avg / mm_max | mcts_avg / mcts_max | P1 W-D-L | elapsed |
 |---|---|---|---|---|---|---|
-| #62 `groups_shallow` | 132000 / 2600 | 50 | 4.25 / 16 | 1.96 / 7 | 20-6-24 | 1495.9 s |
+| #62 `groups_shallow` (classic) | 132000 / 2600 | 50 | 4.25 / 16 | 1.96 / 7 | 20-6-24 | 1495.9 s |
 | `enhanced_shallow` | 132000 / 2600 | 50 | **4.30 / 16** | **2.31 / 10** | 29-0-21 | 744.4 s |
+| #62 `groups_deep` (classic) | 528000 / 10400 | 10 | 4.49 / 7 | 2.32 / 9 | 3-0-7 | 557.0 s |
+| `enhanced_deep` | 528000 / 10400 | 10 | **5.53 / 16** | **2.58 / 11** | 3-0-7 | 2788.0 s |
 
 Minimax ID ply is essentially unchanged at this budget (quiescence still
 eats leaf nodes). MCTS trees are deeper with progressive widening
@@ -79,6 +81,19 @@ is a **seat** lean (mixed as P2 is 2-0-8). Bead vs braid is 5-0-5 either
 direction of the named matchup totals above. One short win:
 `minimax vs mcts [braid vs braid] g4 seed=100004` low_value at 13 turns
 (mirrored braid benches) — not a deck exploit.
+
+### `enhanced_deep` (4×, committed)
+
+```
+# search_depth  mm_avg=5.53 mm_max=16  mcts_avg=2.58 mcts_max=11
+# matchup_totals  mixed 1-0-1  |  braid 1-0-1  |  bead 1-0-1  |  braid vs bead 0-0-2  |  bead vs braid 0-0-2
+# archetype_seat  mixed P1=1-0-1 P2=1-0-1  |  braid P1=1-0-3 P2=3-0-1  |  bead P1=1-0-3 P2=3-0-1
+```
+
+Same P1 3-0-7 as #62 classic 4×. Cross braid/bead is a P2 sweep (4 games),
+seat not deck. One long mixed game (`mcts vs minimax` mixed, 191 turns,
+P1 low_value) dominated wall-clock; 10-ply was still not reached
+(`mm_avg=5.53`).
 
 | File | Budget | Games |
 |---|---|---|
