@@ -14,7 +14,7 @@ Those overrides made a same-color zag vs a normal a capture instead of a wash, a
 
 Together with [`rfc-001-001-001-rosette-redesign`](../rfc-001-001-001-rosette-redesign/README.md), the accepted default is:
 
-- **Independent additive channels** (this RFC): per edge, normal / zag / braid / bead score on their own and add. No cross-channel overrides. Beads: [`rfc-001-001-004`](../rfc-001-001-004-beads/README.md).
+- **Independent additive channels** (this RFC): per edge, normal / zag / braid / bead score on their own. Zag and braid always add. Default bead scoring is **shared-channel** (`max` of normal and bead per match/mismatch); `--bead-scoring independent` restores a sum. No cross-channel overrides. Beads: [`rfc-001-001-004`](../rfc-001-001-004-beads/README.md).
 - **Failed-braid mismatch `--braid-fail-mismatch one`** (flat +1). `weight` and `sum` stay implemented for later research in [issue #39](https://github.com/ramate-io/apa-kan/issues/39).
 - **11-tile public bench with spawn tokens:** each player drafts 7 then +4 from a 27-tile collection (`deck_size` 27, `bag_size` 11, `starting_bench_size` 7). Reserves are never usable. ADD is gated by usable budget = min(tokens, unplaced **bench** tiles). Ring-type cap: 6 slots of each non-normal type on the 11 (zag, braid, bead); braids count by ring slots (a 3-braid uses 3 of 6). See [`rfc-001-001-003`](../rfc-001-001-003-deck-building/README.md).
 - **Doubles allowed:** `--no-same-piece-twice off` is the locked default and the **only benchmarked** H2H configuration. `always` and `when-deck-empty` remain as non-default CLI variants; they are not part of the H2H package.

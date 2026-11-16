@@ -49,22 +49,22 @@ pub enum DeckArchetype {
 	/// Multi-braid tiles (2–3 slots) and leftover braid+normal packing.
 	BraidHeavy,
 	/// Strong bead opportunities: `bead_numer=5`, `braid_numer=0`, zags on.
-	/// Mix of stacked 1-bead tiles and 2–3 bead tiles.
+	/// 2–3 bead tiles only (generation never emits a single-bead tile).
 	BeadHeavy,
 }
 
 /// Braid roll used for [`DeckArchetype::BraidHeavy`] (5/7).
 pub const ARCHETYPE_BRAID_NUMER: u8 = 5;
-/// Bead roll used for [`DeckArchetype::BeadHeavy`] (5/7 of remaining normals).
+/// Bead roll used for [`DeckArchetype::BeadHeavy`] (5/7 piece-level 2–3 group).
 pub const ARCHETYPE_BEAD_NUMER: u8 = 5;
 /// Minimum braid rings in a 27-tile braid-heavy collection.
 pub const BRAID_HEAVY_MIN_RINGS: u8 = 10;
 /// Minimum bead rings in a 27-tile bead-heavy collection.
 pub const BEAD_HEAVY_MIN_RINGS: u8 = 10;
-/// At least this many 1-bead tiles in a bead-heavy collection.
-pub const BEAD_HEAVY_MIN_SINGLE: usize = 2;
-/// At least this many tiles with 2+ bead rings in a bead-heavy collection.
-pub const BEAD_HEAVY_MIN_STACKED: usize = 1;
+/// At least this many 2–3 bead tiles in a bead-heavy collection.
+pub const BEAD_HEAVY_MIN_STACKED: usize = 2;
+/// At least this many 3-bead tiles in a bead-heavy collection.
+pub const BEAD_HEAVY_MIN_TRIPLE: usize = 1;
 /// At least this many tiles whose braid occupies 2–3 slots.
 pub const BRAID_HEAVY_MIN_MULTI: usize = 2;
 
@@ -122,11 +122,13 @@ impl DeckArchetype {
 			}
 			Self::BeadHeavy => {
 				let rings = bead_ring_count(tiles);
-				let single = tiles.iter().filter(|t| t.bead_ring_count() == 1).count();
 				let stacked = tiles.iter().filter(|t| t.bead_ring_count() >= 2).count();
+				let triple = tiles.iter().filter(|t| t.bead_ring_count() >= 3).count();
+				let no_singles = tiles.iter().all(|t| t.bead_ring_count() != 1);
 				rings >= BEAD_HEAVY_MIN_RINGS
-					&& single >= BEAD_HEAVY_MIN_SINGLE
 					&& stacked >= BEAD_HEAVY_MIN_STACKED
+					&& triple >= BEAD_HEAVY_MIN_TRIPLE
+					&& no_singles
 			}
 		}
 	}
@@ -1374,7 +1376,7 @@ mod tests {
 	}
 
 	#[test]
-	fn bead_heavy_collection_has_singles_and_stacks() {
+	fn bead_heavy_collection_has_stacked_groups_not_singles() {
 		let rules = RuleSet::default();
 		let mut setup = SetupConfig::for_seed(21);
 		setup.p1_deck = DeckArchetype::BeadHeavy;
@@ -1385,6 +1387,8 @@ mod tests {
 		let rec = deal_and_pick(&rules, &setup, 21, &mut next);
 		assert!(DeckArchetype::BeadHeavy.meets_quota(&rec.decks[0]));
 		assert_eq!(braid_ring_count(&rec.decks[0]), 0, "bead-heavy rolls braids off");
+		assert!(rec.decks[0].iter().all(|t| t.bead_ring_count() != 1));
+		assert!(rec.decks[0].iter().filter(|t| t.bead_ring_count() >= 2).count() >= 2);
 		assert!(respects_type_cap(&rec.bench(Player::One)));
 		assert!(bead_ring_count(&rec.bench(Player::One)) > 0);
 	}

@@ -2438,7 +2438,12 @@ pub fn demo_zag_color_exclusion_board() -> Game {
 	let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
 	let normal =
 		game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Normal)], 1, 1);
-	let bead = game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Bead)], 1, 1);
+	let bead = game.alloc_typed_rings(
+		Player::Two,
+		&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+		2,
+		1,
+	);
 	game.place_tile(spawn, zag);
 	if let Some(&nb0) = nbs.first() {
 		game.place_tile(nb0, normal);

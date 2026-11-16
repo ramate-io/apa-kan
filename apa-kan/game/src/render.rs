@@ -1664,13 +1664,13 @@ mod tests {
 		);
 		write_cropped(
 			&demo_typed_pair(
-				&[(TileColor::Orange, RingType::Bead)],
-				1,
+				&[(TileColor::Orange, RingType::Bead), (TileColor::Orange, RingType::Bead)],
+				2,
 				&[(TileColor::Orange, RingType::Normal)],
 				1,
 			),
 			dir.join("lane_bead_match.png"),
-			"bead match: connected bead chain plus the orange normal highway",
+			"bead match: two connected bead chains plus the orange normal highway",
 			48.0,
 		);
 		write_png_sized(
@@ -1728,9 +1728,34 @@ mod tests {
 			28.0,
 		);
 		write_cropped(
-			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 2),
+			&demo_typed_tile(
+				&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+				2,
+			),
 			dir.join("bead_ring_tile.png"),
-			"tile bead ring as a connected bead chain",
+			"two-bead tile: connected swelling/pinching chains",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_tile(
+				&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+				2,
+			),
+			dir.join("two_bead_tile.png"),
+			"two concentric bead rings, connected ribbon style",
+			28.0,
+		);
+		write_cropped(
+			&demo_typed_tile(
+				&[
+					(TileColor::Blue, RingType::Bead),
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Teal, RingType::Bead),
+				],
+				3,
+			),
+			dir.join("three_bead_tile.png"),
+			"three concentric bead rings, connected ribbon style",
 			28.0,
 		);
 		write_cropped(
@@ -1744,8 +1769,8 @@ mod tests {
 		);
 		write_cropped(
 			&demo_typed_pair(
-				&[(TileColor::Blue, RingType::Bead)],
-				1,
+				&[(TileColor::Blue, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+				2,
 				&[
 					(TileColor::Teal, RingType::Normal),
 					(TileColor::Orange, RingType::Normal),
@@ -1753,14 +1778,21 @@ mod tests {
 				],
 				3,
 			),
-			dir.join("one_blue_bead_vs_teal_orange_blue_zag.png"),
-			"1 blue bead vs teal+orange+blue zag: unmatched bead + hitch + zag",
+			dir.join("two_blue_beads_vs_teal_orange_blue_zag.png"),
+			"2 blue beads vs teal+orange+blue zag: unmatched beads + hitch + zag",
 			28.0,
 		);
 		write_cropped(
-			&demo_typed_tile(&[(TileColor::Orange, RingType::Bead)], 3),
+			&demo_typed_tile(
+				&[
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Blue, RingType::Bead),
+					(TileColor::Green, RingType::Normal),
+				],
+				3,
+			),
 			dir.join("bead_and_plate_tile.png"),
-			"connected bead chain with a bottom ring notch",
+			"two connected bead chains with a bottom ring notch",
 			28.0,
 		);
 		{
@@ -1770,7 +1802,7 @@ mod tests {
 					Player::One,
 					&[
 						(TileColor::Orange, RingType::Bead),
-						(TileColor::Blue, RingType::Zag),
+						(TileColor::Blue, RingType::Bead),
 						(TileColor::Green, RingType::Normal),
 					],
 					1,
@@ -1793,8 +1825,8 @@ mod tests {
 			write_tile_closeup(tri, dir.join("closeup_notch_triangle.png"), 880, 330.0);
 			write_cropped(
 				&demo_typed_pair(
-					&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Zag)],
-					1,
+					&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+					2,
 					&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
 					1,
 				),
@@ -1804,8 +1836,8 @@ mod tests {
 			);
 			write_arc_bead_closeup(
 				&demo_typed_pair(
-					&[(TileColor::Orange, RingType::Bead)],
-					1,
+					&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+					2,
 					&[(TileColor::Orange, RingType::Normal)],
 					1,
 				),
@@ -1828,11 +1860,11 @@ mod tests {
 			&demo_typed_pair(
 				&[(TileColor::Orange, RingType::Zag)],
 				1,
-				&[(TileColor::Orange, RingType::Bead)],
-				1,
+				&[(TileColor::Orange, RingType::Bead), (TileColor::Orange, RingType::Bead)],
+				2,
 			),
 			dir.join("zag_vs_same_color_bead.png"),
-			"orange zag vs orange bead: unmatched bead + zag hit, no match",
+			"orange zag vs two orange beads: unmatched beads + zag hit, no match",
 			28.0,
 		);
 		write_png_sized(

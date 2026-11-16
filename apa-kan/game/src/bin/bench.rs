@@ -457,6 +457,10 @@ struct SeatStats {
 	bead_contrib: u32,
 	bead_needed: u32,
 	spawn_two_ring_single_bead: u32,
+	depth_max: u8,
+	mcts_depth_sum: f64,
+	mcts_depth_n: u32,
+	mcts_depth_max: u8,
 }
 
 fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
@@ -539,6 +543,9 @@ fn run(cfg: BenchConfig) {
 	);
 	lines.push(
 		"# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).".into(),
+	);
+	lines.push(
+		"# search_depth: mm_avg/mm_max = completed iterative-deepening depth; mcts_avg/mcts_max = visit-weighted tree depth (root excluded from the mean).".into(),
 	);
 	lines.push(
 		"# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
@@ -691,6 +698,12 @@ fn run(cfg: BenchConfig) {
 	let mut bead_contrib = 0u32;
 	let mut bead_needed = 0u32;
 	let mut spawn_two_ring = 0u32;
+	let mut mm_depth_sum = 0.0f64;
+	let mut mm_depth_n = 0u32;
+	let mut mm_depth_max = 0u8;
+	let mut mcts_depth_sum = 0.0f64;
+	let mut mcts_depth_n = 0u32;
+	let mut mcts_depth_max = 0u8;
 	for (_, stats, line) in &pairing_results {
 		println!("{line}");
 		lines.push(line.clone());
@@ -723,6 +736,12 @@ fn run(cfg: BenchConfig) {
 		bead_contrib += stats.bead_contrib;
 		bead_needed += stats.bead_needed;
 		spawn_two_ring += stats.spawn_two_ring_single_bead;
+		mm_depth_sum += stats.depth_sum;
+		mm_depth_n += stats.depth_n;
+		mm_depth_max = mm_depth_max.max(stats.depth_max);
+		mcts_depth_sum += stats.mcts_depth_sum;
+		mcts_depth_n += stats.mcts_depth_n;
+		mcts_depth_max = mcts_depth_max.max(stats.mcts_depth_max);
 		stall_games += cfg.games;
 		stall_rep2 += stats.games_repeat_ge2;
 		stall_rep3 += stats.games_repeat_ge3;
@@ -771,6 +790,11 @@ fn run(cfg: BenchConfig) {
 	));
 	lines.push(format!(
 		"# bead_captures  contrib={bead_contrib} needed={bead_needed} spawn_two_ring_single_bead={spawn_two_ring}  of_total={captures}"
+	));
+	let mm_avg = if mm_depth_n == 0 { 0.0 } else { mm_depth_sum / f64::from(mm_depth_n) };
+	let mcts_avg = if mcts_depth_n == 0 { 0.0 } else { mcts_depth_sum / f64::from(mcts_depth_n) };
+	lines.push(format!(
+		"# search_depth  mm_avg={mm_avg:.2} mm_max={mm_depth_max} mm_n={mm_depth_n}  mcts_avg={mcts_avg:.2} mcts_max={mcts_depth_max} mcts_n={mcts_depth_n}"
 	));
 	{
 		let mut matchup_lines: Vec<(String, u32, u32, u32, u32)> = Vec::new();
@@ -899,6 +923,9 @@ fn run(cfg: BenchConfig) {
 	);
 	println!(
 		"# bead_captures  contrib={bead_contrib} needed={bead_needed} spawn_two_ring_single_bead={spawn_two_ring}  of_total={captures}"
+	);
+	println!(
+		"# search_depth  mm_avg={mm_avg:.2} mm_max={mm_depth_max} mm_n={mm_depth_n}  mcts_avg={mcts_avg:.2} mcts_max={mcts_depth_max} mcts_n={mcts_depth_n}"
 	);
 	println!(
 		"# tokens_bench_over_time  mean_tokens_per_side={mean_tokens:.2}  mean_bench_per_side={mean_bench:.2}  snapshots={snapshots}"
@@ -1030,7 +1057,10 @@ fn run_calibrate(cfg: &BenchConfig) {
 					iter_n += 1;
 					iter_min = iter_min.min(st.iterations);
 					iter_max = iter_max.max(st.iterations);
-					println!("  seed={seed} mcts iters={}", st.iterations);
+					println!(
+						"  seed={seed} mcts iters={} tree_depth={:.2}/{}",
+						st.iterations, st.mcts_avg_depth, st.mcts_max_depth
+					);
 				}
 				_ => {}
 			}
@@ -1053,6 +1083,7 @@ fn run_calibrate(cfg: &BenchConfig) {
 	);
 	println!("# minimax_nodes n={node_n} mean={mean_nodes:.0} min={node_min} max={node_max} mean_depth={mean_depth:.2}");
 	println!("# mcts_iters n={iter_n} mean={mean_iters:.0} min={iter_min} max={iter_max}");
+	println!("# search_depth  mm_avg={mean_depth:.2}");
 	println!("# recommended --budget nodes:{rec_nodes},iters:{rec_iters}");
 	println!(
 		"# current constants CALIBRATED_NODES_PER_MOVE={CALIBRATED_NODES_PER_MOVE} CALIBRATED_ITERS_PER_MOVE={CALIBRATED_ITERS_PER_MOVE}"
@@ -1175,7 +1206,11 @@ fn summarize_pairing(
 		stats.turns += result.turns;
 		stats.depth_sum += result.depth_sum;
 		stats.depth_n += result.depth_n;
+		stats.depth_max = stats.depth_max.max(result.depth_max);
 		stats.iter_sum += result.iter_sum;
+		stats.mcts_depth_sum += result.mcts_depth_sum;
+		stats.mcts_depth_n += result.mcts_depth_n;
+		stats.mcts_depth_max = stats.mcts_depth_max.max(result.mcts_depth_max);
 		stats.iter_n += result.iter_n;
 		if result.max_repeat >= 2 {
 			stats.games_repeat_ge2 += 1;
@@ -1228,10 +1263,15 @@ fn summarize_pairing(
 	let avg_depth =
 		if stats.depth_n == 0 { 0.0 } else { stats.depth_sum / f64::from(stats.depth_n) };
 	let avg_iters = if stats.iter_n == 0 { 0.0 } else { stats.iter_sum / f64::from(stats.iter_n) };
+	let mcts_avg_depth = if stats.mcts_depth_n == 0 {
+		0.0
+	} else {
+		stats.mcts_depth_sum / f64::from(stats.mcts_depth_n)
+	};
 	let avg_cap = f64::from(stats.captures) / f64::from(n);
 	let avg_self = f64::from(stats.self_captures) / f64::from(n);
 	let line = format!(
-		"{:<15} vs {:<15}  {:<13}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}  self={:.2}",
+		"{:<15} vs {:<15}  {:<13}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}  self={:.2}  mm_max={} mcts_avg={:.2} mcts_max={}",
 		p1.name(),
 		p2.name(),
 		matchup,
@@ -1253,7 +1293,10 @@ fn summarize_pairing(
 		avg_depth,
 		avg_iters,
 		avg_cap,
-		avg_self
+		avg_self,
+		stats.depth_max,
+		mcts_avg_depth,
+		stats.mcts_depth_max
 	);
 	(stats, line)
 }
@@ -1350,8 +1393,12 @@ struct PlayResult {
 	max_occ_repeat: u32,
 	depth_sum: f64,
 	depth_n: u32,
+	depth_max: u8,
 	iter_sum: f64,
 	iter_n: u32,
+	mcts_depth_sum: f64,
+	mcts_depth_n: u32,
+	mcts_depth_max: u8,
 	captures: u32,
 	self_captures: u32,
 	center_captures: u32,
@@ -1431,8 +1478,12 @@ fn play_game(
 	let mut max_occ = 0u32;
 	let mut depth_sum = 0.0;
 	let mut depth_n = 0u32;
+	let mut depth_max = 0u8;
 	let mut iter_sum = 0.0;
 	let mut iter_n = 0u32;
+	let mut mcts_depth_sum = 0.0;
+	let mut mcts_depth_n = 0u32;
+	let mut mcts_depth_max = 0u8;
 	let mut record_lines = Vec::new();
 	let mut game_log = keep_log.then(|| {
 		let mut log = GameLog::begin(
@@ -1519,10 +1570,14 @@ fn play_game(
 		if actor == Actor::Minimax {
 			depth_sum += f64::from(st.depth);
 			depth_n += 1;
+			depth_max = depth_max.max(st.depth);
 		}
 		if actor == Actor::Mcts {
 			iter_sum += f64::from(st.iterations);
 			iter_n += 1;
+			mcts_depth_sum += f64::from(st.mcts_avg_depth);
+			mcts_depth_n += 1;
+			mcts_depth_max = mcts_depth_max.max(st.mcts_max_depth);
 		}
 		match action {
 			Action::Add { bench_index, .. } => {
@@ -1571,15 +1626,25 @@ fn play_game(
 					outcome.removals.iter().filter(|r| r.spawn_two_ring_single_bead).count() as u32;
 				if keep_record {
 					record_lines.push(format!(
-						"{:>3}. {}   [depth={} iters={}]",
+						"{:>3}. {}   [mm_depth={} iters={} mcts_depth={:.2}/{}]",
 						game.turn_count(),
 						outcome.log_line,
 						st.depth,
-						st.iterations
+						st.iterations,
+						st.mcts_avg_depth,
+						st.mcts_max_depth
 					));
 				}
 				if let Some(log) = game_log.as_mut() {
-					log.push_action(action, piece, &outcome, &game);
+					log.push_action_with_search(
+						action,
+						piece,
+						&outcome,
+						&game,
+						st.depth,
+						st.mcts_max_depth,
+						st.mcts_avg_depth,
+					);
 				}
 			}
 			Err(_) => {
@@ -1649,8 +1714,12 @@ fn play_game(
 		max_occ_repeat: max_occ,
 		depth_sum,
 		depth_n,
+		depth_max,
 		iter_sum,
 		iter_n,
+		mcts_depth_sum,
+		mcts_depth_n,
+		mcts_depth_max,
 		captures,
 		self_captures,
 		center_captures,
@@ -1746,6 +1815,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut braid_rings = 0u32;
 	let mut braid_pieces = 0u32;
 	let mut bead_rings = 0u32;
+	let mut bead_pieces = 0u32;
 	let mut rings = 0u32;
 	for _ in 0..n {
 		let t = sample_tile(
@@ -1767,6 +1837,9 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			braid_pieces += 1;
 		}
 		bead_rings += u32::from(t.bead_ring_count());
+		if t.bead_ring_count() >= 2 {
+			bead_pieces += 1;
+		}
 		rings += k as u32;
 	}
 	lines.push(format!(
@@ -1784,7 +1857,8 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			f64::from(braid_rings) / f64::from(rings)
 		));
 		lines.push(format!(
-			"# ring_process_beads  rings={rings} beads={bead_rings} rate={:.4}",
+			"# ring_process_beads  pieces={n} grouped={bead_pieces} piece_rate={:.4} rings={rings} beads={bead_rings} ring_rate={:.4}",
+			f64::from(bead_pieces) / f64::from(n),
 			f64::from(bead_rings) / f64::from(rings)
 		));
 	}
@@ -2023,6 +2097,7 @@ mod tests {
 					|| line.starts_with("# center_captures")
 					|| line.starts_with("# capture_dest")
 					|| line.starts_with("# bead_captures")
+					|| line.starts_with("# search_depth")
 					|| line.starts_with("# matchup_totals")
 					|| line.starts_with("# archetype_seat")
 					|| line.starts_with("# short_games")

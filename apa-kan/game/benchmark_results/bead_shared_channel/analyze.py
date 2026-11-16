@@ -88,6 +88,33 @@ def summarize(name: str, logs: list[dict]) -> None:
         f"captures opp={caps}  bead_contrib={contrib} needed={needed} "
         f"spawn_two_ring_single_bead={spawn}"
     )
+    mm_avgs = [g["mm_depth_avg"] for g in logs if g.get("mm_depth_avg")]
+    mm_max = max((g.get("mm_depth_max") or 0) for g in logs)
+    mcts_avgs = [g["mcts_depth_avg"] for g in logs if g.get("mcts_depth_avg")]
+    mcts_max = max((g.get("mcts_depth_max") or 0) for g in logs)
+    mm_mean = sum(mm_avgs) / len(mm_avgs) if mm_avgs else 0.0
+    mcts_mean = sum(mcts_avgs) / len(mcts_avgs) if mcts_avgs else 0.0
+    print(
+        f"search_depth  mm_avg={mm_mean:.2f} mm_max={mm_max}  "
+        f"mcts_avg={mcts_mean:.2f} mcts_max={mcts_max}"
+    )
+    singles = 0
+    grouped = 0
+    for g in logs:
+        setup = g.get("setup") or {}
+        tiles = []
+        for key in ("p1_deck", "p2_deck", "p1_pick7", "p2_pick7", "p1_extend", "p2_extend"):
+            tiles.extend(setup.get(key) or [])
+        if not tiles:
+            tiles.extend((g.get("opening") or {}).get("p1_bench") or [])
+            tiles.extend((g.get("opening") or {}).get("p2_bench") or [])
+        for t in tiles:
+            beads = sum(1 for r in (t.get("rings") or []) if r.get("e"))
+            if beads == 1:
+                singles += 1
+            elif beads >= 2:
+                grouped += 1
+    print(f"bead_tiles  singles={singles} grouped_2_or_3={grouped}")
 
     print("by pairing:")
     by_p: dict[str, list] = defaultdict(list)
@@ -155,14 +182,21 @@ def main() -> None:
         "independent_deep",
         "shared_shallow",
         "shared_deep",
+        "groups/groups_shallow",
+        "groups/groups_deep",
     ]
     args = sys.argv[1:] or names
     for name in args:
-        path = root / f"{name}.jsonl.gz" if not name.endswith(".gz") else Path(name)
+        path = Path(name)
+        if not path.is_absolute() and not path.exists():
+            path = root / name
+        if not str(path).endswith(".gz"):
+            path = Path(str(path) + ".jsonl.gz")
         if not path.exists():
             print(f"missing {path}")
             continue
-        summarize(path.stem.replace(".jsonl", ""), load(path))
+        label = path.stem.replace(".jsonl", "")
+        summarize(label, load(path))
 
 
 if __name__ == "__main__":

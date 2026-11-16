@@ -32,6 +32,14 @@ fn skip_zero_u32(v: &u32) -> bool {
 	*v == 0
 }
 
+fn skip_zero_f32(v: &f32) -> bool {
+	*v == 0.0
+}
+
+fn skip_zero_f64(v: &f64) -> bool {
+	*v == 0.0
+}
+
 fn default_independent() -> String {
 	BeadScoring::Independent.name().to_string()
 }
@@ -290,8 +298,8 @@ pub struct RulesLog {
 	/// those is skipped because capture outcomes differ.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub zag_match_non_zag: Option<bool>,
-	/// `independent` (rule A, default) or `shared` (rule B). Absent on older
-	/// logs; replay uses independent, which matches those captures.
+	/// `shared` (rule B, live default) or `independent` (rule A). Absent on
+	/// older logs; replay uses independent, which matches those captures.
 	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
 	pub bead_scoring: String,
 }
@@ -466,7 +474,7 @@ impl OpeningLog {
 }
 
 /// One applied action. `kind` is ADD/MOVE/PASS; capture flags are outcomes.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ActionLog {
 	pub turn: u32,
 	pub player: u8,
@@ -495,6 +503,15 @@ pub struct ActionLog {
 	pub budget: usize,
 	#[serde(default, skip_serializing_if = "skip_zero_usize")]
 	pub surplus: usize,
+	/// Minimax completed iterative-deepening depth this move. Absent for MCTS.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mm_depth: u8,
+	/// MCTS tree max depth this move (root = 0). Absent for minimax.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mcts_max_depth: u8,
+	/// Visit-weighted mean MCTS node depth this move, excluding the root.
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub mcts_avg_depth: f32,
 }
 
 /// One captured tile: original owner and where it went.
@@ -560,7 +577,17 @@ impl ActionLog {
 			tokens: game_after.budget_token_count(player),
 			budget: game_after.budget(player),
 			surplus: game_after.budget_surplus(player),
+			mm_depth: 0,
+			mcts_max_depth: 0,
+			mcts_avg_depth: 0.0,
 		}
+	}
+
+	pub fn with_search(mut self, mm_depth: u8, mcts_max_depth: u8, mcts_avg_depth: f32) -> Self {
+		self.mm_depth = mm_depth;
+		self.mcts_max_depth = mcts_max_depth;
+		self.mcts_avg_depth = mcts_avg_depth;
+		self
 	}
 
 	pub fn to_action(&self) -> Result<Action, String> {
@@ -790,6 +817,16 @@ pub struct GameLog {
 	pub bead_needed_captures: u32,
 	#[serde(default, skip_serializing_if = "skip_zero_u32")]
 	pub spawn_two_ring_single_bead: u32,
+	/// Mean minimax completed-ID depth over minimax moves in this game.
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub mm_depth_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mm_depth_max: u8,
+	/// Mean visit-weighted MCTS tree depth over MCTS moves in this game.
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub mcts_depth_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mcts_depth_max: u8,
 }
 
 impl GameLog {
@@ -827,6 +864,10 @@ impl GameLog {
 			bead_contrib_captures: 0,
 			bead_needed_captures: 0,
 			spawn_two_ring_single_bead: 0,
+			mm_depth_avg: 0.0,
+			mm_depth_max: 0,
+			mcts_depth_avg: 0.0,
+			mcts_depth_max: 0,
 		}
 	}
 
@@ -838,6 +879,24 @@ impl GameLog {
 		game_after: &Game,
 	) {
 		self.actions.push(ActionLog::record(action, piece, outcome, game_after));
+	}
+
+	pub fn push_action_with_search(
+		&mut self,
+		action: Action,
+		piece: Option<Tile>,
+		outcome: &ActionOutcome,
+		game_after: &Game,
+		mm_depth: u8,
+		mcts_max_depth: u8,
+		mcts_avg_depth: f32,
+	) {
+		self.actions
+			.push(ActionLog::record(action, piece, outcome, game_after).with_search(
+				mm_depth,
+				mcts_max_depth,
+				mcts_avg_depth,
+			));
 	}
 
 	pub fn finish(&mut self, live: &Game, low_value: Option<LowValueResolution>) {
@@ -863,6 +922,28 @@ impl GameLog {
 		self.bead_contrib_captures = contrib;
 		self.bead_needed_captures = needed;
 		self.spawn_two_ring_single_bead = spawn;
+		let mut mm_sum = 0.0f64;
+		let mut mm_n = 0u32;
+		let mut mm_max = 0u8;
+		let mut mcts_sum = 0.0f64;
+		let mut mcts_n = 0u32;
+		let mut mcts_max = 0u8;
+		for act in &self.actions {
+			if act.mm_depth > 0 {
+				mm_sum += f64::from(act.mm_depth);
+				mm_n += 1;
+				mm_max = mm_max.max(act.mm_depth);
+			}
+			if act.mcts_max_depth > 0 || act.mcts_avg_depth > 0.0 {
+				mcts_sum += f64::from(act.mcts_avg_depth);
+				mcts_n += 1;
+				mcts_max = mcts_max.max(act.mcts_max_depth);
+			}
+		}
+		self.mm_depth_avg = if mm_n == 0 { 0.0 } else { mm_sum / f64::from(mm_n) };
+		self.mm_depth_max = mm_max;
+		self.mcts_depth_avg = if mcts_n == 0 { 0.0 } else { mcts_sum / f64::from(mcts_n) };
+		self.mcts_depth_max = mcts_max;
 	}
 }
 
@@ -1281,6 +1362,18 @@ mod tests {
 		assert_eq!(log.to_rules().unwrap(), r);
 		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
 		assert_eq!(log.bead_scoring, "shared");
+	}
+
+	#[test]
+	fn missing_bead_scoring_replays_as_independent() {
+		let mut r = RuleSet::default();
+		r.bead_scoring = BeadScoring::Independent;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("bead_scoring"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.bead_scoring, "independent");
+		assert_eq!(parsed.to_rules().unwrap().bead_scoring, BeadScoring::Independent);
 	}
 
 	#[test]

@@ -420,9 +420,9 @@ pub fn usage() -> &'static str {
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
-	   --bead-chance <0..7>                       Each remaining normal ring is a bead with k/7 chance (default: 1)\n\
+	   --bead-chance <0..7>                       A piece forms a 2–3 bead group with k/7 chance (default: 1)\n\
 	   --beads <on|off>                           Alias for --bead-chance 1 or 0 (default: on)\n\
-	   --bead-scoring <independent|shared>        Normal/bead combine: sum (A, default) or max (B)\n\
+	   --bead-scoring <independent|shared>        Normal/bead combine: max (B, default) or sum (A)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
 	   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)\n\
@@ -562,7 +562,7 @@ mod tests {
 		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.bead_numer, 1);
-		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::Independent);
+		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
 		assert_eq!(cfg.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.setup.p2_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.rules.dot_percent, crate::game::DOT_PERCENT_DEFAULT);

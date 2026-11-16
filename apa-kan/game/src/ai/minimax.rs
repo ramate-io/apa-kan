@@ -238,7 +238,7 @@ pub fn search(
 	}
 
 	let action = best_move.to_action(game).unwrap_or(fallback);
-	(action, SearchStats { depth: completed_depth, iterations: 0, nodes: ctx.nodes })
+	(action, SearchStats { depth: completed_depth, nodes: ctx.nodes, ..SearchStats::default() })
 }
 
 fn child_pos(game: &Game, mv: SearchMove) -> Option<Game> {

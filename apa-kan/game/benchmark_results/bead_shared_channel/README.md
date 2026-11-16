@@ -4,6 +4,11 @@ Compares two bead scoring rules on the same search, pick, and deck package.
 Doubles allowed, zags on. Do not overwrite; quote numbers from the committed
 logs in this directory.
 
+The **live default** is now rule B (shared-channel) with **2–3 bead groups**
+(generated tiles never have a single bead ring). Rerun logs under that
+default: [`groups/`](groups/). Logs here used per-ring independent beads,
+including 1-bead tiles.
+
 ## Rules
 
 Both rules keep the same **matching** test: a bead of color `C` is matched iff
@@ -12,8 +17,8 @@ still −1 at most once per edge. Zag and braid channels are unchanged.
 
 | | Combine | 1 unmatched bead vs 2-ring hitch | 3 unmatched beads vs 1-ring |
 |---|---|---|---|
-| **A. Independent** (default, `--bead-scoring independent`) | normal + bead | hitch 1 + unmatched 1 → `(0, 2)` | hitch 1 + unmatched 3 → `(0, 4)` |
-| **B. Shared channel** (`--bead-scoring shared`) | `max(normal, bead)` per match and per mismatch | `max(1, 1)` → `(0, 1)` | `max(1, 3)` → `(0, 3)` |
+| **A. Independent** (`--bead-scoring independent`) | normal + bead | hitch 1 + unmatched 1 → `(0, 2)` | hitch 1 + unmatched 3 → `(0, 4)` |
+| **B. Shared channel** (live default) | `max(normal, bead)` per match and per mismatch | `max(1, 1)` → `(0, 1)` | `max(1, 3)` → `(0, 3)` |
 
 Rule B stops beads doubling with a normal hitch. Beads still count per unmatched
 ring when that count exceeds the hitch, so they remain a bomb against
@@ -31,7 +36,7 @@ at 1/7 (zags on).
 |---|---|---|
 | `mixed` | `braid_numer=1`, `bead_numer=1` (defaults) | none — the usual noisy deal |
 | `braid` | `braid_numer=5`, `bead_numer=0` | ≥10 braid rings and ≥2 multi-braid (2–3 slot) tiles. Leftover slots after a 2-braid stay normal → braid+normal packing. |
-| `bead` | `bead_numer=5`, `braid_numer=0` | ≥10 bead rings, ≥2 single-bead tiles, ≥1 tile with 2–3 beads. |
+| `bead` | `bead_numer=5`, `braid_numer=0` | These logs: ≥10 bead rings, ≥2 single-bead tiles, ≥1 stacked tile. Live generation never emits singles; see [`groups/`](groups/). |
 
 When the two sides have different archetypes the collections are generated
 independently even if `identical_bags` is on. Same-archetype matchups still
@@ -222,4 +227,5 @@ seed=400001` P1 low_value t=51. Shallow rule B on the same matchups was
 
 Rule B is even across archetypes at calibrated depth and does not create a
 dominant strategy at 4×. Rule A’s modest braid lean at calibrated depth is
-not robust to more search. Default stays independent.
+not robust to more search. Default is now shared-channel (rule B) with 2–3
+bead groups; see [`groups/`](groups/).

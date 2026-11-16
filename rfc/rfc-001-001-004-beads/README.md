@@ -22,7 +22,7 @@ Documented here as the chosen reading of “the same notion of a color matching 
 
 ### Bead channel
 
-The channel fires only if at least one tile on the edge has a bead ring. Independent of normal / zag / braid; they add.
+The channel fires only if at least one tile on the edge has a bead ring. Zag and braid still add. Default **shared-channel** scoring (rule B) takes `max(normal, bead)` per match and per mismatch instead of summing those two channels. `--bead-scoring independent` restores the additive rule A.
 
 | | Match | Mismatch |
 |---|---|---|
@@ -46,13 +46,13 @@ Beads do **not** enable pass-through or hops (same as zags). Low-value: beads co
 
 ### Generation and cap
 
-Each remaining **normal** ring after braid and zag independently becomes a bead with chance `bead_numer / 7` (default 1). `--bead-chance 0` / `--beads off` skips the RNG so the deal matches the pre-bead process for the same seed.
+A piece forms a **2–3 bead group** with chance `bead_numer / 7` (default 1), rolled after braid and zag, occupying remaining **normal** slots (padding a short tile by repeating its last color, like braids). Generated tiles never have a single bead ring. `--bead-chance 0` / `--beads off` skips the RNG so the deal matches the pre-bead process for the same seed. Custom TOML that lists exactly one bead is rejected. Scoring still accepts 1-bead fixtures.
 
 Beads count toward the **6-per-type cap** on the 11-tile bench (6 bead rings max), alongside zag and braid, counted by ring slots. Normal stays uncapped. Enforced at the 7-pick and the +4.
 
 ### Visual
 
-Tile rims: a ring of small filled discs (beads), distinct from solid normals, zigzag zags, and braid weaves.
+Tile rims: a connected swelling/pinching ribbon per bead ring (2 or 3 concentric chains on a generated tile), distinct from solid normals, zigzag zags, and braid weaves.
 
 Lanes, fixed order: **normal, zag, braid, bead**. Quiet channels omitted. 1–3 active lanes keep today's offsets; four use `±1.5 pitch` and `±0.5 pitch`. Failed-braid diamonds, solid token stacks, and “deck row = unplaced bench only” are unchanged.
 
@@ -79,18 +79,18 @@ Unit tests in `game::tests` (`bead_unmatched_counts_rings_not_color_pairs`, `bea
 - Cap DP in `deck.rs` is 3-dimensional (zag, braid, bead)
 - JSONL: ring flag `e`, `bead_rings`, `bead_numer` (absent/0 on older logs), `bead_scoring`
 - Visual: `bead_ring_centers` / bead lane in `visual.rs`, `ui.rs`, `render.rs`
-- CLI: `--bead-scoring independent|shared` (default independent)
+- CLI: `--bead-scoring independent|shared` (default **shared**)
 
-### Shared-channel variant (rule B, experimental)
+### Shared-channel default (rule B)
 
-`--bead-scoring shared` keeps the same bead matching rule (presence, −1 at most once) but **does not add** the bead channel to the normal channel. On each edge the normal/bead contribution is `max(normal match, bead match)` and `max(normal mismatch, bead mismatch)`. Zag and braid still add. Default remains independent (rule A).
+`--bead-scoring shared` is the live default. It keeps the same bead matching rule (presence, −1 at most once) but **does not add** the bead channel to the normal channel. On each edge the normal/bead contribution is `max(normal match, bead match)` and `max(normal mismatch, bead mismatch)`. Zag and braid still add. `--bead-scoring independent` restores rule A (sum). JSONL logs that omit `bead_scoring` still replay as independent.
 
 ## Alternatives considered
 
 - Count each mismatching color pair (3 beads × 3 braid colors = 9) — rejected. Confirmed: unmatched **bead rings**.
 - Match −1 per matched bead — rejected. One −1 at most per edge, like normals.
 - Multiset coverage (orange+orange beads need two oranges) — rejected. Same presence test as the normal channel.
-- Piece-level bead roll like braids — rejected. Beads are like zags: per remaining normal ring, 1/7.
+- Per-ring independent beads (like zags) — replaced. Generated tiles now form a piece-level 2–3 bead group like braids, so a live tile is never a lone bead ring.
 
 ## Open questions
 

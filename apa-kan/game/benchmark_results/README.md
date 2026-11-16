@@ -22,9 +22,7 @@ Vs [`capture_modifiers/`](capture_modifiers/) (**49-7-52**, 41/18/2/47/0, mean *
 
 ## Research: bead independent vs shared channel
 
-[`bead_shared_channel/`](bead_shared_channel/) compares rule A (independent: normal+bead) with rule B (`--bead-scoring shared`: `max` instead of sum) on braid-heavy, bead-heavy, and mixed collections. Quote numbers from that directory. The 108-game default H2H above is unchanged (rule A).
-
-Headline from the committed logs: **no dominant deck strategy**. Shallow 50: A P1 24-2-24, braid vs bead combined 12-1-7; B P1 25-3-22, combined 10-1-9. Deep 4× (n=10): both rules braid vs bead combined 1-0-3 (the shallow braid lean flips). Short lockouts are minimax vs MCTS with identical benches, not an archetype lockout. Default stays independent.
+[`bead_shared_channel/`](bead_shared_channel/) compared rule A (independent: normal+bead) with rule B (`max` instead of sum) while singles still generated. Quote those numbers from that directory. Live default is now rule B with 2–3 bead groups only; grouped reruns live in [`bead_shared_channel/groups/`](bead_shared_channel/groups/). The 108-game zag-color-exclusion H2H above predates this default.
 
 ## Historical: capture modifiers (before zag-color exclusion)
 
