@@ -53,7 +53,32 @@ At ~55 legal moves, 10-ply ID is not feasible at the calibrated budget.
 ## Full-game package
 
 Same pairings/matchups as #62. Quote `# search_depth` and W-D-L from the
-log files once they are committed.
+committed log files.
+
+### Depth vs PR #62 classic (`groups_shallow`)
+
+| Log | Budget | Games | mm_avg / mm_max | mcts_avg / mcts_max | P1 W-D-L | elapsed |
+|---|---|---|---|---|---|---|
+| #62 `groups_shallow` | 132000 / 2600 | 50 | 4.25 / 16 | 1.96 / 7 | 20-6-24 | 1495.9 s |
+| `enhanced_shallow` | 132000 / 2600 | 50 | **4.30 / 16** | **2.31 / 10** | 29-0-21 | 744.4 s |
+
+Minimax ID ply is essentially unchanged at this budget (quiescence still
+eats leaf nodes). MCTS trees are deeper with progressive widening
+(+0.35 avg, +3 max).
+
+### Balance (`enhanced_shallow`)
+
+```
+# matchup_totals  mixed vs mixed 8-0-2  |  braid vs braid 7-0-3  |  bead vs bead 5-0-5  |  braid vs bead 4-0-6  |  bead vs braid 5-0-5
+# archetype_seat  mixed P1=8-0-2 P2=2-0-8  |  braid P1=11-0-9 P2=8-0-12  |  bead P1=10-0-10 P2=11-0-9
+# short_games  turns_le_20=1 lockout=0 control=0
+```
+
+No archetype wins from both seats against the other. Mixed's 8-0-2 as P1
+is a **seat** lean (mixed as P2 is 2-0-8). Bead vs braid is 5-0-5 either
+direction of the named matchup totals above. One short win:
+`minimax vs mcts [braid vs braid] g4 seed=100004` low_value at 13 turns
+(mirrored braid benches) — not a deck exploit.
 
 | File | Budget | Games |
 |---|---|---|
