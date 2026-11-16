@@ -1,0 +1,6 @@
+# minimax ply probe target=10 search=profile=custom ordering=on tt=on lmr=on pvs=on q=off pw=on heur_playouts=on threads=1
+# Each row times one searcher.choose at the work/time limit on that position.
+open  completed_depth=6 nodes=6089984 ms=20000 legal=88 target=10 reached=false
+open2  completed_depth=6 nodes=5800448 ms=20000 legal=88 target=10 reached=false
+braid_vs_bead_ply24  completed_depth=8 nodes=4640128 ms=20000 legal=54 target=10 reached=false
+# elapsed_sec=60.2
