@@ -400,6 +400,8 @@ impl SetupSession {
 			strategy: self.cfg.pick,
 			deck_seed: self.cfg.deck_seed(self.seed),
 			deck_noise: self.cfg.deck_noise,
+			p1_deck: self.cfg.p1_deck,
+			p2_deck: self.cfg.p2_deck,
 		}
 	}
 

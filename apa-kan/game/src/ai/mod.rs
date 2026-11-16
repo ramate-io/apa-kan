@@ -136,6 +136,10 @@ pub struct SearchStats {
 	/// MCTS iterations this move (not cumulative).
 	pub iterations: u32,
 	pub nodes: u64,
+	/// Deepest MCTS tree node from the root this move (root = 0).
+	pub mcts_max_depth: u8,
+	/// Visit-weighted mean MCTS node depth this move, excluding the root.
+	pub mcts_avg_depth: f32,
 }
 
 pub struct HistoryTable {
@@ -691,6 +695,19 @@ mod tests {
 		let action = searcher.choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(40));
 		assert!(game.legal_actions().contains(&action));
 		assert!(searcher.stats().depth >= 1);
+	}
+
+	#[test]
+	fn mcts_reports_tree_depth() {
+		let game = Game::new(RuleSet::default(), 8);
+		let mut rng = StdRng::seed_from_u64(8);
+		let mut searcher = Searcher::new();
+		let _ = searcher.choose_with(&game, Actor::Mcts, &mut rng, SearchLimit::work(80, 24));
+		let st = searcher.stats();
+		assert!(st.mcts_max_depth >= 1, "expanded MCTS tree should have depth >= 1");
+		assert!(st.mcts_avg_depth > 0.0);
+		assert!(st.mcts_avg_depth <= f32::from(st.mcts_max_depth) + 1e-3);
+		assert_eq!(st.depth, 0, "MCTS does not fill minimax completed-ID depth");
 	}
 
 	#[test]

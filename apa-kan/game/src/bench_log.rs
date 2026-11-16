@@ -2,10 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::deck::PickStrategy;
+use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
-	Action, ActionOutcome, BraidFailMismatch, BudgetToken, CaptureMark, EndReason, Game,
-	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
+	Action, ActionOutcome, BeadScoring, BraidFailMismatch, BudgetToken, CaptureMark, EndReason,
+	Game, GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
 	PathConstraint, Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
 	DOT_PERCENT_DEFAULT,
 };
@@ -26,6 +26,34 @@ fn skip_zero_u8(v: &u8) -> bool {
 
 fn skip_zero_usize(v: &usize) -> bool {
 	*v == 0
+}
+
+fn skip_zero_u32(v: &u32) -> bool {
+	*v == 0
+}
+
+fn skip_zero_f32(v: &f32) -> bool {
+	*v == 0.0
+}
+
+fn skip_zero_f64(v: &f64) -> bool {
+	*v == 0.0
+}
+
+fn default_independent() -> String {
+	BeadScoring::Independent.name().to_string()
+}
+
+fn skip_independent(v: &String) -> bool {
+	v == BeadScoring::Independent.name()
+}
+
+fn default_mixed() -> String {
+	DeckArchetype::Mixed.name().to_string()
+}
+
+fn skip_mixed(v: &String) -> bool {
+	v == DeckArchetype::Mixed.name()
 }
 
 fn default_triangle() -> String {
@@ -270,6 +298,10 @@ pub struct RulesLog {
 	/// those is skipped because capture outcomes differ.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub zag_match_non_zag: Option<bool>,
+	/// `shared` (rule B, live default) or `independent` (rule A). Absent on
+	/// older logs; replay uses independent, which matches those captures.
+	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
+	pub bead_scoring: String,
 }
 
 impl RulesLog {
@@ -312,6 +344,7 @@ impl RulesLog {
 			braid_fail_mismatch: Some(r.braid_fail_mismatch.name().into()),
 			score_incident_arcs: Some(true),
 			zag_match_non_zag: Some(true),
+			bead_scoring: r.bead_scoring.name().into(),
 		}
 	}
 
@@ -355,6 +388,7 @@ impl RulesLog {
 				Some(s) => BraidFailMismatch::parse(s)?,
 				None => BraidFailMismatch::One,
 			},
+			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
 		})
 	}
 }
@@ -385,6 +419,10 @@ pub struct SetupLog {
 	pub p2_pick7: Vec<TileLog>,
 	pub p1_extend: Vec<TileLog>,
 	pub p2_extend: Vec<TileLog>,
+	#[serde(default = "default_mixed", skip_serializing_if = "skip_mixed")]
+	pub p1_arch: String,
+	#[serde(default = "default_mixed", skip_serializing_if = "skip_mixed")]
+	pub p2_arch: String,
 }
 
 impl SetupLog {
@@ -399,6 +437,8 @@ impl SetupLog {
 			p2_pick7: tiles_to_log(&rec.pick7[1]),
 			p1_extend: tiles_to_log(&rec.extend[0]),
 			p2_extend: tiles_to_log(&rec.extend[1]),
+			p1_arch: rec.p1_deck.name().into(),
+			p2_arch: rec.p2_deck.name().into(),
 		}
 	}
 
@@ -414,6 +454,8 @@ impl SetupLog {
 			strategy: PickStrategy::parse(&self.pick).unwrap_or(PickStrategy::Heuristic),
 			deck_seed: self.deck_seed,
 			deck_noise: self.deck_noise,
+			p1_deck: DeckArchetype::parse(&self.p1_arch).unwrap_or(DeckArchetype::Mixed),
+			p2_deck: DeckArchetype::parse(&self.p2_arch).unwrap_or(DeckArchetype::Mixed),
 		})
 	}
 }
@@ -432,7 +474,7 @@ impl OpeningLog {
 }
 
 /// One applied action. `kind` is ADD/MOVE/PASS; capture flags are outcomes.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ActionLog {
 	pub turn: u32,
 	pub player: u8,
@@ -461,6 +503,15 @@ pub struct ActionLog {
 	pub budget: usize,
 	#[serde(default, skip_serializing_if = "skip_zero_usize")]
 	pub surplus: usize,
+	/// Minimax completed iterative-deepening depth this move. Absent for MCTS.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mm_depth: u8,
+	/// MCTS tree max depth this move (root = 0). Absent for minimax.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mcts_max_depth: u8,
+	/// Visit-weighted mean MCTS node depth this move, excluding the root.
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub mcts_avg_depth: f32,
 }
 
 /// One captured tile: original owner and where it went.
@@ -469,6 +520,15 @@ pub struct CaptureEventLog {
 	pub node: u8,
 	pub owner: u8,
 	pub dest: String,
+	/// Some incident edge had a non-zero bead match or bead mismatch.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub bead_contrib: bool,
+	/// Would not have been overwhelmed with the bead channel zeroed.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub bead_needed: bool,
+	/// Fresh 2-ring ADD popped; a 1-bead neighbor was decisive.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub spawn_two_ring_single_bead: bool,
 }
 
 impl ActionLog {
@@ -495,6 +555,9 @@ impl ActionLog {
 				node: r.node,
 				owner: player_num(r.tile.owner),
 				dest: r.dest.name().to_string(),
+				bead_contrib: r.bead_contrib,
+				bead_needed: r.bead_needed,
+				spawn_two_ring_single_bead: r.spawn_two_ring_single_bead,
 			})
 			.collect();
 		let capture_dest = captures.first().map(|c| c.dest.clone());
@@ -514,7 +577,17 @@ impl ActionLog {
 			tokens: game_after.budget_token_count(player),
 			budget: game_after.budget(player),
 			surplus: game_after.budget_surplus(player),
+			mm_depth: 0,
+			mcts_max_depth: 0,
+			mcts_avg_depth: 0.0,
 		}
+	}
+
+	pub fn with_search(mut self, mm_depth: u8, mcts_max_depth: u8, mcts_avg_depth: f32) -> Self {
+		self.mm_depth = mm_depth;
+		self.mcts_max_depth = mcts_max_depth;
+		self.mcts_avg_depth = mcts_avg_depth;
+		self
 	}
 
 	pub fn to_action(&self) -> Result<Action, String> {
@@ -735,6 +808,25 @@ pub struct GameLog {
 	pub actions: Vec<ActionLog>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub final_state: Option<FinalLog>,
+	/// `braid vs bead`, `mixed vs mixed`, …
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deck_matchup: Option<String>,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub bead_contrib_captures: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub bead_needed_captures: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub spawn_two_ring_single_bead: u32,
+	/// Mean minimax completed-ID depth over minimax moves in this game.
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub mm_depth_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mm_depth_max: u8,
+	/// Mean visit-weighted MCTS tree depth over MCTS moves in this game.
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub mcts_depth_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mcts_depth_max: u8,
 }
 
 impl GameLog {
@@ -766,6 +858,16 @@ impl GameLog {
 			end: EndLog::from_status(GameStatus::InProgress, None),
 			actions: Vec::new(),
 			final_state: None,
+			deck_matchup: live
+				.setup_record()
+				.map(|r| format!("{} vs {}", r.p1_deck.name(), r.p2_deck.name())),
+			bead_contrib_captures: 0,
+			bead_needed_captures: 0,
+			spawn_two_ring_single_bead: 0,
+			mm_depth_avg: 0.0,
+			mm_depth_max: 0,
+			mcts_depth_avg: 0.0,
+			mcts_depth_max: 0,
 		}
 	}
 
@@ -779,10 +881,69 @@ impl GameLog {
 		self.actions.push(ActionLog::record(action, piece, outcome, game_after));
 	}
 
+	pub fn push_action_with_search(
+		&mut self,
+		action: Action,
+		piece: Option<Tile>,
+		outcome: &ActionOutcome,
+		game_after: &Game,
+		mm_depth: u8,
+		mcts_max_depth: u8,
+		mcts_avg_depth: f32,
+	) {
+		self.actions
+			.push(ActionLog::record(action, piece, outcome, game_after).with_search(
+				mm_depth,
+				mcts_max_depth,
+				mcts_avg_depth,
+			));
+	}
+
 	pub fn finish(&mut self, live: &Game, low_value: Option<LowValueResolution>) {
 		self.turns = live.turn_count();
 		self.end = EndLog::from_status(live.status(), low_value);
 		self.final_state = Some(FinalLog::from_game(live));
+		let mut contrib = 0u32;
+		let mut needed = 0u32;
+		let mut spawn = 0u32;
+		for act in &self.actions {
+			for cap in &act.captures {
+				if cap.bead_contrib {
+					contrib += 1;
+				}
+				if cap.bead_needed {
+					needed += 1;
+				}
+				if cap.spawn_two_ring_single_bead {
+					spawn += 1;
+				}
+			}
+		}
+		self.bead_contrib_captures = contrib;
+		self.bead_needed_captures = needed;
+		self.spawn_two_ring_single_bead = spawn;
+		let mut mm_sum = 0.0f64;
+		let mut mm_n = 0u32;
+		let mut mm_max = 0u8;
+		let mut mcts_sum = 0.0f64;
+		let mut mcts_n = 0u32;
+		let mut mcts_max = 0u8;
+		for act in &self.actions {
+			if act.mm_depth > 0 {
+				mm_sum += f64::from(act.mm_depth);
+				mm_n += 1;
+				mm_max = mm_max.max(act.mm_depth);
+			}
+			if act.mcts_max_depth > 0 || act.mcts_avg_depth > 0.0 {
+				mcts_sum += f64::from(act.mcts_avg_depth);
+				mcts_n += 1;
+				mcts_max = mcts_max.max(act.mcts_max_depth);
+			}
+		}
+		self.mm_depth_avg = if mm_n == 0 { 0.0 } else { mm_sum / f64::from(mm_n) };
+		self.mm_depth_max = mm_max;
+		self.mcts_depth_avg = if mcts_n == 0 { 0.0 } else { mcts_sum / f64::from(mcts_n) };
+		self.mcts_depth_max = mcts_max;
 	}
 }
 
@@ -1196,9 +1357,23 @@ mod tests {
 		r.pass_through_ring_cmp = PassThroughRingCmp::Gt;
 		r.turn_limit = 50;
 		r.braid_fail_mismatch = BraidFailMismatch::Sum;
+		r.bead_scoring = BeadScoring::SharedChannel;
 		let log = RulesLog::from_rules(r);
 		assert_eq!(log.to_rules().unwrap(), r);
 		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
+		assert_eq!(log.bead_scoring, "shared");
+	}
+
+	#[test]
+	fn missing_bead_scoring_replays_as_independent() {
+		let mut r = RuleSet::default();
+		r.bead_scoring = BeadScoring::Independent;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("bead_scoring"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.bead_scoring, "independent");
+		assert_eq!(parsed.to_rules().unwrap().bead_scoring, BeadScoring::Independent);
 	}
 
 	#[test]
@@ -1253,13 +1428,17 @@ mod tests {
 	}
 
 	fn assert_committed_jsonl_gz_replays(rel: &str) {
+		assert_committed_jsonl_gz_replays_n(rel, 108);
+	}
+
+	fn assert_committed_jsonl_gz_replays_n(rel: &str, expected: usize) {
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
 		if !path.exists() {
 			return;
 		}
 		let bytes = std::fs::read(&path).unwrap();
 		let logs = decode_jsonl_gz(&bytes).expect("decode gzip jsonl");
-		assert_eq!(logs.len(), 108, "standard H2H is 9 pairings × 12 games");
+		assert_eq!(logs.len(), expected, "{rel} expected {expected} games");
 		let derived_weight = logs.iter().all(opening_weight_equals_rings);
 		let independent_channels = logs.iter().all(|log| log.rules.braid_fail_mismatch.is_some());
 		let incident_arc_scoring =
@@ -1388,6 +1567,54 @@ mod tests {
 	fn committed_work_budget_doubles_disallowed_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays(
 			"benchmark_results/work_budget_doubles_disallowed/h2h.jsonl.gz",
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_independent_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/independent_shallow.jsonl.gz",
+			50,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_independent_deep_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/independent_deep.jsonl.gz",
+			10,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_shared_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/shared_shallow.jsonl.gz",
+			50,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_shared_deep_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/shared_deep.jsonl.gz",
+			10,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_groups_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/groups/groups_shallow.jsonl.gz",
+			50,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_groups_deep_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/groups/groups_deep.jsonl.gz",
+			10,
 		);
 	}
 

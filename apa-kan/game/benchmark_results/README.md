@@ -20,6 +20,10 @@ Capture dest: **584** to bench (5.41/game), **677** to tokens (6.27/game). Mean 
 
 Vs [`capture_modifiers/`](capture_modifiers/) (**49-7-52**, 41/18/2/47/0, mean **39.63**): fewer draws (7→5), more lockouts (18→27), fewer control wins (41→30), one elimination. Captures rise (opp 5.17→5.71, self 5.38→5.96) as same-color zag vs normal/bead stops washing out.
 
+## Research: bead independent vs shared channel
+
+[`bead_shared_channel/`](bead_shared_channel/) compared rule A (independent: normal+bead) with rule B (`max` instead of sum) while singles still generated. Quote those numbers from that directory. Live default is now rule B with 2–3 bead groups only; grouped reruns live in [`bead_shared_channel/groups/`](bead_shared_channel/groups/) (shallow P1 **20-6-24**, deep P1 **3-0-7**; still no dominant deck strategy). The 108-game zag-color-exclusion H2H above predates this default.
+
 ## Historical: capture modifiers (before zag-color exclusion)
 
 Same search budget and H2H shape, **before** zag colors were excluded from normal / bead / braid matches. Do not overwrite.

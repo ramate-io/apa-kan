@@ -12,7 +12,7 @@ use apa_kan::ai::{
 };
 use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
-use apa_kan::deck::{PickStrategy, SetupConfig};
+use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig};
 use apa_kan::game::{
 	sample_tile, Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet, Tile,
 	TileColor,
@@ -47,6 +47,10 @@ struct BenchConfig {
 	scenario: Option<Scenario>,
 	calibrate: bool,
 	setup: SetupConfig,
+	/// If set, only these directed pairings run (not the cartesian of --bots).
+	pairings: Option<Vec<(Actor, Actor)>>,
+	/// Archetype matchups. Default is one row from `--p1-deck`/`--p2-deck`.
+	matchups: Vec<(DeckArchetype, DeckArchetype)>,
 }
 
 fn usage() -> &'static str {
@@ -66,6 +70,10 @@ fn usage() -> &'static str {
 	   --deck-noise <0..100> Resample that percent of a mirrored collection (default: 0)\n\
 	   --pick <heuristic|search|greedy>  Bench 7+4 picker (default: heuristic)\n\
 	   --bots <list>        Comma-separated actors (default: greedy,minimax,mcts)\n\
+	   --pairings <list>    Directed pairings a:b,c:d (default: cartesian of --bots)\n\
+	   --p1-deck <mixed|braid|bead>  P1 collection archetype when --deck-matchups is omitted\n\
+	   --p2-deck <mixed|braid|bead>  P2 collection archetype\n\
+	   --deck-matchups <list>  a:b,c:d archetype pairs (mixed|braid|bead). Default: --p1-deck vs --p2-deck\n\
 	   --depth-probe        Also time minimax ID depth at 1000 ms and 3000 ms\n\
 	   --measure-games <n>  Games for branching sample (default: 12)\n\
 	   --out <path>         Output log path\n\
@@ -84,7 +92,7 @@ fn usage() -> &'static str {
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --beads, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch,\n\
+	   --braid-fail-mismatch, --bead-scoring,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
@@ -118,6 +126,8 @@ where
 		scenario: None,
 		calibrate: false,
 		setup: SetupConfig::default(),
+		pairings: None,
+		matchups: Vec::new(),
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -170,6 +180,18 @@ where
 			}
 			"--pick" => {
 				cfg.setup.pick = PickStrategy::parse(&need("--pick", it.next())?)?;
+			}
+			"--p1-deck" => {
+				cfg.setup.p1_deck = DeckArchetype::parse(&need("--p1-deck", it.next())?)?;
+			}
+			"--p2-deck" => {
+				cfg.setup.p2_deck = DeckArchetype::parse(&need("--p2-deck", it.next())?)?;
+			}
+			"--deck-matchups" => {
+				cfg.matchups = parse_deck_matchups(&need("--deck-matchups", it.next())?)?;
+			}
+			"--pairings" => {
+				cfg.pairings = Some(parse_pairings_flag(&need("--pairings", it.next())?)?);
 			}
 			"--measure-games" => {
 				cfg.measure_games =
@@ -234,6 +256,9 @@ where
 		SearchLimit::work(budget_nodes, budget_iters)
 	};
 	cfg.setup.limit = cfg.limit;
+	if cfg.matchups.is_empty() {
+		cfg.matchups = vec![(cfg.setup.p1_deck, cfg.setup.p2_deck)];
+	}
 	validate_rule_flags(&cfg.rules)?;
 	Ok(cfg)
 }
@@ -336,6 +361,50 @@ fn parse_bots(s: &str) -> Result<Vec<Actor>, String> {
 	Ok(out)
 }
 
+fn parse_pairings_flag(s: &str) -> Result<Vec<(Actor, Actor)>, String> {
+	let mut out = Vec::new();
+	for part in s.split(',') {
+		let part = part.trim();
+		if part.is_empty() {
+			continue;
+		}
+		let (a, b) = part.split_once(':').ok_or_else(|| {
+			format!("invalid --pairings '{s}' (expected a:b,c:d with actor names)")
+		})?;
+		out.push((Actor::parse(a.trim())?, Actor::parse(b.trim())?));
+	}
+	if out.is_empty() {
+		return Err("--pairings must name at least one a:b pairing".into());
+	}
+	Ok(out)
+}
+
+fn parse_deck_matchups(s: &str) -> Result<Vec<(DeckArchetype, DeckArchetype)>, String> {
+	let mut out = Vec::new();
+	for part in s.split(',') {
+		let part = part.trim();
+		if part.is_empty() {
+			continue;
+		}
+		let (a, b) = part.split_once(':').ok_or_else(|| {
+			format!("invalid --deck-matchups '{s}' (expected a:b,c:d with mixed|braid|bead)")
+		})?;
+		out.push((DeckArchetype::parse(a.trim())?, DeckArchetype::parse(b.trim())?));
+	}
+	if out.is_empty() {
+		return Err("--deck-matchups must name at least one a:b matchup".into());
+	}
+	Ok(out)
+}
+
+fn resolved_pairings(cfg: &BenchConfig) -> Vec<(Actor, Actor)> {
+	cfg.pairings.clone().unwrap_or_else(|| pairings(&cfg.bots))
+}
+
+fn matchup_label(p1: DeckArchetype, p2: DeckArchetype) -> String {
+	format!("{} vs {}", p1.name(), p2.name())
+}
+
 fn need(flag: &str, v: Option<impl AsRef<str>>) -> Result<String, String> {
 	v.map(|s| s.as_ref().to_string())
 		.ok_or_else(|| format!("missing value for {flag}"))
@@ -385,6 +454,13 @@ struct SeatStats {
 	snapshots: u32,
 	p1_open_dots: u32,
 	p1_open_n: u32,
+	bead_contrib: u32,
+	bead_needed: u32,
+	spawn_two_ring_single_bead: u32,
+	depth_max: u8,
+	mcts_depth_sum: f64,
+	mcts_depth_n: u32,
+	mcts_depth_max: u8,
 }
 
 fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
@@ -430,7 +506,7 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!("# {}", cfg.label));
 	lines.push(limit_header(&cfg, rules.turn_limit));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} dot_percent={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} dot_percent={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -455,6 +531,7 @@ fn run(cfg: BenchConfig) {
 		rules.zag_numer,
 		rules.braid_numer,
 		rules.bead_numer,
+		rules.bead_scoring.name(),
 		rules.dot_percent,
 		rules.zag_mismatch.name(),
 		rules.path_constraint.name(),
@@ -468,33 +545,44 @@ fn run(cfg: BenchConfig) {
 		"# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).".into(),
 	);
 	lines.push(
-		"# pairing  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
+		"# search_depth: mm_avg/mm_max = completed iterative-deepening depth; mcts_avg/mcts_max = visit-weighted tree depth (root excluded from the mean).".into(),
+	);
+	lines.push(
+		"# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
 	);
 
 	let keep_log = cfg.games_log.is_some();
-	let pairs = pairings(&cfg.bots);
+	let pairs = resolved_pairings(&cfg);
+	let matchups = cfg.matchups.clone();
 	let stdout = Mutex::new(());
 	let mut jobs = Vec::new();
-	for (pi, &(p1, p2)) in pairs.iter().enumerate() {
-		for g in 0..cfg.games {
-			let seed = cfg
-				.seed
-				.wrapping_add((pi as u64).wrapping_mul(10_000))
-				.wrapping_add(u64::from(g));
-			jobs.push(GameJob {
-				pi,
-				g,
-				p1,
-				p2,
-				seed,
-				want_record: p1 == Actor::Minimax && p2 == Actor::Mcts && g == 0,
-			});
+	for (mi, &(p1_deck, p2_deck)) in matchups.iter().enumerate() {
+		for (pi, &(p1, p2)) in pairs.iter().enumerate() {
+			for g in 0..cfg.games {
+				let seed = cfg
+					.seed
+					.wrapping_add((mi as u64).wrapping_mul(100_000))
+					.wrapping_add((pi as u64).wrapping_mul(10_000))
+					.wrapping_add(u64::from(g));
+				jobs.push(GameJob {
+					pi,
+					mi,
+					g,
+					p1,
+					p2,
+					p1_deck,
+					p2_deck,
+					seed,
+					want_record: p1 == Actor::Minimax && p2 == Actor::Mcts && g == 0 && mi == 0,
+				});
+			}
 		}
 	}
 	println!(
-		"running {} games across {} pairings with --jobs {} ({})...",
+		"running {} games across {} pairings × {} matchups with --jobs {} ({})...",
 		jobs.len(),
 		pairs.len(),
+		matchups.len(),
 		cfg.jobs,
 		cfg.limit.label()
 	);
@@ -502,6 +590,9 @@ fn run(cfg: BenchConfig) {
 	let limit = cfg.limit;
 	let setup = cfg.setup;
 	let outs = run_parallel(cfg.jobs, jobs, |job| {
+		let mut job_setup = setup;
+		job_setup.p1_deck = job.p1_deck;
+		job_setup.p2_deck = job.p2_deck;
 		let result = play_game(
 			rules,
 			job.seed,
@@ -511,7 +602,7 @@ fn run(cfg: BenchConfig) {
 			job.want_record,
 			keep_log,
 			scenario.as_ref(),
-			setup,
+			job_setup,
 		);
 		{
 			let _g = stdout.lock().unwrap_or_else(|e| e.into_inner());
@@ -534,7 +625,8 @@ fn run(cfg: BenchConfig) {
 		JobOut { job, result }
 	});
 
-	let mut by_pair: Vec<Vec<PlayResult>> = (0..pairs.len()).map(|_| Vec::new()).collect();
+	let mut by_pair: Vec<Vec<PlayResult>> =
+		(0..pairs.len() * matchups.len()).map(|_| Vec::new()).collect();
 	let mut record: Option<GameRecord> = None;
 	let mut deck_rows: Vec<DeckRow> = Vec::new();
 	let mut logs: Vec<GameLog> = Vec::new();
@@ -547,19 +639,30 @@ fn run(cfg: BenchConfig) {
 			log.pairing = format!("{} vs {}", out.job.p1.name(), out.job.p2.name());
 			log.p1 = out.job.p1.name().to_string();
 			log.p2 = out.job.p2.name().to_string();
+			log.deck_matchup = Some(matchup_label(out.job.p1_deck, out.job.p2_deck));
 			logs.push(log);
 		}
 		let mut row = out.result.deck.clone();
-		row.pairing = format!("{} vs {}", out.job.p1.name(), out.job.p2.name());
+		row.pairing = format!(
+			"{} vs {} [{}]",
+			out.job.p1.name(),
+			out.job.p2.name(),
+			matchup_label(out.job.p1_deck, out.job.p2_deck)
+		);
 		row.game = out.job.g + 1;
 		deck_rows.push(row);
-		by_pair[out.job.pi].push(out.result);
+		let gi = out.job.mi * pairs.len() + out.job.pi;
+		by_pair[gi].push(out.result);
 	}
 
 	let mut pairing_results: Vec<(usize, SeatStats, String)> = Vec::new();
-	for (pi, &(p1, p2)) in pairs.iter().enumerate() {
-		let (stats, line) = summarize_pairing(p1, p2, cfg.games, &by_pair[pi]);
-		pairing_results.push((pi, stats, line));
+	for (mi, &(p1_deck, p2_deck)) in matchups.iter().enumerate() {
+		for (pi, &(p1, p2)) in pairs.iter().enumerate() {
+			let gi = mi * pairs.len() + pi;
+			let (stats, line) =
+				summarize_pairing(p1, p2, cfg.games, &by_pair[gi], matchup_label(p1_deck, p2_deck));
+			pairing_results.push((gi, stats, line));
+		}
 	}
 	let mut stall_games = 0u32;
 	let mut stall_rep2 = 0u32;
@@ -592,6 +695,15 @@ fn run(cfg: BenchConfig) {
 	let mut token_sum = 0u64;
 	let mut bench_len_sum = 0u64;
 	let mut snapshots = 0u32;
+	let mut bead_contrib = 0u32;
+	let mut bead_needed = 0u32;
+	let mut spawn_two_ring = 0u32;
+	let mut mm_depth_sum = 0.0f64;
+	let mut mm_depth_n = 0u32;
+	let mut mm_depth_max = 0u8;
+	let mut mcts_depth_sum = 0.0f64;
+	let mut mcts_depth_n = 0u32;
+	let mut mcts_depth_max = 0u8;
 	for (_, stats, line) in &pairing_results {
 		println!("{line}");
 		lines.push(line.clone());
@@ -621,6 +733,15 @@ fn run(cfg: BenchConfig) {
 		token_sum += stats.token_sum;
 		bench_len_sum += stats.bench_len_sum;
 		snapshots += stats.snapshots;
+		bead_contrib += stats.bead_contrib;
+		bead_needed += stats.bead_needed;
+		spawn_two_ring += stats.spawn_two_ring_single_bead;
+		mm_depth_sum += stats.depth_sum;
+		mm_depth_n += stats.depth_n;
+		mm_depth_max = mm_depth_max.max(stats.depth_max);
+		mcts_depth_sum += stats.mcts_depth_sum;
+		mcts_depth_n += stats.mcts_depth_n;
+		mcts_depth_max = mcts_depth_max.max(stats.mcts_depth_max);
 		stall_games += cfg.games;
 		stall_rep2 += stats.games_repeat_ge2;
 		stall_rep3 += stats.games_repeat_ge3;
@@ -668,6 +789,112 @@ fn run(cfg: BenchConfig) {
 		"# capture_dest  bench={bench_captures} avg_per_game={avg_bench_cap:.2}  tokens={token_captures} avg_per_game={avg_token_cap:.2}"
 	));
 	lines.push(format!(
+		"# bead_captures  contrib={bead_contrib} needed={bead_needed} spawn_two_ring_single_bead={spawn_two_ring}  of_total={captures}"
+	));
+	let mm_avg = if mm_depth_n == 0 { 0.0 } else { mm_depth_sum / f64::from(mm_depth_n) };
+	let mcts_avg = if mcts_depth_n == 0 { 0.0 } else { mcts_depth_sum / f64::from(mcts_depth_n) };
+	lines.push(format!(
+		"# search_depth  mm_avg={mm_avg:.2} mm_max={mm_depth_max} mm_n={mm_depth_n}  mcts_avg={mcts_avg:.2} mcts_max={mcts_depth_max} mcts_n={mcts_depth_n}"
+	));
+	{
+		let mut matchup_lines: Vec<(String, u32, u32, u32, u32)> = Vec::new();
+		for (mi, &(a, b)) in matchups.iter().enumerate() {
+			let mut w = 0u32;
+			let mut d = 0u32;
+			let mut l = 0u32;
+			let mut turns = 0u32;
+			for (pi, _) in pairs.iter().enumerate() {
+				for r in &by_pair[mi * pairs.len() + pi] {
+					turns += r.turns;
+					match r.status {
+						GameStatus::Won { winner: Player::One, .. } => w += 1,
+						GameStatus::Won { winner: Player::Two, .. } => l += 1,
+						_ => d += 1,
+					}
+				}
+			}
+			matchup_lines.push((matchup_label(a, b), w, d, l, turns));
+		}
+		let bits: Vec<String> = matchup_lines
+			.iter()
+			.map(|(name, w, d, l, turns)| {
+				let n = w + d + l;
+				let avg = if n == 0 { 0.0 } else { f64::from(*turns) / f64::from(n) };
+				format!("{name} {w}-{d}-{l} avg_turns={avg:.2}")
+			})
+			.collect();
+		lines.push(format!("# matchup_totals  {}", bits.join("  |  ")));
+		println!("# matchup_totals  {}", bits.join("  |  "));
+	}
+	{
+		// Seat-agnostic archetype record: does braid-heavy (or bead-heavy)
+		// win from both seats in the cross matchup? That's the primary
+		// "dominant strategy" signal.
+		let mut p1_w = [0u32; 3];
+		let mut p1_d = [0u32; 3];
+		let mut p1_l = [0u32; 3];
+		let mut p2_w = [0u32; 3];
+		let mut p2_d = [0u32; 3];
+		let mut p2_l = [0u32; 3];
+		let idx = |a: DeckArchetype| match a {
+			DeckArchetype::Mixed => 0,
+			DeckArchetype::BraidHeavy => 1,
+			DeckArchetype::BeadHeavy => 2,
+		};
+		for (mi, &(a, b)) in matchups.iter().enumerate() {
+			for (pi, _) in pairs.iter().enumerate() {
+				for r in &by_pair[mi * pairs.len() + pi] {
+					match r.status {
+						GameStatus::Won { winner: Player::One, .. } => {
+							p1_w[idx(a)] += 1;
+							p2_l[idx(b)] += 1;
+						}
+						GameStatus::Won { winner: Player::Two, .. } => {
+							p1_l[idx(a)] += 1;
+							p2_w[idx(b)] += 1;
+						}
+						_ => {
+							p1_d[idx(a)] += 1;
+							p2_d[idx(b)] += 1;
+						}
+					}
+				}
+			}
+		}
+		let names = ["mixed", "braid", "bead"];
+		let bits: Vec<String> = (0..3)
+			.filter(|&i| p1_w[i] + p1_d[i] + p1_l[i] + p2_w[i] + p2_d[i] + p2_l[i] > 0)
+			.map(|i| {
+				format!(
+					"{} P1={}-{}-{} P2={}-{}-{}",
+					names[i], p1_w[i], p1_d[i], p1_l[i], p2_w[i], p2_d[i], p2_l[i]
+				)
+			})
+			.collect();
+		lines.push(format!("# archetype_seat  {}", bits.join("  |  ")));
+		println!("# archetype_seat  {}", bits.join("  |  "));
+		let mut short_n = 0u32;
+		let mut short_lock = 0u32;
+		let mut short_ctrl = 0u32;
+		for results in &by_pair {
+			for r in results {
+				if r.turns > 20 {
+					continue;
+				}
+				short_n += 1;
+				match r.status {
+					GameStatus::Won { reason: EndReason::LockedOut, .. } => short_lock += 1,
+					GameStatus::Won { reason: EndReason::Control, .. } => short_ctrl += 1,
+					_ => {}
+				}
+			}
+		}
+		lines.push(format!(
+			"# short_games  turns_le_20={short_n} lockout={short_lock} control={short_ctrl}"
+		));
+		println!("# short_games  turns_le_20={short_n} lockout={short_lock} control={short_ctrl}");
+	}
+	lines.push(format!(
 		"# tokens_bench_over_time  mean_tokens_per_side={mean_tokens:.2}  mean_bench_per_side={mean_bench:.2}  snapshots={snapshots}"
 	));
 	let mut pick_w = [0u32; 12];
@@ -693,6 +920,12 @@ fn run(cfg: BenchConfig) {
 	println!("# center_captures  opponent_tiles_removed={center_captures}  avg_per_game={avg_center:.2}  self_captures={center_self_captures}  self_avg_per_game={avg_center_self:.2}");
 	println!(
 		"# capture_dest  bench={bench_captures} avg_per_game={avg_bench_cap:.2}  tokens={token_captures} avg_per_game={avg_token_cap:.2}"
+	);
+	println!(
+		"# bead_captures  contrib={bead_contrib} needed={bead_needed} spawn_two_ring_single_bead={spawn_two_ring}  of_total={captures}"
+	);
+	println!(
+		"# search_depth  mm_avg={mm_avg:.2} mm_max={mm_depth_max} mm_n={mm_depth_n}  mcts_avg={mcts_avg:.2} mcts_max={mcts_depth_max} mcts_n={mcts_depth_n}"
 	);
 	println!(
 		"# tokens_bench_over_time  mean_tokens_per_side={mean_tokens:.2}  mean_bench_per_side={mean_bench:.2}  snapshots={snapshots}"
@@ -743,7 +976,12 @@ fn run(cfg: BenchConfig) {
 	}
 
 	if let Some(path) = cfg.games_log.as_ref() {
-		logs.sort_by(|a, b| a.pairing.cmp(&b.pairing).then(a.game.cmp(&b.game)));
+		logs.sort_by(|a, b| {
+			a.pairing
+				.cmp(&b.pairing)
+				.then(a.deck_matchup.cmp(&b.deck_matchup))
+				.then(a.game.cmp(&b.game))
+		});
 		if let Err(err) = write_games_log(path, &logs) {
 			eprintln!("failed to write {}: {err}", path.display());
 			std::process::exit(1);
@@ -819,7 +1057,10 @@ fn run_calibrate(cfg: &BenchConfig) {
 					iter_n += 1;
 					iter_min = iter_min.min(st.iterations);
 					iter_max = iter_max.max(st.iterations);
-					println!("  seed={seed} mcts iters={}", st.iterations);
+					println!(
+						"  seed={seed} mcts iters={} tree_depth={:.2}/{}",
+						st.iterations, st.mcts_avg_depth, st.mcts_max_depth
+					);
 				}
 				_ => {}
 			}
@@ -842,6 +1083,7 @@ fn run_calibrate(cfg: &BenchConfig) {
 	);
 	println!("# minimax_nodes n={node_n} mean={mean_nodes:.0} min={node_min} max={node_max} mean_depth={mean_depth:.2}");
 	println!("# mcts_iters n={iter_n} mean={mean_iters:.0} min={iter_min} max={iter_max}");
+	println!("# search_depth  mm_avg={mean_depth:.2}");
 	println!("# recommended --budget nodes:{rec_nodes},iters:{rec_iters}");
 	println!(
 		"# current constants CALIBRATED_NODES_PER_MOVE={CALIBRATED_NODES_PER_MOVE} CALIBRATED_ITERS_PER_MOVE={CALIBRATED_ITERS_PER_MOVE}"
@@ -926,9 +1168,12 @@ fn games_log_size(path: &Path) -> String {
 #[derive(Clone, Copy)]
 struct GameJob {
 	pi: usize,
+	mi: usize,
 	g: u32,
 	p1: Actor,
 	p2: Actor,
+	p1_deck: DeckArchetype,
+	p2_deck: DeckArchetype,
 	seed: u64,
 	want_record: bool,
 }
@@ -954,13 +1199,18 @@ fn summarize_pairing(
 	p2: Actor,
 	games: u32,
 	results: &[PlayResult],
+	matchup: String,
 ) -> (SeatStats, String) {
 	let mut stats = SeatStats::default();
 	for result in results {
 		stats.turns += result.turns;
 		stats.depth_sum += result.depth_sum;
 		stats.depth_n += result.depth_n;
+		stats.depth_max = stats.depth_max.max(result.depth_max);
 		stats.iter_sum += result.iter_sum;
+		stats.mcts_depth_sum += result.mcts_depth_sum;
+		stats.mcts_depth_n += result.mcts_depth_n;
+		stats.mcts_depth_max = stats.mcts_depth_max.max(result.mcts_depth_max);
 		stats.iter_n += result.iter_n;
 		if result.max_repeat >= 2 {
 			stats.games_repeat_ge2 += 1;
@@ -984,6 +1234,9 @@ fn summarize_pairing(
 		stats.snapshots += result.snapshots;
 		stats.p1_open_dots += result.p1_open_dots;
 		stats.p1_open_n += result.p1_open_n;
+		stats.bead_contrib += result.bead_contrib;
+		stats.bead_needed += result.bead_needed;
+		stats.spawn_two_ring_single_bead += result.spawn_two_ring_single_bead;
 		match result.status {
 			GameStatus::Won { winner, reason } => {
 				if winner == Player::One {
@@ -1010,12 +1263,18 @@ fn summarize_pairing(
 	let avg_depth =
 		if stats.depth_n == 0 { 0.0 } else { stats.depth_sum / f64::from(stats.depth_n) };
 	let avg_iters = if stats.iter_n == 0 { 0.0 } else { stats.iter_sum / f64::from(stats.iter_n) };
+	let mcts_avg_depth = if stats.mcts_depth_n == 0 {
+		0.0
+	} else {
+		stats.mcts_depth_sum / f64::from(stats.mcts_depth_n)
+	};
 	let avg_cap = f64::from(stats.captures) / f64::from(n);
 	let avg_self = f64::from(stats.self_captures) / f64::from(n);
 	let line = format!(
-		"{:<15} vs {:<15}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}  self={:.2}",
+		"{:<15} vs {:<15}  {:<13}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}  self={:.2}  mm_max={} mcts_avg={:.2} mcts_max={}",
 		p1.name(),
 		p2.name(),
+		matchup,
 		stats.wins,
 		stats.draws,
 		stats.losses,
@@ -1034,7 +1293,10 @@ fn summarize_pairing(
 		avg_depth,
 		avg_iters,
 		avg_cap,
-		avg_self
+		avg_self,
+		stats.depth_max,
+		mcts_avg_depth,
+		stats.mcts_depth_max
 	);
 	(stats, line)
 }
@@ -1131,8 +1393,12 @@ struct PlayResult {
 	max_occ_repeat: u32,
 	depth_sum: f64,
 	depth_n: u32,
+	depth_max: u8,
 	iter_sum: f64,
 	iter_n: u32,
+	mcts_depth_sum: f64,
+	mcts_depth_n: u32,
+	mcts_depth_max: u8,
 	captures: u32,
 	self_captures: u32,
 	center_captures: u32,
@@ -1144,6 +1410,9 @@ struct PlayResult {
 	snapshots: u32,
 	p1_open_dots: u32,
 	p1_open_n: u32,
+	bead_contrib: u32,
+	bead_needed: u32,
+	spawn_two_ring_single_bead: u32,
 	record: Option<GameRecord>,
 	log: Option<GameLog>,
 	deck: DeckRow,
@@ -1209,8 +1478,12 @@ fn play_game(
 	let mut max_occ = 0u32;
 	let mut depth_sum = 0.0;
 	let mut depth_n = 0u32;
+	let mut depth_max = 0u8;
 	let mut iter_sum = 0.0;
 	let mut iter_n = 0u32;
+	let mut mcts_depth_sum = 0.0;
+	let mut mcts_depth_n = 0u32;
+	let mut mcts_depth_max = 0u8;
 	let mut record_lines = Vec::new();
 	let mut game_log = keep_log.then(|| {
 		let mut log = GameLog::begin(
@@ -1232,6 +1505,9 @@ fn play_game(
 	let mut center_self_captures = 0u32;
 	let mut bench_captures = 0u32;
 	let mut token_captures = 0u32;
+	let mut bead_contrib = 0u32;
+	let mut bead_needed = 0u32;
+	let mut spawn_two_ring_single_bead = 0u32;
 	let mut token_sum = 0u64;
 	let mut bench_len_sum = 0u64;
 	let mut snapshots = 0u32;
@@ -1294,10 +1570,14 @@ fn play_game(
 		if actor == Actor::Minimax {
 			depth_sum += f64::from(st.depth);
 			depth_n += 1;
+			depth_max = depth_max.max(st.depth);
 		}
 		if actor == Actor::Mcts {
 			iter_sum += f64::from(st.iterations);
 			iter_n += 1;
+			mcts_depth_sum += f64::from(st.mcts_avg_depth);
+			mcts_depth_n += 1;
+			mcts_depth_max = mcts_depth_max.max(st.mcts_max_depth);
 		}
 		match action {
 			Action::Add { bench_index, .. } => {
@@ -1340,17 +1620,31 @@ fn play_game(
 					.iter()
 					.filter(|r| r.dest == apa_kan::game::CaptureDest::Tokens)
 					.count() as u32;
+				bead_contrib += outcome.removals.iter().filter(|r| r.bead_contrib).count() as u32;
+				bead_needed += outcome.removals.iter().filter(|r| r.bead_needed).count() as u32;
+				spawn_two_ring_single_bead +=
+					outcome.removals.iter().filter(|r| r.spawn_two_ring_single_bead).count() as u32;
 				if keep_record {
 					record_lines.push(format!(
-						"{:>3}. {}   [depth={} iters={}]",
+						"{:>3}. {}   [mm_depth={} iters={} mcts_depth={:.2}/{}]",
 						game.turn_count(),
 						outcome.log_line,
 						st.depth,
-						st.iterations
+						st.iterations,
+						st.mcts_avg_depth,
+						st.mcts_max_depth
 					));
 				}
 				if let Some(log) = game_log.as_mut() {
-					log.push_action(action, piece, &outcome, &game);
+					log.push_action_with_search(
+						action,
+						piece,
+						&outcome,
+						&game,
+						st.depth,
+						st.mcts_max_depth,
+						st.mcts_avg_depth,
+					);
 				}
 			}
 			Err(_) => {
@@ -1420,8 +1714,12 @@ fn play_game(
 		max_occ_repeat: max_occ,
 		depth_sum,
 		depth_n,
+		depth_max,
 		iter_sum,
 		iter_n,
+		mcts_depth_sum,
+		mcts_depth_n,
+		mcts_depth_max,
 		captures,
 		self_captures,
 		center_captures,
@@ -1433,6 +1731,9 @@ fn play_game(
 		snapshots,
 		p1_open_dots,
 		p1_open_n,
+		bead_contrib,
+		bead_needed,
+		spawn_two_ring_single_bead,
 		record,
 		log: game_log,
 		deck: DeckRow {
@@ -1514,6 +1815,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut braid_rings = 0u32;
 	let mut braid_pieces = 0u32;
 	let mut bead_rings = 0u32;
+	let mut bead_pieces = 0u32;
 	let mut rings = 0u32;
 	for _ in 0..n {
 		let t = sample_tile(
@@ -1535,6 +1837,9 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			braid_pieces += 1;
 		}
 		bead_rings += u32::from(t.bead_ring_count());
+		if t.bead_ring_count() >= 2 {
+			bead_pieces += 1;
+		}
 		rings += k as u32;
 	}
 	lines.push(format!(
@@ -1552,7 +1857,8 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			f64::from(braid_rings) / f64::from(rings)
 		));
 		lines.push(format!(
-			"# ring_process_beads  rings={rings} beads={bead_rings} rate={:.4}",
+			"# ring_process_beads  pieces={n} grouped={bead_pieces} piece_rate={:.4} rings={rings} beads={bead_rings} ring_rate={:.4}",
+			f64::from(bead_pieces) / f64::from(n),
 			f64::from(bead_rings) / f64::from(rings)
 		));
 	}
@@ -1790,6 +2096,11 @@ mod tests {
 					|| line.starts_with("# captures")
 					|| line.starts_with("# center_captures")
 					|| line.starts_with("# capture_dest")
+					|| line.starts_with("# bead_captures")
+					|| line.starts_with("# search_depth")
+					|| line.starts_with("# matchup_totals")
+					|| line.starts_with("# archetype_seat")
+					|| line.starts_with("# short_games")
 					|| line.starts_with("# tokens_bench_over_time")
 					|| line.starts_with("# pick_dot_ratio")
 			})
@@ -1862,6 +2173,24 @@ mod tests {
 		let cfg = parse(Vec::<String>::new()).unwrap();
 		assert_eq!(cfg.limit, SearchLimit::calibrated());
 		assert!(cfg.jobs >= 1);
+		assert_eq!(cfg.matchups, vec![(DeckArchetype::Mixed, DeckArchetype::Mixed)]);
+	}
+
+	#[test]
+	fn parse_pairings_and_deck_matchups() {
+		let cfg = parse(vec![
+			"--pairings".to_string(),
+			"minimax:mcts,mcts:minimax".to_string(),
+			"--deck-matchups".to_string(),
+			"braid:bead,bead:braid,mixed:mixed".to_string(),
+			"--bead-scoring".to_string(),
+			"shared".to_string(),
+		])
+		.unwrap();
+		assert_eq!(cfg.pairings.as_ref().map(|p| p.len()), Some(2));
+		assert_eq!(cfg.matchups.len(), 3);
+		assert_eq!(cfg.matchups[0], (DeckArchetype::BraidHeavy, DeckArchetype::BeadHeavy));
+		assert_eq!(cfg.rules.bead_scoring, apa_kan::game::BeadScoring::SharedChannel);
 	}
 
 	/// Default rules include beads; `--jobs 1` and `--jobs 4` must still

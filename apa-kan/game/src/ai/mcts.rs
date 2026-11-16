@@ -142,10 +142,47 @@ pub fn search(
 		}
 	}
 
+	let (mcts_max_depth, mcts_avg_depth) = tree_depth_stats(t);
 	(
 		best.to_action(game).unwrap_or(fallback),
-		SearchStats { depth: 0, iterations, nodes: u64::from(iterations) },
+		SearchStats {
+			iterations,
+			nodes: u64::from(iterations),
+			mcts_max_depth,
+			mcts_avg_depth,
+			..SearchStats::default()
+		},
 	)
+}
+
+/// Max tree depth from the current root, and visit-weighted mean depth of
+/// non-root nodes. Root is depth 0. Unvisited nodes are ignored.
+fn tree_depth_stats(tree: &MctsTree) -> (u8, f32) {
+	let mut max_d = 0u8;
+	let mut wsum = 0.0f64;
+	let mut vsum = 0.0f64;
+	let mut stack = vec![(tree.root, 0u8)];
+	let mut seen = vec![false; tree.nodes.len()];
+	while let Some((idx, d)) = stack.pop() {
+		if idx >= tree.nodes.len() || seen[idx] {
+			continue;
+		}
+		seen[idx] = true;
+		let n = &tree.nodes[idx];
+		if n.visits > 0 {
+			max_d = max_d.max(d);
+			if d > 0 {
+				wsum += f64::from(n.visits) * f64::from(d);
+				vsum += f64::from(n.visits);
+			}
+		}
+		let next = d.saturating_add(1);
+		for &c in &n.children {
+			stack.push((c, next));
+		}
+	}
+	let avg = if vsum <= 0.0 { 0.0 } else { wsum / vsum };
+	(max_d, avg as f32)
 }
 
 fn iterate(

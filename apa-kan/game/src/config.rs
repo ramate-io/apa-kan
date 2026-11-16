@@ -6,10 +6,10 @@ use std::process;
 use std::time::Duration;
 
 use crate::ai::Actor;
-use crate::deck::{PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
+use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	BraidFailMismatch, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint,
-	RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
+	BeadScoring, BraidFailMismatch, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp,
+	PathConstraint, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -104,6 +104,14 @@ impl GameConfig {
 				}
 				"--pick" => {
 					cfg.setup.pick = PickStrategy::parse(&require_value("--pick", it.next())?)?;
+				}
+				"--p1-deck" => {
+					cfg.setup.p1_deck =
+						DeckArchetype::parse(&require_value("--p1-deck", it.next())?)?;
+				}
+				"--p2-deck" => {
+					cfg.setup.p2_deck =
+						DeckArchetype::parse(&require_value("--p2-deck", it.next())?)?;
 				}
 				"--think-ms" => {
 					let ms = parse_u64("--think-ms", &require_value("--think-ms", it.next())?)?;
@@ -327,6 +335,9 @@ where
 			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
 			rules.bead_numer = if on { crate::game::BEAD_NUMER_DEFAULT } else { 0 };
 		}
+		"--bead-scoring" => {
+			rules.bead_scoring = BeadScoring::parse(&require_value(arg, it.next())?)?;
+		}
 		"--dot-chance" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n > 100 {
@@ -372,6 +383,8 @@ pub fn usage() -> &'static str {
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
 	   --deck-noise <0..100>                      Resample that percent of a mirrored collection (default: 0)\n\
 	   --pick <heuristic|search|greedy>           Bench 7+4 picker (default: heuristic)\n\
+	   --p1-deck <mixed|braid|bead>               P1 collection archetype (default: mixed)\n\
+	   --p2-deck <mixed|braid|bead>               P2 collection archetype (default: mixed)\n\
 	   --think-ms <n>                             Bot think time in ms (default: 80)\n\
 	   --delay-ms <n>                             Delay between bot moves (default: 350)\n\
 	   --actions <1..8>                           Actions per turn (default: 1)\n\
@@ -407,8 +420,9 @@ pub fn usage() -> &'static str {
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
-	   --bead-chance <0..7>                       Each remaining normal ring is a bead with k/7 chance (default: 1)\n\
+	   --bead-chance <0..7>                       A piece forms a 2–3 bead group with k/7 chance (default: 1)\n\
 	   --beads <on|off>                           Alias for --bead-chance 1 or 0 (default: on)\n\
+	   --bead-scoring <independent|shared>        Normal/bead combine: max (B, default) or sum (A)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
 	   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)\n\
@@ -548,6 +562,9 @@ mod tests {
 		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.bead_numer, 1);
+		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
+		assert_eq!(cfg.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
+		assert_eq!(cfg.setup.p2_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.rules.dot_percent, crate::game::DOT_PERCENT_DEFAULT);
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 		assert!(cfg.rules.counted_pass_through);
@@ -652,6 +669,19 @@ mod tests {
 		assert_eq!(three.rules.bead_numer, 3);
 		let err = GameConfig::parse(["--bead-chance", "8"]).unwrap_err();
 		assert!(err.contains("bead-chance"));
+	}
+
+	#[test]
+	fn parses_bead_scoring_and_deck_archetypes() {
+		let shared = GameConfig::parse(["--bead-scoring", "shared"]).unwrap();
+		assert_eq!(shared.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
+		let ind = GameConfig::parse(["--bead-scoring", "independent"]).unwrap();
+		assert_eq!(ind.rules.bead_scoring, crate::game::BeadScoring::Independent);
+		let err = GameConfig::parse(["--bead-scoring", "average"]).unwrap_err();
+		assert!(err.contains("bead-scoring"));
+		let decks = GameConfig::parse(["--p1-deck", "braid", "--p2-deck", "bead"]).unwrap();
+		assert_eq!(decks.setup.p1_deck, crate::deck::DeckArchetype::BraidHeavy);
+		assert_eq!(decks.setup.p2_deck, crate::deck::DeckArchetype::BeadHeavy);
 	}
 
 	#[test]
