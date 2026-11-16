@@ -468,10 +468,12 @@ fn search_child(
 
 	let in_pv = move_index == 0;
 	let mut depth = child_depth;
+	// Skip the root ply: reducing late root moves burns the ID budget on
+	// re-searches and dropped completed depth from 4 to 3 in the ablation.
 	let reduce = ctx.config.lmr
 		&& !in_pv
 		&& !capture
-		&& ply > 0
+		&& ply > 1
 		&& child_depth >= LMR_MIN_DEPTH
 		&& move_index >= LMR_MOVE_SKIP;
 	if reduce {
