@@ -1603,6 +1603,22 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_bead_shared_channel_groups_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/groups/groups_shallow.jsonl.gz",
+			50,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_groups_deep_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/groups/groups_deep.jsonl.gz",
+			10,
+		);
+	}
+
+	#[test]
 	fn default_games_log_path_is_jsonl_gz_sibling() {
 		let p =
 			std::path::Path::new("apa-kan/game/benchmark_results/low_value_pairs_deck11_on.txt");

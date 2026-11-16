@@ -22,7 +22,7 @@ Vs [`capture_modifiers/`](capture_modifiers/) (**49-7-52**, 41/18/2/47/0, mean *
 
 ## Research: bead independent vs shared channel
 
-[`bead_shared_channel/`](bead_shared_channel/) compared rule A (independent: normal+bead) with rule B (`max` instead of sum) while singles still generated. Quote those numbers from that directory. Live default is now rule B with 2–3 bead groups only; grouped reruns live in [`bead_shared_channel/groups/`](bead_shared_channel/groups/). The 108-game zag-color-exclusion H2H above predates this default.
+[`bead_shared_channel/`](bead_shared_channel/) compared rule A (independent: normal+bead) with rule B (`max` instead of sum) while singles still generated. Quote those numbers from that directory. Live default is now rule B with 2–3 bead groups only; grouped reruns live in [`bead_shared_channel/groups/`](bead_shared_channel/groups/) (shallow P1 **20-6-24**, deep P1 **3-0-7**; still no dominant deck strategy). The 108-game zag-color-exclusion H2H above predates this default.
 
 ## Historical: capture modifiers (before zag-color exclusion)
 
