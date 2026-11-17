@@ -67,8 +67,8 @@ Emblems sit at the **top** of the tile, warped/rotated with the face like captur
 
 - Non-empty emblem: rings (normal, zag, braid, bead) open a ~70° **C-notch** at the top, same idea as the capture-mark notch.
 - Empty slot: full rings at the top.
-- Crescent Moon: a thin two-circle sliver (waxing/waning moon), back on the upper-left, horns pointing right and down-right. Solid fill, no star.
-- Two Zag Zs: two parallel vertical zigzags (lightning: `>` stacked over `<`), sharp corners, uniform stroke.
+- Crescent Moon: a thin two-circle sliver (waxing/waning moon) filling the top notch, back on the upper-left, horns pointing right and down-right. Solid fill, no star. Fully inside the tile disc.
+- Two Zag Zs: two identical parallel upright vertical zigzags (lightning: `>` stacked over `<`), sharp corners, uniform stroke. The pair rotates with the tile as a unit. Fully inside the tile disc.
 
 Desktop PNG close-ups: [`emblem_crescent_dot.png`](../../apa-kan/game/screenshots/emblem_crescent_dot.png), [`emblem_crescent_triangle.png`](../../apa-kan/game/screenshots/emblem_crescent_triangle.png), [`emblem_zs_dot.png`](../../apa-kan/game/screenshots/emblem_zs_dot.png), [`emblem_zs_triangle.png`](../../apa-kan/game/screenshots/emblem_zs_triangle.png).
 

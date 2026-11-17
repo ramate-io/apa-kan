@@ -982,7 +982,9 @@ impl TileRingDraw {
 		}
 	}
 
-	/// Polar frame of the emblem slot: tile center, mid-angle, radius.
+	/// Rigid frame of the emblem slot: tile center, mid-angle, radius.
+	/// Glyphs sit in the top notch, fully inside the disc; the pair rotates
+	/// with the tile as a unit (no per-stroke polar fan along the rim).
 	pub fn emblem_frame(
 		self,
 		tile_center: [f32; 2],
@@ -990,12 +992,22 @@ impl TileRingDraw {
 		up: [f32; 2],
 	) -> ([f32; 2], f32, f32) {
 		let mid = down_angle(up);
-		let mark_r = self.capture_mark_r(tile_radius, 2);
-		let rho_track = self.ring_radius(tile_radius, 0).max(tile_radius * 0.55);
-		let rho = (rho_track - mark_r * 0.08)
-			.min(tile_radius - mark_r * 1.05)
-			.max(tile_radius * 0.45);
+		let half = self.emblem_half_extent();
+		let pad = (0.65 * self.scale).max(0.5);
+		let rho = (tile_radius - half - pad).max(tile_radius * 0.42);
 		(tile_center, mid, rho)
+	}
+
+	/// Outer-circle radius of the two-circle moon (~2–3 ring-widths tall).
+	pub fn crescent_radius(self) -> f32 {
+		let stroke = self.zag_stroke.max(0.55);
+		(self.gap * 1.52).max(stroke * 2.8)
+	}
+
+	fn emblem_half_extent(self) -> f32 {
+		let stroke = self.zag_stroke.max(0.55);
+		let zag_h = stroke * 3.15;
+		(self.crescent_radius() * 0.92).max(zag_h + stroke * 0.55)
 	}
 
 	/// Thin two-circle crescent (waning/waxing sliver), opening right/down-right.
@@ -1006,8 +1018,7 @@ impl TileRingDraw {
 		up: [f32; 2],
 	) -> Vec<[f32; 2]> {
 		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
-		let r = self.capture_mark_r(tile_radius, 2) * 1.35;
-		crescent_on_arc(origin, theta, rho, r)
+		crescent_on_arc(origin, theta, rho, self.crescent_radius())
 	}
 
 	/// Strip triangles for the two-circle crescent (a centroid fan would fill the bite).
@@ -1018,11 +1029,10 @@ impl TileRingDraw {
 		up: [f32; 2],
 	) -> Vec<[[f32; 2]; 3]> {
 		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
-		let r = self.capture_mark_r(tile_radius, 2) * 1.35;
-		crescent_tris_on_arc(origin, theta, rho, r)
+		crescent_tris_on_arc(origin, theta, rho, self.crescent_radius())
 	}
 
-	/// Two parallel vertical zigzags (lightning / `>` over `<`) in the top notch.
+	/// Two identical parallel upright zigzags (lightning / `>` over `<`).
 	pub fn two_zag_z_polys(
 		self,
 		tile_center: [f32; 2],
@@ -1030,16 +1040,13 @@ impl TileRingDraw {
 		up: [f32; 2],
 	) -> [Vec<[f32; 2]>; 2] {
 		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
-		// Amplitude and gap are in stroke units so the bends stay visible
-		// (a capture-mark-sized zigzag is thinner than the zag stroke).
 		let stroke = self.zag_stroke.max(0.55);
-		let h = stroke * 2.15;
-		let w = stroke * 1.25;
-		let sep = stroke * 2.4;
-		let n0 = -stroke * 0.95;
+		let h = stroke * 3.15;
+		let w = stroke * 0.78;
+		let sep = w + stroke * 1.12;
 		[
-			zag_zigzag_on_arc(origin, theta, rho, h, w, n0, -sep),
-			zag_zigzag_on_arc(origin, theta, rho, h, w, n0, sep),
+			zag_zigzag_upright(origin, theta, rho, h, w, -sep),
+			zag_zigzag_upright(origin, theta, rho, h, w, sep),
 		]
 	}
 }
@@ -1107,8 +1114,8 @@ fn crescent_arcs(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> (Vec<[f32; 2
 	use std::f32::consts::PI;
 	let n = TILE_MARK_DOT_SAMPLES.max(20);
 	let outer_r = r;
-	let inner_r = r * 0.97;
-	let offset = r * 0.32;
+	let inner_r = r * 0.93;
+	let offset = r * 0.40;
 	// ~−38° from +s toward −n: horns point right and down-right, back is upper-left.
 	let open = -38.0 * PI / 180.0;
 	let (os, on) = (open.cos(), open.sin());
@@ -1122,7 +1129,7 @@ fn crescent_arcs(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> (Vec<[f32; 2
 	let mut outer = sample_circle_arc(c0, outer_r, p, q, back, n);
 	let mut inner = sample_circle_arc(c1, inner_r, p, q, terminator, n);
 	center_local_pair(&mut outer, &mut inner);
-	(warp_local(origin, theta, rho, &outer), warp_local(origin, theta, rho, &inner))
+	(emblem_warp(origin, theta, rho, &outer), emblem_warp(origin, theta, rho, &inner))
 }
 
 fn crescent_tris_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[[f32; 2]; 3]> {
@@ -1202,48 +1209,32 @@ fn center_local_pair(a: &mut [[f32; 2]], b: &mut [[f32; 2]]) {
 	}
 }
 
-fn warp_local(origin: [f32; 2], theta: f32, rho: f32, pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+/// Rigid `(s, n)` → world: `+n` along the emblem radial, `+s` 90° CCW.
+/// Same first-order frame as polar, without fanning each stroke along the rim.
+fn emblem_local_to_world(origin: [f32; 2], theta: f32, rho: f32, s: f32, n: f32) -> [f32; 2] {
+	let (ct, st) = (theta.cos(), theta.sin());
+	[origin[0] + (rho + n) * ct - s * st, origin[1] + (rho + n) * st + s * ct]
+}
+
+fn emblem_warp(origin: [f32; 2], theta: f32, rho: f32, pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 	pts.iter()
-		.map(|p| polar_local_to_world(origin, theta, rho, p[0], p[1]))
+		.map(|p| emblem_local_to_world(origin, theta, rho, p[0], p[1]))
 		.collect()
 }
 
-fn zag_zigzag_on_arc(
+fn zag_zigzag_upright(
 	origin: [f32; 2],
 	theta: f32,
 	rho: f32,
 	h: f32,
 	w: f32,
-	n0: f32,
 	s_off: f32,
 ) -> Vec<[f32; 2]> {
 	// Vertical lightning: top-left, down-right, down-left, down-right (`>` over `<`).
-	let verts = [
-		[-w + s_off, n0 + h],
-		[w + s_off, n0 + h / 3.0],
-		[-w + s_off, n0 - h / 3.0],
-		[w + s_off, n0 - h],
-	];
-	let m = TILE_MARK_TRI_EDGE_SAMPLES.max(3);
-	let mut out = Vec::new();
-	for i in 0..verts.len() - 1 {
-		let a = verts[i];
-		let b = verts[i + 1];
-		for k in 0..m {
-			let t = k as f32 / m as f32;
-			out.push(polar_local_to_world(
-				origin,
-				theta,
-				rho,
-				a[0] + (b[0] - a[0]) * t,
-				a[1] + (b[1] - a[1]) * t,
-			));
-		}
-	}
-	if let Some(&last) = verts.last() {
-		out.push(polar_local_to_world(origin, theta, rho, last[0], last[1]));
-	}
-	out
+	[[-w + s_off, h], [w + s_off, h / 3.0], [-w + s_off, -h / 3.0], [w + s_off, -h]]
+		.into_iter()
+		.map(|p| emblem_local_to_world(origin, theta, rho, p[0], p[1]))
+		.collect()
 }
 
 fn capture_triangle_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
@@ -4406,10 +4397,17 @@ mod tests {
 		let mut min_x = f32::INFINITY;
 		let mut left_y = 0.0f32;
 		let mut mean_y = 0.0f32;
+		let mut min_y = f32::INFINITY;
+		let mut max_y = f32::NEG_INFINITY;
+		let mut max_hyp = 0.0f32;
 		for p in &poly {
-			dist_sum += p[0].hypot(p[1]);
+			let hyp = p[0].hypot(p[1]);
+			dist_sum += hyp;
+			max_hyp = max_hyp.max(hyp);
 			assert!(p[1] > 0.0, "crescent sits at the top of the tile in Bevy coords");
 			mean_y += p[1];
+			min_y = min_y.min(p[1]);
+			max_y = max_y.max(p[1]);
 			if p[0] < min_x {
 				min_x = p[0];
 				left_y = p[1];
@@ -4417,6 +4415,13 @@ mod tests {
 		}
 		mean_y /= poly.len() as f32;
 		assert!(dist_sum / poly.len() as f32 > r * 0.4);
+		assert!(max_hyp < r - 0.2, "crescent stays inside the tile, max={max_hyp} r={r}");
+		assert!(
+			max_y - min_y > draw.gap * 1.7,
+			"crescent fills the notch, height={} gap={}",
+			max_y - min_y,
+			draw.gap
+		);
 		assert!(poly.iter().any(|p| p[0] > 0.0), "horns open toward +s (right)");
 		assert!(min_x < 0.0, "back of the sliver sits on the left");
 		assert!(
@@ -4425,14 +4430,28 @@ mod tests {
 		);
 		let zigs = draw.two_zag_z_polys([0.0, 0.0], r, up);
 		assert_eq!(zigs.len(), 2);
+		assert_eq!(zigs[0].len(), zigs[1].len());
+		assert!(zigs[0].len() >= 4, "each zag is an angular polyline");
+		let d0 = [zigs[1][0][0] - zigs[0][0][0], zigs[1][0][1] - zigs[0][0][1]];
+		for i in 0..zigs[0].len() {
+			let d = [zigs[1][i][0] - zigs[0][i][0], zigs[1][i][1] - zigs[0][i][1]];
+			assert!(
+				(d[0] - d0[0]).abs() < 1e-4 && (d[1] - d0[1]).abs() < 1e-4,
+				"zags are identical up to a shared translation, i={i} d={d:?} d0={d0:?}"
+			);
+		}
 		for zig in &zigs {
-			assert!(zig.len() >= 4, "each zag is an angular polyline");
 			let mut min_zx = f32::INFINITY;
 			let mut max_zx = f32::NEG_INFINITY;
 			let mut min_zy = f32::INFINITY;
 			let mut max_zy = f32::NEG_INFINITY;
 			for p in zig {
+				let hyp = p[0].hypot(p[1]);
 				assert!(p[1] > 0.0, "zag glyphs sit at the top, p={p:?}");
+				assert!(
+					hyp + draw.zag_stroke * 0.5 < r - 0.15,
+					"zag stroke stays inside the tile, hyp={hyp} r={r}"
+				);
 				min_zx = min_zx.min(p[0]);
 				max_zx = max_zx.max(p[0]);
 				min_zy = min_zy.min(p[1]);
