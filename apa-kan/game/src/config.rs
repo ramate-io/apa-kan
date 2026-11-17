@@ -148,6 +148,14 @@ impl GameConfig {
 						it.next(),
 					)?)?;
 				}
+				"--bot-config" => {
+					let path = PathBuf::from(require_value("--bot-config", it.next())?);
+					cfg.search = SearchConfig::load_path(&path)?;
+				}
+				"--list-search-profiles" => {
+					print!("{}", SearchConfig::list_text());
+					process::exit(0);
+				}
 				"--search" => {
 					cfg.search = cfg.search.with_spec(&require_value("--search", it.next())?)?;
 				}
@@ -400,8 +408,13 @@ pub fn usage() -> &'static str {
 	 Options:\n\
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
-	   --search-profile <enhanced|classic|plain>  Search levers (default: enhanced)\n\
-	   --search <k=v,...>                         Overlay ordering|tt|lmr|pvs|quiescence|pw|heuristic-playouts|threads\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative>\n\
+	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore)\n\
+	   --bot-config <path.toml>                   Load a SearchConfig TOML (overlays missing keys with enhanced defaults)\n\
+	   --list-search-profiles                     Print named presets and their labels\n\
+	   --search <k=v,...>                         Overlay any knob: ordering, tt, tt-bits, lmr, lmr-min-depth,\n\
+	                                              lmr-reduce, pvs, quiescence, q-depth, pw, pw-a, puct, playout-cutoff,\n\
+	                                              heuristic-playouts, threads, ...\n\
 	   --search-threads <1..32>                   MCTS root-parallel trees (default: 1; 1 keeps benches deterministic)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
@@ -487,7 +500,33 @@ mod tests {
 		assert!(cfg.search.transposition);
 		assert!(cfg.search.lmr && cfg.search.pvs);
 		assert_eq!(cfg.search.mcts_root_threads, 4);
-		assert_eq!(cfg.search.profile_name(), "custom");
+		// classic + LMR + PVS is the enhanced preset (PW stays off). Threads
+		// are ignored when naming the profile.
+		assert_eq!(cfg.search.profile_name(), "enhanced");
+		let custom =
+			GameConfig::parse(["--search-profile", "classic", "--search", "pw=on"]).unwrap();
+		assert_eq!(custom.search.profile_name(), "custom");
+	}
+
+	#[test]
+	fn parses_personality_profiles() {
+		let cfg = GameConfig::parse(["--search-profile", "tactical"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::tactical());
+		let cfg = GameConfig::parse(["--search-profile", "aggressive"]).unwrap();
+		assert_eq!(cfg.search.profile_name(), "tactical");
+		let cfg = GameConfig::parse(["--search-profile", "positional"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::positional());
+		let cfg = GameConfig::parse(["--search-profile", "explorative"]).unwrap();
+		assert!(cfg.search.mcts_progressive_widening);
+		assert_eq!(cfg.search.profile_name(), "explorative");
+	}
+
+	#[test]
+	fn parses_bot_config_toml() {
+		let path = format!("{}/bots/tactical.toml", env!("CARGO_MANIFEST_DIR"));
+		let cfg = GameConfig::parse(["--bot-config", &path]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::tactical());
+		assert_eq!(cfg.search.profile_name(), "tactical");
 	}
 
 	#[test]

@@ -22,12 +22,6 @@ use super::search_move::{apply_move, cheap_order, legal_search_moves, SearchMove
 use super::zobrist;
 use super::{count_repeats, SearchConfig, SearchLimit, SearchStats};
 
-const C_PUCT: f64 = 1.6;
-const RAVE_EQ: f64 = 300.0;
-const PLAYOUT_CUTOFF: u8 = 12;
-const EPSILON: f64 = 0.18;
-const PW_A: f64 = 1.5;
-const PW_ALPHA: f64 = 0.5;
 const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
 
 struct Node {
@@ -69,8 +63,10 @@ impl MctsTree {
 	}
 }
 
-fn pw_limit(visits: u32) -> usize {
-	1 + (PW_A * (visits as f64).powf(PW_ALPHA)) as usize
+fn pw_limit(visits: u32, config: SearchConfig) -> usize {
+	let a = f64::from(config.pw_a);
+	let alpha = f64::from(config.pw_alpha);
+	1 + (a * (visits as f64).powf(alpha)) as usize
 }
 
 fn should_expand(node: &Node, config: SearchConfig) -> bool {
@@ -80,7 +76,7 @@ fn should_expand(node: &Node, config: SearchConfig) -> bool {
 	if !config.mcts_progressive_widening {
 		return true;
 	}
-	node.children.len() < pw_limit(node.visits)
+	node.children.len() < pw_limit(node.visits, config)
 }
 
 fn prepare_untried(
@@ -380,7 +376,7 @@ fn iterate(
 	let mut actions: Vec<(Player, SearchMove)> = Vec::new();
 
 	while !tree.nodes[idx].children.is_empty() && !should_expand(&tree.nodes[idx], config) {
-		idx = puct_child(&tree.nodes, idx);
+		idx = puct_child(&tree.nodes, idx, config);
 		if let Some(mv) = tree.nodes[idx].action {
 			let player = state.current_player();
 			let _ = apply_move(&mut state, mv);
@@ -429,9 +425,9 @@ fn iterate(
 	let value = if let Some(term) = terminal_score(&state, game.current_player()) {
 		f64::from(term) / f64::from(super::eval::WIN)
 	} else if config.mcts_heuristic_playouts {
-		heavy_playout(&mut state, rng, game.current_player(), played, &mut playout_actions)
+		heavy_playout(&mut state, rng, game.current_player(), played, &mut playout_actions, config)
 	} else {
-		random_playout(&mut state, rng, game.current_player(), played, &mut playout_actions)
+		random_playout(&mut state, rng, game.current_player(), played, &mut playout_actions, config)
 	};
 
 	backprop(tree, &path, game.current_player(), value);
@@ -461,7 +457,7 @@ fn pick_untried(
 	if config.mcts_progressive_widening {
 		return untried.pop().unwrap_or(SearchMove::Pass);
 	}
-	if rng.gen_bool(0.25) {
+	if rng.gen_bool(f64::from(config.mcts_untried_random)) {
 		let i = rng.gen_range(0..untried.len());
 		return untried.swap_remove(i);
 	}
@@ -487,11 +483,13 @@ fn prior_of(state: &Game, mover: Player, played: &[u64]) -> f64 {
 	(f64::from(ev) / 350.0).tanh() * 0.5 + 0.5
 }
 
-fn puct_child(nodes: &[Node], idx: usize) -> usize {
+fn puct_child(nodes: &[Node], idx: usize, config: SearchConfig) -> usize {
 	let parent_n = nodes[idx].visits.max(1) as f64;
 	let mut best_idx = nodes[idx].children[0];
 	let mut best = f64::NEG_INFINITY;
 	let mut prior_sum = 0.0;
+	let rave_eq = f64::from(config.rave_eq).max(1.0);
+	let c_puct = f64::from(config.puct);
 	for &c in &nodes[idx].children {
 		prior_sum += nodes[c].prior.max(0.05);
 	}
@@ -503,10 +501,10 @@ fn puct_child(nodes: &[Node], idx: usize) -> usize {
 		let vis = n.visits as f64;
 		let q = if n.visits == 0 { 0.0 } else { n.value / vis };
 		let (rv, rn) = rave_q(&nodes[idx], n.action);
-		let beta = if vis + rn <= 0.0 { 0.0 } else { rn / (vis + rn + 4.0 * vis * rn / RAVE_EQ) };
+		let beta = if vis + rn <= 0.0 { 0.0 } else { rn / (vis + rn + 4.0 * vis * rn / rave_eq) };
 		let mixed = (1.0 - beta) * q + beta * rv;
 		let p = n.prior.max(0.05) / prior_sum;
-		let u = C_PUCT * p * parent_n.sqrt() / (1.0 + vis);
+		let u = c_puct * p * parent_n.sqrt() / (1.0 + vis);
 		let score = mixed + u;
 		if score > best {
 			best = score;
@@ -570,8 +568,9 @@ fn random_playout(
 	root: Player,
 	played: &[u64],
 	out_actions: &mut Vec<(Player, SearchMove)>,
+	config: SearchConfig,
 ) -> f64 {
-	for _ in 0..PLAYOUT_CUTOFF {
+	for _ in 0..config.playout_cutoff {
 		if game.status().is_over() {
 			break;
 		}
@@ -600,8 +599,10 @@ fn heavy_playout(
 	root: Player,
 	played: &[u64],
 	out_actions: &mut Vec<(Player, SearchMove)>,
+	config: SearchConfig,
 ) -> f64 {
-	for _ in 0..PLAYOUT_CUTOFF {
+	let epsilon = f64::from(config.playout_epsilon).clamp(0.0, 1.0);
+	for _ in 0..config.playout_cutoff {
 		if game.status().is_over() {
 			break;
 		}
@@ -610,7 +611,7 @@ fn heavy_playout(
 			break;
 		}
 		let player = game.current_player();
-		let mv = if rng.gen_bool(EPSILON) {
+		let mv = if rng.gen_bool(epsilon) {
 			moves[rng.gen_range(0..moves.len())]
 		} else {
 			greedy_sample(game, &moves, rng, played)
@@ -664,8 +665,8 @@ fn greedy_sample(
 	best
 }
 
-pub fn advance(tree: &mut Option<MctsTree>, game_after: &Game) {
+pub fn advance(tree: &mut Option<MctsTree>, game_after: &Game, config: SearchConfig) {
 	if let Some(t) = tree.as_mut() {
-		t.sync(game_after, None, SearchConfig::classic());
+		t.sync(game_after, None, config);
 	}
 }

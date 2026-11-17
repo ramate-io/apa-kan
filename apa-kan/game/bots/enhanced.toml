@@ -1,0 +1,15 @@
+# Live default (`--search-profile enhanced`).
+# LMR + PVS + quiescence on; MCTS progressive widening off.
+name = "enhanced"
+description = "Recommended search defaults"
+move_ordering = true
+transposition = true
+tt_bits = 18
+lmr = true
+pvs = true
+quiescence = true
+mcts_progressive_widening = false
+mcts_heuristic_playouts = true
+mcts_root_threads = 1
+puct = 1.6
+playout_cutoff = 12

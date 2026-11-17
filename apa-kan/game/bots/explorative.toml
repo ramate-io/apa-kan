@@ -1,0 +1,11 @@
+# Explorative personality.
+# Progressive widening on, high PUCT, noisier playouts.
+# Minimax keeps the enhanced LMR/PVS/quiescence defaults.
+name = "explorative"
+description = "Explorative"
+mcts_progressive_widening = true
+pw_a = 2.0
+pw_alpha = 0.5
+puct = 2.25
+playout_epsilon = 0.375
+mcts_untried_random = 0.375

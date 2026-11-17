@@ -18,12 +18,6 @@ enum Stop {
 }
 
 pub const MAX_PLY: usize = 48;
-const TT_MASK: usize = (1 << 18) - 1;
-const Q_DEPTH: u8 = 4;
-/// Do not reduce the first this-many ordered moves.
-const LMR_MOVE_SKIP: usize = 3;
-/// Interior depth must be at least this before LMR applies.
-const LMR_MIN_DEPTH: u8 = 3;
 
 #[derive(Clone, Copy)]
 enum Bound {
@@ -45,15 +39,22 @@ struct TTEntry {
 
 pub struct TranspositionTable {
 	entries: Vec<TTEntry>,
+	mask: usize,
 }
 
 impl TranspositionTable {
+	pub fn with_bits(bits: u8) -> Self {
+		let bits = bits.clamp(12, 22);
+		let n = 1usize << bits;
+		Self { entries: vec![TTEntry::default(); n], mask: n - 1 }
+	}
+
 	pub fn new() -> Self {
-		Self { entries: vec![TTEntry::default(); TT_MASK + 1] }
+		Self::with_bits(18)
 	}
 
 	fn probe(&self, hash: u64) -> Option<&TTEntry> {
-		let e = &self.entries[hash as usize & TT_MASK];
+		let e = &self.entries[hash as usize & self.mask];
 		if e.hash == hash {
 			Some(e)
 		} else {
@@ -62,7 +63,7 @@ impl TranspositionTable {
 	}
 
 	fn store(&mut self, hash: u64, depth: u8, score: i32, flag: Bound, best: Option<SearchMove>) {
-		let slot = hash as usize & TT_MASK;
+		let slot = hash as usize & self.mask;
 		let cur = &self.entries[slot];
 		if cur.hash == hash && cur.depth > depth {
 			return;
@@ -90,7 +91,7 @@ pub struct MinimaxState {
 impl MinimaxState {
 	pub fn with_config(config: SearchConfig) -> Self {
 		Self {
-			tt: TranspositionTable::new(),
+			tt: TranspositionTable::with_bits(config.tt_bits),
 			killers: [[None; 2]; MAX_PLY],
 			history: HistoryTable::new(),
 			last_move: None,
@@ -468,18 +469,21 @@ fn search_child(
 
 	let in_pv = move_index == 0;
 	let mut depth = child_depth;
-	// Skip the root ply: reducing late root moves burns the ID budget on
-	// re-searches and dropped completed depth from 4 to 3 in the ablation.
+	// Skip the root ply by default: reducing late root moves burns the ID
+	// budget on re-searches and dropped completed depth from 4 to 3 in the
+	// ablation. `lmr_skip_root=off` opts back in.
 	let reduce = ctx.config.lmr
 		&& !in_pv
 		&& !capture
-		&& ply > 1
-		&& child_depth >= LMR_MIN_DEPTH
-		&& move_index >= LMR_MOVE_SKIP;
+		&& (!ctx.config.lmr_skip_root || ply > 1)
+		&& child_depth >= ctx.config.lmr_min_depth
+		&& move_index >= usize::from(ctx.config.lmr_move_skip);
 	if reduce {
-		depth = child_depth.saturating_sub(1);
-		if move_index >= 8 && child_depth >= 5 {
-			depth = child_depth.saturating_sub(2);
+		depth = child_depth.saturating_sub(ctx.config.lmr_reduce.max(1));
+		if move_index >= usize::from(ctx.config.lmr_late_move)
+			&& child_depth >= ctx.config.lmr_late_depth
+		{
+			depth = child_depth.saturating_sub(ctx.config.lmr_late_reduce.max(1));
 		}
 	}
 
@@ -515,7 +519,7 @@ fn quiesce(
 		return term;
 	}
 	let stand = eval_now(game, ctx);
-	if qply >= Q_DEPTH {
+	if qply >= ctx.config.q_depth {
 		return stand;
 	}
 	if stand >= beta {
@@ -539,8 +543,9 @@ fn quiesce(
 		captures.push((gain, mv, child));
 	}
 	captures.sort_by(|a, b| b.0.cmp(&a.0));
-	if captures.len() > 8 {
-		captures.truncate(8);
+	let cap = usize::from(ctx.config.q_capture_cap).max(1);
+	if captures.len() > cap {
+		captures.truncate(cap);
 	}
 	for (_, _, mut child) in captures {
 		if ctx.exhausted() {
@@ -681,22 +686,23 @@ fn order_moves(
 	}
 	moves.sort_by_cached_key(|mv| {
 		let mut s = cheap_order(game, *mv);
-		s += capture_hint(game, *mv);
+		let hint = capture_hint(game, *mv);
+		s += hint.saturating_mul(config.order_capture_scale) / 100;
 		if Some(*mv) == tt_move {
-			s += 1_000_000;
+			s += config.order_tt_bonus;
 		}
 		if ply < MAX_PLY {
 			if killers[ply][0] == Some(*mv) {
-				s += 90_000;
+				s += config.order_killer_bonus;
 			} else if killers[ply][1] == Some(*mv) {
-				s += 80_000;
+				s += config.order_killer_bonus.saturating_sub(10_000);
 			}
 		}
 		if ply == 0 && is_reverse(*mv, last_move) && !center_relevant(game, *mv) {
 			s -= 400_000;
 		}
 		if center_relevant(game, *mv) {
-			s += 8_000;
+			s += config.order_center_bonus;
 		}
 		s += history.get(*mv);
 		-s

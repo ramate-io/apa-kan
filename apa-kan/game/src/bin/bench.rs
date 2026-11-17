@@ -71,9 +71,14 @@ fn usage() -> &'static str {
 	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
 	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
 	                        Each search stays single-threaded unless --search-threads > 1.\n\
-	   --search-profile <enhanced|classic|plain>  Search levers (default: enhanced)\n\
-	   --search <k=v,...>   Overlay ordering|tt|lmr|pvs|quiescence|pw|heuristic-playouts|threads\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative>\n\
+	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore)\n\
+	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced defaults)\n\
+	   --list-search-profiles    Print named presets and their labels\n\
+	   --search <k=v,...>   Overlay any knob (ordering, tt, tt-bits, lmr, lmr-min-depth, lmr-reduce,\n\
+	                        pvs, quiescence, q-depth, pw, pw-a, puct, playout-cutoff, threads, ...)\n\
 	   --p1-search-profile / --p2-search-profile  Per-seat profile (default: --search-profile)\n\
+	   --p1-bot-config / --p2-bot-config          Per-seat TOML profile\n\
 	   --p1-search / --p2-search                  Per-seat overlay\n\
 	   --search-threads <1..32>  MCTS root-parallel trees (default: 1; keep 1 for deterministic --jobs benches).\n\
 	                             Worker t is seeded with rng.gen() XOR (t+1)*golden; threads=1 draws nothing extra.\n\
@@ -249,6 +254,13 @@ where
 			"--search-profile" => {
 				cfg.search = SearchConfig::parse_profile(&need("--search-profile", it.next())?)?;
 			}
+			"--bot-config" => {
+				cfg.search = SearchConfig::load_path(Path::new(&need("--bot-config", it.next())?))?;
+			}
+			"--list-search-profiles" => {
+				print!("{}", SearchConfig::list_text());
+				std::process::exit(0);
+			}
 			"--search" => {
 				cfg.search = cfg.search.with_spec(&need("--search", it.next())?)?;
 			}
@@ -259,6 +271,14 @@ where
 			"--p2-search-profile" => {
 				cfg.p2_search =
 					Some(SearchConfig::parse_profile(&need("--p2-search-profile", it.next())?)?);
+			}
+			"--p1-bot-config" => {
+				cfg.p1_search =
+					Some(SearchConfig::load_path(Path::new(&need("--p1-bot-config", it.next())?))?);
+			}
+			"--p2-bot-config" => {
+				cfg.p2_search =
+					Some(SearchConfig::load_path(Path::new(&need("--p2-bot-config", it.next())?))?);
 			}
 			"--p1-search" => {
 				let base = cfg.p1_search.unwrap_or(cfg.search);
@@ -2454,6 +2474,18 @@ mod tests {
 		assert!(p1.lmr && p1.pvs);
 		assert_eq!(p1.mcts_root_threads, 4);
 		assert_eq!(seat_search(&cfg, false).profile_name(), "classic");
+	}
+
+	#[test]
+	fn parse_personality_and_bot_config() {
+		let cfg = parse(vec!["--search-profile".to_string(), "tactical".to_string()]).unwrap();
+		assert_eq!(cfg.search.profile_name(), "tactical");
+		let path = format!("{}/bots/explorative.toml", env!("CARGO_MANIFEST_DIR"));
+		let cfg = parse(vec!["--bot-config".to_string(), path]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::explorative());
+		assert_eq!(cfg.search.profile_name(), "explorative");
+		let cfg = parse(vec!["--search-profile".to_string(), "positional".to_string()]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::positional());
 	}
 
 	#[test]

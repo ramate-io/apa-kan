@@ -228,7 +228,7 @@ impl Searcher {
 	/// Walk trees to `game` (after an action was applied).
 	pub fn advance(&mut self, game: &Game) {
 		self.observe(game);
-		mcts::advance(&mut self.mcts, game);
+		mcts::advance(&mut self.mcts, game, self.config);
 	}
 
 	pub fn choose(
