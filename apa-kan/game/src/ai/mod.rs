@@ -141,7 +141,22 @@ pub struct SearchStats {
 	/// Deepest MCTS tree node from the root this move (root = 0).
 	pub mcts_max_depth: u8,
 	/// Visit-weighted mean MCTS node depth this move, excluding the root.
+	/// Factored ADD plies (choose-tile) are not counted.
 	pub mcts_avg_depth: f32,
+	/// Shannon entropy (nats) of the root visit distribution.
+	pub root_entropy: f32,
+	/// `exp(root_entropy)` — 1 if all visits on one move, ~legal if uniform.
+	pub root_eff_branch: f32,
+	/// Fraction of root visits on the most-visited child.
+	pub root_top1_share: f32,
+	/// Root children whose Q is within `1/sqrt(n_best)` of the best Q.
+	pub root_near_best_q: u16,
+	/// Max Q − min Q among the 10 most-visited root children.
+	pub root_q_spread_top10: f32,
+	/// Fraction of iteration checkpoints whose best move matches the final pick.
+	pub root_best_stability: f32,
+	/// Legal real moves at the root (not factored).
+	pub root_legal: u16,
 }
 
 pub struct HistoryTable {

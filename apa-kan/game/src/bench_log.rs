@@ -24,6 +24,10 @@ fn skip_zero_u8(v: &u8) -> bool {
 	*v == 0
 }
 
+fn skip_zero_u16(v: &u16) -> bool {
+	*v == 0
+}
+
 fn skip_zero_usize(v: &usize) -> bool {
 	*v == 0
 }
@@ -512,6 +516,20 @@ pub struct ActionLog {
 	/// Visit-weighted mean MCTS node depth this move, excluding the root.
 	#[serde(default, skip_serializing_if = "skip_zero_f32")]
 	pub mcts_avg_depth: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_entropy: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_eff_branch: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_top1_share: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_u16")]
+	pub root_near_best_q: u16,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_q_spread_top10: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_best_stability: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_u16")]
+	pub root_legal: u16,
 }
 
 /// One captured tile: original owner and where it went.
@@ -580,13 +598,27 @@ impl ActionLog {
 			mm_depth: 0,
 			mcts_max_depth: 0,
 			mcts_avg_depth: 0.0,
+			root_entropy: 0.0,
+			root_eff_branch: 0.0,
+			root_top1_share: 0.0,
+			root_near_best_q: 0,
+			root_q_spread_top10: 0.0,
+			root_best_stability: 0.0,
+			root_legal: 0,
 		}
 	}
 
-	pub fn with_search(mut self, mm_depth: u8, mcts_max_depth: u8, mcts_avg_depth: f32) -> Self {
-		self.mm_depth = mm_depth;
-		self.mcts_max_depth = mcts_max_depth;
-		self.mcts_avg_depth = mcts_avg_depth;
+	pub fn with_search(mut self, stats: crate::ai::SearchStats) -> Self {
+		self.mm_depth = stats.depth;
+		self.mcts_max_depth = stats.mcts_max_depth;
+		self.mcts_avg_depth = stats.mcts_avg_depth;
+		self.root_entropy = stats.root_entropy;
+		self.root_eff_branch = stats.root_eff_branch;
+		self.root_top1_share = stats.root_top1_share;
+		self.root_near_best_q = stats.root_near_best_q;
+		self.root_q_spread_top10 = stats.root_q_spread_top10;
+		self.root_best_stability = stats.root_best_stability;
+		self.root_legal = stats.root_legal;
 		self
 	}
 
@@ -827,6 +859,20 @@ pub struct GameLog {
 	pub mcts_depth_avg: f64,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub mcts_depth_max: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_entropy_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_eff_branch_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_top1_share_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_near_best_q_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_q_spread_top10_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_best_stability_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_legal_avg: f64,
 	/// Search-lever label for P1 (empty on logs from before search profiles).
 	#[serde(default, skip_serializing_if = "String::is_empty")]
 	pub p1_search: String,
@@ -873,6 +919,13 @@ impl GameLog {
 			mm_depth_max: 0,
 			mcts_depth_avg: 0.0,
 			mcts_depth_max: 0,
+			root_entropy_avg: 0.0,
+			root_eff_branch_avg: 0.0,
+			root_top1_share_avg: 0.0,
+			root_near_best_q_avg: 0.0,
+			root_q_spread_top10_avg: 0.0,
+			root_best_stability_avg: 0.0,
+			root_legal_avg: 0.0,
 			p1_search: String::new(),
 			p2_search: String::new(),
 		}
@@ -894,16 +947,10 @@ impl GameLog {
 		piece: Option<Tile>,
 		outcome: &ActionOutcome,
 		game_after: &Game,
-		mm_depth: u8,
-		mcts_max_depth: u8,
-		mcts_avg_depth: f32,
+		stats: crate::ai::SearchStats,
 	) {
 		self.actions
-			.push(ActionLog::record(action, piece, outcome, game_after).with_search(
-				mm_depth,
-				mcts_max_depth,
-				mcts_avg_depth,
-			));
+			.push(ActionLog::record(action, piece, outcome, game_after).with_search(stats));
 	}
 
 	pub fn finish(&mut self, live: &Game, low_value: Option<LowValueResolution>) {
@@ -935,6 +982,14 @@ impl GameLog {
 		let mut mcts_sum = 0.0f64;
 		let mut mcts_n = 0u32;
 		let mut mcts_max = 0u8;
+		let mut ent = 0.0f64;
+		let mut eff = 0.0f64;
+		let mut top1 = 0.0f64;
+		let mut near = 0.0f64;
+		let mut qspread = 0.0f64;
+		let mut stab = 0.0f64;
+		let mut legal = 0.0f64;
+		let mut spread_n = 0u32;
 		for act in &self.actions {
 			if act.mm_depth > 0 {
 				mm_sum += f64::from(act.mm_depth);
@@ -946,11 +1001,39 @@ impl GameLog {
 				mcts_n += 1;
 				mcts_max = mcts_max.max(act.mcts_max_depth);
 			}
+			if act.root_legal > 0 || act.root_eff_branch > 0.0 {
+				ent += f64::from(act.root_entropy);
+				eff += f64::from(act.root_eff_branch);
+				top1 += f64::from(act.root_top1_share);
+				near += f64::from(act.root_near_best_q);
+				qspread += f64::from(act.root_q_spread_top10);
+				stab += f64::from(act.root_best_stability);
+				legal += f64::from(act.root_legal);
+				spread_n += 1;
+			}
 		}
 		self.mm_depth_avg = if mm_n == 0 { 0.0 } else { mm_sum / f64::from(mm_n) };
 		self.mm_depth_max = mm_max;
 		self.mcts_depth_avg = if mcts_n == 0 { 0.0 } else { mcts_sum / f64::from(mcts_n) };
 		self.mcts_depth_max = mcts_max;
+		if spread_n == 0 {
+			self.root_entropy_avg = 0.0;
+			self.root_eff_branch_avg = 0.0;
+			self.root_top1_share_avg = 0.0;
+			self.root_near_best_q_avg = 0.0;
+			self.root_q_spread_top10_avg = 0.0;
+			self.root_best_stability_avg = 0.0;
+			self.root_legal_avg = 0.0;
+		} else {
+			let n = f64::from(spread_n);
+			self.root_entropy_avg = ent / n;
+			self.root_eff_branch_avg = eff / n;
+			self.root_top1_share_avg = top1 / n;
+			self.root_near_best_q_avg = near / n;
+			self.root_q_spread_top10_avg = qspread / n;
+			self.root_best_stability_avg = stab / n;
+			self.root_legal_avg = legal / n;
+		}
 	}
 }
 

@@ -408,13 +408,12 @@ pub fn usage() -> &'static str {
 	 Options:\n\
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative>\n\
-	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts>\n\
+	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused)\n\
 	   --bot-config <path.toml>                   Load a SearchConfig TOML (overlays missing keys with enhanced defaults)\n\
 	   --list-search-profiles                     Print named presets and their labels\n\
-	   --search <k=v,...>                         Overlay any knob: ordering, tt, tt-bits, lmr, lmr-min-depth,\n\
-	                                              lmr-reduce, pvs, quiescence, q-depth, pw, pw-a, puct, playout-cutoff,\n\
-	                                              heuristic-playouts, threads, ...\n\
+	   --search <k=v,...>                         Overlay any knob: ordering, tt, lmr, pvs, q-depth, pw, puct,\n\
+	                                              priors, pw-order, reuse, mcts-tt, factored, leaf, solver, threads, ...\n\
 	   --search-threads <1..32>                   MCTS root-parallel trees (default: 1; 1 keeps benches deterministic)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
@@ -519,6 +518,9 @@ mod tests {
 		let cfg = GameConfig::parse(["--search-profile", "explorative"]).unwrap();
 		assert!(cfg.search.mcts_progressive_widening);
 		assert_eq!(cfg.search.profile_name(), "explorative");
+		let cfg = GameConfig::parse(["--search-profile", "deep"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::deep_mcts());
+		assert_eq!(cfg.search.profile_name(), "deep_mcts");
 	}
 
 	#[test]

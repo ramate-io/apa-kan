@@ -116,6 +116,22 @@ def summarize(name: str, logs: list[dict]) -> None:
         f"search_depth  mm_avg={mm_mean:.2f} mm_max={mm_max}  "
         f"mcts_avg={mcts_mean:.2f} mcts_max={mcts_max}"
     )
+    ent = [g.get("root_entropy_avg") or 0 for g in logs if g.get("root_eff_branch_avg")]
+    eff = [g.get("root_eff_branch_avg") or 0 for g in logs if g.get("root_eff_branch_avg")]
+    top1 = [g.get("root_top1_share_avg") or 0 for g in logs if g.get("root_eff_branch_avg")]
+    near = [g.get("root_near_best_q_avg") or 0 for g in logs if g.get("root_eff_branch_avg")]
+    qsp = [g.get("root_q_spread_top10_avg") or 0 for g in logs if g.get("root_eff_branch_avg")]
+    stab = [g.get("root_best_stability_avg") or 0 for g in logs if g.get("root_eff_branch_avg")]
+    legal = [g.get("root_legal_avg") or 0 for g in logs if g.get("root_eff_branch_avg")]
+    if eff:
+        n = len(eff)
+        print(
+            "root_spread  "
+            f"entropy={sum(ent)/n:.2f} eff_branch={sum(eff)/n:.1f} "
+            f"top1={sum(top1)/n:.2f} near_q={sum(near)/n:.1f} "
+            f"q_spread10={sum(qsp)/n:.3f} stability={sum(stab)/n:.2f} "
+            f"legal={sum(legal)/n:.1f}"
+        )
 
     print("by pairing:")
     by_p: dict[str, list] = defaultdict(list)
