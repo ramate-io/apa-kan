@@ -162,24 +162,39 @@ Combined deep_mcts vs enhanced minimax is **10-2-12**. Roughly even, slight
 minimax edge. One 18-turn P2 low_value (`g5` seed 5) and one 196-turn P2
 low_value (`g12` seed 12). No lockout sweep.
 
-## Long MCTS (4×)
+## Long MCTS (4×, `mcts_long.txt`)
 
 Same config as `search_pruning/mcts_long.txt`: `--pairings mcts:mcts`,
 `--deck-matchups mixed:mixed,braid:braid,bead:bead,braid:bead,bead:braid`,
 `--games 6`, `--budget nodes:132000,iters:10400`, `--search-profile deep_mcts`.
-
-Numbers go in `mcts_long.txt` once that run is committed. Compare to
-enhanced (PW off) from PR #63:
+Elapsed **3460.8 s**.
 
 ```
-# seat_totals  P1 8-2-20  P2 20-2-8  games=30
-# matchup_totals  mixed vs mixed 0-0-6  |  braid vs braid 2-1-3  |  bead vs bead 1-1-4  |  braid vs bead 1-0-5  |  bead vs braid 4-0-2
-# archetype_seat  mixed P1=0-0-6 P2=6-0-0  |  braid P1=3-1-8 P2=5-1-6  |  bead P1=5-1-6 P2=9-1-2
-# search_depth  mcts_avg=2.48 mcts_max=13
+# seat_totals  P1 11-7-12  P2 12-7-11  games=30
+# end_reasons  elim=0 locked_out=1 control=3 low_value=23 turn_limit=3
+# search_depth  mcts_avg=3.14 mcts_max=19
+# root_spread  entropy=1.36 eff_branch=5.5 top1=0.62 stability=0.82 legal=42.0 n=1837
+# matchup_totals  mixed vs mixed 4-1-1  |  braid vs braid 1-3-2  |  bead vs bead 3-1-2  |  braid vs bead 1-1-4  |  bead vs braid 2-1-3
+# archetype_seat  mixed P1=4-1-1 P2=1-1-4  |  braid P1=2-4-6 P2=5-4-3  |  bead P1=5-2-5 P2=6-2-4
+# short_games  turns_le_20=5 lockout=0 control=0
 ```
 
-Bead vs braid was **9-0-3** across 12 directed games; mixed mirror was a
-P2 sweep. Those are the two follow-up samples after `mcts_long`.
+| Matchup | P1 W-D-L | avg turns | vs enhanced 4× (`search_pruning/mcts_long`) |
+|---|---|---|---|
+| mixed vs mixed | **4-1-1** | 67.33 | was **0-0-6** P2 sweep |
+| braid vs braid | 1-3-2 | 24.33 | 2-1-3 |
+| bead vs bead | 3-1-2 | 89.83 | 1-1-4 |
+| braid vs bead | 1-1-4 | 55.67 | 1-0-5 |
+| bead vs braid | 2-1-3 | 69.00 | 4-0-2 |
+
+- **Seat:** P1 11-7-12 / P2 12-7-11. The enhanced 4× **P2 20-2-8** lean and mixed P2 6-0-0 sweep **did not replicate**.
+- **Deck:** bead vs braid directed is bead **6-2-4** (bead as P1 2-1-3, bead as P2 4-1-1 from `braid vs bead`). Not the earlier 9-0-3. Analyzer flags bead as P2 4/5 decided vs braid on n=6; extra sample in `mcts_long_extra.txt`.
+- **Depth:** avg **3.14**, max **19** vs enhanced 2.48 / 13. Root visits more concentrated (eff_branch 5.5, top1 0.62).
+- **Endings:** 23 low_value, 3 control, 3 turn-limit, 1 lockout (`braid vs bead` g3 seed=300003, 34 turns).
+- **Openings:** every first action is a spawn ADD. No four-move line repeated. `add@5` is 1-4-3 (n=8, decided win rate 0.25).
+- **Braid mirror shorts:** seeds 100002 / 100003 / 100004 are 9 / 11 / 13-turn low_value **draws**. Seed 100004 is the same 13-turn braid-mirror example from #63; not a new winning exploit.
+
+Extra 4× mixed + bead-braid (seed 100, 12/matchup) goes in `mcts_long_extra.txt`.
 
 ## Correctness
 
@@ -206,7 +221,9 @@ P2 sweep. Those are the two follow-up samples after `mcts_long`.
 5. **Solver.** Correct on a 1-ply hold-win; no-op on opening ablations.
    How often it fires in real games is still open (needs a per-move proven
    count in the log).
-6. **Lockout rate** with live `deep_mcts` as P1 (5/12 mixed). Longer sample
-   in `mcts_long` before treating it as a strategy.
-7. **Mixed P2 lean and bead>braid** from PR #63's 4× enhanced MCTS. Recheck
-   with this preset in `mcts_long` plus extra bead/braid and mixed games.
+6. **Lockout rate** with live `deep_mcts` as P1 (5/12 mixed at 2600 iters).
+   The 4× self-play package had only 1 lockout / 30, so the H2H spike looks
+   matchup-specific, not a lockout script.
+7. **Mixed P2 lean and bead>braid** from PR #63's 4× enhanced MCTS. This
+   preset's 4× self-play is even by seat (11-7-12 / 12-7-11) and mixed is
+   4-1-1. Bead vs braid is 6-2-4, not 9-0-3. Extra sample still running.

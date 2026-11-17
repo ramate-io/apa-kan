@@ -263,6 +263,7 @@ def main() -> None:
         "h2h_mcts_deep_vs_mm",
         "h2h_mm_enhanced_vs_mcts_deep",
         "mcts_long",
+        "mcts_long_extra",
     ]
     args = sys.argv[1:] or names
     for name in args:
