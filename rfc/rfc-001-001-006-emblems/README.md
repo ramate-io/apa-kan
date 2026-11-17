@@ -102,8 +102,16 @@ Desktop PNG close-ups: [`emblem_crescent_dot.png`](../../apa-kan/game/screenshot
 2. **Crescent threshold.** Live rule is `eff >= weight`. The save is `eff == n_rings` at one adjacency (`eff > n_rings` still overwhelms). If `weight` ever diverges from `n_rings`, which side of the comparison should Crescent use?
 3. **Two Zag Zs once vs per edge.** Implemented **per mismatching incident edge** on the emblem tile. A tile with two zag-hitting neighbors gets +2. A once-per-tile reading is also plausible.
 4. **Inner-center double petal.** Those two arcs can each take the Zs +1. Should they collapse to one bonus because they share a neighbor?
-5. **Is +1 cost a fair price?** Collector H2H in [`emblems`](../../apa-kan/game/benchmark_results/emblems/) is the evidence. Quote those logs; do not guess.
+5. **Is +1 cost a fair price?** Collector H2H in [`emblems`](../../apa-kan/game/benchmark_results/emblems/) is the evidence. Against mixed, stuffed collectors are 5-0-7 calibrated (`h2h.txt`) and mixed vs crescent is 3-0-1 at 4× — not clearly underpriced. Stuffed collectors beat braid/bead at calibrated budget via opening weight (`higher_opening_strength_won=35/47`). Interpretations of questions 1–4 stay as implemented.
 
 ## H2H
 
-Release `apa-kan-bench`, zags on, doubles allowed, shared-channel 2–3 bead groups, `--pick search`, `--jobs 4`. Minimax uses `enhanced`; MCTS uses `deep_mcts`. Logs: [`apa-kan/game/benchmark_results/emblems/`](../../apa-kan/game/benchmark_results/emblems/). Quote numbers from the committed files in that directory.
+Release `apa-kan-bench`, zags on, doubles allowed, shared-channel 2–3 bead groups, `--pick search`, `--jobs 4`. Both seats `--search-profile deep_mcts` (minimax uses the enhanced ID knobs from that profile). Logs: [`apa-kan/game/benchmark_results/emblems/`](../../apa-kan/game/benchmark_results/emblems/). Quote numbers from the committed files in that directory.
+
+| Log | Games | P1 W-D-L | crescent_saves | zs_bonuses | elapsed |
+|---|---|---|---|---|---|
+| `h2h.txt` | 48 | 22-0-26 | 115 (2.40/game) | 152 (3.17/game) | 972.3 s |
+| `h2h_4x.txt` | 10 | 8-0-2 | 13 (1.30/game) | 7 (0.70/game) | 736.1 s |
+| `mcts_long.txt` | 30 | 18-1-11 | 64 (2.13/game) | 142 (4.73/game) | 2665.6 s |
+
+Calibrated `# archetype_seat` combined: crescent **15-0-5**, zs **12-0-8**, emblem **11-0-9**, mixed **7-0-5**, braid **2-0-10**, bead **1-0-11**. Collectors vs mixed **5-0-7**. `mcts_long` crescent vs zs is **6-0-0** (P1; 17–145 turns). +1 cost is not clearly underpriced vs mixed; stuffed collectors beat braid/bead via opening weight (`higher_opening_strength_won=35/47`). Not a four-move unbeatable line. Full tables in the emblems README.
