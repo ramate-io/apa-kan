@@ -93,6 +93,15 @@ pub const MAX_COLOR_RINGS: u8 = 3;
 /// Generated tiles are dots with this percent chance; the rest are triangles.
 /// CLI `--dot-chance 0..100`. Default 50/50.
 pub const DOT_PERCENT_DEFAULT: u8 = 50;
+/// Generation weight for no emblem. CLI `--emblem-weights`. Default 200.
+pub const EMBLEM_NONE_WEIGHT_DEFAULT: u16 = 200;
+/// Generation weight for Crescent Moon. Default 1 (1/202 with the others).
+pub const EMBLEM_CRESCENT_WEIGHT_DEFAULT: u16 = 1;
+/// Generation weight for Two Zag Zs. Default 1.
+pub const EMBLEM_ZS_WEIGHT_DEFAULT: u16 = 1;
+/// Extra deck cost paid by a non-empty emblem. Overwhelm still uses
+/// [`Tile::weight`] (`n_rings`); see [`Tile::cost`].
+pub const EMBLEM_COST: u8 = 1;
 /// Per live slot: empty + (6 colors × 4 types). Kind space is this cubed.
 pub const RING_TYPE_COUNT: usize = 4;
 pub const SLOT_KINDS: usize = 1 + 6 * RING_TYPE_COUNT;
@@ -449,6 +458,160 @@ impl CaptureDest {
 	}
 }
 
+/// One optional glyph in the tile's emblem slot (top of the face).
+///
+/// Generation weights default to None 200 / Crescent Moon 1 / Two Zag Zs 1.
+/// Each non-empty emblem adds [`EMBLEM_COST`] to [`Tile::cost`] (deck-building
+/// statistic). Overwhelm still compares against [`Tile::weight`] (`n_rings`);
+/// Crescent Moon changes that comparison when the piece has one adjacency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+pub enum Emblem {
+	#[default]
+	None = 0,
+	/// Mismatches equal to the tile's rings do not overwhelm it when it has
+	/// exactly one occupied neighbor. Strictly greater still overwhelms.
+	CrescentMoon = 1,
+	/// Each incident edge that already has a zag mismatch scores +1 more on
+	/// this tile's zag channel.
+	TwoZagZs = 2,
+}
+
+impl Emblem {
+	pub fn is_none(self) -> bool {
+		matches!(self, Self::None)
+	}
+
+	pub fn is_crescent(self) -> bool {
+		matches!(self, Self::CrescentMoon)
+	}
+
+	pub fn is_two_zag_zs(self) -> bool {
+		matches!(self, Self::TwoZagZs)
+	}
+
+	/// Extra deck cost. Zero for [`Self::None`], [`EMBLEM_COST`] otherwise.
+	pub fn cost(self) -> u8 {
+		if self.is_none() {
+			0
+		} else {
+			EMBLEM_COST
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::None => "none",
+			Self::CrescentMoon => "crescent",
+			Self::TwoZagZs => "zs",
+		}
+	}
+
+	pub fn tag(self) -> &'static str {
+		match self {
+			Self::None => "",
+			Self::CrescentMoon => "m",
+			Self::TwoZagZs => "zz",
+		}
+	}
+
+	pub fn bit(self) -> u8 {
+		self as u8
+	}
+
+	pub fn from_bit(bit: u8) -> Self {
+		match bit {
+			1 => Self::CrescentMoon,
+			2 => Self::TwoZagZs,
+			_ => Self::None,
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().replace('_', "-").as_str() {
+			"none" | "off" | "empty" | "0" => Ok(Self::None),
+			"crescent" | "crescent-moon" | "moon" | "m" => Ok(Self::CrescentMoon),
+			"zs" | "zz" | "two-zag-zs" | "two-zs" | "zags" | "zag-zs" => Ok(Self::TwoZagZs),
+			other => Err(format!("unknown emblem '{other}' (expected none|crescent|zs)")),
+		}
+	}
+}
+
+/// Independent generation weights for the emblem slot. Zero on Crescent and
+/// Two Zag Zs skips the RNG so `--emblems off` matches the pre-emblem deal
+/// for the same seed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EmblemWeights {
+	pub none: u16,
+	pub crescent: u16,
+	pub zs: u16,
+}
+
+impl Default for EmblemWeights {
+	fn default() -> Self {
+		Self {
+			none: EMBLEM_NONE_WEIGHT_DEFAULT,
+			crescent: EMBLEM_CRESCENT_WEIGHT_DEFAULT,
+			zs: EMBLEM_ZS_WEIGHT_DEFAULT,
+		}
+	}
+}
+
+impl EmblemWeights {
+	pub fn off() -> Self {
+		Self { none: 1, crescent: 0, zs: 0 }
+	}
+
+	pub fn total(self) -> u32 {
+		u32::from(self.none) + u32::from(self.crescent) + u32::from(self.zs)
+	}
+
+	/// `none,crescent,zs` (e.g. `200,1,1`).
+	pub fn parse(s: &str) -> Result<Self, String> {
+		let mut parts = s.split(',');
+		let none = parse_weight_part(parts.next(), "none")?;
+		let crescent = parse_weight_part(parts.next(), "crescent")?;
+		let zs = parse_weight_part(parts.next(), "zs")?;
+		if parts.next().is_some() {
+			return Err("invalid --emblem-weights (expected none,crescent,zs)".into());
+		}
+		let w = Self { none, crescent, zs };
+		if w.total() == 0 {
+			return Err("invalid --emblem-weights (at least one weight must be > 0)".into());
+		}
+		Ok(w)
+	}
+
+	pub fn label(self) -> String {
+		format!("{},{},{}", self.none, self.crescent, self.zs)
+	}
+}
+
+fn parse_weight_part(part: Option<&str>, name: &str) -> Result<u16, String> {
+	let raw = part.ok_or_else(|| format!("invalid --emblem-weights (missing {name})"))?;
+	raw.trim()
+		.parse::<u16>()
+		.map_err(|_| format!("invalid --emblem-weights {name} '{raw}'"))
+}
+
+/// Draw one emblem from [`EmblemWeights`]. Ability weights of 0 skip the
+/// RNG so `--emblems off` matches the pre-emblem deal for the same seed.
+pub fn sample_emblem(rng: &mut impl Rng, weights: EmblemWeights) -> Emblem {
+	if weights.crescent == 0 && weights.zs == 0 {
+		return Emblem::None;
+	}
+	let total = weights.total().max(1);
+	let mut roll = rng.gen_range(0..total);
+	if roll < u32::from(weights.none) {
+		return Emblem::None;
+	}
+	roll -= u32::from(weights.none);
+	if roll < u32::from(weights.crescent) {
+		return Emblem::CrescentMoon;
+	}
+	Emblem::TwoZagZs
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Tile {
 	pub id: u32,
@@ -467,6 +630,10 @@ pub struct Tile {
 	pub dots: u8,
 	/// Dot → captured tiles join the mover's bench. Triangle → spawn tokens.
 	pub capture: CaptureMark,
+	/// Optional emblem in the single top-of-tile slot. [`Emblem::None`] is
+	/// the empty slot; a non-empty emblem adds [`EMBLEM_COST`] to
+	/// [`Self::cost`].
+	pub emblem: Emblem,
 }
 
 /// Kind space: color-state × dots. Weight is the ring-slot count, already
@@ -536,6 +703,7 @@ impl Tile {
 			weight: n,
 			dots,
 			capture: CaptureMark::Triangle,
+			emblem: Emblem::None,
 		}
 	}
 
@@ -543,6 +711,18 @@ impl Tile {
 	pub fn with_capture(mut self, capture: CaptureMark) -> Self {
 		self.capture = capture;
 		self
+	}
+
+	/// Fixtures and constructors default to [`Emblem::None`].
+	pub fn with_emblem(mut self, emblem: Emblem) -> Self {
+		self.emblem = emblem;
+		self
+	}
+
+	/// Deck-building cost: ring-slot count plus the emblem surcharge.
+	/// Overwhelm still uses [`Self::weight`] (`n_rings`).
+	pub fn cost(self) -> u8 {
+		self.n_rings.saturating_add(self.emblem.cost())
 	}
 
 	pub fn ring_colors(&self) -> &[TileColor] {
@@ -833,7 +1013,9 @@ impl Tile {
 			})
 			.collect::<Vec<_>>()
 			.join("+");
-		format!("{rings} w{} d{} {}", self.weight, self.dots, self.capture.name())
+		let emblem =
+			if self.emblem.is_none() { String::new() } else { format!(" {}", self.emblem.name()) };
+		format!("{rings} w{} d{} {}{emblem}", self.weight, self.dots, self.capture.name())
 	}
 
 	/// Slot-coded color state: empty / (color × type) per live ring.
@@ -877,13 +1059,16 @@ impl Tile {
 
 	/// Piece value under `weights`: `dots * w.dots + normal_rings * w.normal_ring
 	/// + zag_rings * w.zag_ring + braid_rings * w.braid_ring + bead_rings *
-	/// w.bead_ring`. Used by the low-value end condition.
+	/// w.bead_ring + emblem_cost * w.emblem`. Used by the low-value end
+	/// condition. PRIMARY counts emblems as 0 so the first pass is still
+	/// dots+rings; TIEBREAK counts the +1 deck cost.
 	pub fn piece_value(self, weights: PieceValueWeights) -> i32 {
 		weights.dots * i32::from(self.dots)
 			+ weights.normal_ring * i32::from(self.normal_ring_count())
 			+ weights.zag_ring * i32::from(self.zag_ring_count())
 			+ weights.braid_ring * i32::from(self.braid_ring_count())
 			+ weights.bead_ring * i32::from(self.bead_ring_count())
+			+ weights.emblem * i32::from(self.emblem.cost())
 	}
 }
 
@@ -920,15 +1105,17 @@ pub struct PieceValueWeights {
 	pub zag_ring: i32,
 	pub braid_ring: i32,
 	pub bead_ring: i32,
+	pub emblem: i32,
 }
 
 impl PieceValueWeights {
 	/// Step 1: value = dots + rings (every ring 1). Lower wins.
 	pub const PRIMARY: Self =
-		Self { dots: 1, normal_ring: 1, zag_ring: 1, braid_ring: 1, bead_ring: 1 };
-	/// Step 2 on a primary tie: zag, braid, and bead rings are worth 2. Lower wins.
+		Self { dots: 1, normal_ring: 1, zag_ring: 1, braid_ring: 1, bead_ring: 1, emblem: 0 };
+	/// Step 2 on a primary tie: zag, braid, and bead rings are worth 2, and
+	/// a non-empty emblem counts its +1 deck cost. Lower wins.
 	pub const TIEBREAK: Self =
-		Self { dots: 1, normal_ring: 1, zag_ring: 2, braid_ring: 2, bead_ring: 2 };
+		Self { dots: 1, normal_ring: 1, zag_ring: 2, braid_ring: 2, bead_ring: 2, emblem: 1 };
 }
 
 /// A missing piece in a low-value pair. Treated as maximum value so the
@@ -1520,6 +1707,10 @@ pub struct RuleSet {
 	/// Percent of generated tiles that carry a **dot** capture mark (rest
 	/// triangles). Default [`DOT_PERCENT_DEFAULT`] (50). CLI `--dot-chance`.
 	pub dot_percent: u8,
+	/// Emblem-slot generation weights. Default None 200 / Crescent 1 /
+	/// Two Zag Zs 1. CLI `--emblem-weights`. Ability weights of 0 skip the
+	/// RNG (`--emblems off`).
+	pub emblem_weights: EmblemWeights,
 	/// Legacy: on a MOVE, each removed opponent tile draws one hidden bag tile
 	/// onto the bench. Default **false** (the whole deck is public; captures
 	/// earn tokens only). Kept so historical JSONL logs replay.
@@ -1619,6 +1810,7 @@ impl Default for RuleSet {
 			braid_numer: BRAID_NUMER_DEFAULT,
 			bead_numer: BEAD_NUMER_DEFAULT,
 			dot_percent: DOT_PERCENT_DEFAULT,
+			emblem_weights: EmblemWeights::default(),
 			capture_draw_on_move: false,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
@@ -1684,6 +1876,19 @@ pub struct Removal {
 	pub spawn_two_ring_single_bead: bool,
 }
 
+/// How often emblem abilities fired on one action. Counted on the live
+/// board after the ADD/MOVE lands and before removals, so search clones
+/// do not accumulate them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EmblemTrigger {
+	/// Crescent tiles that would have been overwhelmed under the ordinary
+	/// `eff >= weight` test but were saved by the 1-adjacency exception.
+	pub crescent_saves: u8,
+	/// Two Zag Zs +1 applications: one per incident edge of a Zs tile
+	/// whose zag-mismatch (before the bonus) was already > 0.
+	pub zs_bonuses: u8,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionOutcome {
 	pub action: Action,
@@ -1691,6 +1896,7 @@ pub struct ActionOutcome {
 	pub removals: Vec<Removal>,
 	pub draws: u8,
 	pub log_line: String,
+	pub emblem: EmblemTrigger,
 }
 
 #[derive(Clone, Debug)]
@@ -1790,6 +1996,7 @@ impl Game {
 					*next_id += 1;
 					Tile::with_typed_rings(id, owner, &spec.parts(), spec.weight, spec.dots)
 						.with_capture(spec.capture)
+						.with_emblem(spec.emblem)
 				})
 				.collect::<Vec<_>>()
 		};
@@ -2400,6 +2607,12 @@ impl Game {
 		if tile.zag_ring_count() > 0 || other.zag_ring_count() > 0 {
 			ch.zag_mismatch = self.rules.zag_mismatch.count(tile, other);
 		}
+		// Two Zag Zs: +1 on this tile's zag channel per incident edge that
+		// already has a zag mismatch. Applied when scoring `tile`, not
+		// mirrored onto `other` unless `other` also has the emblem.
+		if tile.emblem.is_two_zag_zs() && ch.zag_mismatch > 0 {
+			ch.zag_mismatch += 1;
+		}
 		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
 			if let Some((_, n)) = selected_braid(tile, other) {
 				ch.braid_match = i32::from(n);
@@ -2431,13 +2644,72 @@ impl Game {
 	/// each petal (not +1 per side of one collapsed pair).
 	pub fn tile_effective_weight(&self, node: NodeId) -> Option<i32> {
 		let tile = self.tile_at(node)?;
+		Some(self.effective_for_tile(node, tile))
+	}
+
+	/// Unique occupied neighbors of `node` (inner↔center is one neighbor
+	/// even though scoring walks two petals). Used by Crescent Moon.
+	pub fn occupied_adjacency_count(&self, node: NodeId) -> u8 {
+		let mut seen = [false; 32];
+		let mut n = 0u8;
+		for nb in self.board.incident_others(node) {
+			let i = nb as usize;
+			if i >= seen.len() || seen[i] {
+				continue;
+			}
+			if self.tile_at(nb).is_some() {
+				seen[i] = true;
+				n = n.saturating_add(1);
+			}
+		}
+		n
+	}
+
+	fn effective_for_tile(&self, node: NodeId, tile: Tile) -> i32 {
 		let mut effective = 0i32;
 		for nb in self.board.incident_others(node) {
 			if let Some(other) = self.tile_at(nb) {
 				effective += self.edge_channels(tile, other).effective_for(self.rules.bead_scoring);
 			}
 		}
-		Some(effective)
+		effective
+	}
+
+	/// Two Zag Zs +1 count for `tile` at `node`: incident edges whose
+	/// pre-bonus zag mismatch is already > 0.
+	pub fn zs_bonus_count(&self, node: NodeId, tile: Tile) -> u8 {
+		if !tile.emblem.is_two_zag_zs() {
+			return 0;
+		}
+		let mut n = 0u8;
+		for nb in self.board.incident_others(node) {
+			let Some(other) = self.tile_at(nb) else {
+				continue;
+			};
+			let mut probe = tile;
+			probe.emblem = Emblem::None;
+			if self.edge_channels(probe, other).zag_mismatch > 0 {
+				n = n.saturating_add(1);
+			}
+		}
+		n
+	}
+
+	/// Overwhelm using the live capture threshold (`eff` vs `n_rings` /
+	/// `weight`). Crescent Moon with exactly one occupied neighbor needs
+	/// `eff > n_rings`; every other case stays `eff >= weight`.
+	pub fn overwhelms(tile: Tile, occupied_adj: u8, effective: i32) -> bool {
+		if tile.emblem.is_crescent() && occupied_adj == 1 {
+			effective > i32::from(tile.n_rings.max(1))
+		} else {
+			effective >= i32::from(tile.weight)
+		}
+	}
+
+	/// Ordinary `eff >= weight` test, ignoring Crescent Moon. Used to count
+	/// crescent saves.
+	pub fn overwhelms_without_crescent(tile: Tile, effective: i32) -> bool {
+		effective >= i32::from(tile.weight)
 	}
 
 	/// Occupied-edge braid stats: `(edges with a braid, satisfied of those)`.
@@ -2478,10 +2750,14 @@ impl Game {
 	}
 
 	pub fn is_overwhelmed(&self, node: NodeId) -> bool {
-		match (self.tile_at(node), self.tile_effective_weight(node)) {
-			(Some(tile), Some(eff)) => eff >= i32::from(tile.weight),
-			_ => false,
-		}
+		let Some(tile) = self.tile_at(node) else {
+			return false;
+		};
+		Self::overwhelms(
+			tile,
+			self.occupied_adjacency_count(node),
+			self.effective_for_tile(node, tile),
+		)
 	}
 
 	/// Would `tile` be overwhelmed if placed at `node` (other tiles unchanged)?
@@ -2489,13 +2765,11 @@ impl Game {
 		if self.tile_at(node).is_some() {
 			return false;
 		}
-		let mut effective = 0i32;
-		for nb in self.board.incident_others(node) {
-			if let Some(other) = self.tile_at(nb) {
-				effective += self.edge_channels(tile, other).effective_for(self.rules.bead_scoring);
-			}
-		}
-		effective >= i32::from(tile.weight)
+		Self::overwhelms(
+			tile,
+			self.occupied_adjacency_count(node),
+			self.effective_for_tile(node, tile),
+		)
 	}
 
 	/// Bead-channel role in an overwhelm of `tile` at `node`.
@@ -2527,8 +2801,8 @@ impl Game {
 			with += ch.effective_for(self.rules.bead_scoring);
 			without += ch.without_beads().effective_for(self.rules.bead_scoring);
 		}
-		let weight = i32::from(tile.weight);
-		let needed = with >= weight && without < weight;
+		let adj = self.occupied_adjacency_count(node);
+		let needed = Self::overwhelms(tile, adj, with) && !Self::overwhelms(tile, adj, without);
 		let spawn = just_added == Some(node) && tile.n_rings == 2 && needed && single_bead_neighbor;
 		(contrib, needed, spawn)
 	}
@@ -2536,23 +2810,41 @@ impl Game {
 	pub fn collect_removals(&self) -> Vec<Removal> {
 		let mut out = Vec::new();
 		for (node, tile) in self.tiles() {
+			if !self.is_overwhelmed(node) {
+				continue;
+			}
 			if let Some((matches, mismatches)) = self.tile_score(node) {
-				if mismatches >= matches {
-					out.push(Removal {
-						node,
-						tile,
-						matches,
-						mismatches,
-						dest: CaptureDest::Tokens,
-						bead_contrib: false,
-						bead_needed: false,
-						spawn_two_ring_single_bead: false,
-					});
-				}
+				out.push(Removal {
+					node,
+					tile,
+					matches,
+					mismatches,
+					dest: CaptureDest::Tokens,
+					bead_contrib: false,
+					bead_needed: false,
+					spawn_two_ring_single_bead: false,
+				});
 			}
 		}
 		out.sort_by_key(|r| r.node);
 		out
+	}
+
+	/// Crescent saves and Two Zag Zs bonuses on the live board.
+	pub fn emblem_triggers(&self) -> EmblemTrigger {
+		let mut trigger = EmblemTrigger::default();
+		for (node, tile) in self.tiles() {
+			if tile.emblem.is_crescent() {
+				let eff = self.effective_for_tile(node, tile);
+				if Self::overwhelms_without_crescent(tile, eff)
+					&& !Self::overwhelms(tile, self.occupied_adjacency_count(node), eff)
+				{
+					trigger.crescent_saves = trigger.crescent_saves.saturating_add(1);
+				}
+			}
+			trigger.zs_bonuses = trigger.zs_bonuses.saturating_add(self.zs_bonus_count(node, tile));
+		}
+		trigger
 	}
 
 	pub fn legal_actions(&self) -> Vec<Action> {
@@ -2914,6 +3206,7 @@ impl Game {
 			_ => None,
 		};
 		let mut removals = self.collect_removals();
+		let emblem = self.emblem_triggers();
 		for rem in &mut removals {
 			rem.dest = dest;
 			let (contrib, needed, spawn) =
@@ -2969,7 +3262,7 @@ impl Game {
 			self.finish_turn(player);
 		}
 
-		Ok(ActionOutcome { action, player, removals, draws, log_line })
+		Ok(ActionOutcome { action, player, removals, draws, log_line, emblem })
 	}
 
 	fn finish_turn(&mut self, who: Player) {
@@ -3272,6 +3565,30 @@ pub fn sample_tile(
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
+	sample_tile_with(
+		owner,
+		max_rings,
+		zag_numer,
+		braid_numer,
+		bead_numer,
+		dot_percent,
+		EmblemWeights::default(),
+		next_id,
+		rng,
+	)
+}
+
+pub fn sample_tile_with(
+	owner: Player,
+	max_rings: u8,
+	zag_numer: u8,
+	braid_numer: u8,
+	bead_numer: u8,
+	dot_percent: u8,
+	emblem_weights: EmblemWeights,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+) -> Tile {
 	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
 	let mut ring_type = sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer);
 	sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
@@ -3283,9 +3600,10 @@ pub fn sample_tile(
 	} else {
 		CaptureMark::Triangle
 	};
+	let emblem = sample_emblem(rng, emblem_weights);
 	let id = *next_id;
 	*next_id += 1;
-	Tile { id, owner, rings, n_rings, ring_type, weight, dots, capture }
+	Tile { id, owner, rings, n_rings, ring_type, weight, dots, capture, emblem }
 }
 
 fn format_log(
@@ -3513,6 +3831,7 @@ mod tests {
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
 		assert_eq!(rules.braid_fail_mismatch, BraidFailMismatch::One);
 		assert_eq!(rules.bead_scoring, BeadScoring::SharedChannel);
+		assert_eq!(rules.emblem_weights, EmblemWeights::default());
 		assert_eq!(rules.no_same_piece_twice, SamePieceTwice::Off);
 		assert!(rules.no_moves_loses);
 		let game = Game::new(rules, 1);
@@ -8328,5 +8647,145 @@ mod tests {
 		let t = Tile::mono(1, Player::One, TileColor::Green, 1, 2);
 		assert_eq!(t.capture, CaptureMark::Triangle);
 		assert_eq!(t.dots, 2);
+		assert_eq!(t.emblem, Emblem::None);
+		assert_eq!(t.cost(), t.n_rings);
+	}
+
+	#[test]
+	fn emblem_adds_one_to_deck_cost_not_weight() {
+		let t =
+			Tile::mono(1, Player::One, TileColor::Green, 1, 1).with_emblem(Emblem::CrescentMoon);
+		assert_eq!(t.n_rings, 1);
+		assert_eq!(t.weight, 1);
+		assert_eq!(t.cost(), 2);
+		assert_eq!(t.emblem.cost(), 1);
+		let zs = t.with_emblem(Emblem::TwoZagZs);
+		assert_eq!(zs.cost(), 2);
+		assert_eq!(Tile::mono(2, Player::One, TileColor::Blue, 1, 1).cost(), 1);
+	}
+
+	#[test]
+	fn crescent_saves_a_one_adjacency_equal_rings_overwhelm() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let moon =
+			take(&mut game, Player::One, TileColor::Green, 1, 1).with_emblem(Emblem::CrescentMoon);
+		game.place_tile(spawn, moon);
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
+		assert_eq!(game.occupied_adjacency_count(spawn), 1);
+		assert_eq!(game.tile_effective_weight(spawn), Some(1));
+		assert!(!game.is_overwhelmed(spawn), "mismatch == rings with 1 adjacency is saved");
+		assert_eq!(game.emblem_triggers().crescent_saves, 1);
+		assert!(
+			!game.collect_removals().iter().any(|r| r.node == spawn),
+			"crescent tile itself is not removed; a 1-ring hitch neighbor may still pop"
+		);
+
+		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 1, 1);
+		assert!(game.occupied_adjacency_count(spawn) >= 2);
+		assert!(game.is_overwhelmed(spawn), "two mismatch neighbors still overwhelm");
+	}
+
+	#[test]
+	fn crescent_does_not_save_mismatch_strictly_above_rings() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let moon = game
+			.alloc_rings(Player::One, &[TileColor::Green], 1, 1)
+			.with_emblem(Emblem::CrescentMoon);
+		game.place_tile(spawn, moon);
+		let zag = game.alloc_ring_kinds(
+			Player::Two,
+			&[(TileColor::Green, true), (TileColor::Orange, false)],
+			2,
+			1,
+		);
+		game.place_tile(nbs[0], zag);
+		assert_eq!(game.occupied_adjacency_count(spawn), 1);
+		let eff = game.tile_effective_weight(spawn).unwrap();
+		assert!(eff > 1, "zag hit plus hitch should exceed one ring, eff={eff}");
+		assert!(game.is_overwhelmed(spawn));
+		assert_eq!(game.emblem_triggers().crescent_saves, 0);
+	}
+
+	#[test]
+	fn two_zag_zs_adds_one_per_mismatching_edge_on_the_emblem_tile() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let zs = game
+			.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1)
+			.with_emblem(Emblem::TwoZagZs);
+		game.place_tile(spawn, zs);
+		let hit = game.alloc_tile(Player::Two, TileColor::Orange, 1, 1);
+		game.place_tile(nbs[0], hit);
+		let ch = game.edge_channels(zs, hit);
+		assert!(ch.zag_mismatch >= 2, "base zag hit plus the emblem +1, got {}", ch.zag_mismatch);
+		assert_eq!(game.zs_bonus_count(spawn, zs), 1);
+		let from_neighbor = game.edge_channels(hit, zs);
+		assert_eq!(
+			from_neighbor.zag_mismatch,
+			ch.zag_mismatch - 1,
+			"neighbor without Zs does not receive the +1"
+		);
+		assert_eq!(game.emblem_triggers().zs_bonuses, 1);
+	}
+
+	#[test]
+	fn emblems_off_skips_rng_so_deals_match() {
+		let mut a_id = 1u32;
+		let mut b_id = 1u32;
+		let mut a_rng = StdRng::seed_from_u64(9);
+		let mut b_rng = StdRng::seed_from_u64(9);
+		let a = sample_tile_with(
+			Player::One,
+			3,
+			0,
+			0,
+			0,
+			50,
+			EmblemWeights::off(),
+			&mut a_id,
+			&mut a_rng,
+		);
+		let b = sample_tile_with(
+			Player::One,
+			3,
+			0,
+			0,
+			0,
+			50,
+			EmblemWeights::off(),
+			&mut b_id,
+			&mut b_rng,
+		);
+		assert_eq!(a.emblem, Emblem::None);
+		assert_eq!(a.rings, b.rings);
+		assert_eq!(a.dots, b.dots);
+		assert_eq!(a.capture, b.capture);
+	}
+
+	#[test]
+	fn emblem_generation_is_rare_under_default_weights() {
+		let mut rng = StdRng::seed_from_u64(21);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut crescent = 0u32;
+		let mut zs = 0u32;
+		for _ in 0..n {
+			let t =
+				sample_tile(Player::One, 3, 0, 0, 0, DOT_PERCENT_DEFAULT, &mut next_id, &mut rng);
+			match t.emblem {
+				Emblem::CrescentMoon => crescent += 1,
+				Emblem::TwoZagZs => zs += 1,
+				Emblem::None => {}
+			}
+		}
+		let c_rate = f64::from(crescent) / f64::from(n);
+		let z_rate = f64::from(zs) / f64::from(n);
+		assert!((0.002..0.009).contains(&c_rate), "crescent rate={c_rate:.4} (expected ~1/202)");
+		assert!((0.002..0.009).contains(&z_rate), "zs rate={z_rate:.4} (expected ~1/202)");
 	}
 }

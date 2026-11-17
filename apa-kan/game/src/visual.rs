@@ -195,6 +195,8 @@ pub const TILE_RING_NOTCH_1: f32 = 64.0 * std::f32::consts::PI / 180.0;
 pub const TILE_RING_NOTCH_2: f32 = 72.0 * std::f32::consts::PI / 180.0;
 /// Notch for 3 marks (~80°), wide enough that marks do not overlap the ends.
 pub const TILE_RING_NOTCH_3: f32 = 80.0 * std::f32::consts::PI / 180.0;
+/// Top emblem notch (~70°). Wide enough for two small Z glyphs or a moon.
+pub const TILE_EMBLEM_NOTCH: f32 = 70.0 * std::f32::consts::PI / 180.0;
 /// Samples along an open tile-ring arc.
 pub const TILE_RING_ARC_SAMPLES: u32 = 96;
 /// Samples around a capture-dot warped through tile polar coordinates.
@@ -979,6 +981,59 @@ impl TileRingDraw {
 			capture_dot_on_arc(origin, theta, rho, r)
 		}
 	}
+
+	/// Polar frame of the emblem slot: tile center, mid-angle, radius.
+	pub fn emblem_frame(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> ([f32; 2], f32, f32) {
+		let mid = down_angle(up);
+		let mark_r = self.capture_mark_r(tile_radius, 2);
+		let rho_track = self.ring_radius(tile_radius, 0).max(tile_radius * 0.55);
+		let rho = (rho_track - mark_r * 0.08)
+			.min(tile_radius - mark_r * 1.05)
+			.max(tile_radius * 0.45);
+		(tile_center, mid, rho)
+	}
+
+	/// Crescent moon: a filled disc with a bite taken toward the tile rim.
+	pub fn crescent_poly(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> Vec<[f32; 2]> {
+		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
+		let r = self.capture_mark_r(tile_radius, 2) * 1.15;
+		crescent_on_arc(origin, theta, rho, r)
+	}
+
+	/// Strip triangles for the crescent C (centroid fan would fill the bite).
+	pub fn crescent_tris(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> Vec<[[f32; 2]; 3]> {
+		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
+		let r = self.capture_mark_r(tile_radius, 2) * 1.15;
+		crescent_tris_on_arc(origin, theta, rho, r)
+	}
+
+	/// Two small angular Z glyphs sitting in the top notch.
+	pub fn two_zag_z_polys(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> [Vec<[f32; 2]>; 2] {
+		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
+		let r = self.capture_mark_r(tile_radius, 2) * 0.72;
+		let sep = r * 1.35;
+		[zag_z_on_arc(origin, theta, rho, r, -sep), zag_z_on_arc(origin, theta, rho, r, sep)]
+	}
 }
 
 /// Screen-down in Bevy world coordinates (+Y up).
@@ -1029,6 +1084,75 @@ fn capture_dot_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f3
 			polar_local_to_world(origin, theta, rho, r * a.cos(), r * a.sin())
 		})
 		.collect()
+}
+
+fn crescent_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
+	let (outer, inner) = crescent_arcs(origin, theta, rho, r);
+	let mut out = outer;
+	out.extend(inner.into_iter().rev());
+	out
+}
+
+fn crescent_arcs(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
+	use std::f32::consts::{PI, TAU};
+	// Outer disc plus a bite disc shifted toward the rim (+n) so the C
+	// reads as a crescent, not a doughnut.
+	let n = TILE_MARK_DOT_SAMPLES.max(16);
+	let opening = 0.55_f32;
+	let outer_r = r;
+	let inner_r = r * 0.72;
+	let bite = r * 0.28;
+	let mut outer = Vec::with_capacity(n as usize + 1);
+	let mut inner = Vec::with_capacity(n as usize + 1);
+	for i in 0..=n {
+		let a = PI * 0.5 + opening * 0.5 + (TAU - opening) * i as f32 / n as f32;
+		outer.push(polar_local_to_world(origin, theta, rho, outer_r * a.cos(), outer_r * a.sin()));
+		inner.push(polar_local_to_world(
+			origin,
+			theta,
+			rho,
+			inner_r * a.cos(),
+			inner_r * a.sin() + bite,
+		));
+	}
+	(outer, inner)
+}
+
+fn crescent_tris_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[[f32; 2]; 3]> {
+	let (outer, inner) = crescent_arcs(origin, theta, rho, r);
+	let mut tris = Vec::with_capacity(outer.len().saturating_sub(1) * 2);
+	for i in 0..outer.len().saturating_sub(1) {
+		tris.push([outer[i], outer[i + 1], inner[i]]);
+		tris.push([inner[i], outer[i + 1], inner[i + 1]]);
+	}
+	tris
+}
+
+fn zag_z_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32, s_off: f32) -> Vec<[f32; 2]> {
+	// Five corners of an angular Z in (s, n) local coords, then warped.
+	let h = r * 1.05;
+	let w = r * 0.85;
+	let verts = [[-w + s_off, h], [w + s_off, h], [-w + s_off, -h], [w + s_off, -h]];
+	let m = TILE_MARK_TRI_EDGE_SAMPLES.max(3);
+	let mut out = Vec::new();
+	for i in 0..verts.len() - 1 {
+		let a = verts[i];
+		let b = verts[i + 1];
+		for k in 0..m {
+			let t = k as f32 / m as f32;
+			out.push(polar_local_to_world(
+				origin,
+				theta,
+				rho,
+				a[0] + (b[0] - a[0]) * t,
+				a[1] + (b[1] - a[1]) * t,
+			));
+		}
+	}
+	if let Some(&last) = verts.last() {
+		out.push(polar_local_to_world(origin, theta, rho, last[0], last[1]));
+	}
+	out
 }
 
 fn capture_triangle_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
@@ -1612,6 +1736,73 @@ pub fn tile_ring_arc(
 	circle_arc_polyline(center, radius, mid + half, 2.0 * PI - f64::from(notch), samples)
 }
 
+/// Capture-mark notch at the bottom plus an emblem notch at the top when the
+/// tile has a glyph. Tiles without emblems keep a full ring at the top.
+pub fn tile_notches(tile: Tile, down: [f32; 2]) -> Vec<(f32, f32)> {
+	let mut n = vec![(down_angle(down), tile_ring_notch(capture_mark_count(tile)))];
+	if !tile.emblem.is_none() {
+		n.push((down_angle([-down[0], -down[1]]), TILE_EMBLEM_NOTCH));
+	}
+	n
+}
+
+/// Remaining `(from, sweep)` arcs after subtracting notches `(mid, width)`.
+pub fn ring_open_spans(notches: &[(f32, f32)]) -> Vec<(f64, f64)> {
+	if notches.is_empty() {
+		return vec![(0.0, 2.0 * PI)];
+	}
+	if notches.len() == 1 {
+		let mid = f64::from(notches[0].0);
+		let w = f64::from(notches[0].1);
+		return vec![(mid + w * 0.5, 2.0 * PI - w)];
+	}
+	let mut n: Vec<(f64, f64)> =
+		notches.iter().map(|&(m, w)| (f64::from(m), f64::from(w))).collect();
+	n.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+	let mut spans = Vec::new();
+	for i in 0..n.len() {
+		let (mid, w) = n[i];
+		let end = mid + w * 0.5;
+		let (nmid, nw) = n[(i + 1) % n.len()];
+		let mut start_next = nmid - nw * 0.5;
+		if i + 1 == n.len() {
+			start_next += 2.0 * PI;
+		}
+		let sweep = start_next - end;
+		if sweep > 0.04 {
+			spans.push((end, sweep));
+		}
+	}
+	spans
+}
+
+/// Angular sweep of an open polyline around `center`, in (0, 2π].
+pub fn polyline_angular_sweep(pts: &[[f64; 2]], center: [f64; 2]) -> f64 {
+	if pts.len() < 2 {
+		return 0.0;
+	}
+	let a0 = (pts[0][1] - center[1]).atan2(pts[0][0] - center[0]);
+	let a1 = (pts[pts.len() - 1][1] - center[1]).atan2(pts[pts.len() - 1][0] - center[0]);
+	let mut d = a1 - a0;
+	if d <= 0.0 {
+		d += 2.0 * PI;
+	}
+	d
+}
+
+/// Open ring arcs with one or two notches (capture bottom, emblem top).
+pub fn tile_ring_notched(
+	center: [f64; 2],
+	radius: f64,
+	notches: &[(f32, f32)],
+	samples: u32,
+) -> Vec<Vec<[f64; 2]>> {
+	ring_open_spans(notches)
+		.into_iter()
+		.map(|(from, sweep)| circle_arc_polyline(center, radius, from, sweep, samples))
+		.collect()
+}
+
 /// Angular zag along the same C-shaped ring. Starts and ends on a trough
 /// so the stroke finishes on the ring track.
 pub fn zigzag_arc(
@@ -1637,6 +1828,32 @@ pub fn zigzag_arc(
 		pts.push([center[0] + rr * ang.cos(), center[1] + rr * ang.sin()]);
 	}
 	pts
+}
+
+/// Angular zag along each open span of a notched ring.
+pub fn zigzag_notched(
+	center: [f64; 2],
+	radius: f64,
+	amplitude: f64,
+	teeth: u32,
+	notches: &[(f32, f32)],
+) -> Vec<Vec<[f64; 2]>> {
+	ring_open_spans(notches)
+		.into_iter()
+		.map(|(from, sweep)| {
+			let n_teeth = ((f64::from(teeth.max(2)) * sweep / (2.0 * PI)).round() as u32).max(2);
+			let n = n_teeth * 2;
+			let mut pts = Vec::with_capacity(n as usize + 1);
+			for i in 0..=n {
+				let t = f64::from(i) / f64::from(n);
+				let ang = from + sweep * t;
+				let wave = if i % 2 == 0 { -1.0 } else { 1.0 };
+				let rr = radius + amplitude * wave;
+				pts.push([center[0] + rr * ang.cos(), center[1] + rr * ang.sin()]);
+			}
+			pts
+		})
+		.collect()
 }
 
 /// Old conflict braid: opposite sines for two slots (`0` and `π`), 120°
@@ -1853,6 +2070,26 @@ pub fn bead_chain_arc(
 	let n_beads = ((f64::from(n_beads.max(3)) * sweep / (2.0 * PI)).round() as u32).max(6);
 	let period = radius * sweep / f64::from(n_beads);
 	bead_chain_triangles(&rim, period, half_w, pinch)
+}
+
+/// Bead chain along each open span of a notched ring.
+pub fn bead_chain_notched(
+	center: [f64; 2],
+	radius: f64,
+	n_beads: u32,
+	half_w: f64,
+	pinch: f64,
+	samples: u32,
+	notches: &[(f32, f32)],
+) -> Vec<[[f32; 2]; 3]> {
+	let mut out = Vec::new();
+	for (from, sweep) in ring_open_spans(notches) {
+		let rim = circle_arc_polyline(center, radius, from, sweep, samples.max(TILE_BEAD_SAMPLES));
+		let n = ((f64::from(n_beads.max(3)) * sweep / (2.0 * PI)).round() as u32).max(3);
+		let period = radius * sweep / f64::from(n);
+		out.extend(bead_chain_triangles(&rim, period, half_w, pinch));
+	}
+	out
 }
 
 pub fn zigzag_circle(
@@ -4040,6 +4277,56 @@ mod tests {
 			"pinch must cover a pixel at board scale so the chain stays connected, pinch={pinch}"
 		);
 		assert!(pinch < bead, "pinch must be thinner than the swell");
+	}
+
+	#[test]
+	fn emblem_notch_opens_the_top_of_the_ring() {
+		use crate::game::{Emblem, Player, Tile, TileColor};
+		let r = 22.0;
+		let draw = TileRingDraw::for_radius(r);
+		let moon =
+			Tile::mono(1, Player::One, TileColor::Green, 1, 2).with_emblem(Emblem::CrescentMoon);
+		let zs = Tile::mono(1, Player::One, TileColor::Orange, 1, 2).with_emblem(Emblem::TwoZagZs);
+		let plain = Tile::mono(1, Player::One, TileColor::Blue, 1, 2);
+		let down = CAPTURE_DOWN_BEVY;
+		let up = [-down[0], -down[1]];
+		let moon_notches = tile_notches(moon, down);
+		assert_eq!(moon_notches.len(), 2, "capture bottom + emblem top");
+		assert_eq!(tile_notches(plain, down).len(), 1, "no-emblem tiles keep a full top");
+		let spans = ring_open_spans(&moon_notches);
+		assert_eq!(spans.len(), 2);
+		let rims = tile_ring_notched([0.0, 0.0], 10.0, &moon_notches, 64);
+		assert_eq!(rims.len(), 2);
+		for rim in &rims {
+			assert!(rim.len() > 8);
+			for p in rim {
+				let ang = (p[1] as f32).atan2(p[0] as f32);
+				assert!(
+					ang_dist(ang, down_angle(up)) > TILE_EMBLEM_NOTCH * 0.5 - 0.08,
+					"ring must not enter the emblem notch, p={p:?}"
+				);
+			}
+		}
+		let poly = draw.crescent_poly([0.0, 0.0], r, up);
+		assert!(poly.len() > 12, "crescent is a thick C");
+		let tris = draw.crescent_tris([0.0, 0.0], r, up);
+		assert!(tris.len() > 16, "crescent is a C strip, not a fan-filled disc");
+		let mut dist_sum = 0.0f32;
+		for p in &poly {
+			dist_sum += p[0].hypot(p[1]);
+			assert!(p[1] > 0.0, "crescent sits at the top of the tile in Bevy coords");
+		}
+		assert!(dist_sum / poly.len() as f32 > r * 0.4);
+		let zigs = draw.two_zag_z_polys([0.0, 0.0], r, up);
+		assert_eq!(zigs.len(), 2);
+		for zig in &zigs {
+			assert!(zig.len() >= 4, "each Z is an angular polyline");
+			for p in zig {
+				assert!(p[1] > 0.0, "Z glyphs sit at the top, p={p:?}");
+			}
+		}
+		let zs_notches = tile_notches(zs, down);
+		assert_eq!(zs_notches.len(), 2);
 	}
 
 	#[test]

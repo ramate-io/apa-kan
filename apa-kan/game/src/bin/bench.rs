@@ -14,8 +14,8 @@ use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig};
 use apa_kan::game::{
-	sample_tile, Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet, Tile,
-	TileColor,
+	sample_tile_with, Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet,
+	Tile, TileColor,
 };
 use apa_kan::scenario::{self, DeckStrength, Scenario};
 use rand::rngs::StdRng;
@@ -91,9 +91,9 @@ fn usage() -> &'static str {
 	   --pick <heuristic|search|greedy>  Bench 7+4 picker (default: heuristic)\n\
 	   --bots <list>        Comma-separated actors (default: greedy,minimax,mcts)\n\
 	   --pairings <list>    Directed pairings a:b,c:d (default: cartesian of --bots)\n\
-	   --p1-deck <mixed|braid|bead>  P1 collection archetype when --deck-matchups is omitted\n\
-	   --p2-deck <mixed|braid|bead>  P2 collection archetype\n\
-	   --deck-matchups <list>  a:b,c:d archetype pairs (mixed|braid|bead). Default: --p1-deck vs --p2-deck\n\
+	   --p1-deck <mixed|braid|bead|crescent|zs|emblem>  P1 collection archetype when --deck-matchups is omitted\n\
+	   --p2-deck <mixed|braid|bead|crescent|zs|emblem>  P2 collection archetype\n\
+	   --deck-matchups <list>  a:b,c:d archetype pairs (mixed|braid|bead|crescent|zs|emblem). Default: --p1-deck vs --p2-deck\n\
 	   --depth-probe        Also time minimax ID depth at 1000 ms and 3000 ms\n\
 	   --measure-games <n>  Games for branching sample (default: 12)\n\
 	   --out <path>         Output log path\n\
@@ -112,7 +112,8 @@ fn usage() -> &'static str {
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --beads, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --bead-scoring,\n\
+	   --braid-fail-mismatch, --bead-scoring, --dot-chance,\n\
+	   --emblem-weights, --emblems,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
@@ -464,7 +465,9 @@ fn parse_deck_matchups(s: &str) -> Result<Vec<(DeckArchetype, DeckArchetype)>, S
 			continue;
 		}
 		let (a, b) = part.split_once(':').ok_or_else(|| {
-			format!("invalid --deck-matchups '{s}' (expected a:b,c:d with mixed|braid|bead)")
+			format!(
+				"invalid --deck-matchups '{s}' (expected a:b,c:d with mixed|braid|bead|crescent|zs|emblem)"
+			)
 		})?;
 		out.push((DeckArchetype::parse(a.trim())?, DeckArchetype::parse(b.trim())?));
 	}
@@ -534,6 +537,8 @@ struct SeatStats {
 	bead_contrib: u32,
 	bead_needed: u32,
 	spawn_two_ring_single_bead: u32,
+	crescent_saves: u32,
+	zs_bonuses: u32,
 	depth_max: u8,
 	mcts_depth_sum: f64,
 	mcts_depth_n: u32,
@@ -619,7 +624,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} dot_percent={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} dot_percent={} emblem_weights={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -646,6 +651,7 @@ fn run(cfg: BenchConfig) {
 		rules.bead_numer,
 		rules.bead_scoring.name(),
 		rules.dot_percent,
+		rules.emblem_weights.label(),
 		rules.zag_mismatch.name(),
 		rules.path_constraint.name(),
 		cfg.scenario.as_ref().map(|s| s.name.as_str()).unwrap_or("default")
@@ -818,6 +824,8 @@ fn run(cfg: BenchConfig) {
 	let mut bead_contrib = 0u32;
 	let mut bead_needed = 0u32;
 	let mut spawn_two_ring = 0u32;
+	let mut crescent_saves = 0u32;
+	let mut zs_bonuses = 0u32;
 	let mut mm_depth_sum = 0.0f64;
 	let mut mm_depth_n = 0u32;
 	let mut mm_depth_max = 0u8;
@@ -864,6 +872,8 @@ fn run(cfg: BenchConfig) {
 		bead_contrib += stats.bead_contrib;
 		bead_needed += stats.bead_needed;
 		spawn_two_ring += stats.spawn_two_ring_single_bead;
+		crescent_saves += stats.crescent_saves;
+		zs_bonuses += stats.zs_bonuses;
 		mm_depth_sum += stats.depth_sum;
 		mm_depth_n += stats.depth_n;
 		mm_depth_max = mm_depth_max.max(stats.depth_max);
@@ -927,6 +937,11 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!(
 		"# bead_captures  contrib={bead_contrib} needed={bead_needed} spawn_two_ring_single_bead={spawn_two_ring}  of_total={captures}"
 	));
+	let avg_moon = if games_n == 0 { 0.0 } else { f64::from(crescent_saves) / f64::from(games_n) };
+	let avg_zs = if games_n == 0 { 0.0 } else { f64::from(zs_bonuses) / f64::from(games_n) };
+	lines.push(format!(
+		"# emblems  crescent_saves={crescent_saves} avg_per_game={avg_moon:.2}  zs_bonuses={zs_bonuses} avg_per_game={avg_zs:.2}"
+	));
 	let mm_avg = if mm_depth_n == 0 { 0.0 } else { mm_depth_sum / f64::from(mm_depth_n) };
 	let mcts_avg = if mcts_depth_n == 0 { 0.0 } else { mcts_depth_sum / f64::from(mcts_depth_n) };
 	lines.push(format!(
@@ -979,16 +994,19 @@ fn run(cfg: BenchConfig) {
 		// Seat-agnostic archetype record: does braid-heavy (or bead-heavy)
 		// win from both seats in the cross matchup? That's the primary
 		// "dominant strategy" signal.
-		let mut p1_w = [0u32; 3];
-		let mut p1_d = [0u32; 3];
-		let mut p1_l = [0u32; 3];
-		let mut p2_w = [0u32; 3];
-		let mut p2_d = [0u32; 3];
-		let mut p2_l = [0u32; 3];
+		let mut p1_w = [0u32; 6];
+		let mut p1_d = [0u32; 6];
+		let mut p1_l = [0u32; 6];
+		let mut p2_w = [0u32; 6];
+		let mut p2_d = [0u32; 6];
+		let mut p2_l = [0u32; 6];
 		let idx = |a: DeckArchetype| match a {
 			DeckArchetype::Mixed => 0,
 			DeckArchetype::BraidHeavy => 1,
 			DeckArchetype::BeadHeavy => 2,
+			DeckArchetype::Crescent => 3,
+			DeckArchetype::Zs => 4,
+			DeckArchetype::EmblemMix => 5,
 		};
 		for (mi, &(a, b)) in matchups.iter().enumerate() {
 			for (pi, _) in pairs.iter().enumerate() {
@@ -1010,8 +1028,8 @@ fn run(cfg: BenchConfig) {
 				}
 			}
 		}
-		let names = ["mixed", "braid", "bead"];
-		let bits: Vec<String> = (0..3)
+		let names = ["mixed", "braid", "bead", "crescent", "zs", "emblem"];
+		let bits: Vec<String> = (0..6)
 			.filter(|&i| p1_w[i] + p1_d[i] + p1_l[i] + p2_w[i] + p2_d[i] + p2_l[i] > 0)
 			.map(|i| {
 				format!(
@@ -1072,6 +1090,9 @@ fn run(cfg: BenchConfig) {
 	);
 	println!(
 		"# bead_captures  contrib={bead_contrib} needed={bead_needed} spawn_two_ring_single_bead={spawn_two_ring}  of_total={captures}"
+	);
+	println!(
+		"# emblems  crescent_saves={crescent_saves} avg_per_game={avg_moon:.2}  zs_bonuses={zs_bonuses} avg_per_game={avg_zs:.2}"
 	);
 	println!(
 		"# search_depth  mm_avg={mm_avg:.2} mm_max={mm_depth_max} mm_n={mm_depth_n}  mcts_avg={mcts_avg:.2} mcts_max={mcts_depth_max} mcts_n={mcts_depth_n}"
@@ -1394,6 +1415,8 @@ fn summarize_pairing(
 		stats.bead_contrib += result.bead_contrib;
 		stats.bead_needed += result.bead_needed;
 		stats.spawn_two_ring_single_bead += result.spawn_two_ring_single_bead;
+		stats.crescent_saves += result.crescent_saves;
+		stats.zs_bonuses += result.zs_bonuses;
 		match result.status {
 			GameStatus::Won { winner, reason } => {
 				if winner == Player::One {
@@ -1780,6 +1803,8 @@ struct PlayResult {
 	bead_contrib: u32,
 	bead_needed: u32,
 	spawn_two_ring_single_bead: u32,
+	crescent_saves: u32,
+	zs_bonuses: u32,
 	record: Option<GameRecord>,
 	log: Option<GameLog>,
 	deck: DeckRow,
@@ -1887,6 +1912,8 @@ fn play_game(
 	let mut bead_contrib = 0u32;
 	let mut bead_needed = 0u32;
 	let mut spawn_two_ring_single_bead = 0u32;
+	let mut crescent_saves = 0u32;
+	let mut zs_bonuses = 0u32;
 	let mut token_sum = 0u64;
 	let mut bench_len_sum = 0u64;
 	let mut snapshots = 0u32;
@@ -2011,6 +2038,8 @@ fn play_game(
 				bead_needed += outcome.removals.iter().filter(|r| r.bead_needed).count() as u32;
 				spawn_two_ring_single_bead +=
 					outcome.removals.iter().filter(|r| r.spawn_two_ring_single_bead).count() as u32;
+				crescent_saves += u32::from(outcome.emblem.crescent_saves);
+				zs_bonuses += u32::from(outcome.emblem.zs_bonuses);
 				if keep_record {
 					record_lines.push(format!(
 						"{:>3}. {}   [mm_depth={} iters={} mcts_depth={:.2}/{}]",
@@ -2121,6 +2150,8 @@ fn play_game(
 		bead_contrib,
 		bead_needed,
 		spawn_two_ring_single_bead,
+		crescent_saves,
+		zs_bonuses,
 		record,
 		log: game_log,
 		deck: DeckRow {
@@ -2203,15 +2234,18 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut braid_pieces = 0u32;
 	let mut bead_rings = 0u32;
 	let mut bead_pieces = 0u32;
+	let mut crescent = 0u32;
+	let mut zs = 0u32;
 	let mut rings = 0u32;
 	for _ in 0..n {
-		let t = sample_tile(
+		let t = sample_tile_with(
 			Player::One,
 			rules.max_rings,
 			rules.zag_numer,
 			rules.braid_numer,
 			rules.bead_numer,
 			rules.dot_percent,
+			rules.emblem_weights,
 			&mut next_id,
 			&mut rng,
 		);
@@ -2226,6 +2260,12 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 		bead_rings += u32::from(t.bead_ring_count());
 		if t.bead_ring_count() >= 2 {
 			bead_pieces += 1;
+		}
+		if t.emblem.is_crescent() {
+			crescent += 1;
+		}
+		if t.emblem.is_two_zag_zs() {
+			zs += 1;
 		}
 		rings += k as u32;
 	}
@@ -2247,6 +2287,12 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			"# ring_process_beads  pieces={n} grouped={bead_pieces} piece_rate={:.4} rings={rings} beads={bead_rings} ring_rate={:.4}",
 			f64::from(bead_pieces) / f64::from(n),
 			f64::from(bead_rings) / f64::from(rings)
+		));
+		lines.push(format!(
+			"# ring_process_emblems  pieces={n} weights={} crescent={crescent} rate={:.4} zs={zs} zs_rate={:.4}",
+			rules.emblem_weights.label(),
+			f64::from(crescent) / f64::from(n),
+			f64::from(zs) / f64::from(n)
 		));
 	}
 	let names = TileColor::ALL.map(|c| c.name());
@@ -2484,6 +2530,7 @@ mod tests {
 					|| line.starts_with("# center_captures")
 					|| line.starts_with("# capture_dest")
 					|| line.starts_with("# bead_captures")
+					|| line.starts_with("# emblems")
 					|| line.starts_with("# search_depth")
 					|| line.starts_with("# root_spread")
 					|| line.starts_with("# matchup_totals")
@@ -2613,6 +2660,20 @@ mod tests {
 		assert_eq!(cfg.matchups.len(), 3);
 		assert_eq!(cfg.matchups[0], (DeckArchetype::BraidHeavy, DeckArchetype::BeadHeavy));
 		assert_eq!(cfg.rules.bead_scoring, apa_kan::game::BeadScoring::SharedChannel);
+		let emblems = parse(vec![
+			"--deck-matchups".to_string(),
+			"crescent:mixed,zs:emblem,emblem:bead".to_string(),
+			"--emblem-weights".to_string(),
+			"1,20,5".to_string(),
+		])
+		.unwrap();
+		assert_eq!(emblems.matchups.len(), 3);
+		assert_eq!(emblems.matchups[0], (DeckArchetype::Crescent, DeckArchetype::Mixed));
+		assert_eq!(emblems.matchups[1], (DeckArchetype::Zs, DeckArchetype::EmblemMix));
+		assert_eq!(emblems.rules.emblem_weights.crescent, 20);
+		assert_eq!(emblems.rules.emblem_weights.zs, 5);
+		let off = parse(vec!["--emblems".to_string(), "off".to_string()]).unwrap();
+		assert_eq!(off.rules.emblem_weights, apa_kan::game::EmblemWeights::off());
 	}
 
 	/// Default rules include beads; `--jobs 1` and `--jobs 4` must still

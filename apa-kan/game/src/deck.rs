@@ -4,7 +4,10 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use crate::ai::{evaluate, SearchLimit};
-use crate::game::{sample_tile, Game, Player, RingType, RuleSet, Tile, BAG_SIZE, MAX_COLOR_RINGS};
+use crate::game::{
+	sample_tile_with, EmblemWeights, Game, Player, RingType, RuleSet, Tile, BAG_SIZE,
+	MAX_COLOR_RINGS,
+};
 
 /// Maximum collection size (historical 27 unique 3-color kinds).
 pub const DECK_SIZE_MAX: usize = BAG_SIZE;
@@ -51,6 +54,14 @@ pub enum DeckArchetype {
 	/// Strong bead opportunities: `bead_numer=5`, `braid_numer=0`, zags on.
 	/// 2–3 bead tiles only (generation never emits a single-bead tile).
 	BeadHeavy,
+	/// Collector: many Crescent Moon tiles. Default ring mix, emblem weights
+	/// stuffed toward crescent (`none=1,crescent=20,zs=0`).
+	Crescent,
+	/// Collector: many Two Zag Zs tiles. Emblem weights `none=1,crescent=0,zs=20`.
+	Zs,
+	/// Collector: emblem-heavy braid/bead mix. Both emblems stuffed, braids
+	/// and 2–3 bead groups still roll.
+	EmblemMix,
 }
 
 /// Braid roll used for [`DeckArchetype::BraidHeavy`] (5/7).
@@ -67,6 +78,16 @@ pub const BEAD_HEAVY_MIN_STACKED: usize = 2;
 pub const BEAD_HEAVY_MIN_TRIPLE: usize = 1;
 /// At least this many tiles whose braid occupies 2–3 slots.
 pub const BRAID_HEAVY_MIN_MULTI: usize = 2;
+/// Minimum Crescent Moon tiles in a crescent collector collection.
+pub const CRESCENT_MIN_TILES: usize = 8;
+/// Minimum Two Zag Zs tiles in a zs collector collection.
+pub const ZS_MIN_TILES: usize = 8;
+/// Minimum of each emblem in an emblem-mix collection.
+pub const EMBLEM_MIX_MIN_EACH: usize = 4;
+/// Stuffed crescent generation weight (paired with `none=1`).
+pub const ARCHETYPE_CRESCENT_WEIGHT: u16 = 20;
+/// Stuffed Two Zag Zs generation weight.
+pub const ARCHETYPE_ZS_WEIGHT: u16 = 20;
 
 impl DeckArchetype {
 	pub fn parse(s: &str) -> Result<Self, String> {
@@ -74,7 +95,12 @@ impl DeckArchetype {
 			"mixed" | "noise" | "noisy" | "default" => Ok(Self::Mixed),
 			"braid" | "braid-heavy" | "braid_heavy" | "braids" => Ok(Self::BraidHeavy),
 			"bead" | "bead-heavy" | "bead_heavy" | "beads" => Ok(Self::BeadHeavy),
-			other => Err(format!("unknown deck archetype '{other}' (expected mixed|braid|bead)")),
+			"crescent" | "moon" | "crescent-moon" => Ok(Self::Crescent),
+			"zs" | "zz" | "two-zs" | "two-zag-zs" => Ok(Self::Zs),
+			"emblem" | "emblems" | "emblem-mix" | "emblem_mix" => Ok(Self::EmblemMix),
+			other => Err(format!(
+				"unknown deck archetype '{other}' (expected mixed|braid|bead|crescent|zs|emblem)"
+			)),
 		}
 	}
 
@@ -83,6 +109,9 @@ impl DeckArchetype {
 			Self::Mixed => "mixed",
 			Self::BraidHeavy => "braid",
 			Self::BeadHeavy => "bead",
+			Self::Crescent => "crescent",
+			Self::Zs => "zs",
+			Self::EmblemMix => "emblem",
 		}
 	}
 
@@ -91,6 +120,9 @@ impl DeckArchetype {
 			Self::Mixed => "mixed",
 			Self::BraidHeavy => "braid-heavy",
 			Self::BeadHeavy => "bead-heavy",
+			Self::Crescent => "crescent",
+			Self::Zs => "zs",
+			Self::EmblemMix => "emblem-mix",
 		}
 	}
 
@@ -107,6 +139,23 @@ impl DeckArchetype {
 			Self::BeadHeavy => {
 				rules.bead_numer = ARCHETYPE_BEAD_NUMER;
 				rules.braid_numer = 0;
+			}
+			Self::Crescent => {
+				rules.emblem_weights =
+					EmblemWeights { none: 1, crescent: ARCHETYPE_CRESCENT_WEIGHT, zs: 0 };
+			}
+			Self::Zs => {
+				rules.emblem_weights =
+					EmblemWeights { none: 1, crescent: 0, zs: ARCHETYPE_ZS_WEIGHT };
+			}
+			Self::EmblemMix => {
+				rules.emblem_weights = EmblemWeights {
+					none: 1,
+					crescent: ARCHETYPE_CRESCENT_WEIGHT,
+					zs: ARCHETYPE_ZS_WEIGHT,
+				};
+				rules.braid_numer = 2;
+				rules.bead_numer = 2;
 			}
 		}
 		rules
@@ -129,6 +178,15 @@ impl DeckArchetype {
 					&& stacked >= BEAD_HEAVY_MIN_STACKED
 					&& triple >= BEAD_HEAVY_MIN_TRIPLE
 					&& no_singles
+			}
+			Self::Crescent => {
+				tiles.iter().filter(|t| t.emblem.is_crescent()).count() >= CRESCENT_MIN_TILES
+			}
+			Self::Zs => tiles.iter().filter(|t| t.emblem.is_two_zag_zs()).count() >= ZS_MIN_TILES,
+			Self::EmblemMix => {
+				let moons = tiles.iter().filter(|t| t.emblem.is_crescent()).count();
+				let zs = tiles.iter().filter(|t| t.emblem.is_two_zag_zs()).count();
+				moons >= EMBLEM_MIX_MIN_EACH && zs >= EMBLEM_MIX_MIN_EACH
 			}
 		}
 	}
@@ -399,13 +457,14 @@ pub fn generate_archetype_collection(
 	for _ in 0..128 {
 		let mut deck = Vec::with_capacity(size);
 		for _ in 0..size {
-			deck.push(sample_tile(
+			deck.push(sample_tile_with(
 				owner,
 				rules.max_rings,
 				rules.zag_numer,
 				rules.braid_numer,
 				rules.bead_numer,
 				rules.dot_percent,
+				rules.emblem_weights,
 				next_id,
 				rng,
 			));
@@ -435,13 +494,14 @@ fn repair_collection(
 ) -> Vec<Tile> {
 	let mut deck = Vec::with_capacity(size);
 	for _ in 0..size {
-		deck.push(sample_tile(
+		deck.push(sample_tile_with(
 			owner,
 			rules.max_rings,
 			rules.zag_numer,
 			rules.braid_numer,
 			rules.bead_numer,
 			rules.dot_percent,
+			rules.emblem_weights,
 			next_id,
 			rng,
 		));
@@ -491,13 +551,14 @@ pub fn apply_deck_noise(
 	let mut out = Vec::with_capacity(base.len());
 	for &src in base {
 		if rng.gen_range(0..100u8) < noise {
-			out.push(sample_tile(
+			out.push(sample_tile_with(
 				owner,
 				rules.max_rings,
 				rules.zag_numer,
 				rules.braid_numer,
 				rules.bead_numer,
 				rules.dot_percent,
+				rules.emblem_weights,
 				next_id,
 				rng,
 			));
@@ -538,8 +599,15 @@ pub fn generate_both_collections(
 	[p1, p2]
 }
 
-fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3], u8) {
-	(t.n_rings, t.dots, t.rings.map(|c| c as u8), t.ring_type.map(|r| r as u8), t.capture.bit())
+fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3], u8, u8) {
+	(
+		t.n_rings,
+		t.dots,
+		t.rings.map(|c| c as u8),
+		t.ring_type.map(|r| r as u8),
+		t.capture.bit(),
+		t.emblem.bit(),
+	)
 }
 
 fn tile_score(tile: Tile) -> i32 {
@@ -548,6 +616,13 @@ fn tile_score(tile: Tile) -> i32 {
 	s += 4 * i32::from(tile.zag_ring_count());
 	s += 5 * i32::from(tile.braid_ring_count());
 	s += 6 * i32::from(tile.bead_ring_count());
+	s += 9 * i32::from(tile.emblem.cost());
+	if tile.emblem.is_crescent() {
+		s += 4;
+	}
+	if tile.emblem.is_two_zag_zs() {
+		s += 4;
+	}
 	for &c in tile.ring_colors() {
 		s += match c as u8 {
 			5 => 18,
@@ -1355,6 +1430,9 @@ mod tests {
 		assert_eq!(DeckArchetype::parse("mixed").unwrap(), DeckArchetype::Mixed);
 		assert_eq!(DeckArchetype::parse("braid-heavy").unwrap(), DeckArchetype::BraidHeavy);
 		assert_eq!(DeckArchetype::parse("bead").unwrap(), DeckArchetype::BeadHeavy);
+		assert_eq!(DeckArchetype::parse("crescent").unwrap(), DeckArchetype::Crescent);
+		assert_eq!(DeckArchetype::parse("zs").unwrap(), DeckArchetype::Zs);
+		assert_eq!(DeckArchetype::parse("emblem").unwrap(), DeckArchetype::EmblemMix);
 		assert!(DeckArchetype::parse("zag").is_err());
 	}
 
@@ -1407,5 +1485,41 @@ mod tests {
 		assert!(DeckArchetype::BeadHeavy.meets_quota(&rec.decks[1]));
 		assert!(braid_ring_count(&rec.decks[0]) > bead_ring_count(&rec.decks[0]));
 		assert!(bead_ring_count(&rec.decks[1]) > braid_ring_count(&rec.decks[1]));
+	}
+
+	#[test]
+	fn crescent_collection_is_stuffed_with_moons() {
+		let rules = RuleSet::default();
+		let mut setup = SetupConfig::for_seed(11);
+		setup.p1_deck = DeckArchetype::Crescent;
+		setup.p2_deck = DeckArchetype::Zs;
+		setup.pick = PickStrategy::Greedy;
+		let mut next = 1u32;
+		let rec = deal_and_pick(&rules, &setup, 11, &mut next);
+		assert!(DeckArchetype::Crescent.meets_quota(&rec.decks[0]));
+		assert!(DeckArchetype::Zs.meets_quota(&rec.decks[1]));
+		assert!(
+			rec.decks[0].iter().filter(|t| t.emblem.is_crescent()).count() >= CRESCENT_MIN_TILES
+		);
+		assert!(rec.decks[1].iter().filter(|t| t.emblem.is_two_zag_zs()).count() >= ZS_MIN_TILES);
+		assert_eq!(
+			rec.decks[0].iter().filter(|t| t.emblem.is_crescent()).next().unwrap().cost(),
+			rec.decks[0].iter().filter(|t| t.emblem.is_crescent()).next().unwrap().n_rings + 1
+		);
+	}
+
+	#[test]
+	fn emblem_mix_has_both_glyphs_and_braid_bead() {
+		let rules = RuleSet::default();
+		let mut setup = SetupConfig::for_seed(17);
+		setup.p1_deck = DeckArchetype::EmblemMix;
+		setup.p2_deck = DeckArchetype::EmblemMix;
+		setup.pick = PickStrategy::Greedy;
+		let mut next = 1u32;
+		let rec = deal_and_pick(&rules, &setup, 17, &mut next);
+		assert!(DeckArchetype::EmblemMix.meets_quota(&rec.decks[0]));
+		assert!(rec.decks[0]
+			.iter()
+			.any(|t| t.braid_ring_count() >= 2 || t.bead_ring_count() >= 2));
 	}
 }

@@ -76,7 +76,11 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	let mut contact_pairs = 0i32;
 	for (node, tile) in game.tiles() {
 		let sign = if tile.owner == me { 1 } else { -1 };
-		material += sign * (48 + 24 * i32::from(tile.weight) + 6 * i32::from(tile.dots));
+		material += sign
+			* (48
+				+ 24 * i32::from(tile.weight)
+				+ 6 * i32::from(tile.dots)
+				+ 10 * i32::from(tile.emblem.cost()));
 		if let Some((matches, mismatches)) = game.tile_score(node) {
 			margin += sign * 8 * (matches - mismatches);
 			if mismatches >= matches - 1 {
@@ -141,10 +145,10 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 
 	let mut bench_score = 0i32;
 	for tile in game.bench(me) {
-		bench_score += 28 + 10 * i32::from(tile.weight);
+		bench_score += 28 + 10 * i32::from(tile.weight) + 8 * i32::from(tile.emblem.cost());
 	}
 	for tile in game.bench(opp) {
-		bench_score -= 28 + 10 * i32::from(tile.weight);
+		bench_score -= 28 + 10 * i32::from(tile.weight) + 8 * i32::from(tile.emblem.cost());
 	}
 	bench_score += capture_mix_score(game, me) - capture_mix_score(game, opp);
 	let presence = 32 * (my_board - opp_board);
@@ -207,7 +211,11 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	let mut contact_pairs = 0i32;
 	for (node, tile) in game.tiles() {
 		let sign = if tile.owner == me { 1 } else { -1 };
-		material += sign * (48 + 24 * i32::from(tile.weight) + 6 * i32::from(tile.dots));
+		material += sign
+			* (48
+				+ 24 * i32::from(tile.weight)
+				+ 6 * i32::from(tile.dots)
+				+ 10 * i32::from(tile.emblem.cost()));
 		if let Some((matches, mismatches)) = game.tile_score(node) {
 			margin += sign * 8 * (matches - mismatches);
 			if mismatches >= matches - 1 {
@@ -283,10 +291,10 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 
 	let mut bench_score = 0i32;
 	for tile in game.bench(me) {
-		bench_score += 28 + 10 * i32::from(tile.weight);
+		bench_score += 28 + 10 * i32::from(tile.weight) + 8 * i32::from(tile.emblem.cost());
 	}
 	for tile in game.bench(opp) {
-		bench_score -= 28 + 10 * i32::from(tile.weight);
+		bench_score -= 28 + 10 * i32::from(tile.weight) + 8 * i32::from(tile.emblem.cost());
 	}
 	bench_score += capture_mix_score(game, me) - capture_mix_score(game, opp);
 	// Usable budget only (min(tokens, remaining deck)); surplus tokens are not ADD permission.

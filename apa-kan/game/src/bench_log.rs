@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
-	Action, ActionOutcome, BeadScoring, BraidFailMismatch, BudgetToken, CaptureMark, EndReason,
-	Game, GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
-	PathConstraint, Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
-	DOT_PERCENT_DEFAULT,
+	Action, ActionOutcome, BeadScoring, BraidFailMismatch, BudgetToken, CaptureMark, Emblem,
+	EmblemWeights, EndReason, Game, GameStatus, HopWeightCmp, InsufficientTilesLoss,
+	LowValueResolution, PassThroughRingCmp, PathConstraint, Player, RingType, RuleSet,
+	SamePieceTwice, Tile, TileColor, ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -66,6 +66,22 @@ fn default_triangle() -> String {
 
 fn skip_triangle(v: &String) -> bool {
 	v == "triangle"
+}
+
+fn default_none() -> String {
+	Emblem::None.name().to_string()
+}
+
+fn skip_none(v: &String) -> bool {
+	v == "none"
+}
+
+fn default_emblem_weights() -> String {
+	EmblemWeights::default().label()
+}
+
+fn skip_default_emblem_weights(v: &String) -> bool {
+	*v == EmblemWeights::default().label()
 }
 
 fn default_dot_percent() -> u8 {
@@ -147,6 +163,9 @@ pub struct TileLog {
 	/// replay as triangle (spawn-token dest).
 	#[serde(default = "default_triangle")]
 	pub capture: String,
+	/// Emblem slot. Absent on logs from before emblems; those replay as none.
+	#[serde(default = "default_none", skip_serializing_if = "skip_none")]
+	pub emblem: String,
 	pub rings: Vec<RingLog>,
 }
 
@@ -174,6 +193,7 @@ impl TileLog {
 			braid_rings: tile.braid_ring_count(),
 			bead_rings: tile.bead_ring_count(),
 			capture: tile.capture.name().to_string(),
+			emblem: tile.emblem.name().to_string(),
 			rings,
 		}
 	}
@@ -197,7 +217,8 @@ impl TileLog {
 			})
 			.collect();
 		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.n_rings, self.dots)
-			.with_capture(CaptureMark::parse(&self.capture).unwrap_or(CaptureMark::Triangle));
+			.with_capture(CaptureMark::parse(&self.capture).unwrap_or(CaptureMark::Triangle))
+			.with_emblem(Emblem::parse(&self.emblem).unwrap_or(Emblem::None));
 		tile.id = self.id;
 		debug_assert_eq!(tile.weight, tile.n_rings);
 		Ok(tile)
@@ -226,6 +247,8 @@ pub struct PieceRef {
 	pub bead_rings: u8,
 	#[serde(default = "default_triangle", skip_serializing_if = "skip_triangle")]
 	pub capture: String,
+	#[serde(default = "default_none", skip_serializing_if = "skip_none")]
+	pub emblem: String,
 }
 
 impl PieceRef {
@@ -239,6 +262,7 @@ impl PieceRef {
 			braid_rings: tile.braid_ring_count(),
 			bead_rings: tile.bead_ring_count(),
 			capture: tile.capture.name().to_string(),
+			emblem: tile.emblem.name().to_string(),
 		}
 	}
 }
@@ -306,6 +330,14 @@ pub struct RulesLog {
 	/// older logs; replay uses independent, which matches those captures.
 	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
 	pub bead_scoring: String,
+	/// `none,crescent,zs` generation weights. Absent on older logs; replay
+	/// uses the live default (200,1,1) only for new deals, not historical
+	/// tiles (those already store `emblem` per tile).
+	#[serde(
+		default = "default_emblem_weights",
+		skip_serializing_if = "skip_default_emblem_weights"
+	)]
+	pub emblem_weights: String,
 }
 
 impl RulesLog {
@@ -349,6 +381,7 @@ impl RulesLog {
 			score_incident_arcs: Some(true),
 			zag_match_non_zag: Some(true),
 			bead_scoring: r.bead_scoring.name().into(),
+			emblem_weights: r.emblem_weights.label(),
 		}
 	}
 
@@ -393,6 +426,8 @@ impl RulesLog {
 				None => BraidFailMismatch::One,
 			},
 			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
+			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
+				.unwrap_or_else(|_| EmblemWeights::default()),
 		})
 	}
 }
@@ -530,6 +565,10 @@ pub struct ActionLog {
 	pub root_best_stability: f32,
 	#[serde(default, skip_serializing_if = "skip_zero_u16")]
 	pub root_legal: u16,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub crescent_saves: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub zs_bonuses: u8,
 }
 
 /// One captured tile: original owner and where it went.
@@ -605,6 +644,8 @@ impl ActionLog {
 			root_q_spread_top10: 0.0,
 			root_best_stability: 0.0,
 			root_legal: 0,
+			crescent_saves: outcome.emblem.crescent_saves,
+			zs_bonuses: outcome.emblem.zs_bonuses,
 		}
 	}
 
@@ -849,6 +890,10 @@ pub struct GameLog {
 	pub bead_needed_captures: u32,
 	#[serde(default, skip_serializing_if = "skip_zero_u32")]
 	pub spawn_two_ring_single_bead: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub crescent_saves: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub zs_bonuses: u32,
 	/// Mean minimax completed-ID depth over minimax moves in this game.
 	#[serde(default, skip_serializing_if = "skip_zero_f64")]
 	pub mm_depth_avg: f64,
@@ -915,6 +960,8 @@ impl GameLog {
 			bead_contrib_captures: 0,
 			bead_needed_captures: 0,
 			spawn_two_ring_single_bead: 0,
+			crescent_saves: 0,
+			zs_bonuses: 0,
 			mm_depth_avg: 0.0,
 			mm_depth_max: 0,
 			mcts_depth_avg: 0.0,
@@ -976,6 +1023,8 @@ impl GameLog {
 		self.bead_contrib_captures = contrib;
 		self.bead_needed_captures = needed;
 		self.spawn_two_ring_single_bead = spawn;
+		self.crescent_saves = self.actions.iter().map(|a| u32::from(a.crescent_saves)).sum();
+		self.zs_bonuses = self.actions.iter().map(|a| u32::from(a.zs_bonuses)).sum();
 		let mut mm_sum = 0.0f64;
 		let mut mm_n = 0u32;
 		let mut mm_max = 0u8;

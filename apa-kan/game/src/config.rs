@@ -8,8 +8,8 @@ use std::time::Duration;
 use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	BeadScoring, BraidFailMismatch, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp,
-	PathConstraint, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
+	BeadScoring, BraidFailMismatch, EmblemWeights, HopWeightCmp, InsufficientTilesLoss,
+	PassThroughRingCmp, PathConstraint, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -374,6 +374,13 @@ where
 			}
 			rules.dot_percent = n as u8;
 		}
+		"--emblem-weights" => {
+			rules.emblem_weights = EmblemWeights::parse(&require_value(arg, it.next())?)?;
+		}
+		"--emblems" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.emblem_weights = if on { EmblemWeights::default() } else { EmblemWeights::off() };
+		}
 		"--zag-mismatch" => {
 			rules.zag_mismatch = ZagMismatchCount::parse(&require_value(arg, it.next())?)?;
 		}
@@ -419,8 +426,8 @@ pub fn usage() -> &'static str {
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
 	   --deck-noise <0..100>                      Resample that percent of a mirrored collection (default: 0)\n\
 	   --pick <heuristic|search|greedy>           Bench 7+4 picker (default: heuristic)\n\
-	   --p1-deck <mixed|braid|bead>               P1 collection archetype (default: mixed)\n\
-	   --p2-deck <mixed|braid|bead>               P2 collection archetype (default: mixed)\n\
+	   --p1-deck <mixed|braid|bead|crescent|zs|emblem>  P1 collection archetype (default: mixed)\n\
+	   --p2-deck <mixed|braid|bead|crescent|zs|emblem>  P2 collection archetype (default: mixed)\n\
 	   --think-ms <n>                             Bot think time in ms (default: 80)\n\
 	   --delay-ms <n>                             Delay between bot moves (default: 350)\n\
 	   --actions <1..8>                           Actions per turn (default: 1)\n\
@@ -460,6 +467,8 @@ pub fn usage() -> &'static str {
 	   --beads <on|off>                           Alias for --bead-chance 1 or 0 (default: on)\n\
 	   --bead-scoring <independent|shared>        Normal/bead combine: max (B, default) or sum (A)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
+	   --emblem-weights <none,crescent,zs>        Emblem generation weights (default: 200,1,1)\n\
+	   --emblems <on|off>                         Alias for default weights or 1,0,0 (skip RNG)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
 	   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
@@ -649,6 +658,7 @@ mod tests {
 		assert_eq!(cfg.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.setup.p2_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.rules.dot_percent, crate::game::DOT_PERCENT_DEFAULT);
+		assert_eq!(cfg.rules.emblem_weights, crate::game::EmblemWeights::default());
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 		assert!(cfg.rules.counted_pass_through);
 		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
@@ -859,6 +869,23 @@ mod tests {
 		assert_eq!(cfg.rules.dot_percent, 100);
 		let err = GameConfig::parse(["--dot-chance", "101"]).unwrap_err();
 		assert!(err.contains("dot-chance"));
+	}
+
+	#[test]
+	fn parses_emblem_weights() {
+		let cfg = GameConfig::parse(["--emblem-weights", "1,20,0"]).unwrap();
+		assert_eq!(cfg.rules.emblem_weights.none, 1);
+		assert_eq!(cfg.rules.emblem_weights.crescent, 20);
+		assert_eq!(cfg.rules.emblem_weights.zs, 0);
+		let off = GameConfig::parse(["--emblems", "off"]).unwrap();
+		assert_eq!(off.rules.emblem_weights, crate::game::EmblemWeights::off());
+		let on = GameConfig::parse(["--emblems", "on"]).unwrap();
+		assert_eq!(on.rules.emblem_weights, crate::game::EmblemWeights::default());
+		let err = GameConfig::parse(["--emblem-weights", "0,0,0"]).unwrap_err();
+		assert!(err.contains("emblem-weights"));
+		let decks = GameConfig::parse(["--p1-deck", "crescent", "--p2-deck", "zs"]).unwrap();
+		assert_eq!(decks.setup.p1_deck, crate::deck::DeckArchetype::Crescent);
+		assert_eq!(decks.setup.p2_deck, crate::deck::DeckArchetype::Zs);
 	}
 
 	#[test]
