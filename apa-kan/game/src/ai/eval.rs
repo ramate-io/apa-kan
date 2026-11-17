@@ -80,7 +80,7 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 			* (48
 				+ 24 * i32::from(tile.weight)
 				+ 6 * i32::from(tile.dots)
-				+ 10 * i32::from(tile.emblem.cost()));
+				+ 10 * i32::from(tile.emblem.cost())); // +1 emblems; Rosette is −1
 		if let Some((matches, mismatches)) = game.tile_score(node) {
 			margin += sign * 8 * (matches - mismatches);
 			if mismatches >= matches - 1 {
@@ -215,7 +215,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 			* (48
 				+ 24 * i32::from(tile.weight)
 				+ 6 * i32::from(tile.dots)
-				+ 10 * i32::from(tile.emblem.cost()));
+				+ 10 * i32::from(tile.emblem.cost())); // +1 emblems; Rosette is −1
 		if let Some((matches, mismatches)) = game.tile_score(node) {
 			margin += sign * 8 * (matches - mismatches);
 			if mismatches >= matches - 1 {
@@ -791,5 +791,29 @@ mod tests {
 		off.pad_above_low_value();
 		on.pad_above_low_value();
 		assert!(evaluate(&on, Player::One, 0) > evaluate(&off, Player::One, 0));
+	}
+
+	#[test]
+	fn emblem_cost_shifts_board_material() {
+		use crate::game::{Emblem, TileColor};
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		let mut none = Game::empty(rules);
+		let mut rose = Game::empty(rules);
+		let mut wall = Game::empty(rules);
+		let spawn = none.board().spawns()[0];
+		let base = none.alloc_tile(Player::One, TileColor::Green, 2, 1);
+		none.place_tile(spawn, base);
+		rose.place_tile(spawn, base.with_emblem(Emblem::Rosette));
+		wall.place_tile(spawn, base.with_emblem(Emblem::Blocker));
+		none.pad_above_low_value();
+		rose.pad_above_low_value();
+		wall.pad_above_low_value();
+		let n = evaluate(&none, Player::One, 0);
+		let r = evaluate(&rose, Player::One, 0);
+		let w = evaluate(&wall, Player::One, 0);
+		assert!(r < n, "Rosette −1 cost lowers in-play material, r={r} n={n}");
+		assert!(w > n, "Blocker +1 cost raises in-play material, w={w} n={n}");
 	}
 }

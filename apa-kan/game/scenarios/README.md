@@ -34,7 +34,7 @@ colors = ["green", "orange"]   # all dots kinds of each color
 #                              # omit weight/dots to expand all dots kinds of that color
 # dots = 1
 # capture = "dot"              # or "triangle" (default); dest for captures made with this tile
-# emblem = "crescent"          # or "zs" / "none" (default empty slot)
+# emblem = "crescent"          # or zs|blocker|rosette|none (default empty slot)
 # count = 1
 # [[p1.bench]]                 # optional ordered prefix of a small collection
 # color = "green"

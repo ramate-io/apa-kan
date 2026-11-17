@@ -55,13 +55,17 @@ pub enum DeckArchetype {
 	/// 2–3 bead tiles only (generation never emits a single-bead tile).
 	BeadHeavy,
 	/// Collector: many Crescent Moon tiles. Default ring mix, emblem weights
-	/// stuffed toward crescent (`none=1,crescent=20,zs=0`).
+	/// stuffed toward crescent (`none=1,crescent=20`, others 0).
 	Crescent,
-	/// Collector: many Two Zag Zs tiles. Emblem weights `none=1,crescent=0,zs=20`.
+	/// Collector: many Two Zag Zs tiles. Emblem weights `none=1,zs=20`.
 	Zs,
-	/// Collector: emblem-heavy braid/bead mix. Both emblems stuffed, braids
+	/// Collector: emblem-heavy braid/bead mix. Crescent and Zs stuffed, braids
 	/// and 2–3 bead groups still roll.
 	EmblemMix,
+	/// Collector: many Blocker tiles. Emblem weights `none=1,blocker=20`.
+	Blocker,
+	/// Collector: many Rosette tiles. Emblem weights `none=1,rosette=20`.
+	Rosette,
 }
 
 /// Braid roll used for [`DeckArchetype::BraidHeavy`] (5/7).
@@ -88,6 +92,14 @@ pub const EMBLEM_MIX_MIN_EACH: usize = 4;
 pub const ARCHETYPE_CRESCENT_WEIGHT: u16 = 20;
 /// Stuffed Two Zag Zs generation weight.
 pub const ARCHETYPE_ZS_WEIGHT: u16 = 20;
+/// Minimum Blocker tiles in a blocker collector collection.
+pub const BLOCKER_MIN_TILES: usize = 8;
+/// Minimum Rosette tiles in a rosette collector collection.
+pub const ROSETTE_MIN_TILES: usize = 8;
+/// Stuffed Blocker generation weight.
+pub const ARCHETYPE_BLOCKER_WEIGHT: u16 = 20;
+/// Stuffed Rosette generation weight.
+pub const ARCHETYPE_ROSETTE_WEIGHT: u16 = 20;
 
 impl DeckArchetype {
 	pub fn parse(s: &str) -> Result<Self, String> {
@@ -98,8 +110,10 @@ impl DeckArchetype {
 			"crescent" | "moon" | "crescent-moon" => Ok(Self::Crescent),
 			"zs" | "zz" | "two-zs" | "two-zag-zs" => Ok(Self::Zs),
 			"emblem" | "emblems" | "emblem-mix" | "emblem_mix" => Ok(Self::EmblemMix),
+			"blocker" | "block" | "blockers" => Ok(Self::Blocker),
+			"rosette" | "rose" | "rosettes" => Ok(Self::Rosette),
 			other => Err(format!(
-				"unknown deck archetype '{other}' (expected mixed|braid|bead|crescent|zs|emblem)"
+				"unknown deck archetype '{other}' (expected mixed|braid|bead|crescent|zs|emblem|blocker|rosette)"
 			)),
 		}
 	}
@@ -112,6 +126,8 @@ impl DeckArchetype {
 			Self::Crescent => "crescent",
 			Self::Zs => "zs",
 			Self::EmblemMix => "emblem",
+			Self::Blocker => "blocker",
+			Self::Rosette => "rosette",
 		}
 	}
 
@@ -123,6 +139,8 @@ impl DeckArchetype {
 			Self::Crescent => "crescent",
 			Self::Zs => "zs",
 			Self::EmblemMix => "emblem-mix",
+			Self::Blocker => "blocker",
+			Self::Rosette => "rosette",
 		}
 	}
 
@@ -141,21 +159,51 @@ impl DeckArchetype {
 				rules.braid_numer = 0;
 			}
 			Self::Crescent => {
-				rules.emblem_weights =
-					EmblemWeights { none: 1, crescent: ARCHETYPE_CRESCENT_WEIGHT, zs: 0 };
+				rules.emblem_weights = EmblemWeights {
+					none: 1,
+					crescent: ARCHETYPE_CRESCENT_WEIGHT,
+					zs: 0,
+					blocker: 0,
+					rosette: 0,
+				};
 			}
 			Self::Zs => {
-				rules.emblem_weights =
-					EmblemWeights { none: 1, crescent: 0, zs: ARCHETYPE_ZS_WEIGHT };
+				rules.emblem_weights = EmblemWeights {
+					none: 1,
+					crescent: 0,
+					zs: ARCHETYPE_ZS_WEIGHT,
+					blocker: 0,
+					rosette: 0,
+				};
 			}
 			Self::EmblemMix => {
 				rules.emblem_weights = EmblemWeights {
 					none: 1,
 					crescent: ARCHETYPE_CRESCENT_WEIGHT,
 					zs: ARCHETYPE_ZS_WEIGHT,
+					blocker: 0,
+					rosette: 0,
 				};
 				rules.braid_numer = 2;
 				rules.bead_numer = 2;
+			}
+			Self::Blocker => {
+				rules.emblem_weights = EmblemWeights {
+					none: 1,
+					crescent: 0,
+					zs: 0,
+					blocker: ARCHETYPE_BLOCKER_WEIGHT,
+					rosette: 0,
+				};
+			}
+			Self::Rosette => {
+				rules.emblem_weights = EmblemWeights {
+					none: 1,
+					crescent: 0,
+					zs: 0,
+					blocker: 0,
+					rosette: ARCHETYPE_ROSETTE_WEIGHT,
+				};
 			}
 		}
 		rules
@@ -187,6 +235,12 @@ impl DeckArchetype {
 				let moons = tiles.iter().filter(|t| t.emblem.is_crescent()).count();
 				let zs = tiles.iter().filter(|t| t.emblem.is_two_zag_zs()).count();
 				moons >= EMBLEM_MIX_MIN_EACH && zs >= EMBLEM_MIX_MIN_EACH
+			}
+			Self::Blocker => {
+				tiles.iter().filter(|t| t.emblem.is_blocker()).count() >= BLOCKER_MIN_TILES
+			}
+			Self::Rosette => {
+				tiles.iter().filter(|t| t.emblem.is_rosette()).count() >= ROSETTE_MIN_TILES
 			}
 		}
 	}
@@ -622,6 +676,14 @@ fn tile_score(tile: Tile) -> i32 {
 	}
 	if tile.emblem.is_two_zag_zs() {
 		s += 4;
+	}
+	if tile.emblem.is_blocker() {
+		s += 4;
+	}
+	if tile.emblem.is_rosette() {
+		// Cost is −1 (−9 here). Offset so stuffed collectors still draft
+		// them at the same net +13 as Crescent/Zs/Blocker.
+		s += 22;
 	}
 	for &c in tile.ring_colors() {
 		s += match c as u8 {
@@ -1433,6 +1495,8 @@ mod tests {
 		assert_eq!(DeckArchetype::parse("crescent").unwrap(), DeckArchetype::Crescent);
 		assert_eq!(DeckArchetype::parse("zs").unwrap(), DeckArchetype::Zs);
 		assert_eq!(DeckArchetype::parse("emblem").unwrap(), DeckArchetype::EmblemMix);
+		assert_eq!(DeckArchetype::parse("blocker").unwrap(), DeckArchetype::Blocker);
+		assert_eq!(DeckArchetype::parse("rosette").unwrap(), DeckArchetype::Rosette);
 		assert!(DeckArchetype::parse("zag").is_err());
 	}
 
@@ -1521,5 +1585,22 @@ mod tests {
 		assert!(rec.decks[0]
 			.iter()
 			.any(|t| t.braid_ring_count() >= 2 || t.bead_ring_count() >= 2));
+	}
+
+	#[test]
+	fn blocker_and_rosette_collections_are_stuffed() {
+		let rules = RuleSet::default();
+		let mut setup = SetupConfig::for_seed(19);
+		setup.p1_deck = DeckArchetype::Blocker;
+		setup.p2_deck = DeckArchetype::Rosette;
+		setup.pick = PickStrategy::Greedy;
+		let mut next = 1u32;
+		let rec = deal_and_pick(&rules, &setup, 19, &mut next);
+		assert!(DeckArchetype::Blocker.meets_quota(&rec.decks[0]));
+		assert!(DeckArchetype::Rosette.meets_quota(&rec.decks[1]));
+		let rose = rec.decks[1].iter().find(|t| t.emblem.is_rosette()).unwrap();
+		assert_eq!(rose.cost(), rose.n_rings.saturating_sub(1));
+		let wall = rec.decks[0].iter().find(|t| t.emblem.is_blocker()).unwrap();
+		assert_eq!(wall.cost(), wall.n_rings + 1);
 	}
 }

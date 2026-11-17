@@ -913,7 +913,7 @@ mod tests {
 	use super::*;
 	use crate::game::{CaptureMark, Emblem, Game, Player, RingType, RuleSet, TileColor};
 
-	fn emblem_closeup_tiles(game: &mut Game) -> [(crate::game::Tile, &'static str); 4] {
+	fn emblem_closeup_tiles(game: &mut Game) -> Vec<(crate::game::Tile, &'static str)> {
 		let rings_moon = [
 			(TileColor::Green, RingType::Normal),
 			(TileColor::Blue, RingType::Normal),
@@ -924,7 +924,17 @@ mod tests {
 			(TileColor::Blue, RingType::Zag),
 			(TileColor::Green, RingType::Normal),
 		];
-		[
+		let rings_block = [
+			(TileColor::Blue, RingType::Normal),
+			(TileColor::Green, RingType::Normal),
+			(TileColor::Orange, RingType::Normal),
+		];
+		let rings_rose = [
+			(TileColor::Green, RingType::Braid),
+			(TileColor::Blue, RingType::Braid),
+			(TileColor::Orange, RingType::Normal),
+		];
+		vec![
 			(
 				game.alloc_typed_rings(Player::One, &rings_moon, 1, 3)
 					.with_capture(CaptureMark::Dot)
@@ -948,6 +958,30 @@ mod tests {
 					.with_capture(CaptureMark::Triangle)
 					.with_emblem(Emblem::TwoZagZs),
 				"emblem_zs_triangle.png",
+			),
+			(
+				game.alloc_typed_rings(Player::One, &rings_block, 1, 3)
+					.with_capture(CaptureMark::Dot)
+					.with_emblem(Emblem::Blocker),
+				"emblem_blocker_dot.png",
+			),
+			(
+				game.alloc_typed_rings(Player::One, &rings_block, 1, 3)
+					.with_capture(CaptureMark::Triangle)
+					.with_emblem(Emblem::Blocker),
+				"emblem_blocker_triangle.png",
+			),
+			(
+				game.alloc_typed_rings(Player::One, &rings_rose, 1, 3)
+					.with_capture(CaptureMark::Dot)
+					.with_emblem(Emblem::Rosette),
+				"emblem_rosette_dot.png",
+			),
+			(
+				game.alloc_typed_rings(Player::One, &rings_rose, 1, 3)
+					.with_capture(CaptureMark::Triangle)
+					.with_emblem(Emblem::Rosette),
+				"emblem_rosette_triangle.png",
 			),
 		]
 	}

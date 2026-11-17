@@ -91,9 +91,9 @@ fn usage() -> &'static str {
 	   --pick <heuristic|search|greedy>  Bench 7+4 picker (default: heuristic)\n\
 	   --bots <list>        Comma-separated actors (default: greedy,minimax,mcts)\n\
 	   --pairings <list>    Directed pairings a:b,c:d (default: cartesian of --bots)\n\
-	   --p1-deck <mixed|braid|bead|crescent|zs|emblem>  P1 collection archetype when --deck-matchups is omitted\n\
-	   --p2-deck <mixed|braid|bead|crescent|zs|emblem>  P2 collection archetype\n\
-	   --deck-matchups <list>  a:b,c:d archetype pairs (mixed|braid|bead|crescent|zs|emblem). Default: --p1-deck vs --p2-deck\n\
+	   --p1-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P1 collection archetype when --deck-matchups is omitted\n\
+	   --p2-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P2 collection archetype\n\
+	   --deck-matchups <list>  a:b,c:d archetype pairs (mixed|braid|bead|crescent|zs|emblem|blocker|rosette). Default: --p1-deck vs --p2-deck\n\
 	   --depth-probe        Also time minimax ID depth at 1000 ms and 3000 ms\n\
 	   --measure-games <n>  Games for branching sample (default: 12)\n\
 	   --out <path>         Output log path\n\
@@ -113,7 +113,7 @@ fn usage() -> &'static str {
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --beads, --dot-chance, --zag-mismatch,\n\
 	   --braid-fail-mismatch, --bead-scoring, --dot-chance,\n\
-	   --emblem-weights, --emblems,\n\
+	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
 }
@@ -466,7 +466,7 @@ fn parse_deck_matchups(s: &str) -> Result<Vec<(DeckArchetype, DeckArchetype)>, S
 		}
 		let (a, b) = part.split_once(':').ok_or_else(|| {
 			format!(
-				"invalid --deck-matchups '{s}' (expected a:b,c:d with mixed|braid|bead|crescent|zs|emblem)"
+				"invalid --deck-matchups '{s}' (expected a:b,c:d with mixed|braid|bead|crescent|zs|emblem|blocker|rosette)"
 			)
 		})?;
 		out.push((DeckArchetype::parse(a.trim())?, DeckArchetype::parse(b.trim())?));
@@ -624,7 +624,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} dot_percent={} emblem_weights={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -652,6 +652,7 @@ fn run(cfg: BenchConfig) {
 		rules.bead_scoring.name(),
 		rules.dot_percent,
 		rules.emblem_weights.label(),
+		rules.blocker_blocks.name(),
 		rules.zag_mismatch.name(),
 		rules.path_constraint.name(),
 		cfg.scenario.as_ref().map(|s| s.name.as_str()).unwrap_or("default")
@@ -994,12 +995,12 @@ fn run(cfg: BenchConfig) {
 		// Seat-agnostic archetype record: does braid-heavy (or bead-heavy)
 		// win from both seats in the cross matchup? That's the primary
 		// "dominant strategy" signal.
-		let mut p1_w = [0u32; 6];
-		let mut p1_d = [0u32; 6];
-		let mut p1_l = [0u32; 6];
-		let mut p2_w = [0u32; 6];
-		let mut p2_d = [0u32; 6];
-		let mut p2_l = [0u32; 6];
+		let mut p1_w = [0u32; 8];
+		let mut p1_d = [0u32; 8];
+		let mut p1_l = [0u32; 8];
+		let mut p2_w = [0u32; 8];
+		let mut p2_d = [0u32; 8];
+		let mut p2_l = [0u32; 8];
 		let idx = |a: DeckArchetype| match a {
 			DeckArchetype::Mixed => 0,
 			DeckArchetype::BraidHeavy => 1,
@@ -1007,6 +1008,8 @@ fn run(cfg: BenchConfig) {
 			DeckArchetype::Crescent => 3,
 			DeckArchetype::Zs => 4,
 			DeckArchetype::EmblemMix => 5,
+			DeckArchetype::Blocker => 6,
+			DeckArchetype::Rosette => 7,
 		};
 		for (mi, &(a, b)) in matchups.iter().enumerate() {
 			for (pi, _) in pairs.iter().enumerate() {
@@ -1028,8 +1031,8 @@ fn run(cfg: BenchConfig) {
 				}
 			}
 		}
-		let names = ["mixed", "braid", "bead", "crescent", "zs", "emblem"];
-		let bits: Vec<String> = (0..6)
+		let names = ["mixed", "braid", "bead", "crescent", "zs", "emblem", "blocker", "rosette"];
+		let bits: Vec<String> = (0..8)
 			.filter(|&i| p1_w[i] + p1_d[i] + p1_l[i] + p2_w[i] + p2_d[i] + p2_l[i] > 0)
 			.map(|i| {
 				format!(
@@ -2236,6 +2239,8 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut bead_pieces = 0u32;
 	let mut crescent = 0u32;
 	let mut zs = 0u32;
+	let mut blocker = 0u32;
+	let mut rosette = 0u32;
 	let mut rings = 0u32;
 	for _ in 0..n {
 		let t = sample_tile_with(
@@ -2267,6 +2272,12 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 		if t.emblem.is_two_zag_zs() {
 			zs += 1;
 		}
+		if t.emblem.is_blocker() {
+			blocker += 1;
+		}
+		if t.emblem.is_rosette() {
+			rosette += 1;
+		}
 		rings += k as u32;
 	}
 	lines.push(format!(
@@ -2289,10 +2300,12 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			f64::from(bead_rings) / f64::from(rings)
 		));
 		lines.push(format!(
-			"# ring_process_emblems  pieces={n} weights={} crescent={crescent} rate={:.4} zs={zs} zs_rate={:.4}",
+			"# ring_process_emblems  pieces={n} weights={} crescent={crescent} rate={:.4} zs={zs} zs_rate={:.4} blocker={blocker} blocker_rate={:.4} rosette={rosette} rosette_rate={:.4}",
 			rules.emblem_weights.label(),
 			f64::from(crescent) / f64::from(n),
-			f64::from(zs) / f64::from(n)
+			f64::from(zs) / f64::from(n),
+			f64::from(blocker) / f64::from(n),
+			f64::from(rosette) / f64::from(n)
 		));
 	}
 	let names = TileColor::ALL.map(|c| c.name());
@@ -2672,6 +2685,20 @@ mod tests {
 		assert_eq!(emblems.matchups[1], (DeckArchetype::Zs, DeckArchetype::EmblemMix));
 		assert_eq!(emblems.rules.emblem_weights.crescent, 20);
 		assert_eq!(emblems.rules.emblem_weights.zs, 5);
+		assert_eq!(emblems.rules.emblem_weights.blocker, 0);
+		assert_eq!(emblems.rules.emblem_weights.rosette, 0);
+		let extra = parse(vec![
+			"--deck-matchups".to_string(),
+			"blocker:mixed,rosette:bead,blocker:rosette".to_string(),
+			"--emblem-weights".to_string(),
+			"200,1,1,1,1".to_string(),
+			"--blocker-blocks".to_string(),
+			"pass".to_string(),
+		])
+		.unwrap();
+		assert_eq!(extra.matchups[0], (DeckArchetype::Blocker, DeckArchetype::Mixed));
+		assert_eq!(extra.matchups[2], (DeckArchetype::Blocker, DeckArchetype::Rosette));
+		assert_eq!(extra.rules.blocker_blocks, apa_kan::game::BlockerBlocks::PassThrough);
 		let off = parse(vec!["--emblems".to_string(), "off".to_string()]).unwrap();
 		assert_eq!(off.rules.emblem_weights, apa_kan::game::EmblemWeights::off());
 	}

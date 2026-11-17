@@ -1090,6 +1090,42 @@ impl TileRingDraw {
 		]
 	}
 
+	/// Chambered diamond: concave-sided outline with a cross that splits
+	/// four chambers. Upright in the slot (+n toward the rim).
+	pub fn blocker_strokes(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> Vec<EmblemStroke> {
+		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
+		let unit = self.crescent_radius();
+		let h = unit * 0.98;
+		let w = unit * 0.86;
+		let width = (self.zag_stroke * 0.36).max(0.45);
+		chambered_diamond_local(h, w)
+			.into_iter()
+			.map(|pts| EmblemStroke { pts: emblem_place(origin, theta, rho, &pts), width })
+			.collect()
+	}
+
+	/// Eight-petal rosette matching the board's generating-circle motif.
+	pub fn rosette_petals(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> Vec<Vec<[f32; 2]>> {
+		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
+		let unit = self.crescent_radius();
+		let petal_r = unit * 0.33;
+		let d = unit * 0.56;
+		eight_petal_local(petal_r, d)
+			.into_iter()
+			.map(|pts| emblem_place(origin, theta, rho, &pts))
+			.collect()
+	}
+
 	/// All drawable parts of `emblem`. New kinds add a match arm here.
 	pub fn emblem_glyph(
 		self,
@@ -1118,6 +1154,18 @@ impl TileRingDraw {
 						.collect(),
 				}
 			}
+			Emblem::Blocker => EmblemGlyph {
+				fills: Vec::new(),
+				strokes: self.blocker_strokes(tile_center, tile_radius, up),
+			},
+			Emblem::Rosette => EmblemGlyph {
+				fills: self
+					.rosette_petals(tile_center, tile_radius, up)
+					.into_iter()
+					.map(EmblemFill::Poly)
+					.collect(),
+				strokes: Vec::new(),
+			},
 		}
 	}
 }
@@ -1326,6 +1374,66 @@ fn zag_zigzag_upright(
 	[[-w + s_off, h], [w + s_off, h / 3.0], [-w + s_off, -h / 3.0], [w + s_off, -h]]
 		.into_iter()
 		.map(|p| emblem_local_to_world(origin, theta, rho, p[0], p[1]))
+		.collect()
+}
+
+fn quad_bezier(p0: [f32; 2], c: [f32; 2], p1: [f32; 2], n: u32) -> Vec<[f32; 2]> {
+	(0..=n)
+		.map(|i| {
+			let t = i as f32 / n as f32;
+			let u = 1.0 - t;
+			[
+				u * u * p0[0] + 2.0 * u * t * c[0] + t * t * p1[0],
+				u * u * p0[1] + 2.0 * u * t * c[1] + t * t * p1[1],
+			]
+		})
+		.collect()
+}
+
+/// Concave diamond outline plus a centered cross. Local +n is up in the slot.
+fn chambered_diamond_local(h: f32, w: f32) -> Vec<Vec<[f32; 2]>> {
+	let n = [0.0, h];
+	let e = [w, 0.0];
+	let s = [0.0, -h];
+	let west = [-w, 0.0];
+	let k = 0.48;
+	let samples = 10;
+	let mut outline = Vec::new();
+	for (a, b) in [(n, e), (e, s), (s, west), (west, n)] {
+		let ctrl = [(a[0] + b[0]) * 0.5 * k, (a[1] + b[1]) * 0.5 * k];
+		let mut seg = quad_bezier(a, ctrl, b, samples);
+		if !outline.is_empty() {
+			seg.remove(0);
+		}
+		outline.extend(seg);
+	}
+	if let Some(first) = outline.first().copied() {
+		outline.push(first);
+	}
+	let inset = 0.58;
+	let cross_v = vec![[0.0, h * inset], [0.0, -h * inset]];
+	let cross_h = vec![[-w * inset, 0.0], [w * inset, 0.0]];
+	vec![outline, cross_v, cross_h]
+}
+
+/// Eight overlapping discs, one petal along +n, matching the 8-circle rosette.
+/// `d` is the center radius; `petal_r` is each generating circle. The board
+/// uses `d == petal_r`; the slot uses a slightly larger `d` so eight lobes
+/// stay readable at emblem size.
+fn eight_petal_local(petal_r: f32, d: f32) -> Vec<Vec<[f32; 2]>> {
+	use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
+	let n = TILE_MARK_DOT_SAMPLES.max(14);
+	(0..8)
+		.map(|k| {
+			let a = FRAC_PI_2 + k as f32 * FRAC_PI_4;
+			let c = [d * a.cos(), d * a.sin()];
+			(0..n)
+				.map(|i| {
+					let t = TAU * i as f32 / n as f32;
+					[c[0] + petal_r * t.cos(), c[1] + petal_r * t.sin()]
+				})
+				.collect()
+		})
 		.collect()
 }
 
@@ -4563,6 +4671,51 @@ mod tests {
 		}
 		let zs_notches = tile_notches(zs, down);
 		assert_eq!(zs_notches.len(), 2);
+	}
+
+	#[test]
+	fn blocker_and_rosette_glyphs_fit_the_emblem_slot() {
+		use crate::game::{Emblem, Player, Tile, TileColor};
+		let r = 22.0;
+		let draw = TileRingDraw::for_radius(r);
+		let down = CAPTURE_DOWN_BEVY;
+		let up = [-down[0], -down[1]];
+		let wall = Tile::mono(1, Player::One, TileColor::Green, 1, 2).with_emblem(Emblem::Blocker);
+		let rose = Tile::mono(1, Player::One, TileColor::Orange, 1, 2).with_emblem(Emblem::Rosette);
+		assert_eq!(tile_notches(wall, down).len(), 2);
+		assert_eq!(tile_notches(rose, down).len(), 2);
+		let blocker = draw.emblem_glyph(Emblem::Blocker, [0.0, 0.0], r, up);
+		assert!(blocker.fills.is_empty(), "Blocker is an outlined lattice");
+		assert_eq!(blocker.strokes.len(), 3, "diamond outline plus a two-arm cross");
+		assert!(blocker.strokes[0].pts.len() > 16, "concave diamond is a sampled outline");
+		for stroke in &blocker.strokes {
+			for p in &stroke.pts {
+				assert!(p[1] > 0.0, "Blocker sits at the top of the tile, p={p:?}");
+				assert!(
+					p[0].hypot(p[1]) + stroke.width * 0.5 < r - 0.15,
+					"Blocker stays inside the tile, p={p:?} r={r}"
+				);
+			}
+		}
+		let outline = &blocker.strokes[0].pts;
+		let max_n = outline.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
+		let min_n = outline.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+		let max_s = outline.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
+		let min_s = outline.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+		assert!(max_n - min_n > max_s - min_s, "diamond is taller than wide (upright)");
+		let rosette = draw.emblem_glyph(Emblem::Rosette, [0.0, 0.0], r, up);
+		assert_eq!(rosette.fills.len(), 8, "eight petals");
+		assert!(rosette.strokes.is_empty());
+		for fill in &rosette.fills {
+			let EmblemFill::Poly(poly) = fill else {
+				panic!("rosette petals are filled discs");
+			};
+			assert!(poly.len() >= 12);
+			for p in poly {
+				assert!(p[1] > 0.0, "rosette sits at the top, p={p:?}");
+				assert!(p[0].hypot(p[1]) < r - 0.2, "rosette stays inside the tile, p={p:?}");
+			}
+		}
 	}
 
 	#[test]
