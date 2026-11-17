@@ -1010,7 +1010,7 @@ impl TileRingDraw {
 		(self.crescent_radius() * 0.92).max(zag_h + stroke * 0.55)
 	}
 
-	/// Thin two-circle crescent (waning/waxing sliver), opening right/down-right.
+	/// Thin two-circle crescent, upright in world axes (does not rotate with the tile).
 	pub fn crescent_poly(
 		self,
 		tile_center: [f32; 2],
@@ -1109,27 +1109,29 @@ fn crescent_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 
 }
 
 /// Thin ~20% sliver: outer disc minus a similar disc offset toward the opening.
-/// Opening is right / lower-right in tile-up `(s, n)` (`+s` right, `+n` toward the rim).
+/// Upright in world axes: opening +X (right), horns along ±Y. Translated into
+/// the notch; the shape does not rotate with the tile or emblem slot.
 fn crescent_arcs(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
-	use std::f32::consts::PI;
 	let n = TILE_MARK_DOT_SAMPLES.max(20);
 	let outer_r = r;
 	let inner_r = r * 0.93;
 	let offset = r * 0.40;
-	// ~−38° from +s toward −n: horns point right and down-right, back is upper-left.
-	let open = -38.0 * PI / 180.0;
-	let (os, on) = (open.cos(), open.sin());
 	let c0 = [0.0_f32, 0.0_f32];
-	let c1 = [offset * os, offset * on];
+	let c1 = [offset, 0.0];
 	let Some((p, q)) = circle_circle_hits(c0, outer_r, c1, inner_r) else {
 		return (Vec::new(), Vec::new());
 	};
-	let back = [-os * outer_r, -on * outer_r];
-	let terminator = [c1[0] - os * inner_r, c1[1] - on * inner_r];
+	let back = [-outer_r, 0.0];
+	let terminator = [c1[0] - inner_r, 0.0];
 	let mut outer = sample_circle_arc(c0, outer_r, p, q, back, n);
 	let mut inner = sample_circle_arc(c1, inner_r, p, q, terminator, n);
 	center_local_pair(&mut outer, &mut inner);
-	(emblem_warp(origin, theta, rho, &outer), emblem_warp(origin, theta, rho, &inner))
+	let slot = polar_point(origin, theta, rho);
+	(translate_pts(&outer, slot), translate_pts(&inner, slot))
+}
+
+fn translate_pts(pts: &[[f32; 2]], slot: [f32; 2]) -> Vec<[f32; 2]> {
+	pts.iter().map(|p| [p[0] + slot[0], p[1] + slot[1]]).collect()
 }
 
 fn crescent_tris_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[[f32; 2]; 3]> {
@@ -1214,12 +1216,6 @@ fn center_local_pair(a: &mut [[f32; 2]], b: &mut [[f32; 2]]) {
 fn emblem_local_to_world(origin: [f32; 2], theta: f32, rho: f32, s: f32, n: f32) -> [f32; 2] {
 	let (ct, st) = (theta.cos(), theta.sin());
 	[origin[0] + (rho + n) * ct - s * st, origin[1] + (rho + n) * st + s * ct]
-}
-
-fn emblem_warp(origin: [f32; 2], theta: f32, rho: f32, pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
-	pts.iter()
-		.map(|p| emblem_local_to_world(origin, theta, rho, p[0], p[1]))
-		.collect()
 }
 
 fn zag_zigzag_upright(
@@ -4389,6 +4385,12 @@ mod tests {
 				);
 			}
 		}
+		fn poly_centroid(poly: &[[f32; 2]]) -> (f32, f32) {
+			let n = poly.len() as f32;
+			let x = poly.iter().map(|p| p[0]).sum::<f32>() / n;
+			let y = poly.iter().map(|p| p[1]).sum::<f32>() / n;
+			(x, y)
+		}
 		let poly = draw.crescent_poly([0.0, 0.0], r, up);
 		assert!(poly.len() > 12, "crescent is a two-circle sliver");
 		let tris = draw.crescent_tris([0.0, 0.0], r, up);
@@ -4422,12 +4424,23 @@ mod tests {
 			max_y - min_y,
 			draw.gap
 		);
-		assert!(poly.iter().any(|p| p[0] > 0.0), "horns open toward +s (right)");
+		assert!(poly.iter().any(|p| p[0] > 0.0), "horns open toward +X (right)");
 		assert!(min_x < 0.0, "back of the sliver sits on the left");
 		assert!(
-			left_y > mean_y,
-			"back of the crescent sits upper-left, left_y={left_y} mean_y={mean_y}"
+			(left_y - mean_y).abs() < (max_y - min_y) * 0.12,
+			"upright crescent: back is at mid-height, left_y={left_y} mean_y={mean_y}"
 		);
+		assert!(max_y > left_y && min_y < left_y, "horns point up and down");
+		let tilted = draw.crescent_poly([0.0, 0.0], r, [1.0, 0.0]);
+		assert_eq!(tilted.len(), poly.len());
+		let (ax, ay) = poly_centroid(&poly);
+		let (bx, by) = poly_centroid(&tilted);
+		for (a, b) in poly.iter().zip(tilted.iter()) {
+			assert!(
+				(a[0] - ax - (b[0] - bx)).abs() < 1e-4 && (a[1] - ay - (b[1] - by)).abs() < 1e-4,
+				"crescent orientation is world-fixed, not the slot angle"
+			);
+		}
 		let zigs = draw.two_zag_z_polys([0.0, 0.0], r, up);
 		assert_eq!(zigs.len(), 2);
 		assert_eq!(zigs[0].len(), zigs[1].len());
