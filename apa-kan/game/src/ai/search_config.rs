@@ -7,8 +7,8 @@
 //! - `tactical`: aggressive capture/center weights, deeper qsearch, short playouts
 //! - `positional`: cautious, longer playouts, lighter LMR
 //! - `explorative`: high PUCT, progressive widening on
-//! - `deep_mcts`: move priors + prior-ordered PW + tree reuse + MCTS TT +
-//!   factored ADDs + 1-ply leaf search + solver (focused MCTS)
+//! - `deep_mcts`: move-ordering priors + prior-ordered PW + lower PUCT +
+//!   tree reuse + solver (focused MCTS; other levers stay independent knobs)
 //!
 //! Overlay any field with `--search k=v,...`. Load a TOML file with `--bot-config`.
 
@@ -212,8 +212,10 @@ impl SearchConfig {
 		cfg
 	}
 
-	/// Focused MCTS: priors + prior-ordered PW, reuse, transpositions,
-	/// factored ADDs, 1-ply leaf search, and a win/loss solver.
+	/// Focused MCTS: move-ordering softmax priors, prior-ordered PW, lower
+	/// PUCT, tree reuse, and a win/loss solver. Ablation dropped factored
+	/// ADDs, leaf search, and MCTS transpositions (they spread visits or
+	/// shallowed the tree on the opening/mid positions).
 	pub fn deep_mcts() -> Self {
 		let mut cfg = Self::enhanced();
 		cfg.mcts_move_priors = true;
@@ -225,11 +227,10 @@ impl SearchConfig {
 		cfg.puct = 0.9;
 		cfg.mcts_untried_random = 0.0;
 		cfg.mcts_tree_reuse = true;
-		cfg.mcts_transpositions = true;
-		cfg.mcts_factored_moves = true;
-		cfg.playout_leaf_depth = 1;
+		cfg.mcts_transpositions = false;
+		cfg.mcts_factored_moves = false;
+		cfg.playout_leaf_depth = 0;
 		cfg.mcts_solver = true;
-		cfg.playout_cutoff = 8;
 		cfg
 	}
 
@@ -600,9 +601,9 @@ mod tests {
 	fn deep_mcts_enables_focus_levers() {
 		let cfg = SearchConfig::deep_mcts();
 		assert!(cfg.mcts_move_priors && cfg.prior_widening && cfg.mcts_progressive_widening);
-		assert!(cfg.mcts_tree_reuse && cfg.mcts_transpositions && cfg.mcts_factored_moves);
-		assert!(cfg.mcts_solver);
-		assert_eq!(cfg.playout_leaf_depth, 1);
+		assert!(cfg.mcts_tree_reuse && cfg.mcts_solver);
+		assert!(!cfg.mcts_transpositions && !cfg.mcts_factored_moves);
+		assert_eq!(cfg.playout_leaf_depth, 0);
 		assert!(cfg.puct < SearchConfig::enhanced().puct);
 		assert_eq!(SearchConfig::parse_profile("focused").unwrap(), cfg);
 		assert_eq!(cfg.profile_name(), "deep_mcts");

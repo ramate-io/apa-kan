@@ -1,6 +1,7 @@
 # Focused MCTS personality (`--search-profile deep_mcts`).
 # Move-ordering softmax priors, prior-ordered progressive widening, lower PUCT,
-# tree reuse, Zobrist-shared stats, factored ADDs, 1-ply leaf search, solver.
+# tree reuse, MCTS-solver. Factored ADDs, leaf search, and MCTS transpositions
+# are independent knobs; ablation left them off in this preset.
 # Missing keys take the `enhanced` defaults (LMR on, PVS on, qsearch on).
 name = "deep_mcts"
 description = "Focused MCTS"
@@ -13,8 +14,4 @@ pw_alpha = 0.4
 puct = 0.9
 mcts_untried_random = 0.0
 mcts_tree_reuse = true
-mcts_transpositions = true
-mcts_factored_moves = true
-playout_leaf_depth = 1
 mcts_solver = true
-playout_cutoff = 8
