@@ -1,0 +1,44 @@
+# search ablation  budget=nodes:132000,iters:2600
+# positions: opening seeds 1,2,3 and 6 greedy plies from seed 4. jobs=1
+# profile  pos  mm_depth  mm_nodes  mcts_avg  mcts_max  mcts_iters  mm_ms  mcts_ms
+plain  open1  mm_depth=2 mm_nodes=132000  mcts_avg=1.92 mcts_max=4 mcts_iters=2600  mm_ms=297 mcts_ms=229
+plain  open2  mm_depth=2 mm_nodes=132000  mcts_avg=1.73 mcts_max=4 mcts_iters=2600  mm_ms=304 mcts_ms=255
+plain  open3  mm_depth=3 mm_nodes=132000  mcts_avg=1.76 mcts_max=4 mcts_iters=2600  mm_ms=299 mcts_ms=206
+plain  mid6  mm_depth=3 mm_nodes=132000  mcts_avg=1.97 mcts_max=5 mcts_iters=2600  mm_ms=300 mcts_ms=226
++ordering  open1  mm_depth=3 mm_nodes=132000  mcts_avg=2.03 mcts_max=5 mcts_iters=2600  mm_ms=359 mcts_ms=218
++ordering  open2  mm_depth=3 mm_nodes=132000  mcts_avg=1.72 mcts_max=3 mcts_iters=2600  mm_ms=349 mcts_ms=240
++ordering  open3  mm_depth=4 mm_nodes=132000  mcts_avg=1.77 mcts_max=4 mcts_iters=2600  mm_ms=376 mcts_ms=197
++ordering  mid6  mm_depth=4 mm_nodes=132000  mcts_avg=1.97 mcts_max=4 mcts_iters=2600  mm_ms=396 mcts_ms=224
++tt  open1  mm_depth=4 mm_nodes=132000  mcts_avg=2.03 mcts_max=5 mcts_iters=2600  mm_ms=381 mcts_ms=217
++tt  open2  mm_depth=4 mm_nodes=132000  mcts_avg=1.72 mcts_max=3 mcts_iters=2600  mm_ms=339 mcts_ms=238
++tt  open3  mm_depth=4 mm_nodes=132000  mcts_avg=1.77 mcts_max=4 mcts_iters=2600  mm_ms=391 mcts_ms=197
++tt  mid6  mm_depth=4 mm_nodes=132000  mcts_avg=1.97 mcts_max=4 mcts_iters=2600  mm_ms=394 mcts_ms=224
++lmr  open1  mm_depth=4 mm_nodes=132000  mcts_avg=2.03 mcts_max=5 mcts_iters=2600  mm_ms=391 mcts_ms=217
++lmr  open2  mm_depth=4 mm_nodes=132000  mcts_avg=1.72 mcts_max=3 mcts_iters=2600  mm_ms=342 mcts_ms=236
++lmr  open3  mm_depth=4 mm_nodes=132000  mcts_avg=1.77 mcts_max=4 mcts_iters=2600  mm_ms=390 mcts_ms=197
++lmr  mid6  mm_depth=4 mm_nodes=132000  mcts_avg=1.97 mcts_max=4 mcts_iters=2600  mm_ms=394 mcts_ms=226
++pvs  open1  mm_depth=4 mm_nodes=132000  mcts_avg=2.03 mcts_max=5 mcts_iters=2600  mm_ms=386 mcts_ms=217
++pvs  open2  mm_depth=4 mm_nodes=132000  mcts_avg=1.72 mcts_max=3 mcts_iters=2600  mm_ms=335 mcts_ms=237
++pvs  open3  mm_depth=4 mm_nodes=132000  mcts_avg=1.77 mcts_max=4 mcts_iters=2600  mm_ms=367 mcts_ms=196
++pvs  mid6  mm_depth=4 mm_nodes=132000  mcts_avg=1.97 mcts_max=4 mcts_iters=2600  mm_ms=412 mcts_ms=225
++quiescence  open1  mm_depth=3 mm_nodes=132000  mcts_avg=2.03 mcts_max=5 mcts_iters=2600  mm_ms=2332 mcts_ms=217
++quiescence  open2  mm_depth=3 mm_nodes=132000  mcts_avg=1.72 mcts_max=3 mcts_iters=2600  mm_ms=1646 mcts_ms=236
++quiescence  open3  mm_depth=4 mm_nodes=132000  mcts_avg=1.77 mcts_max=4 mcts_iters=2600  mm_ms=1814 mcts_ms=196
++quiescence  mid6  mm_depth=4 mm_nodes=132000  mcts_avg=1.97 mcts_max=4 mcts_iters=2600  mm_ms=1989 mcts_ms=224
+classic  open1  mm_depth=3 mm_nodes=132000  mcts_avg=2.21 mcts_max=5 mcts_iters=2600  mm_ms=1817 mcts_ms=799
+classic  open2  mm_depth=3 mm_nodes=132000  mcts_avg=2.12 mcts_max=5 mcts_iters=2600  mm_ms=1772 mcts_ms=905
+classic  open3  mm_depth=3 mm_nodes=132000  mcts_avg=2.00 mcts_max=5 mcts_iters=2600  mm_ms=2006 mcts_ms=771
+classic  mid6  mm_depth=4 mm_nodes=132000  mcts_avg=2.30 mcts_max=6 mcts_iters=2600  mm_ms=2096 mcts_ms=822
+enhanced  open1  mm_depth=3 mm_nodes=132000  mcts_avg=2.40 mcts_max=7 mcts_iters=2600  mm_ms=2322 mcts_ms=774
+enhanced  open2  mm_depth=3 mm_nodes=132000  mcts_avg=2.12 mcts_max=6 mcts_iters=2600  mm_ms=1624 mcts_ms=864
+enhanced  open3  mm_depth=4 mm_nodes=132000  mcts_avg=2.16 mcts_max=6 mcts_iters=2600  mm_ms=1814 mcts_ms=757
+enhanced  mid6  mm_depth=4 mm_nodes=132000  mcts_avg=2.38 mcts_max=7 mcts_iters=2600  mm_ms=2006 mcts_ms=808
+classic+pw  open1  mm_depth=3 mm_nodes=132000  mcts_avg=2.40 mcts_max=7 mcts_iters=2600  mm_ms=1812 mcts_ms=777
+classic+pw  open2  mm_depth=3 mm_nodes=132000  mcts_avg=2.12 mcts_max=6 mcts_iters=2600  mm_ms=1780 mcts_ms=871
+classic+pw  open3  mm_depth=3 mm_nodes=132000  mcts_avg=2.16 mcts_max=6 mcts_iters=2600  mm_ms=1995 mcts_ms=762
+classic+pw  mid6  mm_depth=4 mm_nodes=132000  mcts_avg=2.38 mcts_max=7 mcts_iters=2600  mm_ms=2093 mcts_ms=808
+classic+random_playouts  open1  mm_depth=3 mm_nodes=132000  mcts_avg=2.03 mcts_max=5 mcts_iters=2600  mm_ms=1811 mcts_ms=219
+classic+random_playouts  open2  mm_depth=3 mm_nodes=132000  mcts_avg=1.72 mcts_max=3 mcts_iters=2600  mm_ms=1776 mcts_ms=238
+classic+random_playouts  open3  mm_depth=3 mm_nodes=132000  mcts_avg=1.77 mcts_max=4 mcts_iters=2600  mm_ms=1998 mcts_ms=196
+classic+random_playouts  mid6  mm_depth=4 mm_nodes=132000  mcts_avg=1.97 mcts_max=4 mcts_iters=2600  mm_ms=2096 mcts_ms=224
+# elapsed_sec=112.5

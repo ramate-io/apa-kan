@@ -420,19 +420,12 @@ fn can_reach_center(game: &Game, player: Player) -> bool {
 	if game.tile_at(center).is_some() {
 		return false;
 	}
-	if player != game.current_player() {
-		// Approximate: an inner-ring tile with a vacant center is a 1-step
-		// threat on the next turn if it is not same-piece-restricted.
-		return game
-			.board()
-			.inner_ring()
-			.iter()
-			.any(|&n| game.tile_at(n).map(|t| t.owner == player).unwrap_or(false));
-	}
-	game.board().inner_ring().iter().any(|&n| {
-		game.tile_at(n).map(|t| t.owner == player).unwrap_or(false)
-			&& game.legal_destinations(n).contains(&center)
-	})
+	// Inner-ring occupant + vacant center is a 1-step threat. Skip
+	// `legal_destinations` (path search) so eval stays cheap in the leaves.
+	game.board()
+		.inner_ring()
+		.iter()
+		.any(|&n| game.tile_at(n).map(|t| t.owner == player).unwrap_or(false))
 }
 
 /// Prefer a mixed capture-mark bench. All dots starve spawn tokens; all

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 
-use crate::ai::Actor;
+use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	BeadScoring, BraidFailMismatch, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp,
@@ -29,6 +29,7 @@ pub struct GameConfig {
 	pub rules: RuleSet,
 	pub scenario: Option<Scenario>,
 	pub setup: SetupConfig,
+	pub search: SearchConfig,
 }
 
 impl Default for GameConfig {
@@ -46,6 +47,7 @@ impl Default for GameConfig {
 			rules: RuleSet::default(),
 			scenario: None,
 			setup: SetupConfig::default(),
+			search: SearchConfig::default(),
 		}
 	}
 }
@@ -139,6 +141,33 @@ impl GameConfig {
 				}
 				"--height" => {
 					cfg.height = parse_u32("--height", &require_value("--height", it.next())?)?;
+				}
+				"--search-profile" => {
+					cfg.search = SearchConfig::parse_profile(&require_value(
+						"--search-profile",
+						it.next(),
+					)?)?;
+				}
+				"--bot-config" => {
+					let path = PathBuf::from(require_value("--bot-config", it.next())?);
+					cfg.search = SearchConfig::load_path(&path)?;
+				}
+				"--list-search-profiles" => {
+					print!("{}", SearchConfig::list_text());
+					process::exit(0);
+				}
+				"--search" => {
+					cfg.search = cfg.search.with_spec(&require_value("--search", it.next())?)?;
+				}
+				"--search-threads" => {
+					let n = parse_u64(
+						"--search-threads",
+						&require_value("--search-threads", it.next())?,
+					)?;
+					if n == 0 || n > 32 {
+						return Err("invalid --search-threads (expected 1..32)".into());
+					}
+					cfg.search = cfg.search.with_threads(n as u8);
 				}
 				"--actions" => {
 					let n = parse_u64("--actions", &require_value("--actions", it.next())?)?;
@@ -379,6 +408,14 @@ pub fn usage() -> &'static str {
 	 Options:\n\
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative>\n\
+	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore)\n\
+	   --bot-config <path.toml>                   Load a SearchConfig TOML (overlays missing keys with enhanced defaults)\n\
+	   --list-search-profiles                     Print named presets and their labels\n\
+	   --search <k=v,...>                         Overlay any knob: ordering, tt, tt-bits, lmr, lmr-min-depth,\n\
+	                                              lmr-reduce, pvs, quiescence, q-depth, pw, pw-a, puct, playout-cutoff,\n\
+	                                              heuristic-playouts, threads, ...\n\
+	   --search-threads <1..32>                   MCTS root-parallel trees (default: 1; 1 keeps benches deterministic)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
 	   --deck-noise <0..100>                      Resample that percent of a mirrored collection (default: 0)\n\
@@ -446,6 +483,50 @@ mod tests {
 		assert_eq!(cfg.bot1, Actor::Mcts);
 		assert_eq!(cfg.bot2, Actor::Minimax);
 		assert_eq!(cfg.seed, 42);
+		assert_eq!(cfg.search, SearchConfig::enhanced());
+	}
+
+	#[test]
+	fn parses_search_profile_and_spec() {
+		let cfg = GameConfig::parse([
+			"--search-profile",
+			"classic",
+			"--search",
+			"lmr=on,pvs=on",
+			"--search-threads",
+			"4",
+		])
+		.unwrap();
+		assert!(cfg.search.transposition);
+		assert!(cfg.search.lmr && cfg.search.pvs);
+		assert_eq!(cfg.search.mcts_root_threads, 4);
+		// classic + LMR + PVS is the enhanced preset (PW stays off). Threads
+		// are ignored when naming the profile.
+		assert_eq!(cfg.search.profile_name(), "enhanced");
+		let custom =
+			GameConfig::parse(["--search-profile", "classic", "--search", "pw=on"]).unwrap();
+		assert_eq!(custom.search.profile_name(), "custom");
+	}
+
+	#[test]
+	fn parses_personality_profiles() {
+		let cfg = GameConfig::parse(["--search-profile", "tactical"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::tactical());
+		let cfg = GameConfig::parse(["--search-profile", "aggressive"]).unwrap();
+		assert_eq!(cfg.search.profile_name(), "tactical");
+		let cfg = GameConfig::parse(["--search-profile", "positional"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::positional());
+		let cfg = GameConfig::parse(["--search-profile", "explorative"]).unwrap();
+		assert!(cfg.search.mcts_progressive_widening);
+		assert_eq!(cfg.search.profile_name(), "explorative");
+	}
+
+	#[test]
+	fn parses_bot_config_toml() {
+		let path = format!("{}/bots/tactical.toml", env!("CARGO_MANIFEST_DIR"));
+		let cfg = GameConfig::parse(["--bot-config", &path]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::tactical());
+		assert_eq!(cfg.search.profile_name(), "tactical");
 	}
 
 	#[test]

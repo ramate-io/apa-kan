@@ -45,6 +45,7 @@ pub fn run_app(cfg: GameConfig) {
 	let rng = StdRng::seed_from_u64(cfg.seed ^ 0xA5A5_A5A5);
 	let width = cfg.width;
 	let height = cfg.height;
+	let search = cfg.search;
 	let deck_slots = game.rules().bag_size as usize;
 	let mut resolution = WindowResolution::new(width, height);
 	resolution.set_scale_factor_override(Some(1.0));
@@ -72,6 +73,8 @@ pub fn run_app(cfg: GameConfig) {
 			last_removals: String::new(),
 			flash: visual::CaptureFlash::empty(),
 			fingerprint: 0,
+			search1: ai::Searcher::with_config(search),
+			search2: ai::Searcher::with_config(search),
 		})
 		.insert_resource(RngRes(rng))
 		.insert_resource(BotClock { wait: 0.4 })
@@ -124,6 +127,8 @@ struct PlayState {
 	last_removals: String,
 	flash: visual::CaptureFlash,
 	fingerprint: u64,
+	search1: ai::Searcher,
+	search2: ai::Searcher,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -754,6 +759,8 @@ fn apply_action(play: &mut PlayState, action: Action) {
 			}
 			play.selection = Selection::None;
 			play.warning.clear();
+			play.search1.advance(&play.game);
+			play.search2.advance(&play.game);
 		}
 		Err(err) => {
 			play.warning = err;
@@ -908,7 +915,15 @@ fn bot_turn(
 		return;
 	}
 	clock.wait = cfg.delay.as_secs_f32();
-	let action = ai::choose(&play.game, actor, &mut rng.0, cfg.think);
+	let player = play.game.current_player();
+	let think = cfg.think;
+	let action = {
+		let PlayState { game, search1, search2, .. } = &mut *play;
+		match player {
+			Player::One => search1.choose(game, actor, &mut rng.0, think),
+			Player::Two => search2.choose(game, actor, &mut rng.0, think),
+		}
+	};
 	apply_action(&mut play, action);
 }
 

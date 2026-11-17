@@ -1,0 +1,13 @@
+# Cautious / positional personality.
+# Lighter LMR, quieter qsearch, longer MCTS playouts.
+# Missing keys take the `enhanced` defaults (LMR on, PVS on, PW off).
+name = "positional"
+description = "Cautious / positional"
+q_depth = 2
+lmr_min_depth = 4
+lmr_reduce = 1
+lmr_late_reduce = 1
+order_capture_scale = 70
+order_center_bonus = 16000
+playout_cutoff = 18
+puct = 1.25
