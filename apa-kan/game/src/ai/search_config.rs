@@ -7,6 +7,8 @@
 //! - `tactical`: aggressive capture/center weights, deeper qsearch, short playouts
 //! - `positional`: cautious, longer playouts, lighter LMR
 //! - `explorative`: high PUCT, progressive widening on
+//! - `deep_mcts`: move-ordering softmax priors + prior-ordered expansion +
+//!   tree reuse + solver (focused MCTS; extra PW / low PUCT lost strength)
 //!
 //! Overlay any field with `--search k=v,...`. Load a TOML file with `--bot-config`.
 
@@ -85,6 +87,25 @@ pub struct SearchConfig {
 	pub puct: f32,
 	/// RAVE equivalence parameter (higher = RAVE lingers longer).
 	pub rave_eq: f32,
+
+	/// Softmax of move-ordering scores as PUCT priors (vs eval-of-child).
+	pub mcts_move_priors: bool,
+	/// Softmax temperature for move priors (higher = flatter).
+	pub prior_temperature: f32,
+	/// Expand untried moves in prior/order-score order (highest first).
+	pub prior_widening: bool,
+
+	/// Keep the subtree under the played move (and the opponent reply).
+	pub mcts_tree_reuse: bool,
+	/// Share node statistics for Zobrist-identical positions.
+	pub mcts_transpositions: bool,
+	/// Split ADD into choose-tile then choose-destination.
+	pub mcts_factored_moves: bool,
+	/// After a cut-off playout, score the leaf with this many ply of
+	/// capture-first minimax (0 = static eval).
+	pub playout_leaf_depth: u8,
+	/// Propagate proven wins/losses so settled lines stop getting visits.
+	pub mcts_solver: bool,
 }
 
 impl SearchConfig {
@@ -120,6 +141,14 @@ impl SearchConfig {
 			mcts_root_threads: 1,
 			puct: 1.6,
 			rave_eq: 300.0,
+			mcts_move_priors: false,
+			prior_temperature: 1.5,
+			prior_widening: false,
+			mcts_tree_reuse: true,
+			mcts_transpositions: false,
+			mcts_factored_moves: false,
+			playout_leaf_depth: 0,
+			mcts_solver: false,
 		}
 	}
 
@@ -183,6 +212,26 @@ impl SearchConfig {
 		cfg
 	}
 
+	/// Focused MCTS: move-ordering softmax priors, expand untried in prior
+	/// order, tree reuse, and a win/loss solver. Extra progressive widening
+	/// plus a lowered PUCT deepened the tree on openings but lost 4-2-26
+	/// vs `enhanced` in mixed H2H, so this preset keeps PW off (same as
+	/// `enhanced`) and the default PUCT. Factored ADDs, 1-ply leaf search,
+	/// and MCTS transpositions stay independent knobs (off here).
+	pub fn deep_mcts() -> Self {
+		let mut cfg = Self::enhanced();
+		cfg.mcts_move_priors = true;
+		cfg.prior_temperature = 1.25;
+		cfg.prior_widening = true;
+		cfg.mcts_untried_random = 0.0;
+		cfg.mcts_tree_reuse = true;
+		cfg.mcts_transpositions = false;
+		cfg.mcts_factored_moves = false;
+		cfg.playout_leaf_depth = 0;
+		cfg.mcts_solver = true;
+		cfg
+	}
+
 	pub fn parse_profile(s: &str) -> Result<Self, String> {
 		match s.trim().to_ascii_lowercase().as_str() {
 			"enhanced" | "new" | "full" | "pruned" | "default" => Ok(Self::enhanced()),
@@ -191,14 +240,15 @@ impl SearchConfig {
 			"tactical" | "aggressive" | "aggro" => Ok(Self::tactical()),
 			"positional" | "cautious" | "solid" => Ok(Self::positional()),
 			"explorative" | "explore" | "curious" => Ok(Self::explorative()),
+			"deep_mcts" | "deep-mcts" | "deep" | "focused" => Ok(Self::deep_mcts()),
 			other => Err(format!(
-				"unknown --search-profile '{other}' (expected enhanced|classic|plain|tactical|positional|explorative)"
+				"unknown --search-profile '{other}' (expected enhanced|classic|plain|tactical|positional|explorative|deep_mcts)"
 			)),
 		}
 	}
 
 	pub fn profile_names() -> &'static [&'static str] {
-		&["enhanced", "classic", "plain", "tactical", "positional", "explorative"]
+		&["enhanced", "classic", "plain", "tactical", "positional", "explorative", "deep_mcts"]
 	}
 
 	pub fn profile_name(self) -> &'static str {
@@ -216,6 +266,8 @@ impl SearchConfig {
 			"positional"
 		} else if core == Self::explorative() {
 			"explorative"
+		} else if core == Self::deep_mcts() {
+			"deep_mcts"
 		} else {
 			"custom"
 		}
@@ -309,6 +361,30 @@ impl SearchConfig {
 				}
 				"puct" | "c-puct" | "exploration" => self.puct = parse_f32(&key, val)?,
 				"rave-eq" | "rave_eq" => self.rave_eq = parse_f32(&key, val)?,
+				"priors" | "move-priors" | "mcts_move_priors" | "mcts-move-priors" => {
+					self.mcts_move_priors = parse_on_off(&key, val)?;
+				}
+				"prior-temp" | "prior_temperature" | "prior-temperature" => {
+					self.prior_temperature = parse_f32(&key, val)?;
+				}
+				"prior-widening" | "prior_widening" | "pw-order" | "pw_order" => {
+					self.prior_widening = parse_on_off(&key, val)?;
+				}
+				"reuse" | "tree-reuse" | "mcts_tree_reuse" | "mcts-tree-reuse" => {
+					self.mcts_tree_reuse = parse_on_off(&key, val)?;
+				}
+				"mcts-tt" | "mcts_transpositions" | "mcts-transpositions" | "transpositions" => {
+					self.mcts_transpositions = parse_on_off(&key, val)?;
+				}
+				"factored" | "factored-moves" | "mcts_factored_moves" | "mcts-factored-moves" => {
+					self.mcts_factored_moves = parse_on_off(&key, val)?;
+				}
+				"leaf-depth" | "playout_leaf_depth" | "playout-leaf-depth" | "leaf" => {
+					self.playout_leaf_depth = parse_u8_range(&key, val, 0, 4)?;
+				}
+				"solver" | "mcts-solver" | "mcts_solver" => {
+					self.mcts_solver = parse_on_off(&key, val)?;
+				}
 				other => {
 					return Err(format!(
 						"unknown --search key '{other}' (see --list-search-profiles)"
@@ -372,11 +448,15 @@ impl SearchConfig {
 		if self.order_capture_scale < 0 {
 			self.order_capture_scale = 0;
 		}
+		if self.prior_temperature < 0.05 {
+			self.prior_temperature = 0.05;
+		}
+		self.playout_leaf_depth = self.playout_leaf_depth.min(4);
 	}
 
 	pub fn label(self) -> String {
 		format!(
-			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={}",
+			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={}",
 			self.profile_name(),
 			on_off(self.move_ordering),
 			on_off(self.transposition),
@@ -389,7 +469,14 @@ impl SearchConfig {
 			on_off(self.mcts_heuristic_playouts),
 			self.puct,
 			self.playout_cutoff,
-			self.mcts_root_threads
+			self.mcts_root_threads,
+			on_off(self.mcts_move_priors),
+			on_off(self.prior_widening),
+			on_off(self.mcts_tree_reuse),
+			on_off(self.mcts_transpositions),
+			on_off(self.mcts_factored_moves),
+			self.playout_leaf_depth,
+			on_off(self.mcts_solver)
 		)
 	}
 }
@@ -504,5 +591,31 @@ mod tests {
 		assert_eq!(tactical, SearchConfig::tactical());
 		assert_eq!(positional, SearchConfig::positional());
 		assert_eq!(explorative, SearchConfig::explorative());
+		let deep = SearchConfig::parse_toml(include_str!("../../bots/deep_mcts.toml")).unwrap();
+		assert_eq!(deep, SearchConfig::deep_mcts());
+	}
+
+	#[test]
+	fn deep_mcts_enables_focus_levers() {
+		let cfg = SearchConfig::deep_mcts();
+		assert!(cfg.mcts_move_priors && cfg.prior_widening && cfg.mcts_solver);
+		assert!(cfg.mcts_tree_reuse && !cfg.mcts_progressive_widening);
+		assert!(!cfg.mcts_transpositions && !cfg.mcts_factored_moves);
+		assert_eq!(cfg.playout_leaf_depth, 0);
+		assert!((cfg.puct - SearchConfig::enhanced().puct).abs() < 1e-6);
+		assert_eq!(SearchConfig::parse_profile("focused").unwrap(), cfg);
+		assert_eq!(cfg.profile_name(), "deep_mcts");
+	}
+
+	#[test]
+	fn spec_overlays_deep_mcts_knobs() {
+		let cfg = SearchConfig::enhanced()
+			.with_spec("priors=on,pw-order=on,reuse=off,mcts-tt=on,factored=on,leaf=2,solver=on")
+			.unwrap();
+		assert!(cfg.mcts_move_priors && cfg.prior_widening);
+		assert!(!cfg.mcts_tree_reuse);
+		assert!(cfg.mcts_transpositions && cfg.mcts_factored_moves && cfg.mcts_solver);
+		assert_eq!(cfg.playout_leaf_depth, 2);
+		assert_eq!(cfg.profile_name(), "custom");
 	}
 }

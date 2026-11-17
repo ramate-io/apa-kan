@@ -71,12 +71,12 @@ fn usage() -> &'static str {
 	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
 	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
 	                        Each search stays single-threaded unless --search-threads > 1.\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative>\n\
-	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts>\n\
+	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused)\n\
 	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced defaults)\n\
 	   --list-search-profiles    Print named presets and their labels\n\
-	   --search <k=v,...>   Overlay any knob (ordering, tt, tt-bits, lmr, lmr-min-depth, lmr-reduce,\n\
-	                        pvs, quiescence, q-depth, pw, pw-a, puct, playout-cutoff, threads, ...)\n\
+	   --search <k=v,...>   Overlay any knob (ordering, tt, lmr, pvs, q-depth, pw, puct, priors,\n\
+	                        pw-order, reuse, mcts-tt, factored, leaf, solver, threads, ...)\n\
 	   --p1-search-profile / --p2-search-profile  Per-seat profile (default: --search-profile)\n\
 	   --p1-bot-config / --p2-bot-config          Per-seat TOML profile\n\
 	   --p1-search / --p2-search                  Per-seat overlay\n\
@@ -538,6 +538,14 @@ struct SeatStats {
 	mcts_depth_sum: f64,
 	mcts_depth_n: u32,
 	mcts_depth_max: u8,
+	root_entropy_sum: f64,
+	root_eff_branch_sum: f64,
+	root_top1_sum: f64,
+	root_near_q_sum: f64,
+	root_q_spread_sum: f64,
+	root_stability_sum: f64,
+	root_legal_sum: f64,
+	root_spread_n: u32,
 }
 
 fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
@@ -651,6 +659,9 @@ fn run(cfg: BenchConfig) {
 	);
 	lines.push(
 		"# search_depth: mm_avg/mm_max = completed iterative-deepening depth; mcts_avg/mcts_max = visit-weighted tree depth (root excluded from the mean).".into(),
+	);
+	lines.push(
+		"# root_spread: visit entropy / effective branching, top-1 visit share, #moves within 1/sqrt(n) of best Q, Q spread of top 10, best-move stability.".into(),
 	);
 	lines.push(
 		"# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
@@ -813,6 +824,14 @@ fn run(cfg: BenchConfig) {
 	let mut mcts_depth_sum = 0.0f64;
 	let mut mcts_depth_n = 0u32;
 	let mut mcts_depth_max = 0u8;
+	let mut root_entropy_sum = 0.0f64;
+	let mut root_eff_branch_sum = 0.0f64;
+	let mut root_top1_sum = 0.0f64;
+	let mut root_near_q_sum = 0.0f64;
+	let mut root_q_spread_sum = 0.0f64;
+	let mut root_stability_sum = 0.0f64;
+	let mut root_legal_sum = 0.0f64;
+	let mut root_spread_n = 0u32;
 	for (_, stats, line) in &pairing_results {
 		println!("{line}");
 		lines.push(line.clone());
@@ -851,6 +870,14 @@ fn run(cfg: BenchConfig) {
 		mcts_depth_sum += stats.mcts_depth_sum;
 		mcts_depth_n += stats.mcts_depth_n;
 		mcts_depth_max = mcts_depth_max.max(stats.mcts_depth_max);
+		root_entropy_sum += stats.root_entropy_sum;
+		root_eff_branch_sum += stats.root_eff_branch_sum;
+		root_top1_sum += stats.root_top1_sum;
+		root_near_q_sum += stats.root_near_q_sum;
+		root_q_spread_sum += stats.root_q_spread_sum;
+		root_stability_sum += stats.root_stability_sum;
+		root_legal_sum += stats.root_legal_sum;
+		root_spread_n += stats.root_spread_n;
 		stall_games += cfg.games;
 		stall_rep2 += stats.games_repeat_ge2;
 		stall_rep3 += stats.games_repeat_ge3;
@@ -905,6 +932,19 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!(
 		"# search_depth  mm_avg={mm_avg:.2} mm_max={mm_depth_max} mm_n={mm_depth_n}  mcts_avg={mcts_avg:.2} mcts_max={mcts_depth_max} mcts_n={mcts_depth_n}"
 	));
+	let rn = f64::from(root_spread_n.max(1));
+	let root_line = format!(
+		"# root_spread  entropy={:.2} eff_branch={:.1} top1={:.2} near_q={:.1} q_spread10={:.3} stability={:.2} legal={:.1} n={root_spread_n}",
+		root_entropy_sum / rn,
+		root_eff_branch_sum / rn,
+		root_top1_sum / rn,
+		root_near_q_sum / rn,
+		root_q_spread_sum / rn,
+		root_stability_sum / rn,
+		root_legal_sum / rn
+	);
+	lines.push(root_line.clone());
+	println!("{root_line}");
 	{
 		let mut matchup_lines: Vec<(String, u32, u32, u32, u32)> = Vec::new();
 		for (mi, &(a, b)) in matchups.iter().enumerate() {
@@ -1320,6 +1360,14 @@ fn summarize_pairing(
 		stats.mcts_depth_sum += result.mcts_depth_sum;
 		stats.mcts_depth_n += result.mcts_depth_n;
 		stats.mcts_depth_max = stats.mcts_depth_max.max(result.mcts_depth_max);
+		stats.root_entropy_sum += result.root_entropy_sum;
+		stats.root_eff_branch_sum += result.root_eff_branch_sum;
+		stats.root_top1_sum += result.root_top1_sum;
+		stats.root_near_q_sum += result.root_near_q_sum;
+		stats.root_q_spread_sum += result.root_q_spread_sum;
+		stats.root_stability_sum += result.root_stability_sum;
+		stats.root_legal_sum += result.root_legal_sum;
+		stats.root_spread_n += result.root_spread_n;
 		stats.iter_n += result.iter_n;
 		if result.max_repeat >= 2 {
 			stats.games_repeat_ge2 += 1;
@@ -1492,6 +1540,33 @@ fn ablation_profiles() -> Vec<(&'static str, SearchConfig)> {
 	let mut mcts_rand = SearchConfig::classic();
 	mcts_rand.mcts_heuristic_playouts = false;
 	rows.push(("classic+random_playouts", mcts_rand));
+	let mut priors = SearchConfig::enhanced();
+	priors.mcts_move_priors = true;
+	priors.prior_widening = true;
+	priors.puct = 0.9;
+	rows.push(("enhanced+priors", priors));
+	let mut pw_prior = priors;
+	pw_prior.mcts_progressive_widening = true;
+	pw_prior.pw_a = 1.0;
+	pw_prior.pw_alpha = 0.4;
+	pw_prior.mcts_untried_random = 0.0;
+	rows.push(("enhanced+prior_pw", pw_prior));
+	let mut reuse_off = SearchConfig::enhanced();
+	reuse_off.mcts_tree_reuse = false;
+	rows.push(("enhanced+noreuse", reuse_off));
+	let mut mcts_tt = SearchConfig::enhanced();
+	mcts_tt.mcts_transpositions = true;
+	rows.push(("enhanced+mcts_tt", mcts_tt));
+	let mut factored = SearchConfig::enhanced();
+	factored.mcts_factored_moves = true;
+	rows.push(("enhanced+factored", factored));
+	let mut leaf = SearchConfig::enhanced();
+	leaf.playout_leaf_depth = 1;
+	rows.push(("enhanced+leaf1", leaf));
+	let mut solver = SearchConfig::enhanced();
+	solver.mcts_solver = true;
+	rows.push(("enhanced+solver", solver));
+	rows.push(("deep_mcts", SearchConfig::deep_mcts()));
 	rows
 }
 
@@ -1504,7 +1579,7 @@ fn run_ablate(cfg: &BenchConfig) {
 		cfg.jobs
 	));
 	let header =
-		"# profile  pos  mm_depth  mm_nodes  mcts_avg  mcts_max  mcts_iters  mm_ms  mcts_ms";
+		"# profile  pos  mm_depth  mm_nodes  mcts_avg  mcts_max  mcts_iters  entropy  eff_branch  top1  near_q  q_spread10  stability  legal  mm_ms  mcts_ms";
 	lines.push(header.into());
 	println!("{header}");
 	let mut positions = Vec::new();
@@ -1536,21 +1611,28 @@ fn run_ablate(cfg: &BenchConfig) {
 
 	for (name, profile) in ablation_profiles() {
 		for (pos_name, game) in &positions {
+			let skip_mm = name.starts_with("enhanced+") || name == "deep_mcts";
 			let mut mm = Searcher::with_config(profile);
 			let mut mcts = Searcher::with_config(profile);
 			let mut rng_mm = StdRng::seed_from_u64(cfg.seed ^ 0x11);
 			let mut rng_mc = StdRng::seed_from_u64(cfg.seed ^ 0x22);
 			let t0 = Instant::now();
-			let _ = mm.choose_with(game, Actor::Minimax, &mut rng_mm, cfg.limit);
+			let st = if skip_mm {
+				apa_kan::ai::SearchStats::default()
+			} else {
+				let _ = mm.choose_with(game, Actor::Minimax, &mut rng_mm, cfg.limit);
+				mm.stats()
+			};
 			let mm_ms = t0.elapsed().as_secs_f64() * 1000.0;
-			let st = mm.stats();
 			let t1 = Instant::now();
 			let _ = mcts.choose_with(game, Actor::Mcts, &mut rng_mc, cfg.limit);
 			let mcts_ms = t1.elapsed().as_secs_f64() * 1000.0;
 			let mt = mcts.stats();
 			let line = format!(
-				"{name}  {pos_name}  mm_depth={} mm_nodes={}  mcts_avg={:.2} mcts_max={} mcts_iters={}  mm_ms={mm_ms:.0} mcts_ms={mcts_ms:.0}",
-				st.depth, st.nodes, mt.mcts_avg_depth, mt.mcts_max_depth, mt.iterations
+				"{name}  {pos_name}  mm_depth={} mm_nodes={}  mcts_avg={:.2} mcts_max={} mcts_iters={}  entropy={:.2} eff_branch={:.1} top1={:.2} near_q={} q_spread10={:.3} stability={:.2} legal={}  mm_ms={mm_ms:.0} mcts_ms={mcts_ms:.0}",
+				st.depth, st.nodes, mt.mcts_avg_depth, mt.mcts_max_depth, mt.iterations,
+				mt.root_entropy, mt.root_eff_branch, mt.root_top1_share, mt.root_near_best_q,
+				mt.root_q_spread_top10, mt.root_best_stability, mt.root_legal
 			);
 			println!("{line}");
 			lines.push(line);
@@ -1676,6 +1758,14 @@ struct PlayResult {
 	mcts_depth_sum: f64,
 	mcts_depth_n: u32,
 	mcts_depth_max: u8,
+	root_entropy_sum: f64,
+	root_eff_branch_sum: f64,
+	root_top1_sum: f64,
+	root_near_q_sum: f64,
+	root_q_spread_sum: f64,
+	root_stability_sum: f64,
+	root_legal_sum: f64,
+	root_spread_n: u32,
 	captures: u32,
 	self_captures: u32,
 	center_captures: u32,
@@ -1763,6 +1853,14 @@ fn play_game(
 	let mut mcts_depth_sum = 0.0;
 	let mut mcts_depth_n = 0u32;
 	let mut mcts_depth_max = 0u8;
+	let mut root_entropy_sum = 0.0;
+	let mut root_eff_branch_sum = 0.0;
+	let mut root_top1_sum = 0.0;
+	let mut root_near_q_sum = 0.0;
+	let mut root_q_spread_sum = 0.0;
+	let mut root_stability_sum = 0.0;
+	let mut root_legal_sum = 0.0;
+	let mut root_spread_n = 0u32;
 	let mut record_lines = Vec::new();
 	let mut game_log = keep_log.then(|| {
 		let mut log = GameLog::begin(
@@ -1859,6 +1957,14 @@ fn play_game(
 			mcts_depth_sum += f64::from(st.mcts_avg_depth);
 			mcts_depth_n += 1;
 			mcts_depth_max = mcts_depth_max.max(st.mcts_max_depth);
+			root_entropy_sum += f64::from(st.root_entropy);
+			root_eff_branch_sum += f64::from(st.root_eff_branch);
+			root_top1_sum += f64::from(st.root_top1_share);
+			root_near_q_sum += f64::from(st.root_near_best_q);
+			root_q_spread_sum += f64::from(st.root_q_spread_top10);
+			root_stability_sum += f64::from(st.root_best_stability);
+			root_legal_sum += f64::from(st.root_legal);
+			root_spread_n += 1;
 		}
 		match action {
 			Action::Add { bench_index, .. } => {
@@ -1917,15 +2023,7 @@ fn play_game(
 					));
 				}
 				if let Some(log) = game_log.as_mut() {
-					log.push_action_with_search(
-						action,
-						piece,
-						&outcome,
-						&game,
-						st.depth,
-						st.mcts_max_depth,
-						st.mcts_avg_depth,
-					);
+					log.push_action_with_search(action, piece, &outcome, &game, st);
 				}
 			}
 			Err(_) => {
@@ -2001,6 +2099,14 @@ fn play_game(
 		mcts_depth_sum,
 		mcts_depth_n,
 		mcts_depth_max,
+		root_entropy_sum,
+		root_eff_branch_sum,
+		root_top1_sum,
+		root_near_q_sum,
+		root_q_spread_sum,
+		root_stability_sum,
+		root_legal_sum,
+		root_spread_n,
 		captures,
 		self_captures,
 		center_captures,
@@ -2379,6 +2485,7 @@ mod tests {
 					|| line.starts_with("# capture_dest")
 					|| line.starts_with("# bead_captures")
 					|| line.starts_with("# search_depth")
+					|| line.starts_with("# root_spread")
 					|| line.starts_with("# matchup_totals")
 					|| line.starts_with("# archetype_seat")
 					|| line.starts_with("# short_games")
@@ -2486,6 +2593,9 @@ mod tests {
 		assert_eq!(cfg.search.profile_name(), "explorative");
 		let cfg = parse(vec!["--search-profile".to_string(), "positional".to_string()]).unwrap();
 		assert_eq!(cfg.search, SearchConfig::positional());
+		let cfg = parse(vec!["--search-profile".to_string(), "deep_mcts".to_string()]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::deep_mcts());
+		assert_eq!(cfg.search.profile_name(), "deep_mcts");
 	}
 
 	#[test]
