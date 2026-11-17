@@ -7,8 +7,8 @@
 //! - `tactical`: aggressive capture/center weights, deeper qsearch, short playouts
 //! - `positional`: cautious, longer playouts, lighter LMR
 //! - `explorative`: high PUCT, progressive widening on
-//! - `deep_mcts`: move-ordering priors + prior-ordered PW + lower PUCT +
-//!   tree reuse + solver (focused MCTS; other levers stay independent knobs)
+//! - `deep_mcts`: move-ordering softmax priors + prior-ordered expansion +
+//!   tree reuse + solver (focused MCTS; extra PW / low PUCT lost strength)
 //!
 //! Overlay any field with `--search k=v,...`. Load a TOML file with `--bot-config`.
 
@@ -212,19 +212,17 @@ impl SearchConfig {
 		cfg
 	}
 
-	/// Focused MCTS: move-ordering softmax priors, prior-ordered PW, lower
-	/// PUCT, tree reuse, and a win/loss solver. Ablation dropped factored
-	/// ADDs, leaf search, and MCTS transpositions (they spread visits or
-	/// shallowed the tree on the opening/mid positions).
+	/// Focused MCTS: move-ordering softmax priors, expand untried in prior
+	/// order, tree reuse, and a win/loss solver. Extra progressive widening
+	/// plus a lowered PUCT deepened the tree on openings but lost 4-2-26
+	/// vs `enhanced` in mixed H2H, so this preset keeps PW off (same as
+	/// `enhanced`) and the default PUCT. Factored ADDs, 1-ply leaf search,
+	/// and MCTS transpositions stay independent knobs (off here).
 	pub fn deep_mcts() -> Self {
 		let mut cfg = Self::enhanced();
 		cfg.mcts_move_priors = true;
 		cfg.prior_temperature = 1.25;
 		cfg.prior_widening = true;
-		cfg.mcts_progressive_widening = true;
-		cfg.pw_a = 1.0;
-		cfg.pw_alpha = 0.4;
-		cfg.puct = 0.9;
 		cfg.mcts_untried_random = 0.0;
 		cfg.mcts_tree_reuse = true;
 		cfg.mcts_transpositions = false;
@@ -600,11 +598,11 @@ mod tests {
 	#[test]
 	fn deep_mcts_enables_focus_levers() {
 		let cfg = SearchConfig::deep_mcts();
-		assert!(cfg.mcts_move_priors && cfg.prior_widening && cfg.mcts_progressive_widening);
-		assert!(cfg.mcts_tree_reuse && cfg.mcts_solver);
+		assert!(cfg.mcts_move_priors && cfg.prior_widening && cfg.mcts_solver);
+		assert!(cfg.mcts_tree_reuse && !cfg.mcts_progressive_widening);
 		assert!(!cfg.mcts_transpositions && !cfg.mcts_factored_moves);
 		assert_eq!(cfg.playout_leaf_depth, 0);
-		assert!(cfg.puct < SearchConfig::enhanced().puct);
+		assert!((cfg.puct - SearchConfig::enhanced().puct).abs() < 1e-6);
 		assert_eq!(SearchConfig::parse_profile("focused").unwrap(), cfg);
 		assert_eq!(cfg.profile_name(), "deep_mcts");
 	}

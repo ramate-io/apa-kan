@@ -1,17 +1,14 @@
 # Focused MCTS personality (`--search-profile deep_mcts`).
-# Move-ordering softmax priors, prior-ordered progressive widening, lower PUCT,
-# tree reuse, MCTS-solver. Factored ADDs, leaf search, and MCTS transpositions
-# are independent knobs; ablation left them off in this preset.
+# Move-ordering softmax priors, expand untried in prior order, tree reuse,
+# MCTS-solver. Extra progressive widening + low PUCT lost H2H strength, so
+# this preset keeps PW off and the enhanced PUCT. Factored ADDs, leaf search,
+# and MCTS transpositions are independent knobs left off here.
 # Missing keys take the `enhanced` defaults (LMR on, PVS on, qsearch on).
 name = "deep_mcts"
 description = "Focused MCTS"
 mcts_move_priors = true
 prior_temperature = 1.25
 prior_widening = true
-mcts_progressive_widening = true
-pw_a = 1.0
-pw_alpha = 0.4
-puct = 0.9
 mcts_untried_random = 0.0
 mcts_tree_reuse = true
 mcts_solver = true
