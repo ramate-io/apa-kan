@@ -672,25 +672,18 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 		);
 		fill_polygon(img, &poly, primary);
 	}
-	match tile.emblem {
-		crate::game::Emblem::None => {}
-		crate::game::Emblem::CrescentMoon => {
-			fill_tris(
-				img,
-				&draw.crescent_tris([c.0 as f32, c.1 as f32], r as f32, [-down[0], -down[1]]),
-				primary,
-			);
+	let glyph =
+		draw.emblem_glyph(tile.emblem, [c.0 as f32, c.1 as f32], r as f32, [-down[0], -down[1]]);
+	for fill in glyph.fills {
+		match fill {
+			visual::EmblemFill::Tris(tris) => fill_tris(img, &tris, primary),
+			visual::EmblemFill::Poly(poly) => fill_polygon(img, &poly, primary),
 		}
-		crate::game::Emblem::TwoZagZs => {
-			let width = f64::from(draw.zag_stroke).max(1.4);
-			for zig in
-				draw.two_zag_z_polys([c.0 as f32, c.1 as f32], r as f32, [-down[0], -down[1]])
-			{
-				let pts: Vec<[f64; 2]> =
-					zig.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
-				stroke_polyline(img, &pts, primary, width);
-			}
-		}
+	}
+	for stroke in glyph.strokes {
+		let pts: Vec<[f64; 2]> =
+			stroke.pts.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+		stroke_polyline(img, &pts, primary, f64::from(stroke.width).max(1.4));
 	}
 }
 

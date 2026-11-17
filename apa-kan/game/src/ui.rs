@@ -15,8 +15,7 @@ use crate::deck::{
 	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
 };
 use crate::game::{
-	Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Emblem, Game, Player, Tile,
-	ZagMismatchCount,
+	Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile, ZagMismatchCount,
 };
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
@@ -2061,33 +2060,29 @@ fn spawn_tile_at(
 		spawn_filled_poly(commands, meshes, materials, &poly, primary, visual::Z_TILE_DOT);
 	}
 	let up = [-down[0], -down[1]];
-	match tile.emblem {
-		Emblem::None => {}
-		Emblem::CrescentMoon => {
-			spawn_filled_tris(
-				commands,
-				meshes,
-				materials,
-				&draw.crescent_tris([pos.x, pos.y], radius, up),
-				primary,
-				visual::Z_TILE_DOT,
-			);
-		}
-		Emblem::TwoZagZs => {
-			for zig in draw.two_zag_z_polys([pos.x, pos.y], radius, up) {
-				let pts: Vec<[f64; 2]> =
-					zig.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
-				spawn_stroke_capped(
-					commands,
-					meshes,
-					materials,
-					&pts,
-					draw.zag_stroke.max(0.7),
-					primary,
-					visual::Z_TILE_DOT,
-				);
+	let glyph = draw.emblem_glyph(tile.emblem, [pos.x, pos.y], radius, up);
+	for fill in glyph.fills {
+		match fill {
+			visual::EmblemFill::Tris(tris) => {
+				spawn_filled_tris(commands, meshes, materials, &tris, primary, visual::Z_TILE_DOT);
+			}
+			visual::EmblemFill::Poly(poly) => {
+				spawn_filled_poly(commands, meshes, materials, &poly, primary, visual::Z_TILE_DOT);
 			}
 		}
+	}
+	for stroke in glyph.strokes {
+		let pts: Vec<[f64; 2]> =
+			stroke.pts.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+		spawn_stroke_capped(
+			commands,
+			meshes,
+			materials,
+			&pts,
+			stroke.width.max(0.7),
+			primary,
+			visual::Z_TILE_DOT,
+		);
 	}
 	if highlight {
 		spawn_ring(
