@@ -64,9 +64,10 @@ committed log files.
 | #62 `groups_deep` (classic) | 528000 / 10400 | 10 | 4.49 / 7 | 2.32 / 9 | 3-0-7 | 557.0 s |
 | `enhanced_deep` | 528000 / 10400 | 10 | **5.53 / 16** | **2.58 / 11** | 3-0-7 | 2788.0 s |
 
-Minimax ID ply is essentially unchanged at this budget (quiescence still
-eats leaf nodes). MCTS trees are deeper with progressive widening
-(+0.35 avg, +3 max).
+At the calibrated budget, minimax ID ply is essentially unchanged
+(quiescence still eats leaf nodes). At 4×, enhanced ID rises to **5.53**
+avg (classic 4.49) and max 16. MCTS trees are deeper with progressive
+widening (+0.35 avg / +3 max shallow; +0.26 avg / +2 max at 4×).
 
 ### Balance (`enhanced_shallow`)
 
@@ -95,10 +96,36 @@ seat not deck. One long mixed game (`mcts vs minimax` mixed, 191 turns,
 P1 low_value) dominated wall-clock; 10-ply was still not reached
 (`mm_avg=5.53`).
 
-| File | Budget | Games |
-|---|---|---|
-| `ablate.txt` | 132000 / 2600 | 4 positions × 10 profiles |
-| `enhanced_shallow` | 132000 / 2600 | 50 |
-| `enhanced_deep` | 528000 / 10400 | 10 |
-| `h2h_*` | 132000 / 2600 | 6 mixed games per seat × engine |
-| `ply_target_braid_bead` | 2000000 / 5200 | 4 braid/bead |
+4× braid-vs-bead handful (the 10-ply target; time/move from `ply10_4x.txt`
+is 4–7 s at 4–5 ply, not 10):
+
+```
+minimax vs mcts  braid vs bead  P1  0-0-1  104.00  mm avg 6.04 max 9
+mcts vs minimax  braid vs bead  P1  0-0-1  30.00   mm avg 4.07 max 5
+minimax vs mcts  bead vs braid  P1  0-0-1  38.00   mm avg 6.32 max 10
+mcts vs minimax  bead vs braid  P1  0-0-1  24.00   mm avg 5.50 max 6
+```
+
+### Strength: enhanced vs classic (mixed, 6 games/seat)
+
+| Log | P1 profile | P2 profile | P1 W-D-L |
+|---|---|---|---|
+| `h2h_mm_enhanced_vs_classic` | enhanced minimax | classic minimax | **4-1-1** |
+| `h2h_mm_classic_vs_enhanced` | classic minimax | enhanced minimax | 2-1-3 |
+| `h2h_mcts_enhanced_vs_classic` | enhanced MCTS | classic MCTS | 1-1-4 |
+| `h2h_mcts_classic_vs_enhanced` | classic MCTS | enhanced MCTS | 2-1-3 |
+
+Minimax enhanced is **7-2-3** across 12 mixed games (both seats).
+MCTS enhanced is **4-2-6** — progressive widening deepens the tree but
+did not win this sample. Keep classic MCTS available behind the flag.
+
+### Suspicious lines
+
+MCTS typically opens with ADDs; nothing in the committed JSONL looks like
+a unique forced opening. The 13-turn braid mirror (`seed=100004`) was
+re-probed at 4× (`verify_short_braid_100004.txt`): opening ID is still 4
+ply / 8591 ms with 88 legal moves, so it is not a solved force.
+
+**Main question:** no archetype or line wins regardless of seat and
+opponent. Closest leans are P1 mixed (seat) and P2 in 4× cross games
+(also seat).
