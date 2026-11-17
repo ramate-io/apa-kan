@@ -188,13 +188,30 @@ Elapsed **3460.8 s**.
 | bead vs braid | 2-1-3 | 69.00 | 4-0-2 |
 
 - **Seat:** P1 11-7-12 / P2 12-7-11. The enhanced 4× **P2 20-2-8** lean and mixed P2 6-0-0 sweep **did not replicate**.
-- **Deck:** bead vs braid directed is bead **6-2-4** (bead as P1 2-1-3, bead as P2 4-1-1 from `braid vs bead`). Not the earlier 9-0-3. Analyzer flags bead as P2 4/5 decided vs braid on n=6; extra sample in `mcts_long_extra.txt`.
+- **Deck:** bead vs braid directed is bead **6-2-4** (bead as P1 2-1-3, bead as P2 4-1-1 from `braid vs bead`). Not the earlier 9-0-3. Extra 4× sample (`mcts_long_extra.txt`) is bead **12-1-11** over braid; combined **18-3-15**.
 - **Depth:** avg **3.14**, max **19** vs enhanced 2.48 / 13. Root visits more concentrated (eff_branch 5.5, top1 0.62).
 - **Endings:** 23 low_value, 3 control, 3 turn-limit, 1 lockout (`braid vs bead` g3 seed=300003, 34 turns).
 - **Openings:** every first action is a spawn ADD. No four-move line repeated. `add@5` is 1-4-3 (n=8, decided win rate 0.25).
 - **Braid mirror shorts:** seeds 100002 / 100003 / 100004 are 9 / 11 / 13-turn low_value **draws**. Seed 100004 is the same 13-turn braid-mirror example from #63; not a new winning exploit.
 
-Extra 4× mixed + bead-braid (seed 100, 12/matchup) goes in `mcts_long_extra.txt`.
+### Extra 4× mixed + bead-braid (`mcts_long_extra.txt`)
+
+Seed 100, 12 games/matchup, same 4× budget. Elapsed **2598.9 s**.
+
+```
+# seat_totals  P1 19-1-16  P2 16-1-19  games=36
+# matchup_totals  mixed vs mixed 5-0-7  |  braid vs bead 7-0-5  |  bead vs braid 7-1-4
+# search_depth  mcts_avg=2.97 mcts_max=17
+# short_games  turns_le_20=0
+```
+
+| Matchup | extra n=12 | plus `mcts_long` n=6 | combined |
+|---|---|---|---|
+| mixed vs mixed | 5-0-7 | 4-1-1 | **9-1-8** |
+| braid vs bead | 7-0-5 | 1-1-4 | 8-1-9 |
+| bead vs braid | 7-1-4 | 2-1-3 | 9-2-7 |
+
+Combined mixed (18 games) is even. Combined bead vs braid (36 directed) is bead **18-3-15**. No P2 6-0-0 sweep, no 9-0-3 deck exploit. `add@23` is 4-0-0 (n=4) in this extra file only; not a repeated four-move line. Four lockouts at 27–111 turns, no short-game lockout script.
 
 ## Correctness
 
@@ -225,5 +242,7 @@ Extra 4× mixed + bead-braid (seed 100, 12/matchup) goes in `mcts_long_extra.txt
    The 4× self-play package had only 1 lockout / 30, so the H2H spike looks
    matchup-specific, not a lockout script.
 7. **Mixed P2 lean and bead>braid** from PR #63's 4× enhanced MCTS. This
-   preset's 4× self-play is even by seat (11-7-12 / 12-7-11) and mixed is
-   4-1-1. Bead vs braid is 6-2-4, not 9-0-3. Extra sample still running.
+   preset's 4× self-play is even by seat (11-7-12 / 12-7-11). Combined with
+   the extra sample, mixed is 9-1-8 and bead vs braid is 18-3-15. Those
+   earlier leans look engine-specific to `enhanced` at 4×, not a rule
+   exploit.
