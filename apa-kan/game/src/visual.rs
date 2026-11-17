@@ -195,7 +195,7 @@ pub const TILE_RING_NOTCH_1: f32 = 64.0 * std::f32::consts::PI / 180.0;
 pub const TILE_RING_NOTCH_2: f32 = 72.0 * std::f32::consts::PI / 180.0;
 /// Notch for 3 marks (~80°), wide enough that marks do not overlap the ends.
 pub const TILE_RING_NOTCH_3: f32 = 80.0 * std::f32::consts::PI / 180.0;
-/// Top emblem notch (~70°). Wide enough for two small Z glyphs or a moon.
+/// Top emblem notch (~70°). Wide enough for two vertical zags or a moon.
 pub const TILE_EMBLEM_NOTCH: f32 = 70.0 * std::f32::consts::PI / 180.0;
 /// Samples along an open tile-ring arc.
 pub const TILE_RING_ARC_SAMPLES: u32 = 96;
@@ -998,7 +998,7 @@ impl TileRingDraw {
 		(tile_center, mid, rho)
 	}
 
-	/// Crescent moon: a filled disc with a bite taken toward the tile rim.
+	/// Thin two-circle crescent (waning/waxing sliver), opening right/down-right.
 	pub fn crescent_poly(
 		self,
 		tile_center: [f32; 2],
@@ -1006,11 +1006,11 @@ impl TileRingDraw {
 		up: [f32; 2],
 	) -> Vec<[f32; 2]> {
 		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
-		let r = self.capture_mark_r(tile_radius, 2) * 1.15;
+		let r = self.capture_mark_r(tile_radius, 2) * 1.35;
 		crescent_on_arc(origin, theta, rho, r)
 	}
 
-	/// Strip triangles for the crescent C (centroid fan would fill the bite).
+	/// Strip triangles for the two-circle crescent (a centroid fan would fill the bite).
 	pub fn crescent_tris(
 		self,
 		tile_center: [f32; 2],
@@ -1018,11 +1018,11 @@ impl TileRingDraw {
 		up: [f32; 2],
 	) -> Vec<[[f32; 2]; 3]> {
 		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
-		let r = self.capture_mark_r(tile_radius, 2) * 1.15;
+		let r = self.capture_mark_r(tile_radius, 2) * 1.35;
 		crescent_tris_on_arc(origin, theta, rho, r)
 	}
 
-	/// Two small angular Z glyphs sitting in the top notch.
+	/// Two parallel vertical zigzags (lightning / `>` over `<`) in the top notch.
 	pub fn two_zag_z_polys(
 		self,
 		tile_center: [f32; 2],
@@ -1030,9 +1030,17 @@ impl TileRingDraw {
 		up: [f32; 2],
 	) -> [Vec<[f32; 2]>; 2] {
 		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
-		let r = self.capture_mark_r(tile_radius, 2) * 0.72;
-		let sep = r * 1.35;
-		[zag_z_on_arc(origin, theta, rho, r, -sep), zag_z_on_arc(origin, theta, rho, r, sep)]
+		// Amplitude and gap are in stroke units so the bends stay visible
+		// (a capture-mark-sized zigzag is thinner than the zag stroke).
+		let stroke = self.zag_stroke.max(0.55);
+		let h = stroke * 2.15;
+		let w = stroke * 1.25;
+		let sep = stroke * 2.4;
+		let n0 = -stroke * 0.95;
+		[
+			zag_zigzag_on_arc(origin, theta, rho, h, w, n0, -sep),
+			zag_zigzag_on_arc(origin, theta, rho, h, w, n0, sep),
+		]
 	}
 }
 
@@ -1093,29 +1101,28 @@ fn crescent_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 
 	out
 }
 
+/// Thin ~20% sliver: outer disc minus a similar disc offset toward the opening.
+/// Opening is right / lower-right in tile-up `(s, n)` (`+s` right, `+n` toward the rim).
 fn crescent_arcs(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
-	use std::f32::consts::{PI, TAU};
-	// Outer disc plus a bite disc shifted toward the rim (+n) so the C
-	// reads as a crescent, not a doughnut.
-	let n = TILE_MARK_DOT_SAMPLES.max(16);
-	let opening = 0.55_f32;
+	use std::f32::consts::PI;
+	let n = TILE_MARK_DOT_SAMPLES.max(20);
 	let outer_r = r;
-	let inner_r = r * 0.72;
-	let bite = r * 0.28;
-	let mut outer = Vec::with_capacity(n as usize + 1);
-	let mut inner = Vec::with_capacity(n as usize + 1);
-	for i in 0..=n {
-		let a = PI * 0.5 + opening * 0.5 + (TAU - opening) * i as f32 / n as f32;
-		outer.push(polar_local_to_world(origin, theta, rho, outer_r * a.cos(), outer_r * a.sin()));
-		inner.push(polar_local_to_world(
-			origin,
-			theta,
-			rho,
-			inner_r * a.cos(),
-			inner_r * a.sin() + bite,
-		));
-	}
-	(outer, inner)
+	let inner_r = r * 0.97;
+	let offset = r * 0.32;
+	// ~−38° from +s toward −n: horns point right and down-right, back is upper-left.
+	let open = -38.0 * PI / 180.0;
+	let (os, on) = (open.cos(), open.sin());
+	let c0 = [0.0_f32, 0.0_f32];
+	let c1 = [offset * os, offset * on];
+	let Some((p, q)) = circle_circle_hits(c0, outer_r, c1, inner_r) else {
+		return (Vec::new(), Vec::new());
+	};
+	let back = [-os * outer_r, -on * outer_r];
+	let terminator = [c1[0] - os * inner_r, c1[1] - on * inner_r];
+	let mut outer = sample_circle_arc(c0, outer_r, p, q, back, n);
+	let mut inner = sample_circle_arc(c1, inner_r, p, q, terminator, n);
+	center_local_pair(&mut outer, &mut inner);
+	(warp_local(origin, theta, rho, &outer), warp_local(origin, theta, rho, &inner))
 }
 
 fn crescent_tris_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[[f32; 2]; 3]> {
@@ -1128,11 +1135,95 @@ fn crescent_tris_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[
 	tris
 }
 
-fn zag_z_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32, s_off: f32) -> Vec<[f32; 2]> {
-	// Five corners of an angular Z in (s, n) local coords, then warped.
-	let h = r * 1.05;
-	let w = r * 0.85;
-	let verts = [[-w + s_off, h], [w + s_off, h], [-w + s_off, -h], [w + s_off, -h]];
+fn wrap_tau(a: f32) -> f32 {
+	use std::f32::consts::TAU;
+	((a % TAU) + TAU) % TAU
+}
+
+fn circle_circle_hits(
+	c0: [f32; 2],
+	r0: f32,
+	c1: [f32; 2],
+	r1: f32,
+) -> Option<([f32; 2], [f32; 2])> {
+	let dx = c1[0] - c0[0];
+	let dy = c1[1] - c0[1];
+	let d = dx.hypot(dy);
+	if d < 1e-5 || d > r0 + r1 || d < (r0 - r1).abs() {
+		return None;
+	}
+	let a = (d * d + r0 * r0 - r1 * r1) / (2.0 * d);
+	let h = (r0 * r0 - a * a).max(0.0).sqrt();
+	let mx = c0[0] + a * dx / d;
+	let my = c0[1] + a * dy / d;
+	let px = -dy / d * h;
+	let py = dx / d * h;
+	Some(([mx + px, my + py], [mx - px, my - py]))
+}
+
+fn sample_circle_arc(
+	c: [f32; 2],
+	radius: f32,
+	from: [f32; 2],
+	to: [f32; 2],
+	via: [f32; 2],
+	n: u32,
+) -> Vec<[f32; 2]> {
+	let a0 = (from[1] - c[1]).atan2(from[0] - c[0]);
+	let a1 = (to[1] - c[1]).atan2(to[0] - c[0]);
+	let av = (via[1] - c[1]).atan2(via[0] - c[0]);
+	let ccw_span = wrap_tau(a1 - a0);
+	let via_span = wrap_tau(av - a0);
+	let span = if via_span <= ccw_span + 1e-4 { ccw_span } else { -(wrap_tau(a0 - a1)) };
+	(0..=n)
+		.map(|i| {
+			let a = a0 + span * i as f32 / n as f32;
+			[c[0] + radius * a.cos(), c[1] + radius * a.sin()]
+		})
+		.collect()
+}
+
+fn center_local_pair(a: &mut [[f32; 2]], b: &mut [[f32; 2]]) {
+	let mut min_s = f32::INFINITY;
+	let mut max_s = f32::NEG_INFINITY;
+	let mut min_n = f32::INFINITY;
+	let mut max_n = f32::NEG_INFINITY;
+	for p in a.iter().chain(b.iter()) {
+		min_s = min_s.min(p[0]);
+		max_s = max_s.max(p[0]);
+		min_n = min_n.min(p[1]);
+		max_n = max_n.max(p[1]);
+	}
+	let ds = -0.5 * (min_s + max_s);
+	let dn = -0.5 * (min_n + max_n);
+	for p in a.iter_mut().chain(b.iter_mut()) {
+		p[0] += ds;
+		p[1] += dn;
+	}
+}
+
+fn warp_local(origin: [f32; 2], theta: f32, rho: f32, pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+	pts.iter()
+		.map(|p| polar_local_to_world(origin, theta, rho, p[0], p[1]))
+		.collect()
+}
+
+fn zag_zigzag_on_arc(
+	origin: [f32; 2],
+	theta: f32,
+	rho: f32,
+	h: f32,
+	w: f32,
+	n0: f32,
+	s_off: f32,
+) -> Vec<[f32; 2]> {
+	// Vertical lightning: top-left, down-right, down-left, down-right (`>` over `<`).
+	let verts = [
+		[-w + s_off, n0 + h],
+		[w + s_off, n0 + h / 3.0],
+		[-w + s_off, n0 - h / 3.0],
+		[w + s_off, n0 - h],
+	];
 	let m = TILE_MARK_TRI_EDGE_SAMPLES.max(3);
 	let mut out = Vec::new();
 	for i in 0..verts.len() - 1 {
@@ -4308,22 +4399,46 @@ mod tests {
 			}
 		}
 		let poly = draw.crescent_poly([0.0, 0.0], r, up);
-		assert!(poly.len() > 12, "crescent is a thick C");
+		assert!(poly.len() > 12, "crescent is a two-circle sliver");
 		let tris = draw.crescent_tris([0.0, 0.0], r, up);
 		assert!(tris.len() > 16, "crescent is a C strip, not a fan-filled disc");
 		let mut dist_sum = 0.0f32;
+		let mut min_x = f32::INFINITY;
+		let mut left_y = 0.0f32;
+		let mut mean_y = 0.0f32;
 		for p in &poly {
 			dist_sum += p[0].hypot(p[1]);
 			assert!(p[1] > 0.0, "crescent sits at the top of the tile in Bevy coords");
+			mean_y += p[1];
+			if p[0] < min_x {
+				min_x = p[0];
+				left_y = p[1];
+			}
 		}
+		mean_y /= poly.len() as f32;
 		assert!(dist_sum / poly.len() as f32 > r * 0.4);
+		assert!(poly.iter().any(|p| p[0] > 0.0), "horns open toward +s (right)");
+		assert!(min_x < 0.0, "back of the sliver sits on the left");
+		assert!(
+			left_y > mean_y,
+			"back of the crescent sits upper-left, left_y={left_y} mean_y={mean_y}"
+		);
 		let zigs = draw.two_zag_z_polys([0.0, 0.0], r, up);
 		assert_eq!(zigs.len(), 2);
 		for zig in &zigs {
-			assert!(zig.len() >= 4, "each Z is an angular polyline");
+			assert!(zig.len() >= 4, "each zag is an angular polyline");
+			let mut min_zx = f32::INFINITY;
+			let mut max_zx = f32::NEG_INFINITY;
+			let mut min_zy = f32::INFINITY;
+			let mut max_zy = f32::NEG_INFINITY;
 			for p in zig {
-				assert!(p[1] > 0.0, "Z glyphs sit at the top, p={p:?}");
+				assert!(p[1] > 0.0, "zag glyphs sit at the top, p={p:?}");
+				min_zx = min_zx.min(p[0]);
+				max_zx = max_zx.max(p[0]);
+				min_zy = min_zy.min(p[1]);
+				max_zy = max_zy.max(p[1]);
 			}
+			assert!(max_zy - min_zy > max_zx - min_zx, "each zag is taller than wide");
 		}
 		let zs_notches = tile_notches(zs, down);
 		assert_eq!(zs_notches.len(), 2);
