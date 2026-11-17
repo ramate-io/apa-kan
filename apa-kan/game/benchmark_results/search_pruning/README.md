@@ -9,11 +9,20 @@ append a new file if a rerun is needed.
 
 ## Profiles
 
+Every search lever is an independent documented knob on `SearchConfig`
+(serde/TOML). Named presets via `--search-profile`; load any TOML with
+`--bot-config` (example files in `apa-kan/game/bots/`). `--search k=v`
+overlays booleans and numerics (ordering weights, `tt-bits`, LMR min-depth /
+reduce, `q-depth`, PUCT, PW constants, playout cutoff/epsilon, threads, …).
+
 | Profile | Minimax | MCTS |
 |---|---|---|
 | `plain` | alpha-beta, no TT/ordering/LMR/PVS/qsearch | uniform random cut-off playouts, no PW |
 | `classic` | PR #62: TT + ordering + quiescence | heuristic cut-off playouts, no PW, 1 thread |
-| `enhanced` (default) | classic + LMR (fail-high re-search, skip root) + PVS | classic + progressive widening |
+| `enhanced` (default) | classic + LMR (fail-high re-search, skip root) + PVS | classic; **progressive widening off** |
+| `tactical` | deeper qsearch (8), heavier captures/center | short playouts (6), low PUCT (1.125) |
+| `positional` | quieter qsearch (2), lighter LMR | longer playouts (18), PUCT 1.25 |
+| `explorative` | enhanced minimax | PW on, PUCT 2.25, noisier playouts |
 
 `--search k=on\|off` overlays flags. `--search-threads N` runs N independent
 MCTS trees at the root; worker `t` is seeded with `rng.gen() XOR (t+1)*golden`.
@@ -23,6 +32,11 @@ MCTS trees at the root; worker `t` is seeded with `rng.gen() XOR (t+1)*golden`.
 `--ablate-search` writes one row per lever × opening/midgame position.
 `--ply-probe N` times a handful of positions against the work/time limit and
 reports completed ID depth vs the target.
+
+The committed `ablate.txt` / `enhanced_shallow` / H2H `enhanced` rows were
+captured when `enhanced` still had MCTS progressive widening **on**. Live
+`enhanced` now matches classic MCTS (PW off) plus minimax LMR/PVS. Turn PW
+on with `--search-profile explorative` or `--search pw=on`.
 
 ## Package
 
@@ -129,3 +143,40 @@ ply / 8591 ms with 88 legal moves, so it is not a solved force.
 **Main question:** no archetype or line wins regardless of seat and
 opponent. Closest leans are P1 mixed (seat) and P2 in 4× cross games
 (also seat).
+
+## Long MCTS (`mcts_long`)
+
+Release `apa-kan-bench`, zags on, doubles allowed, shared-channel beads,
+`--pairings mcts:mcts`, mixed/braid/bead matchups, `--games 6` (30 games),
+`--budget nodes:132000,iters:10400` (4× MCTS), `--jobs 4`,
+`--search-profile enhanced` (PW off). Quote `mcts_long.txt`.
+
+```
+# search  p1=profile=enhanced ... pw=off ... puct=1.60 cutoff=12 threads=1
+# seat_totals  P1 8-2-20  P2 20-2-8  games=30
+# end_reasons  elim=1 locked_out=5 center_hold=0 petal_maj=0 control=1 insuff=0 low_value=22 low_value_wins=21 low_value_draws=1 turn_limit=1 double_pass=0
+# search_depth  mm_avg=0.00 mm_max=0 mm_n=0  mcts_avg=2.48 mcts_max=13 mcts_n=1539
+# matchup_totals  mixed vs mixed 0-0-6 avg_turns=40.17  |  braid vs braid 2-1-3 avg_turns=42.17  |  bead vs bead 1-1-4 avg_turns=81.50  |  braid vs bead 1-0-5 avg_turns=54.83  |  bead vs braid 4-0-2 avg_turns=37.67
+# archetype_seat  mixed P1=0-0-6 P2=6-0-0  |  braid P1=3-1-8 P2=5-1-6  |  bead P1=5-1-6 P2=9-1-2
+# elapsed_sec=1991.7
+```
+
+| Matchup | P1 W-D-L | avg turns | notes |
+|---|---|---|---|
+| mixed vs mixed | 0-0-6 | 40.17 | mirrored decks; P2 sweep |
+| braid vs braid | 2-1-3 | 42.17 | |
+| bead vs bead | 1-1-4 | 81.50 | includes 200-turn draw |
+| braid vs bead | 1-0-5 | 54.83 | bead as P2 |
+| bead vs braid | 4-0-2 | 37.67 | bead as P1 |
+
+Bead vs braid is **9-0-3** across 12 directed games (both seats). Mixed
+mirrored is a **P2 6-0-0** seat result, not a deck exploit. Endings are
+mostly low_value (22/30); 5 lockouts, 1 control (braid vs bead g3
+seed=300003, 136 turns), 1 elimination, 1 turn-limit (bead vs bead g4
+seed=200004).
+
+First moves are all spawn ADDs (`2,5,8,11,14,17,20,23`). With P1 at
+8-2-20 overall, common P1 first-adds inherit that seat lean (`add@5`
+1-1-5, `add@14` 1-0-4, `add@2` 1-1-3). `add@8` is the only n≥4 spawn
+above .500 for P1 (3-0-2). No four-move opening repeated. Not a unique
+forced line; the P2 seat lean is the slow-exploit signal in this sample.

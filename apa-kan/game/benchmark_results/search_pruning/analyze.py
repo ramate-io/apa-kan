@@ -75,7 +75,7 @@ def bench_kinds(g: dict, side: str) -> str:
 
 
 def action_tag(act: dict) -> str:
-    kind = act.get("kind") or "?"
+    kind = (act.get("kind") or "?").lower()
     if kind == "add":
         return f"add@{act.get('to')}"
     if kind == "move":
@@ -161,18 +161,54 @@ def summarize(name: str, logs: list[dict]) -> None:
         print(f"  n={len(gs)} P1 {ww}-{dd}-{ll}  {line}")
 
     print("MCTS P1 first-add destinations:")
-    first_add = Counter()
-    first_add_wins = Counter()
+    first_add: Counter = Counter()
+    first_add_wdl: dict = defaultdict(lambda: [0, 0, 0])
     for g in mcts_p1:
         acts = g.get("actions") or []
-        if not acts or acts[0].get("kind") != "add":
+        if not acts or (acts[0].get("kind") or "").lower() != "add":
             continue
         dest = acts[0].get("to")
         first_add[dest] += 1
-        if g["end"]["status"] == "won" and g["end"].get("winner") == 1:
-            first_add_wins[dest] += 1
-    for dest, n in first_add.most_common(8):
-        print(f"  add@{dest}  n={n} P1_wins={first_add_wins[dest]}")
+        w, d, l = wdl([g])
+        first_add_wdl[dest][0] += w
+        first_add_wdl[dest][1] += d
+        first_add_wdl[dest][2] += l
+    for dest, n in first_add.most_common(12):
+        ww, dd, ll = first_add_wdl[dest]
+        print(f"  add@{dest}  n={n} P1 {ww}-{dd}-{ll}")
+
+    print("unusual first-adds (n>=4, decided win rate <=25% or >=75%):")
+    flagged = 0
+    for dest, n in first_add.most_common():
+        ww, dd, ll = first_add_wdl[dest]
+        decided = ww + ll
+        if n < 4 or decided < 4:
+            continue
+        rate = ww / decided
+        if rate <= 0.25 or rate >= 0.75:
+            flagged += 1
+            print(f"  FLAG add@{dest}  n={n} P1 {ww}-{dd}-{ll}  win_rate={rate:.2f}")
+    if flagged == 0:
+        print("  (none)")
+
+    print("MCTS P2 first-add destinations (reply to P1):")
+    mcts_p2 = [g for g in logs if (g.get("p2") or "").lower() == "mcts"]
+    p2_add: Counter = Counter()
+    p2_wdl: dict = defaultdict(lambda: [0, 0, 0])
+    for g in mcts_p2:
+        acts = [a for a in (g.get("actions") or []) if (a.get("kind") or "").lower() == "add"]
+        if len(acts) < 2:
+            continue
+        dest = acts[1].get("to")
+        p2_add[dest] += 1
+        w, d, l = wdl([g])
+        # P2 win is P1 loss.
+        p2_wdl[dest][0] += l
+        p2_wdl[dest][1] += d
+        p2_wdl[dest][2] += w
+    for dest, n in p2_add.most_common(8):
+        ww, dd, ll = p2_wdl[dest]
+        print(f"  add@{dest}  n={n} P2 {ww}-{dd}-{ll}")
 
     print("notable games (short wins, lockouts, one-sided):")
     notable = []
@@ -210,6 +246,7 @@ def main() -> None:
         "h2h_mcts_enhanced_vs_classic",
         "h2h_mcts_classic_vs_enhanced",
         "ply10_braid_bead",
+        "mcts_long",
     ]
     args = sys.argv[1:] or names
     for name in args:
