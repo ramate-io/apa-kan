@@ -6,8 +6,9 @@ use crate::game::{Action, Game, KIND_DOTS};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchMove {
 	/// Low 16 bits: [`crate::game::Tile::kind_index`] (color-state × dots).
-	/// High bits: [`crate::game::CaptureMark::bit`] so dot vs triangle ADDs of
-	/// the same colors/types stay distinct in the TT.
+	/// Bit 16: [`crate::game::CaptureMark::bit`]. Bits 17–18:
+	/// [`crate::game::Emblem::bit`]. `KIND_COUNT` is not multiplied (it
+	/// already fills a `u16`).
 	Add {
 		kind: u32,
 		node: NodeId,
@@ -50,16 +51,17 @@ impl SearchMove {
 	}
 
 	/// Packed TT key: 0 = MOVE, u16::MAX = PASS, 1..=COLOR_STATES = ADD color-state.
-	/// `b` is `dots | (capture_bit << 2)`.
+	/// `b` is `dots | (capture_bit << 2) | (emblem << 3)`.
 	pub fn pack(self) -> (u16, u8, u8) {
 		match self {
 			SearchMove::Add { kind, node } => {
 				let dots_n = KIND_DOTS as u32;
 				let base = kind & 0xFFFF;
 				let capture = ((kind >> 16) as u8) & 1;
+				let emblem = ((kind >> 17) as u8) & 3;
 				let state = (base / dots_n + 1) as u16;
 				let dots = (base % dots_n) as u8;
-				(state, node, dots | (capture << 2))
+				(state, node, dots | (capture << 2) | (emblem << 3))
 			}
 			SearchMove::Move { from, to } => (0, from, to),
 			SearchMove::Pass => (u16::MAX, 0, 0),
@@ -73,13 +75,16 @@ impl SearchMove {
 			state
 				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
 					&& (b & 3) < KIND_DOTS as u8
-					&& (b >> 2) <= 1 =>
+					&& ((b >> 2) & 1) <= 1
+					&& (b >> 3) <= 2 =>
 			{
 				let dots = b & 3;
-				let capture = b >> 2;
+				let capture = (b >> 2) & 1;
+				let emblem = b >> 3;
 				Some(SearchMove::Add {
 					kind: u32::from(state - 1) * KIND_DOTS as u32
-						+ u32::from(dots) + (u32::from(capture) << 16),
+						+ u32::from(dots) + (u32::from(capture) << 16)
+						+ (u32::from(emblem) << 17),
 					node: a,
 				})
 			}
@@ -89,7 +94,9 @@ impl SearchMove {
 }
 
 pub fn search_kind(tile: crate::game::Tile) -> u32 {
-	(tile.kind_index() as u32) | (u32::from(tile.capture.bit()) << 16)
+	(tile.kind_index() as u32)
+		| (u32::from(tile.capture.bit()) << 16)
+		| (u32::from(tile.emblem.bit()) << 17)
 }
 
 fn kind_index_of(kind: u32) -> usize {
@@ -299,6 +306,11 @@ mod tests {
 		let packed = dotted_add.pack();
 		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(dotted_add));
 		assert_ne!(braid_add, dotted_add);
+		let moon = dotted.with_emblem(crate::game::Emblem::CrescentMoon);
+		let moon_add = SearchMove::Add { kind: search_kind(moon), node: 4 };
+		let packed = moon_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(moon_add));
+		assert_ne!(dotted_add, moon_add);
 		let mv = SearchMove::Move { from: 2, to: 7 };
 		let (k, a, b) = mv.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));

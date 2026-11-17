@@ -8,7 +8,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::Deserialize;
 
-use crate::game::{CaptureMark, RingType, Tile, TileColor, MAX_COLOR_RINGS};
+use crate::game::{CaptureMark, Emblem, RingType, Tile, TileColor, MAX_COLOR_RINGS};
 
 /// One (rings × dots) kind. `count` repeats in the bag. `weight` is always
 /// the ring-slot count.
@@ -20,6 +20,7 @@ pub struct KindCount {
 	pub weight: u8,
 	pub dots: u8,
 	pub capture: CaptureMark,
+	pub emblem: Emblem,
 	pub count: u8,
 }
 
@@ -32,6 +33,7 @@ impl KindCount {
 			weight: 1,
 			dots,
 			capture: CaptureMark::Triangle,
+			emblem: Emblem::None,
 			count,
 		}
 	}
@@ -41,7 +43,14 @@ impl KindCount {
 	}
 
 	pub fn tag(self) -> String {
-		kind_tag(self.ring_colors(), &self.ring_type, self.weight, self.dots, self.capture)
+		kind_tag(
+			self.ring_colors(),
+			&self.ring_type,
+			self.weight,
+			self.dots,
+			self.capture,
+			self.emblem,
+		)
 	}
 }
 
@@ -54,6 +63,7 @@ pub struct TileSpec {
 	pub weight: u8,
 	pub dots: u8,
 	pub capture: CaptureMark,
+	pub emblem: Emblem,
 }
 
 impl TileSpec {
@@ -80,6 +90,7 @@ pub fn kind_tag(
 	weight: u8,
 	dots: u8,
 	capture: CaptureMark,
+	emblem: Emblem,
 ) -> String {
 	let rings = colors
 		.iter()
@@ -92,11 +103,11 @@ pub fn kind_tag(
 		})
 		.collect::<Vec<_>>()
 		.join("+");
-	format!("{rings}{weight}-{dots}{}", capture.tag())
+	format!("{rings}{weight}-{dots}{}{}", capture.tag(), emblem.tag())
 }
 
 pub fn tile_tag(tile: Tile) -> String {
-	kind_tag(tile.ring_colors(), &tile.ring_type, tile.weight, tile.dots, tile.capture)
+	kind_tag(tile.ring_colors(), &tile.ring_type, tile.weight, tile.dots, tile.capture, tile.emblem)
 }
 
 /// Sum of ring counts (weight), dots, and distinct colors — a simple deck-strength view.
@@ -114,7 +125,7 @@ impl DeckStrength {
 		let mut weight_sum = 0u32;
 		let mut dots_sum = 0u32;
 		for t in tiles {
-			weight_sum += u32::from(t.weight);
+			weight_sum += u32::from(t.cost());
 			dots_sum += u32::from(t.dots);
 			for &c in t.ring_colors() {
 				if (c as usize) < 6 {
@@ -204,18 +215,23 @@ impl Scenario {
 		must_parse("independent", include_str!("../scenarios/independent.toml"))
 	}
 
+	pub fn emblems() -> Self {
+		must_parse("emblems", include_str!("../scenarios/emblems.toml"))
+	}
+
 	pub fn builtin(name: &str) -> Option<Self> {
 		match name {
 			"default" | "same" => Some(Self::same()),
 			"independent" => Some(Self::independent()),
 			"complementary" => Some(Self::complementary()),
 			"complementary-swapped" => Some(Self::complementary_swapped()),
+			"emblems" => Some(Self::emblems()),
 			_ => None,
 		}
 	}
 
 	pub fn builtin_names() -> &'static [&'static str] {
-		&["default", "same", "independent", "complementary", "complementary-swapped"]
+		&["default", "same", "independent", "complementary", "complementary-swapped", "emblems"]
 	}
 
 	/// Name of a builtin, or a path to a `.toml` file.
@@ -350,6 +366,9 @@ struct FileTile {
 	/// `dot` or `triangle`. Default triangle (spawn-token captures).
 	#[serde(default)]
 	capture: Option<String>,
+	/// `none`, `crescent`, or `zs`. Default none (empty emblem slot).
+	#[serde(default)]
+	emblem: Option<String>,
 }
 
 pub fn parse_toml(text: &str) -> Result<Scenario, String> {
@@ -440,6 +459,7 @@ fn deck_from_file(d: &FileDeck) -> Result<DeckSpec, String> {
 					t.weight.unwrap_or(1),
 					t.dots.unwrap_or(1),
 					parse_file_capture(t)?,
+					parse_file_emblem(t)?,
 				));
 			}
 			Some(out)
@@ -572,6 +592,7 @@ fn spec_from_rings(
 	_weight: u8,
 	dots: u8,
 	capture: CaptureMark,
+	emblem: Emblem,
 ) -> TileSpec {
 	let first = colors[0];
 	let mut rings = [first; 3];
@@ -579,13 +600,20 @@ fn spec_from_rings(
 		rings[i] = c;
 	}
 	let n_rings = colors.len().min(3) as u8;
-	TileSpec { rings, n_rings, ring_type: types, weight: n_rings.max(1), dots, capture }
+	TileSpec { rings, n_rings, ring_type: types, weight: n_rings.max(1), dots, capture, emblem }
 }
 
 fn parse_file_capture(t: &FileTile) -> Result<CaptureMark, String> {
 	match &t.capture {
 		None => Ok(CaptureMark::Triangle),
 		Some(s) => CaptureMark::parse(s),
+	}
+}
+
+fn parse_file_emblem(t: &FileTile) -> Result<Emblem, String> {
+	match &t.emblem {
+		None => Ok(Emblem::None),
+		Some(s) => Emblem::parse(s),
 	}
 }
 
@@ -596,6 +624,7 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 		return Err("tile count must be >= 1".into());
 	}
 	let capture = parse_file_capture(t)?;
+	let emblem = parse_file_emblem(t)?;
 	let to_kind = |dots: u8| {
 		let n = colors.len().min(3) as u8;
 		let mut k = KindCount::mono(colors[0], n, dots, count);
@@ -607,6 +636,7 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 		k.weight = n.max(1);
 		k.ring_type = types;
 		k.capture = capture;
+		k.emblem = emblem;
 		k
 	};
 	match (t.weight, t.dots) {
@@ -615,6 +645,7 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 			.map(|mut k| {
 				k.count = count;
 				k.capture = capture;
+				k.emblem = emblem;
 				k
 			})
 			.collect()),
@@ -663,7 +694,14 @@ pub fn materialize(
 				.iter()
 				.map(|&(role, w, d)| {
 					let color = if role == 0 { excl } else { c.shared };
-					spec_from_rings(&[color], [RingType::Normal; 3], w, d, CaptureMark::Triangle)
+					spec_from_rings(
+						&[color],
+						[RingType::Normal; 3],
+						w,
+						d,
+						CaptureMark::Triangle,
+						Emblem::None,
+					)
 				})
 				.collect()
 		};
@@ -705,6 +743,7 @@ fn expand_kinds(kinds: &[KindCount]) -> Vec<TileSpec> {
 				weight: k.weight,
 				dots: k.dots,
 				capture: k.capture,
+				emblem: k.emblem,
 			});
 		}
 	}
@@ -723,7 +762,7 @@ fn take_fixed_bench(
 		let pos = bag.iter().position(|&x| x == k).ok_or_else(|| {
 			format!(
 				"fixed bench {} is not in the bag",
-				kind_tag(k.ring_colors(), &k.ring_type, k.weight, k.dots, k.capture)
+				kind_tag(k.ring_colors(), &k.ring_type, k.weight, k.dots, k.capture, k.emblem)
 			)
 		})?;
 		bench.push(bag.remove(pos));
@@ -993,6 +1032,38 @@ dots = 3
 		assert_eq!(game.bench(Player::One)[0].dots, 3);
 		assert_eq!(game.bench(Player::Two)[0].weight, 1);
 		assert_eq!(game.budget(Player::One), 1);
+	}
+
+	#[test]
+	fn custom_toml_carries_emblem_slot() {
+		let toml = r#"
+name = "emblems"
+shuffle = false
+[[p1.tiles]]
+color = "green"
+weight = 1
+dots = 1
+count = 1
+emblem = "crescent"
+capture = "dot"
+[[p1.tiles]]
+colors = ["orange"]
+zags = ["orange"]
+weight = 1
+dots = 2
+count = 1
+emblem = "zs"
+"#;
+		let s = parse_toml(toml).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		let tiles = game.collection(Player::One);
+		assert_eq!(tiles.len(), 2);
+		assert_eq!(tiles[0].emblem, crate::game::Emblem::CrescentMoon);
+		assert_eq!(tiles[0].cost(), 2);
+		assert_eq!(tiles[1].emblem, crate::game::Emblem::TwoZagZs);
+		assert_eq!(tiles[1].cost(), 2);
+		assert!(format_kind_list(tiles).contains("m"));
+		assert!(format_kind_list(tiles).contains("zz"));
 	}
 
 	#[test]

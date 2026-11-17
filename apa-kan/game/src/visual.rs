@@ -8,8 +8,8 @@ use std::f64::consts::PI;
 
 use crate::board::{ArcEdge, Board, NodeId};
 use crate::game::{
-	selected_braid, ActionOutcome, BudgetToken, CaptureDest, Game, GameStatus, Player, RingType,
-	RuleSet, Tile, TileColor, ZagMismatchCount, BAG_SIZE_DEFAULT,
+	selected_braid, ActionOutcome, BudgetToken, CaptureDest, Emblem, Game, GameStatus, Player,
+	RingType, RuleSet, Tile, TileColor, ZagMismatchCount, BAG_SIZE_DEFAULT,
 };
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
@@ -195,6 +195,8 @@ pub const TILE_RING_NOTCH_1: f32 = 64.0 * std::f32::consts::PI / 180.0;
 pub const TILE_RING_NOTCH_2: f32 = 72.0 * std::f32::consts::PI / 180.0;
 /// Notch for 3 marks (~80°), wide enough that marks do not overlap the ends.
 pub const TILE_RING_NOTCH_3: f32 = 80.0 * std::f32::consts::PI / 180.0;
+/// Top emblem notch (~70°). Wide enough for two vertical zags or a moon.
+pub const TILE_EMBLEM_NOTCH: f32 = 70.0 * std::f32::consts::PI / 180.0;
 /// Samples along an open tile-ring arc.
 pub const TILE_RING_ARC_SAMPLES: u32 = 96;
 /// Samples around a capture-dot warped through tile polar coordinates.
@@ -856,6 +858,35 @@ fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
 	paint
 }
 
+/// Filled piece of an emblem. New emblems add a match arm in
+/// [`TileRingDraw::emblem_glyph`].
+#[derive(Clone, Debug)]
+pub enum EmblemFill {
+	Tris(Vec<[[f32; 2]; 3]>),
+	Poly(Vec<[f32; 2]>),
+}
+
+/// Stroked polyline of an emblem, in the same units as [`TileRingDraw::zag_stroke`].
+#[derive(Clone, Debug)]
+pub struct EmblemStroke {
+	pub pts: Vec<[f32; 2]>,
+	pub width: f32,
+}
+
+/// Drawable parts of one emblem. Keep this the single extension point so a
+/// later emblem only needs a new `Emblem` variant and a match arm.
+#[derive(Clone, Debug, Default)]
+pub struct EmblemGlyph {
+	pub fills: Vec<EmblemFill>,
+	pub strokes: Vec<EmblemStroke>,
+}
+
+impl EmblemGlyph {
+	pub fn empty() -> Self {
+		Self::default()
+	}
+}
+
 /// Stroke counts and radii for concentric tile rings, including zag amplitude
 /// small enough that two zag rings stay distinguishable.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -979,6 +1010,116 @@ impl TileRingDraw {
 			capture_dot_on_arc(origin, theta, rho, r)
 		}
 	}
+
+	/// Rigid frame of the emblem slot: tile center, mid-angle, radius.
+	/// Glyphs sit in the top notch, fully inside the disc; the pair rotates
+	/// with the tile as a unit (no per-stroke polar fan along the rim).
+	pub fn emblem_frame(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> ([f32; 2], f32, f32) {
+		let mid = down_angle(up);
+		let half = self.emblem_half_extent();
+		let pad = (0.65 * self.scale).max(0.5);
+		let rho = (tile_radius - half - pad).max(tile_radius * 0.42);
+		(tile_center, mid, rho)
+	}
+
+	/// Outer-circle radius of the two-circle moon (~2–3 ring-widths tall).
+	pub fn crescent_radius(self) -> f32 {
+		let stroke = self.zag_stroke.max(0.55);
+		(self.gap * 1.52).max(stroke * 2.8)
+	}
+
+	fn emblem_half_extent(self) -> f32 {
+		let stroke = self.zag_stroke.max(0.55);
+		let zag_h = stroke * 3.15;
+		(self.crescent_radius() * 0.92).max(zag_h + stroke * 0.55)
+	}
+
+	/// Bowl outline of the crescent (no star/rays). Opening along `up`.
+	pub fn crescent_poly(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> Vec<[f32; 2]> {
+		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
+		crescent_on_arc(origin, theta, rho, self.crescent_radius())
+	}
+
+	/// Strip triangles for the two-circle bowl (a centroid fan would fill the bite).
+	pub fn crescent_tris(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> Vec<[[f32; 2]; 3]> {
+		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
+		crescent_tris_on_arc(origin, theta, rho, self.crescent_radius())
+	}
+
+	/// Small filled dot in the bowl's opening.
+	pub fn crescent_dot_poly(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> Vec<[f32; 2]> {
+		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
+		crescent_dot_on_arc(origin, theta, rho, self.crescent_radius())
+	}
+
+	/// Two identical parallel upright zigzags (lightning / `>` over `<`).
+	pub fn two_zag_z_polys(
+		self,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> [Vec<[f32; 2]>; 2] {
+		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
+		let stroke = self.zag_stroke.max(0.55);
+		let h = stroke * 3.15;
+		let w = stroke * 0.78;
+		let sep = w + stroke * 1.12;
+		[
+			zag_zigzag_upright(origin, theta, rho, h, w, -sep),
+			zag_zigzag_upright(origin, theta, rho, h, w, sep),
+		]
+	}
+
+	/// All drawable parts of `emblem`. New kinds add a match arm here.
+	pub fn emblem_glyph(
+		self,
+		emblem: Emblem,
+		tile_center: [f32; 2],
+		tile_radius: f32,
+		up: [f32; 2],
+	) -> EmblemGlyph {
+		match emblem {
+			Emblem::None => EmblemGlyph::empty(),
+			Emblem::CrescentMoon => EmblemGlyph {
+				fills: vec![
+					EmblemFill::Tris(self.crescent_tris(tile_center, tile_radius, up)),
+					EmblemFill::Poly(self.crescent_dot_poly(tile_center, tile_radius, up)),
+				],
+				strokes: Vec::new(),
+			},
+			Emblem::TwoZagZs => {
+				let width = self.zag_stroke.max(0.55);
+				EmblemGlyph {
+					fills: Vec::new(),
+					strokes: self
+						.two_zag_z_polys(tile_center, tile_radius, up)
+						.into_iter()
+						.map(|pts| EmblemStroke { pts, width })
+						.collect(),
+				}
+			}
+		}
+	}
 }
 
 /// Screen-down in Bevy world coordinates (+Y up).
@@ -1028,6 +1169,163 @@ fn capture_dot_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f3
 			let a = TAU * i as f32 / n as f32;
 			polar_local_to_world(origin, theta, rho, r * a.cos(), r * a.sin())
 		})
+		.collect()
+}
+
+fn crescent_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
+	let (outer, inner) = crescent_arcs(origin, theta, rho, r);
+	let mut out = outer;
+	out.extend(inner.into_iter().rev());
+	out
+}
+
+/// Thin bowl: outer disc minus a similar disc offset toward +n (opening up).
+/// Local +n is the emblem `up`; the bowl is rigid, not polar-warped along the arc.
+fn crescent_bowl_local(r: f32) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
+	let n = TILE_MARK_DOT_SAMPLES.max(20);
+	let outer_r = r;
+	let inner_r = r * 0.93;
+	let offset = r * 0.40;
+	let c0 = [0.0_f32, 0.0_f32];
+	let c1 = [0.0, offset];
+	let Some((p, q)) = circle_circle_hits(c0, outer_r, c1, inner_r) else {
+		return (Vec::new(), Vec::new());
+	};
+	let back = [0.0, -outer_r];
+	let terminator = [0.0, c1[1] - inner_r];
+	let mut outer = sample_circle_arc(c0, outer_r, p, q, back, n);
+	let mut inner = sample_circle_arc(c1, inner_r, p, q, terminator, n);
+	center_local_pair(&mut outer, &mut inner);
+	(outer, inner)
+}
+
+fn crescent_arcs(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
+	let (outer, inner) = crescent_bowl_local(r);
+	(emblem_place(origin, theta, rho, &outer), emblem_place(origin, theta, rho, &inner))
+}
+
+fn crescent_dot_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[f32; 2]> {
+	use std::f32::consts::TAU;
+	let (outer, inner) = crescent_bowl_local(r);
+	if inner.is_empty() || outer.is_empty() {
+		return Vec::new();
+	}
+	let lip_n = inner.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+	let horn_n = inner.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
+	let dot_n = lip_n + (horn_n - lip_n) * 0.68;
+	let dr = r * 0.15;
+	let samples = TILE_MARK_DOT_SAMPLES.max(12);
+	let local: Vec<[f32; 2]> = (0..samples)
+		.map(|i| {
+			let a = TAU * i as f32 / samples as f32;
+			[dr * a.cos(), dot_n + dr * a.sin()]
+		})
+		.collect();
+	emblem_place(origin, theta, rho, &local)
+}
+
+fn emblem_place(origin: [f32; 2], theta: f32, rho: f32, pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+	pts.iter()
+		.map(|p| emblem_local_to_world(origin, theta, rho, p[0], p[1]))
+		.collect()
+}
+
+fn crescent_tris_on_arc(origin: [f32; 2], theta: f32, rho: f32, r: f32) -> Vec<[[f32; 2]; 3]> {
+	let (outer, inner) = crescent_arcs(origin, theta, rho, r);
+	let mut tris = Vec::with_capacity(outer.len().saturating_sub(1) * 2);
+	for i in 0..outer.len().saturating_sub(1) {
+		tris.push([outer[i], outer[i + 1], inner[i]]);
+		tris.push([inner[i], outer[i + 1], inner[i + 1]]);
+	}
+	tris
+}
+
+fn wrap_tau(a: f32) -> f32 {
+	use std::f32::consts::TAU;
+	((a % TAU) + TAU) % TAU
+}
+
+fn circle_circle_hits(
+	c0: [f32; 2],
+	r0: f32,
+	c1: [f32; 2],
+	r1: f32,
+) -> Option<([f32; 2], [f32; 2])> {
+	let dx = c1[0] - c0[0];
+	let dy = c1[1] - c0[1];
+	let d = dx.hypot(dy);
+	if d < 1e-5 || d > r0 + r1 || d < (r0 - r1).abs() {
+		return None;
+	}
+	let a = (d * d + r0 * r0 - r1 * r1) / (2.0 * d);
+	let h = (r0 * r0 - a * a).max(0.0).sqrt();
+	let mx = c0[0] + a * dx / d;
+	let my = c0[1] + a * dy / d;
+	let px = -dy / d * h;
+	let py = dx / d * h;
+	Some(([mx + px, my + py], [mx - px, my - py]))
+}
+
+fn sample_circle_arc(
+	c: [f32; 2],
+	radius: f32,
+	from: [f32; 2],
+	to: [f32; 2],
+	via: [f32; 2],
+	n: u32,
+) -> Vec<[f32; 2]> {
+	let a0 = (from[1] - c[1]).atan2(from[0] - c[0]);
+	let a1 = (to[1] - c[1]).atan2(to[0] - c[0]);
+	let av = (via[1] - c[1]).atan2(via[0] - c[0]);
+	let ccw_span = wrap_tau(a1 - a0);
+	let via_span = wrap_tau(av - a0);
+	let span = if via_span <= ccw_span + 1e-4 { ccw_span } else { -(wrap_tau(a0 - a1)) };
+	(0..=n)
+		.map(|i| {
+			let a = a0 + span * i as f32 / n as f32;
+			[c[0] + radius * a.cos(), c[1] + radius * a.sin()]
+		})
+		.collect()
+}
+
+fn center_local_pair(a: &mut [[f32; 2]], b: &mut [[f32; 2]]) {
+	let mut min_s = f32::INFINITY;
+	let mut max_s = f32::NEG_INFINITY;
+	let mut min_n = f32::INFINITY;
+	let mut max_n = f32::NEG_INFINITY;
+	for p in a.iter().chain(b.iter()) {
+		min_s = min_s.min(p[0]);
+		max_s = max_s.max(p[0]);
+		min_n = min_n.min(p[1]);
+		max_n = max_n.max(p[1]);
+	}
+	let ds = -0.5 * (min_s + max_s);
+	let dn = -0.5 * (min_n + max_n);
+	for p in a.iter_mut().chain(b.iter_mut()) {
+		p[0] += ds;
+		p[1] += dn;
+	}
+}
+
+/// Rigid `(s, n)` → world: `+n` along the emblem radial, `+s` 90° CCW.
+/// Same first-order frame as polar, without fanning each stroke along the rim.
+fn emblem_local_to_world(origin: [f32; 2], theta: f32, rho: f32, s: f32, n: f32) -> [f32; 2] {
+	let (ct, st) = (theta.cos(), theta.sin());
+	[origin[0] + (rho + n) * ct - s * st, origin[1] + (rho + n) * st + s * ct]
+}
+
+fn zag_zigzag_upright(
+	origin: [f32; 2],
+	theta: f32,
+	rho: f32,
+	h: f32,
+	w: f32,
+	s_off: f32,
+) -> Vec<[f32; 2]> {
+	// Vertical lightning: top-left, down-right, down-left, down-right (`>` over `<`).
+	[[-w + s_off, h], [w + s_off, h / 3.0], [-w + s_off, -h / 3.0], [w + s_off, -h]]
+		.into_iter()
+		.map(|p| emblem_local_to_world(origin, theta, rho, p[0], p[1]))
 		.collect()
 }
 
@@ -1612,6 +1910,73 @@ pub fn tile_ring_arc(
 	circle_arc_polyline(center, radius, mid + half, 2.0 * PI - f64::from(notch), samples)
 }
 
+/// Capture-mark notch at the bottom plus an emblem notch at the top when the
+/// tile has a glyph. Tiles without emblems keep a full ring at the top.
+pub fn tile_notches(tile: Tile, down: [f32; 2]) -> Vec<(f32, f32)> {
+	let mut n = vec![(down_angle(down), tile_ring_notch(capture_mark_count(tile)))];
+	if !tile.emblem.is_none() {
+		n.push((down_angle([-down[0], -down[1]]), TILE_EMBLEM_NOTCH));
+	}
+	n
+}
+
+/// Remaining `(from, sweep)` arcs after subtracting notches `(mid, width)`.
+pub fn ring_open_spans(notches: &[(f32, f32)]) -> Vec<(f64, f64)> {
+	if notches.is_empty() {
+		return vec![(0.0, 2.0 * PI)];
+	}
+	if notches.len() == 1 {
+		let mid = f64::from(notches[0].0);
+		let w = f64::from(notches[0].1);
+		return vec![(mid + w * 0.5, 2.0 * PI - w)];
+	}
+	let mut n: Vec<(f64, f64)> =
+		notches.iter().map(|&(m, w)| (f64::from(m), f64::from(w))).collect();
+	n.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+	let mut spans = Vec::new();
+	for i in 0..n.len() {
+		let (mid, w) = n[i];
+		let end = mid + w * 0.5;
+		let (nmid, nw) = n[(i + 1) % n.len()];
+		let mut start_next = nmid - nw * 0.5;
+		if i + 1 == n.len() {
+			start_next += 2.0 * PI;
+		}
+		let sweep = start_next - end;
+		if sweep > 0.04 {
+			spans.push((end, sweep));
+		}
+	}
+	spans
+}
+
+/// Angular sweep of an open polyline around `center`, in (0, 2π].
+pub fn polyline_angular_sweep(pts: &[[f64; 2]], center: [f64; 2]) -> f64 {
+	if pts.len() < 2 {
+		return 0.0;
+	}
+	let a0 = (pts[0][1] - center[1]).atan2(pts[0][0] - center[0]);
+	let a1 = (pts[pts.len() - 1][1] - center[1]).atan2(pts[pts.len() - 1][0] - center[0]);
+	let mut d = a1 - a0;
+	if d <= 0.0 {
+		d += 2.0 * PI;
+	}
+	d
+}
+
+/// Open ring arcs with one or two notches (capture bottom, emblem top).
+pub fn tile_ring_notched(
+	center: [f64; 2],
+	radius: f64,
+	notches: &[(f32, f32)],
+	samples: u32,
+) -> Vec<Vec<[f64; 2]>> {
+	ring_open_spans(notches)
+		.into_iter()
+		.map(|(from, sweep)| circle_arc_polyline(center, radius, from, sweep, samples))
+		.collect()
+}
+
 /// Angular zag along the same C-shaped ring. Starts and ends on a trough
 /// so the stroke finishes on the ring track.
 pub fn zigzag_arc(
@@ -1637,6 +2002,32 @@ pub fn zigzag_arc(
 		pts.push([center[0] + rr * ang.cos(), center[1] + rr * ang.sin()]);
 	}
 	pts
+}
+
+/// Angular zag along each open span of a notched ring.
+pub fn zigzag_notched(
+	center: [f64; 2],
+	radius: f64,
+	amplitude: f64,
+	teeth: u32,
+	notches: &[(f32, f32)],
+) -> Vec<Vec<[f64; 2]>> {
+	ring_open_spans(notches)
+		.into_iter()
+		.map(|(from, sweep)| {
+			let n_teeth = ((f64::from(teeth.max(2)) * sweep / (2.0 * PI)).round() as u32).max(2);
+			let n = n_teeth * 2;
+			let mut pts = Vec::with_capacity(n as usize + 1);
+			for i in 0..=n {
+				let t = f64::from(i) / f64::from(n);
+				let ang = from + sweep * t;
+				let wave = if i % 2 == 0 { -1.0 } else { 1.0 };
+				let rr = radius + amplitude * wave;
+				pts.push([center[0] + rr * ang.cos(), center[1] + rr * ang.sin()]);
+			}
+			pts
+		})
+		.collect()
 }
 
 /// Old conflict braid: opposite sines for two slots (`0` and `π`), 120°
@@ -1853,6 +2244,26 @@ pub fn bead_chain_arc(
 	let n_beads = ((f64::from(n_beads.max(3)) * sweep / (2.0 * PI)).round() as u32).max(6);
 	let period = radius * sweep / f64::from(n_beads);
 	bead_chain_triangles(&rim, period, half_w, pinch)
+}
+
+/// Bead chain along each open span of a notched ring.
+pub fn bead_chain_notched(
+	center: [f64; 2],
+	radius: f64,
+	n_beads: u32,
+	half_w: f64,
+	pinch: f64,
+	samples: u32,
+	notches: &[(f32, f32)],
+) -> Vec<[[f32; 2]; 3]> {
+	let mut out = Vec::new();
+	for (from, sweep) in ring_open_spans(notches) {
+		let rim = circle_arc_polyline(center, radius, from, sweep, samples.max(TILE_BEAD_SAMPLES));
+		let n = ((f64::from(n_beads.max(3)) * sweep / (2.0 * PI)).round() as u32).max(3);
+		let period = radius * sweep / f64::from(n);
+		out.extend(bead_chain_triangles(&rim, period, half_w, pinch));
+	}
+	out
 }
 
 pub fn zigzag_circle(
@@ -4040,6 +4451,118 @@ mod tests {
 			"pinch must cover a pixel at board scale so the chain stays connected, pinch={pinch}"
 		);
 		assert!(pinch < bead, "pinch must be thinner than the swell");
+	}
+
+	#[test]
+	fn emblem_notch_opens_the_top_of_the_ring() {
+		use crate::game::{Emblem, Player, Tile, TileColor};
+		let r = 22.0;
+		let draw = TileRingDraw::for_radius(r);
+		let moon =
+			Tile::mono(1, Player::One, TileColor::Green, 1, 2).with_emblem(Emblem::CrescentMoon);
+		let zs = Tile::mono(1, Player::One, TileColor::Orange, 1, 2).with_emblem(Emblem::TwoZagZs);
+		let plain = Tile::mono(1, Player::One, TileColor::Blue, 1, 2);
+		let down = CAPTURE_DOWN_BEVY;
+		let up = [-down[0], -down[1]];
+		let moon_notches = tile_notches(moon, down);
+		assert_eq!(moon_notches.len(), 2, "capture bottom + emblem top");
+		assert_eq!(tile_notches(plain, down).len(), 1, "no-emblem tiles keep a full top");
+		let spans = ring_open_spans(&moon_notches);
+		assert_eq!(spans.len(), 2);
+		let rims = tile_ring_notched([0.0, 0.0], 10.0, &moon_notches, 64);
+		assert_eq!(rims.len(), 2);
+		for rim in &rims {
+			assert!(rim.len() > 8);
+			for p in rim {
+				let ang = (p[1] as f32).atan2(p[0] as f32);
+				assert!(
+					ang_dist(ang, down_angle(up)) > TILE_EMBLEM_NOTCH * 0.5 - 0.08,
+					"ring must not enter the emblem notch, p={p:?}"
+				);
+			}
+		}
+		let glyph = draw.emblem_glyph(Emblem::CrescentMoon, [0.0, 0.0], r, up);
+		assert_eq!(glyph.fills.len(), 2, "bowl strip plus a filled dot");
+		assert!(glyph.strokes.is_empty(), "crescent is filled, not stroked");
+		let poly = draw.crescent_poly([0.0, 0.0], r, up);
+		assert!(poly.len() > 12, "crescent is a two-circle bowl");
+		let tris = draw.crescent_tris([0.0, 0.0], r, up);
+		assert!(tris.len() > 16, "crescent is a C strip, not a fan-filled disc");
+		let mut dist_sum = 0.0f32;
+		let mut min_x = f32::INFINITY;
+		let mut max_x = f32::NEG_INFINITY;
+		let mut min_y = f32::INFINITY;
+		let mut max_y = f32::NEG_INFINITY;
+		let mut max_hyp = 0.0f32;
+		let mut back_y = f32::INFINITY;
+		for p in &poly {
+			let hyp = p[0].hypot(p[1]);
+			dist_sum += hyp;
+			max_hyp = max_hyp.max(hyp);
+			assert!(p[1] > 0.0, "crescent sits at the top of the tile in Bevy coords");
+			min_x = min_x.min(p[0]);
+			max_x = max_x.max(p[0]);
+			min_y = min_y.min(p[1]);
+			max_y = max_y.max(p[1]);
+			if p[1] < back_y {
+				back_y = p[1];
+			}
+		}
+		assert!(dist_sum / poly.len() as f32 > r * 0.4);
+		assert!(max_hyp < r - 0.2, "crescent stays inside the tile, max={max_hyp} r={r}");
+		assert!(
+			max_y - min_y > draw.gap * 1.2,
+			"bowl fills the notch, height={} gap={}",
+			max_y - min_y,
+			draw.gap
+		);
+		assert!(max_x > 0.0 && min_x < 0.0, "bowl is symmetric about the vertical");
+		assert!(max_y > back_y + (max_y - min_y) * 0.35, "horns point up, above the bowl back");
+		let dot = draw.crescent_dot_poly([0.0, 0.0], r, up);
+		assert!(dot.len() > 8, "a small filled dot sits in the opening");
+		let (dx, dy) = {
+			let n = dot.len() as f32;
+			(dot.iter().map(|p| p[0]).sum::<f32>() / n, dot.iter().map(|p| p[1]).sum::<f32>() / n)
+		};
+		assert!(dx.abs() < r * 0.08, "dot is centered above the bowl, dx={dx}");
+		assert!(dy > back_y, "dot sits above the bowl back");
+		assert!(dy < max_y + r * 0.05, "dot stays inside the horns, dy={dy} max_y={max_y}");
+		for p in &dot {
+			assert!(p[0].hypot(p[1]) < r - 0.2, "dot stays inside the tile");
+		}
+		let zigs = draw.two_zag_z_polys([0.0, 0.0], r, up);
+		assert_eq!(zigs.len(), 2);
+		assert_eq!(zigs[0].len(), zigs[1].len());
+		assert!(zigs[0].len() >= 4, "each zag is an angular polyline");
+		let d0 = [zigs[1][0][0] - zigs[0][0][0], zigs[1][0][1] - zigs[0][0][1]];
+		for i in 0..zigs[0].len() {
+			let d = [zigs[1][i][0] - zigs[0][i][0], zigs[1][i][1] - zigs[0][i][1]];
+			assert!(
+				(d[0] - d0[0]).abs() < 1e-4 && (d[1] - d0[1]).abs() < 1e-4,
+				"zags are identical up to a shared translation, i={i} d={d:?} d0={d0:?}"
+			);
+		}
+		for zig in &zigs {
+			let mut min_zx = f32::INFINITY;
+			let mut max_zx = f32::NEG_INFINITY;
+			let mut min_zy = f32::INFINITY;
+			let mut max_zy = f32::NEG_INFINITY;
+			for p in zig {
+				let hyp = p[0].hypot(p[1]);
+				assert!(p[1] > 0.0, "zag glyphs sit at the top, p={p:?}");
+				assert!(
+					hyp + draw.zag_stroke * 0.5 < r - 0.15,
+					"zag stroke stays inside the tile, hyp={hyp} r={r}"
+				);
+				min_zx = min_zx.min(p[0]);
+				max_zx = max_zx.max(p[0]);
+				min_zy = min_zy.min(p[1]);
+				max_zy = max_zy.max(p[1]);
+			}
+			assert!(max_zy - min_zy > max_zx - min_zx, "each zag is taller than wide");
+		}
+		let zs_notches = tile_notches(zs, down);
+		assert_eq!(zs_notches.len(), 2);
 	}
 
 	#[test]

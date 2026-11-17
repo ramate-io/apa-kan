@@ -10,16 +10,21 @@ const MAX_NODES: usize = 32;
 /// Captures-to-bench can grow past the 11-tile draft, so copy keys go higher.
 const MAX_BENCH_COPIES: usize = 32;
 const CAPTURE_MARKS: usize = 2;
+const EMBLEMS: usize = 3;
 
 pub struct Zobrist {
 	/// node × owner × kind, heap so the 6-color kind space cannot overflow the stack.
 	board: Vec<u64>,
 	/// node × owner × capture-mark bit.
 	board_mark: Vec<u64>,
+	/// node × owner × emblem.
+	board_emblem: Vec<u64>,
 	/// player × kind × copy-count (1-based)
 	bench: Vec<u64>,
 	/// player × capture-mark × copy-count
 	bench_mark: Vec<u64>,
+	/// player × emblem × copy-count
+	bench_emblem: Vec<u64>,
 	side_two: u64,
 	pass_phase: [u64; 4],
 	actions_phase: [u64; 8],
@@ -40,8 +45,10 @@ impl Zobrist {
 		let mut z = Self {
 			board: vec![0; MAX_NODES * 2 * KIND_COUNT],
 			board_mark: vec![0; MAX_NODES * 2 * CAPTURE_MARKS],
+			board_emblem: vec![0; MAX_NODES * 2 * EMBLEMS],
 			bench: vec![0; 2 * KIND_COUNT * MAX_BENCH_COPIES],
 			bench_mark: vec![0; 2 * CAPTURE_MARKS * MAX_BENCH_COPIES],
+			bench_emblem: vec![0; 2 * EMBLEMS * MAX_BENCH_COPIES],
 			side_two: next(),
 			pass_phase: [0; 4],
 			actions_phase: [0; 8],
@@ -62,6 +69,9 @@ impl Zobrist {
 				for mark in 0..CAPTURE_MARKS {
 					z.board_mark[board_mark_ix(node, owner, mark)] = next();
 				}
+				for emblem in 0..EMBLEMS {
+					z.board_emblem[board_emblem_ix(node, owner, emblem)] = next();
+				}
 			}
 		}
 		for player in 0..2 {
@@ -73,6 +83,11 @@ impl Zobrist {
 			for mark in 0..CAPTURE_MARKS {
 				for copy in 0..MAX_BENCH_COPIES {
 					z.bench_mark[bench_mark_ix(player, mark, copy)] = next();
+				}
+			}
+			for emblem in 0..EMBLEMS {
+				for copy in 0..MAX_BENCH_COPIES {
+					z.bench_emblem[bench_emblem_ix(player, emblem, copy)] = next();
 				}
 			}
 		}
@@ -120,6 +135,14 @@ fn bench_mark_ix(player: usize, mark: usize, copy: usize) -> usize {
 	(player * CAPTURE_MARKS + mark) * MAX_BENCH_COPIES + copy
 }
 
+fn board_emblem_ix(node: usize, owner: usize, emblem: usize) -> usize {
+	(node * 2 + owner) * EMBLEMS + emblem
+}
+
+fn bench_emblem_ix(player: usize, emblem: usize, copy: usize) -> usize {
+	(player * EMBLEMS + emblem) * MAX_BENCH_COPIES + copy
+}
+
 pub fn tables() -> &'static Zobrist {
 	static Z: OnceLock<Zobrist> = OnceLock::new();
 	Z.get_or_init(Zobrist::new)
@@ -134,11 +157,13 @@ pub fn hash(game: &Game) -> u64 {
 		if n < MAX_NODES {
 			h ^= z.board[board_ix(n, tile.owner.index(), tile.kind_index())];
 			h ^= z.board_mark[board_mark_ix(n, tile.owner.index(), tile.capture.bit() as usize)];
+			h ^= z.board_emblem[board_emblem_ix(n, tile.owner.index(), tile.emblem.bit() as usize)];
 		}
 	}
 	for player in [Player::One, Player::Two] {
 		let mut copies = [0u8; KIND_COUNT];
 		let mut mark_copies = [0u8; CAPTURE_MARKS];
+		let mut emblem_copies = [0u8; EMBLEMS];
 		for tile in game.bench(player) {
 			let k = tile.kind_index();
 			let n = copies[k].saturating_add(1).min(MAX_BENCH_COPIES as u8);
@@ -148,6 +173,10 @@ pub fn hash(game: &Game) -> u64 {
 			let mn = mark_copies[mark].saturating_add(1).min(MAX_BENCH_COPIES as u8);
 			mark_copies[mark] = mn;
 			h ^= z.bench_mark[bench_mark_ix(player.index(), mark, (mn as usize) - 1)];
+			let emblem = tile.emblem.bit() as usize;
+			let en = emblem_copies[emblem].saturating_add(1).min(MAX_BENCH_COPIES as u8);
+			emblem_copies[emblem] = en;
+			h ^= z.bench_emblem[bench_emblem_ix(player.index(), emblem, (en as usize) - 1)];
 		}
 	}
 	if game.current_player() == Player::Two {
@@ -191,6 +220,7 @@ pub fn occupancy_hash(game: &Game) -> u64 {
 		if n < MAX_NODES {
 			h ^= z.board[board_ix(n, tile.owner.index(), tile.kind_index())];
 			h ^= z.board_mark[board_mark_ix(n, tile.owner.index(), tile.capture.bit() as usize)];
+			h ^= z.board_emblem[board_emblem_ix(n, tile.owner.index(), tile.emblem.bit() as usize)];
 		}
 	}
 	if game.current_player() == Player::Two {
@@ -262,6 +292,23 @@ mod tests {
 		tris.place_tile(spawn, t);
 		assert_ne!(hash(&dots), hash(&tris));
 		assert_ne!(occupancy_hash(&dots), occupancy_hash(&tris));
+	}
+
+	#[test]
+	fn hash_distinguishes_emblems() {
+		use crate::game::{Emblem, Game, Player, TileColor};
+
+		let mut none = Game::empty(RuleSet::default());
+		let mut moon = Game::empty(RuleSet::default());
+		let spawn = none.board().spawns()[0];
+		let a = none.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		let b = moon
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_emblem(Emblem::CrescentMoon);
+		none.place_tile(spawn, a);
+		moon.place_tile(spawn, b);
+		assert_ne!(hash(&none), hash(&moon));
+		assert_ne!(occupancy_hash(&none), occupancy_hash(&moon));
 	}
 
 	#[test]

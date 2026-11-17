@@ -8,7 +8,7 @@ cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- \
   --scenario same --games 12 --no-depth-probe
 ```
 
-`--scenario` takes a builtin name (`default`, `same`, `independent`, `complementary`, `complementary-swapped`) or a path to a `.toml` file. `--list-scenarios` prints the builtins.
+`--scenario` takes a builtin name (`default`, `same`, `independent`, `complementary`, `complementary-swapped`, `emblems`) or a path to a `.toml` file. `--list-scenarios` prints the builtins.
 
 ## Schema
 
@@ -34,6 +34,7 @@ colors = ["green", "orange"]   # all dots kinds of each color
 #                              # omit weight/dots to expand all dots kinds of that color
 # dots = 1
 # capture = "dot"              # or "triangle" (default); dest for captures made with this tile
+# emblem = "crescent"          # or "zs" / "none" (default empty slot)
 # count = 1
 # [[p1.bench]]                 # optional ordered prefix of a small collection
 # color = "green"

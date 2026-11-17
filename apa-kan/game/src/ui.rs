@@ -1929,8 +1929,8 @@ fn spawn_tile_at(
 	let draw = visual::TileRingDraw::for_radius(radius);
 	let ring_half = draw.stroke * 0.5;
 	let marks = visual::capture_mark_count(tile);
-	let notch = visual::tile_ring_notch(marks);
 	let down = visual::CAPTURE_DOWN_BEVY;
+	let notches = visual::tile_notches(tile, down);
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
 		if tile.stroke_is_braid(k) {
@@ -1942,66 +1942,70 @@ fn spawn_tile_at(
 			let z = visual::Z_TILE_RING + f32::from(k) * 0.02;
 			let center = [f64::from(pos.x), f64::from(pos.y)];
 			if tile.stroke_is_zag(k) {
-				let zig = visual::zigzag_arc(
+				for zig in visual::zigzag_notched(
 					center,
 					f64::from(r - ring_half * 0.5),
 					f64::from(draw.zag_amp),
 					draw.zag_teeth,
-					down,
-					notch,
-				);
-				spawn_stroke_capped(
-					commands,
-					meshes,
-					materials,
-					&zig,
-					draw.zag_stroke.max(0.45),
-					rgb(visual::tile_rgb(color)),
-					z,
-				);
+					&notches,
+				) {
+					spawn_stroke_capped(
+						commands,
+						meshes,
+						materials,
+						&zig,
+						draw.zag_stroke.max(0.45),
+						rgb(visual::tile_rgb(color)),
+						z,
+					);
+				}
 			} else if tile.stroke_is_bead(k) {
 				let bead_r = f64::from(draw.bead_r.max(0.7));
 				let pinch = f64::from(visual::bead_pinch(bead_r as f32));
 				let rr = f64::from(r - ring_half * 0.5);
 				let color = rgb(visual::tile_rgb(color));
-				let tris = visual::bead_chain_arc(
+				let tris = visual::bead_chain_notched(
 					center,
 					rr,
 					draw.bead_count,
 					bead_r,
 					pinch,
 					visual::TILE_BEAD_SAMPLES,
-					down,
-					notch,
+					&notches,
 				);
 				spawn_filled_tris(commands, meshes, materials, &tris, color, z);
-				let rim = visual::tile_ring_arc(center, rr, down, notch, visual::TILE_BEAD_SAMPLES);
 				let cap = (pinch as f32).max(0.4);
-				for p in [rim.first(), rim.last()].into_iter().flatten() {
-					commands.spawn((
-						DynamicView,
-						Mesh2d(meshes.add(Circle::new(cap))),
-						MeshMaterial2d(materials.add(ColorMaterial::from(color))),
-						Transform::from_translation(Vec2::new(p[0] as f32, p[1] as f32).extend(z)),
-					));
+				for rim in
+					visual::tile_ring_notched(center, rr, &notches, visual::TILE_BEAD_SAMPLES)
+				{
+					for p in [rim.first(), rim.last()].into_iter().flatten() {
+						commands.spawn((
+							DynamicView,
+							Mesh2d(meshes.add(Circle::new(cap))),
+							MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+							Transform::from_translation(
+								Vec2::new(p[0] as f32, p[1] as f32).extend(z),
+							),
+						));
+					}
 				}
 			} else {
-				let rim = visual::tile_ring_arc(
+				for rim in visual::tile_ring_notched(
 					center,
 					f64::from(r - ring_half * 0.5),
-					down,
-					notch,
+					&notches,
 					visual::TILE_RING_ARC_SAMPLES,
-				);
-				spawn_stroke_capped(
-					commands,
-					meshes,
-					materials,
-					&rim,
-					draw.stroke.max(1.2),
-					rgb(visual::tile_rgb(color)),
-					z,
-				);
+				) {
+					spawn_stroke_capped(
+						commands,
+						meshes,
+						materials,
+						&rim,
+						draw.stroke.max(1.2),
+						rgb(visual::tile_rgb(color)),
+						z,
+					);
+				}
 			}
 		}
 	}
@@ -2009,34 +2013,36 @@ fn spawn_tile_at(
 		let r = f64::from(draw.ring_radius(radius, 0) - ring_half * 0.5);
 		if r > 6.0 * f64::from(draw.scale) {
 			let center = [f64::from(pos.x), f64::from(pos.y)];
-			let rim = visual::tile_ring_arc(center, r, down, notch, draw.braid_samples);
 			let amp = f64::from(draw.braid_amp);
-			let sweep = 2.0 * std::f64::consts::PI - f64::from(notch);
-			let turns = visual::tile_braid_turns(r) * sweep / (2.0 * std::f64::consts::PI);
 			let w = draw.braid_stroke.max(0.28);
-			for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
-				let color = rgb(visual::tile_rgb(thread.color));
-				spawn_braid_strand(
-					commands,
-					meshes,
-					materials,
-					&thread.pts,
-					&thread.phase,
-					w,
-					color,
-					visual::Z_TILE_RING,
-					visual::Z_TILE_RING + 0.08,
-				);
-				let cap = (w * 0.5).max(0.28);
-				for p in [thread.pts.first(), thread.pts.last()].into_iter().flatten() {
-					commands.spawn((
-						DynamicView,
-						Mesh2d(meshes.add(Circle::new(cap))),
-						MeshMaterial2d(materials.add(ColorMaterial::from(color))),
-						Transform::from_translation(
-							Vec2::new(p[0] as f32, p[1] as f32).extend(visual::Z_TILE_RING + 0.08),
-						),
-					));
+			for rim in visual::tile_ring_notched(center, r, &notches, draw.braid_samples) {
+				let sweep = visual::polyline_angular_sweep(&rim, center);
+				let turns = visual::tile_braid_turns(r) * sweep / (2.0 * std::f64::consts::PI);
+				for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
+					let color = rgb(visual::tile_rgb(thread.color));
+					spawn_braid_strand(
+						commands,
+						meshes,
+						materials,
+						&thread.pts,
+						&thread.phase,
+						w,
+						color,
+						visual::Z_TILE_RING,
+						visual::Z_TILE_RING + 0.08,
+					);
+					let cap = (w * 0.5).max(0.28);
+					for p in [thread.pts.first(), thread.pts.last()].into_iter().flatten() {
+						commands.spawn((
+							DynamicView,
+							Mesh2d(meshes.add(Circle::new(cap))),
+							MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+							Transform::from_translation(
+								Vec2::new(p[0] as f32, p[1] as f32)
+									.extend(visual::Z_TILE_RING + 0.08),
+							),
+						));
+					}
 				}
 			}
 		}
@@ -2052,6 +2058,31 @@ fn spawn_tile_at(
 			triangle,
 		);
 		spawn_filled_poly(commands, meshes, materials, &poly, primary, visual::Z_TILE_DOT);
+	}
+	let up = [-down[0], -down[1]];
+	let glyph = draw.emblem_glyph(tile.emblem, [pos.x, pos.y], radius, up);
+	for fill in glyph.fills {
+		match fill {
+			visual::EmblemFill::Tris(tris) => {
+				spawn_filled_tris(commands, meshes, materials, &tris, primary, visual::Z_TILE_DOT);
+			}
+			visual::EmblemFill::Poly(poly) => {
+				spawn_filled_poly(commands, meshes, materials, &poly, primary, visual::Z_TILE_DOT);
+			}
+		}
+	}
+	for stroke in glyph.strokes {
+		let pts: Vec<[f64; 2]> =
+			stroke.pts.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+		spawn_stroke_capped(
+			commands,
+			meshes,
+			materials,
+			&pts,
+			stroke.width.max(0.7),
+			primary,
+			visual::Z_TILE_DOT,
+		);
 	}
 	if highlight {
 		spawn_ring(

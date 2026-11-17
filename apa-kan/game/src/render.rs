@@ -576,8 +576,8 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 	let primary = rgb_of(visual::tile_rgb(tile.primary()));
 	let draw = visual::TileRingDraw::for_radius(r as f32);
 	let marks = visual::capture_mark_count(tile);
-	let notch = visual::tile_ring_notch(marks);
 	let down = visual::CAPTURE_DOWN_IMAGE;
+	let notches = visual::tile_notches(tile, down);
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
 		if tile.stroke_is_braid(k) {
@@ -589,72 +589,74 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			let width =
 				f64::from(if tile.stroke_is_zag(k) { draw.zag_stroke } else { draw.stroke });
 			if tile.stroke_is_zag(k) {
-				let zig = visual::zigzag_arc(
+				for zig in visual::zigzag_notched(
 					[c.0, c.1],
 					rr,
 					f64::from(draw.zag_amp),
 					draw.zag_teeth,
-					down,
-					notch,
-				);
-				stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
+					&notches,
+				) {
+					stroke_polyline(img, &zig, rgb_of(visual::tile_rgb(color)), width);
+				}
 			} else if tile.stroke_is_bead(k) {
 				let bead_r = f64::from(draw.bead_r);
 				let pinch = f64::from(visual::bead_pinch(draw.bead_r));
 				let fill = rgb_of(visual::tile_rgb(color));
-				let rim =
-					visual::tile_ring_arc([c.0, c.1], rr, down, notch, visual::TILE_BEAD_SAMPLES);
 				fill_tris(
 					img,
-					&visual::bead_chain_arc(
+					&visual::bead_chain_notched(
 						[c.0, c.1],
 						rr,
 						draw.bead_count,
 						bead_r,
 						pinch,
 						visual::TILE_BEAD_SAMPLES,
-						down,
-						notch,
+						&notches,
 					),
 					fill,
 				);
-				for p in [rim.first(), rim.last()].into_iter().flatten() {
-					fill_circle(img, (p[0], p[1]), pinch, fill);
+				for rim in
+					visual::tile_ring_notched([c.0, c.1], rr, &notches, visual::TILE_BEAD_SAMPLES)
+				{
+					for p in [rim.first(), rim.last()].into_iter().flatten() {
+						fill_circle(img, (p[0], p[1]), pinch, fill);
+					}
 				}
 			} else {
-				let rim = visual::tile_ring_arc(
+				for rim in visual::tile_ring_notched(
 					[c.0, c.1],
 					rr,
-					down,
-					notch,
+					&notches,
 					visual::TILE_RING_ARC_SAMPLES,
-				);
-				stroke_polyline(img, &rim, rgb_of(visual::tile_rgb(color)), width);
+				) {
+					stroke_polyline(img, &rim, rgb_of(visual::tile_rgb(color)), width);
+				}
 			}
 		}
 	}
 	if tile.braid_ring_count() >= 2 {
 		let rr = f64::from(draw.ring_radius(r as f32, 0));
 		if rr > 4.0 * f64::from(draw.scale) {
-			let rim = visual::tile_ring_arc([c.0, c.1], rr, down, notch, draw.braid_samples);
 			let amp = f64::from(draw.braid_amp);
-			let sweep = 2.0 * std::f64::consts::PI - f64::from(notch);
-			let turns = visual::tile_braid_turns(rr) * sweep / (2.0 * std::f64::consts::PI);
 			let w = f64::from(draw.braid_stroke);
-			let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
-			let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
-			for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
-				split_braid(
-					&thread.pts,
-					&thread.phase,
-					rgb_of(visual::tile_rgb(thread.color)),
-					w,
-					&mut back,
-					&mut front,
-				);
-			}
-			for (pts, color, width) in back.into_iter().chain(front) {
-				stroke_polyline(img, &pts, color, width);
+			for rim in visual::tile_ring_notched([c.0, c.1], rr, &notches, draw.braid_samples) {
+				let sweep = visual::polyline_angular_sweep(&rim, [c.0, c.1]);
+				let turns = visual::tile_braid_turns(rr) * sweep / (2.0 * std::f64::consts::PI);
+				let mut back: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
+				let mut front: Vec<(Vec<[f64; 2]>, Rgba<u8>, f64)> = Vec::new();
+				for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
+					split_braid(
+						&thread.pts,
+						&thread.phase,
+						rgb_of(visual::tile_rgb(thread.color)),
+						w,
+						&mut back,
+						&mut front,
+					);
+				}
+				for (pts, color, width) in back.into_iter().chain(front) {
+					stroke_polyline(img, &pts, color, width);
+				}
 			}
 		}
 	}
@@ -669,6 +671,19 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 			triangle,
 		);
 		fill_polygon(img, &poly, primary);
+	}
+	let glyph =
+		draw.emblem_glyph(tile.emblem, [c.0 as f32, c.1 as f32], r as f32, [-down[0], -down[1]]);
+	for fill in glyph.fills {
+		match fill {
+			visual::EmblemFill::Tris(tris) => fill_tris(img, &tris, primary),
+			visual::EmblemFill::Poly(poly) => fill_polygon(img, &poly, primary),
+		}
+	}
+	for stroke in glyph.strokes {
+		let pts: Vec<[f64; 2]> =
+			stroke.pts.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+		stroke_polyline(img, &pts, primary, f64::from(stroke.width).max(1.4));
 	}
 }
 
@@ -896,7 +911,56 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
-	use crate::game::{Game, RuleSet};
+	use crate::game::{CaptureMark, Emblem, Game, Player, RingType, RuleSet, TileColor};
+
+	fn emblem_closeup_tiles(game: &mut Game) -> [(crate::game::Tile, &'static str); 4] {
+		let rings_moon = [
+			(TileColor::Green, RingType::Normal),
+			(TileColor::Blue, RingType::Normal),
+			(TileColor::Orange, RingType::Zag),
+		];
+		let rings_zs = [
+			(TileColor::Orange, RingType::Zag),
+			(TileColor::Blue, RingType::Zag),
+			(TileColor::Green, RingType::Normal),
+		];
+		[
+			(
+				game.alloc_typed_rings(Player::One, &rings_moon, 1, 3)
+					.with_capture(CaptureMark::Dot)
+					.with_emblem(Emblem::CrescentMoon),
+				"emblem_crescent_dot.png",
+			),
+			(
+				game.alloc_typed_rings(Player::One, &rings_moon, 1, 3)
+					.with_capture(CaptureMark::Triangle)
+					.with_emblem(Emblem::CrescentMoon),
+				"emblem_crescent_triangle.png",
+			),
+			(
+				game.alloc_typed_rings(Player::One, &rings_zs, 1, 3)
+					.with_capture(CaptureMark::Dot)
+					.with_emblem(Emblem::TwoZagZs),
+				"emblem_zs_dot.png",
+			),
+			(
+				game.alloc_typed_rings(Player::One, &rings_zs, 1, 3)
+					.with_capture(CaptureMark::Triangle)
+					.with_emblem(Emblem::TwoZagZs),
+				"emblem_zs_triangle.png",
+			),
+		]
+	}
+
+	#[test]
+	fn write_emblem_closeups() {
+		let mut game = Game::empty(RuleSet::default());
+		let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots");
+		std::fs::create_dir_all(&dir).unwrap();
+		for (tile, name) in emblem_closeup_tiles(&mut game) {
+			write_tile_closeup(tile, dir.join(name), 880, 330.0);
+		}
+	}
 
 	#[test]
 	fn opening_deck_paints_every_unplaced_tile() {
@@ -1823,6 +1887,9 @@ mod tests {
 				.with_capture(CaptureMark::Triangle);
 			write_tile_closeup(dot, dir.join("closeup_notch_dot.png"), 880, 330.0);
 			write_tile_closeup(tri, dir.join("closeup_notch_triangle.png"), 880, 330.0);
+			for (tile, name) in emblem_closeup_tiles(&mut g) {
+				write_tile_closeup(tile, dir.join(name), 880, 330.0);
+			}
 			write_cropped(
 				&demo_typed_pair(
 					&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Bead)],

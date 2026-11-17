@@ -1,0 +1,20 @@
+# Two listed tiles so scenario TOML can carry the emblem slot.
+# `crescent` is a one-ring green with a Crescent Moon; `zs` is an orange zag
+# with Two Zag Zs. Omitted `emblem` on other files still means none.
+name = "emblems"
+description = "Tiny fixture: one Crescent Moon tile and one Two Zag Zs tile."
+shuffle = false
+[[p1.tiles]]
+color = "green"
+weight = 1
+dots = 1
+count = 1
+capture = "dot"
+emblem = "crescent"
+[[p1.tiles]]
+colors = ["orange"]
+zags = ["orange"]
+weight = 1
+dots = 2
+count = 1
+emblem = "zs"

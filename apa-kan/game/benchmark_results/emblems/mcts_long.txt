@@ -1,0 +1,109 @@
+# apa-kan search benchmark
+# budget=nodes:132000,iters:10400 jobs=4 games_per_pairing_per_seat=6 seed_base=1 turn_limit=200
+
+# branching factor (legal actions per position, from greedy/random games)
+# sample_games=12  (greedy vs random, random vs greedy, greedy vs greedy)
+# kind     n_positions  avg    max
+ADD       321          47.18  96
+MOVE      313          14.35  44
+ALL       362          54.25  103
+
+# emblem collector mcts_long deep_mcts 4x iters
+# budget=nodes:132000,iters:10400 jobs=4 games_per_pairing_per_seat=6 seed_base=1 turn_limit=200
+# search  p1=profile=deep_mcts ordering=on tt=on/18 lmr=on pvs=on q=on/4 pw=off heur_playouts=on puct=1.60 cutoff=12 threads=1 priors=on pw_order=on reuse=on mcts_tt=off factored=off leaf=0 solver=on  p2=profile=deep_mcts ordering=on tt=on/18 lmr=on pvs=on q=on/4 pw=off heur_playouts=on puct=1.60 cutoff=12 threads=1 priors=on pw_order=on reuse=on mcts_tt=off factored=off leaf=0 solver=on
+# rules: no_moves_loses=on center_hold_win=off center_hold_n=5 no_same_piece_twice=off color_restricted_hops=on hop_weight_cmp=le counted_pass_through=on pass_through_ring_cmp=ge petal_majority_win=off petal_majority_n=1 control_win=on control_n=5 control_hold_turns=1 insufficient_tiles_loss=off starting_bench=7 bag_size=11 deck_size=27 pick=search deck_noise=0 self_capture_budget=on max_rings=3 zag_numer=1 braid_numer=1 bead_numer=1 bead_scoring=shared dot_percent=50 emblem_weights=200,1,1 zag_mismatch=sum path_constraint=no-edge-revisit scenario=default
+# ring_process  sample=20000 max_rings=3 zag_numer=1 braid_numer=1 bead_numer=1  n1=12293 n2=6162 n3=1545
+# ring_process_zags  rings=29252 zags=2860 rate=0.0978
+# ring_process_braids  pieces=20000 braided=2788 piece_rate=0.1394 rings=29252 braid_rings=5580 ring_rate=0.1908
+# ring_process_beads  pieces=20000 grouped=2433 piece_rate=0.1216 rings=29252 beads=5907 ring_rate=0.2019
+# ring_process_emblems  pieces=20000 weights=200,1,1 crescent=106 rate=0.0053 zs=101 zs_rate=0.0050
+# ring_process_colors  green=8954 blue=9138 orange=8961 lavender-pink=1051 teal=1050 maroon=98
+# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.
+# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).
+# search_depth: mm_avg/mm_max = completed iterative-deepening depth; mcts_avg/mcts_max = visit-weighted tree depth (root excluded from the mean).
+# root_spread: visit entropy / effective branching, top-1 visit share, #moves within 1/sqrt(n) of best Q, Q spread of top 10, best-move stability.
+# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures
+mcts            vs mcts             mixed vs mixed  P1  2-0-4  47.33  0  0  0  0  1  0  5  0  0  0  1.00  0.00  9441.8  cap=6.00  self=8.00  mm_max=0 mcts_avg=3.15 mcts_max=19
+mcts            vs mcts             crescent vs crescent  P1  4-0-2  33.33  0  2  0  0  1  0  3  0  0  0  1.00  0.00  9373.8  cap=6.17  self=6.00  mm_max=0 mcts_avg=2.90 mcts_max=13
+mcts            vs mcts             zs vs zs       P1  3-0-3  33.83  0  0  0  0  1  0  5  0  0  0  1.00  0.00  9229.6  cap=6.67  self=7.33  mm_max=0 mcts_avg=2.92 mcts_max=14
+mcts            vs mcts             emblem vs emblem  P1  3-1-2  33.50  0  0  0  0  0  0  6  0  0  0  1.00  0.00  9373.0  cap=6.83  self=5.17  mm_max=0 mcts_avg=3.02 mcts_max=15
+mcts            vs mcts             crescent vs zs  P1  6-0-0  54.33  0  1  0  0  1  0  4  0  0  1  1.67  0.00  9922.0  cap=4.83  self=4.50  mm_max=0 mcts_avg=2.28 mcts_max=11
+# seat_totals  P1 18-1-11  P2 11-1-18  games=30
+# end_reasons  elim=0 locked_out=3 center_hold=0 petal_maj=0 control=4 insuff=0 low_value=23 low_value_wins=22 low_value_draws=1 turn_limit=0 double_pass=0
+# low_value_pairs  pair0=15 later=1 piece_count=6
+# captures  opponent_tiles_removed=183  avg_per_game=6.10  self_captures=186  self_avg_per_game=6.20
+# center_captures  opponent_tiles_removed=16  avg_per_game=0.53  self_captures=7  self_avg_per_game=0.23
+# capture_dest  bench=198 avg_per_game=6.60  tokens=171 avg_per_game=5.70
+# bead_captures  contrib=170 needed=135 spawn_two_ring_single_bead=0  of_total=183
+# emblems  crescent_saves=64 avg_per_game=2.13  zs_bonuses=142 avg_per_game=4.73
+# search_depth  mm_avg=0.00 mm_max=0 mm_n=0  mcts_avg=2.82 mcts_max=19 mcts_n=1214
+# root_spread  entropy=1.71 eff_branch=11.0 top1=0.54 near_q=13.5 q_spread10=0.207 stability=0.82 legal=46.1 n=1214
+# matchup_totals  mixed vs mixed 2-0-4 avg_turns=47.33  |  crescent vs crescent 4-0-2 avg_turns=33.33  |  zs vs zs 3-0-3 avg_turns=33.83  |  emblem vs emblem 3-1-2 avg_turns=33.50  |  crescent vs zs 6-0-0 avg_turns=54.33
+# archetype_seat  mixed P1=2-0-4 P2=4-0-2  |  crescent P1=10-0-2 P2=2-0-4  |  zs P1=3-0-3 P2=3-0-9  |  emblem P1=3-1-2 P2=2-1-3
+# short_games  turns_le_20=3 lockout=0 control=0
+# tokens_bench_over_time  mean_tokens_per_side=3.06  mean_bench_per_side=6.62  snapshots=1244
+# pick_dot_ratio  P1_opening_dots W-D-L  dots3=1-0-0  dots4=0-0-1  dots5=15-1-10  dots6=2-0-0
+
+# stalling (rules unchanged; no threefold draw)
+# games=30  visible_pos_seen_>=2=2  visible_pos_seen_>=3=1  occupancy_seen_>=3=1
+# games_that_both_hit_turn_limit_and_had_a_visible_repeat_>=3 (lower bound via pairing mins) ~ 0
+# Visible hash covers occupancy, tile kind, owner, the public remaining deck, spawn-token count (including surplus), side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).
+# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.
+
+# observed_opening_rings  tiles=660  n1=216 n2=349 n3=95
+# observed_opening_colors  green=347 blue=360 orange=339 lavender-pink=53 teal=89 maroon=11
+# add_rings  tiles=504  n1=136 n2=283 n3=85
+# move_rings  tiles=710  n1=104 n2=498 n3=108
+# board_sample  positions=1244 avg_tiles=5.36 avg_rings=2.027 avg_weight=2.027
+# braid_edges  occupied_with_braid=1531 satisfied=1196 rate=0.7812
+
+# deck fairness
+# games=30
+# opening_strength_equal=24/30
+# strength = weight_sum + dots_sum + n_colors on the opening bench (and on tiles that entered play).
+# pearson(opening_combined_diff, outcome +1/0/-1)=0.048
+# pearson(opening_weight_diff, outcome)=0.023
+# pearson(opening_dots_diff, outcome)=-0.012
+# pearson(opening_color_diff, outcome)=0.268
+# pearson(p1_opening_weight, outcome)=0.262  (shared-deal / first-player view)
+# pearson(p1_opening_weight, turns)=0.066
+# pearson(played_combined_diff, outcome)=0.706  (board+bench at end; play-influenced)
+# higher_opening_strength_won=3/5 (excludes draws and equal opening strength)
+# higher_played_strength_won=24/29 (excludes draws and equal end strength)
+# opening_deal  pairing  game  seed  p1  p2  p1_bench  p2_bench  outcome  turns
+#   mcts vs mcts [crescent vs crescent]  g1  seed=100001  p1=n11 w30 d26 c5  p2=n11 w30 d26 c5  [pe+be2-3^m,b+oz2-3om,b+g2-1^m,mz+g2-2om,o+b2-3^m,od+od2-2om,bd+bd2-3^m,bz1-3^m,oz1-2^m,od+od2-1om,b1-3om]  [pe+be2-3^m,b+oz2-3om,b+g2-1^m,mz+g2-2om,o+b2-3^m,od+od2-2om,bd+bd2-3^m,bz1-3^m,oz1-2^m,od+od2-1om,b1-3om]  P1  t25
+#   mcts vs mcts [crescent vs crescent]  g2  seed=100002  p1=n11 w33 d25 c4  p2=n11 w33 d25 c4  [o+b2-2om,te+te+te3-3^m,ge+ge+ge3-2om,g+bz2-2^m,oz+g2-1^m,b+t2-2om,od+od2-3^m,b1-3^m,od+od2-3om,o1-3^m,t+b2-1om]  [o+b2-2om,te+te+te3-3^m,ge+ge+ge3-2om,g+bz2-2^m,oz+g2-1^m,b+t2-2om,od+od2-3^m,b1-3^m,od+od2-3om,o1-3^m,t+b2-1om]  P2  t50
+#   mcts vs mcts [crescent vs crescent]  g3  seed=100003  p1=n11 w30 d24 c4  p2=n11 w30 d24 c4  [b1-3^m,o+g2-1om,b1-3^m,g+o2-3^m,oz+t2-1^m,gz+ge+ge3-2om,be+be+be3-2om,od+od2-2om,o1-3^m,gz1-2om,gz1-2^m]  [b1-3^m,o+g2-1om,b1-3^m,g+o2-3^m,oz+t2-1^m,gz+ge+ge3-2om,be+be+be3-2om,od+od2-2om,o1-3^m,gz1-2om,gz1-2^m]  P1  t23
+#   mcts vs mcts [crescent vs crescent]  g4  seed=100004  p1=n11 w30 d25 c5  p2=n11 w30 d25 c5  [b+g2-3^m,b+o2-2^m,m1-1^m,oe+oe+oe3-3om,be+be+be3-3^m,bz+oz2-2om,p1-1om,g+o2-1^m,bz1-3^m,bz1-3^m,bz+o2-3^]  [b+g2-3^m,b+o2-2^m,m1-1^m,oe+oe+oe3-3om,be+be+be3-3^m,bz+oz2-2om,p1-1om,g+o2-1^m,bz1-3^m,bz1-3^m,bz+o2-3^]  P1  t33
+#   mcts vs mcts [crescent vs crescent]  g5  seed=100005  p1=n11 w30 d27 c4  p2=n11 w30 d27 c4  [o1-3^m,bd+bd2-3^m,bz+o2-3om,td+od2-2om,bd+gd2-3^m,ge+ge+ge3-2^m,oe+oe+oe3-1om,gz1-3om,b1-3om,oz1-1^m,oz1-3^m]  [o1-3^m,bd+bd2-3^m,bz+o2-3om,td+od2-2om,bd+gd2-3^m,ge+ge+ge3-2^m,oe+oe+oe3-1om,gz1-3om,b1-3om,oz1-1^m,oz1-3^m]  P2  t38
+#   mcts vs mcts [crescent vs crescent]  g6  seed=100006  p1=n11 w30 d26 c5  p2=n11 w30 d26 c5  [bd+bd2-3^m,t1-3^m,p+b2-1o,be+be+be3-2^m,b+o2-3om,bd+bd2-3^m,ge+ge+ge3-3om,o1-3om,o1-2om,bz1-2^m,bd+bd2-1^m]  [bd+bd2-3^m,t1-3^m,p+b2-1o,be+be+be3-2^m,b+o2-3om,bd+bd2-3^m,ge+ge+ge3-3om,o1-3om,o1-2om,bz1-2^m,bd+bd2-1^m]  P1  t31
+#   mcts vs mcts [crescent vs zs]  g1  seed=400001  p1=n11 w31 d25 c5  p2=n11 w30 d26 c5  [pd+pd2-2om,t+oz2-2om,g+t2-2^m,oe+ge+ge3-3^,pe+pe2-3om,bz+t2-2^m,o+g2-2^m,gd+gd2-2^m,bz1-3^m,gz1-1om,gd+gd2-3om]  [b+g2-2^zz,g1-3ozz,be+be+be3-3^zz,be+be+be3-3ozz,p1-3ozz,t+g2-1^zz,g+o2-2^zz,o+gz2-1^zz,t1-3^zz,o1-3ozz,oz1-2ozz]  P1  t23
+#   mcts vs mcts [crescent vs zs]  g2  seed=400002  p1=n11 w32 d21 c5  p2=n11 w30 d28 c4  [oz+oe+oe3-3^m,gz+o2-2om,td+td2-2^m,g+o2-3om,gd+pd2-3om,g+b2-1^m,o+b2-1^m,bz1-2om,bd+bd2-1^m,ge+ge2-1om,b1-2^m]  [oe+oe+oe3-2^zz,o1-3^zz,b+o2-3ozz,ge+ge+ge3-3ozz,g+b2-2^zz,bd+bd2-1ozz,t+oz2-2^zz,b1-3^zz,b1-3ozz,g1-3ozz,g1-3^zz]  P1  t17
+#   mcts vs mcts [crescent vs zs]  g3  seed=400003  p1=n11 w29 d25 c5  p2=n11 w31 d27 c5  [oe+oe+oe3-2om,t1-3om,oe+be2-3^m,b1-3^m,gd+gd2-2^m,bd+od2-1^m,g+o2-2om,gz1-2om,od+od2-3om,bz1-3^m,pz1-1^m]  [p+g2-1ozz,p+t2-2^zz,gd+bd2-3^zz,od+od2-3ozz,ge+ge+ge3-2^zz,be+be+be3-1ozz,o+g2-3^zz,g1-3^zz,b1-3ozz,gz1-3^zz,bz1-3ozz]  P1  t31
+#   mcts vs mcts [crescent vs zs]  g4  seed=400004  p1=n11 w32 d23 c5  p2=n11 w28 d27 c4  [m1-1om,ge+ge+ge3-2^m,p+o2-1^m,o+g2-3om,o+b2-1^m,o+g2-2om,be+be+be3-2^m,bd+bd2-3^m,oz1-2om,bz1-3^m,bd+bd2-3om]  [ge+ge2-3^zz,oe+oe2-2^zz,b+o2-2ozz,be+be2-2^zz,pz+b2-2ozz,bd+bd2-3ozz,o1-3^zz,gz1-3ozz,o1-2^zz,gz1-3ozz,o1-2^zz]  P1  t87
+#   mcts vs mcts [crescent vs zs]  g5  seed=400005  p1=n11 w32 d26 c5  p2=n11 w32 d21 c5  [bz+be+be3-3^m,od+od2-3^m,ge+ge+ge3-1om,p1-3om,g+b2-3^m,g+t2-1^m,o+g2-2om,bd+od2-2^m,gz+b2-2^m,gz1-3om,od+od2-3o]  [g+pz2-1^zz,be+gz+ge3-2^zz,g+oz2-3^zz,g+b2-2^zz,te+te2-3ozz,gz+ge+ge3-1ozz,t+g2-1ozz,o1-3^zz,gz1-1ozz,bd+bd2-3ozz,gz1-1^zz]  P1  t145
+#   mcts vs mcts [crescent vs zs]  g6  seed=400006  p1=n11 w28 d28 c5  p2=n11 w32 d20 c4  [b+o2-2^m,t1-3^m,oe+oe+oe3-1om,g+b2-3^m,p1-3om,g+b2-3om,o+b2-3^,o+g2-3o,b1-3om,b1-3^m,gd+gd2-1^m]  [p+g2-1ozz,o+b2-2^zz,o+b2-2^zz,bz+o2-2ozz,g+b2-2ozz,oe+bz+be3-1^zz,gd+gd2-3^zz,b1-2^zz,b1-3^zz,ge+ge2-1ozz,oe+oe2-1ozz]  P1  t23
+#   mcts vs mcts [emblem vs emblem]  g1  seed=300001  p1=n11 w31 d24 c4  p2=n11 w31 d24 c4  [bd+bd2-3om,p+bz2-2^zz,ge+ge+ge3-1ozz,ge+ge+ge3-2^zz,bd+bd2-3^m,bd+bd2-3om,o+g2-1^m,b1-2om,b1-3ozz,b1-1^m,b1-3om]  [bd+bd2-3om,p+bz2-2^zz,ge+ge+ge3-1ozz,ge+ge+ge3-2^zz,bd+bd2-3^m,bd+bd2-3om,o+g2-1^m,b1-2om,b1-3ozz,b1-1^m,b1-3om]  P1  t23
+#   mcts vs mcts [emblem vs emblem]  g2  seed=300002  p1=n11 w31 d25 c5  p2=n11 w31 d25 c5  [t1-3^zz,gd+gd2-2om,ge+te+te3-3om,pd+pd2-3^zz,oz+ge+ge3-1^m,o+gz2-2^zz,o+b2-3om,gz1-1om,gz1-2^zz,gz1-3^m,gd+gd2-2om]  [t1-3^zz,gd+gd2-2om,ge+te+te3-3om,pd+pd2-3^zz,oz+ge+ge3-1^m,o+gz2-2^zz,o+b2-3om,gz1-1om,gz1-2^zz,gz1-3^m,gd+gd2-2om]  P1  t57
+#   mcts vs mcts [emblem vs emblem]  g3  seed=300003  p1=n11 w30 d27 c5  p2=n11 w30 d27 c5  [gd+gd2-3^zz,bz+be+be3-3ozz,te+te2-3^zz,g+o2-1om,od+od2-3^m,pd+gd2-3om,be+be2-2^m,o1-3^m,g1-2ozz,bz1-1^m,gz1-3ozz]  [gd+gd2-3^zz,bz+be+be3-3ozz,te+te2-3^zz,g+o2-1om,od+od2-3^m,pd+gd2-3om,be+be2-2^m,o1-3^m,g1-2ozz,bz1-1^m,gz1-3ozz]  P2  t22
+#   mcts vs mcts [emblem vs emblem]  g4  seed=300004  p1=n11 w32 d28 c5  p2=n11 w32 d28 c5  [oz+g2-3ozz,te+te2-1om,od+od2-3ozz,oe+oe+oe3-2^zz,o+p2-2^m,b+o2-2^m,b+g2-3^zz,b1-3om,od+od2-3^zz,g1-3^zz,od+od2-3ozz]  [oz+g2-3ozz,te+te2-1om,od+od2-3ozz,oe+oe+oe3-2^zz,o+p2-2^m,b+o2-2^m,b+g2-3^zz,b1-3om,od+od2-3^zz,g1-3^zz,od+od2-3ozz]  D  t16
+#   mcts vs mcts [emblem vs emblem]  g5  seed=300005  p1=n11 w32 d22 c5  p2=n11 w32 d22 c5  [bd+bd2-2ozz,g+o2-1^m,p1-1^m,od+td2-3^m,te+te+te3-2^zz,oz+oe+oe3-2om,b+o2-2om,bd+bd2-2^m,o1-3om,oz1-2^m,gz+oz2-2^zz]  [bd+bd2-2ozz,g+o2-1^m,p1-1^m,od+td2-3^m,te+te+te3-2^zz,oz+oe+oe3-2om,b+o2-2om,bd+bd2-2^m,o1-3om,oz1-2^m,gz+oz2-2^zz]  P2  t44
+#   mcts vs mcts [emblem vs emblem]  g6  seed=300006  p1=n11 w29 d24 c4  p2=n11 w29 d24 c4  [o1-3ozz,oe+be+be3-3ozz,td+td2-2^m,gd+gd2-3^m,oe+oe+oe3-1ozz,g1-3^m,od+bd2-3^m,g1-2om,b1-1^m,g1-2om,b1-1^zz]  [o1-3ozz,oe+be+be3-3ozz,td+td2-2^m,gd+gd2-3^m,oe+oe+oe3-1ozz,g1-3^m,od+bd2-3^m,g1-2om,b1-1^m,g1-2om,b1-1^zz]  P1  t39
+#   mcts vs mcts [mixed vs mixed]  g1  seed=1  p1=n11 w20 d24 c4  p2=n11 w20 d24 c4  [bz+be+be3-1^,gd+gd2-3^,gd+gd2-3o,gz+oe+oe3-2^,td+td2-2o,o1-3o,be+gz+ge3-1^,gz1-2o,gz1-3^,gz1-2o,g1-2^]  [bz+be+be3-1^,gd+gd2-3^,gd+gd2-3o,gz+oe+oe3-2^,td+td2-2o,o1-3o,be+gz+ge3-1^,gz1-2o,gz1-3^,gz1-2o,g1-2^]  P2  t26
+#   mcts vs mcts [mixed vs mixed]  g2  seed=2  p1=n11 w21 d22 c5  p2=n11 w21 d22 c5  [td+td2-1^,ge+ge+ge3-2^,b+m2-2o,o+bz2-3o,gd+md2-3o,t+oz2-1^,gz+o2-2^,bd+bd2-2^,oz1-2o,b+gz2-1o,b1-3^]  [td+td2-1^,ge+ge+ge3-2^,b+m2-2o,o+bz2-3o,gd+md2-3o,t+oz2-1^,gz+o2-2^,bd+bd2-2^,oz1-2o,b+gz2-1o,b1-3^]  P2  t28
+#   mcts vs mcts [mixed vs mixed]  g3  seed=3  p1=n11 w25 d19 c3  p2=n11 w25 d19 c3  [gd+bd+oz3-2o,b+g2-1^,gz+ge+ge3-3o,g+b2-1^,gz+ge+ge3-2^,o+b2-2^,g+o2-1o,bz+o2-1o,gd+gd2-3^,gd+bd2-1o,be+be2-2^]  [gd+bd+oz3-2o,b+g2-1^,gz+ge+ge3-3o,g+b2-1^,gz+ge+ge3-2^,o+b2-2^,g+o2-1o,bz+o2-1o,gd+gd2-3^,gd+bd2-1o,be+be2-2^]  P1  t129
+#   mcts vs mcts [mixed vs mixed]  g4  seed=4  p1=n11 w20 d30 c5  p2=n11 w20 d30 c5  [g+b2-1^,bd+bd2-2o,gd+pd2-3^,g+oz2-3^,bz+oe+oe3-3^,t1-3o,be+be2-3o,o1-3o,gz1-3^,gd+gd2-3o,oz+b2-3^]  [g+b2-1^,bd+bd2-2o,gd+pd2-3^,g+oz2-3^,bz+oe+oe3-3^,t1-3o,be+be2-3o,o1-3o,gz1-3^,gd+gd2-3o,oz+b2-3^]  P2  t34
+#   mcts vs mcts [mixed vs mixed]  g5  seed=5  p1=n11 w19 d22 c5  p2=n11 w19 d22 c5  [te+te2-2^,oe+oe2-3o,p1-3^,g+b2-1^,bz+be+be3-1^,o+b2-3o,od+pd2-1o,bd+bd2-1^,bz1-2o,bz1-3o,g1-2^]  [te+te2-2^,oe+oe2-3o,p1-3^,g+b2-1^,bz+be+be3-1^,o+b2-3o,od+pd2-1o,bd+bd2-1^,bz1-2o,bz1-3o,g1-2^]  P2  t24
+#   mcts vs mcts [mixed vs mixed]  g6  seed=6  p1=n11 w18 d23 c4  p2=n11 w18 d23 c4  [o1-2^,bd+od2-3o,od+od2-2^,g+o2-2o,g1-3^,p+g2-1o,bd+gd2-3^,ge+ge2-1o,gz1-3o,g1-2^,be+be2-1o]  [o1-2^,bd+od2-3o,od+od2-2^,g+o2-2o,g1-3^,p+g2-1o,bd+gd2-3^,ge+ge2-1o,gz1-3o,g1-2^,be+be2-1o]  P1  t43
+#   mcts vs mcts [zs vs zs]  g1  seed=200001  p1=n11 w32 d24 c5  p2=n11 w32 d24 c5  [b+o2-3^zz,gz+oe+oe3-2^zz,o+g2-3ozz,t+o2-1ozz,bd+bd2-3ozz,p1-3^zz,ge+ge+ge3-1^zz,oz1-2^zz,bd+bd2-1^zz,oz1-3ozz,o+gz2-2ozz]  [b+o2-3^zz,gz+oe+oe3-2^zz,o+g2-3ozz,t+o2-1ozz,bd+bd2-3ozz,p1-3^zz,ge+ge+ge3-1^zz,oz1-2^zz,bd+bd2-1^zz,oz1-3ozz,o+gz2-2ozz]  P2  t20
+#   mcts vs mcts [zs vs zs]  g2  seed=200002  p1=n11 w31 d26 c5  p2=n11 w31 d26 c5  [b+o2-3^,t1-3ozz,g+o2-2ozz,pz+oe+oe3-3^zz,o+b2-2^zz,oe+oe+oe3-3^zz,b+g2-1ozz,o+gz2-3ozz,bz1-3ozz,bd+bd2-2^zz,oz1-1^zz]  [b+o2-3^,t1-3ozz,g+o2-2ozz,pz+oe+oe3-3^zz,o+b2-2^zz,oe+oe+oe3-3^zz,b+g2-1ozz,o+gz2-3ozz,bz1-3ozz,bd+bd2-2^zz,oz1-1^zz]  P1  t45
+#   mcts vs mcts [zs vs zs]  g3  seed=200003  p1=n11 w32 d26 c4  p2=n11 w32 d26 c4  [oe+oe+oe3-3^zz,g+o2-2^zz,td+td2-2^zz,od+od2-3ozz,ge+ge+ge3-1ozz,b+g2-1^zz,g+b2-2ozz,od+od2-3^zz,bz1-3ozz,b1-3^zz,b1-3ozz]  [oe+oe+oe3-3^zz,g+o2-2^zz,td+td2-2^zz,od+od2-3ozz,ge+ge+ge3-1ozz,b+g2-1^zz,g+b2-2ozz,od+od2-3^zz,bz1-3ozz,b1-3^zz,b1-3ozz]  P1  t37
+#   mcts vs mcts [zs vs zs]  g4  seed=200004  p1=n11 w29 d24 c5  p2=n11 w29 d24 c5  [m1-3ozz,bz+t2-2ozz,g1-3^zz,bd+bd2-3ozz,gd+gd2-1^zz,g+b2-3^zz,o1-2^zz,gd+gd2-1ozz,gz+bz2-1^zz,b1-3^zz,b+gz2-2ozz]  [m1-3ozz,bz+t2-2ozz,g1-3^zz,bd+bd2-3ozz,gd+gd2-1^zz,g+b2-3^zz,o1-2^zz,gd+gd2-1ozz,gz+bz2-1^zz,b1-3^zz,b+gz2-2ozz]  P2  t34
+#   mcts vs mcts [zs vs zs]  g5  seed=200005  p1=n11 w29 d24 c5  p2=n11 w29 d24 c5  [b1-2ozz,oz+t2-3^zz,o1-2ozz,oe+oe+oe3-2^zz,oe+pe+pe3-1^zz,o+g2-3^zz,p+g2-1ozz,gz1-3ozz,t1-2^zz,b1-3^zz,oz1-2ozz]  [b1-2ozz,oz+t2-3^zz,o1-2ozz,oe+oe+oe3-2^zz,oe+pe+pe3-1^zz,o+g2-3^zz,p+g2-1ozz,gz1-3ozz,t1-2^zz,b1-3^zz,oz1-2ozz]  P1  t39
+#   mcts vs mcts [zs vs zs]  g6  seed=200006  p1=n11 w31 d29 c5  p2=n11 w31 d29 c5  [te+oz+oe3-2^zz,b+o2-2ozz,bd+gd2-3^zz,ge+ge+ge3-2ozz,o1-3^zz,bd+bd2-3ozz,bd+bd2-2^zz,oz+gz2-3ozz,b1-3^zz,o1-3^zz,pz1-3ozz]  [te+oz+oe3-2^zz,b+o2-2ozz,bd+gd2-3^zz,ge+ge+ge3-2ozz,o1-3^zz,bd+bd2-3ozz,bd+bd2-2^zz,oz+gz2-3ozz,b1-3^zz,o1-3^zz,pz1-3ozz]  P2  t28
+
+# MCTS: the remaining deck is public, so bag shuffle is a no-op on default rules. Legacy `capture_draw_on_move` logs still shuffle hidden remainders. Minimax searches the live position.
+# Minimax: iterative deepening alpha-beta, Zobrist TT, TT/capture/killer/history ordering, quiescence on capture sequences.
+# game_record=(none — minimax vs mcts game did not complete)
+# games_log=apa-kan/game/benchmark_results/emblems/mcts_long.jsonl.gz
+# elapsed_sec=2665.6
