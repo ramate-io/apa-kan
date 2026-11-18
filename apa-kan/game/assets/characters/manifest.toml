@@ -1,0 +1,74 @@
+# Character illustration library.
+# Paths are Bevy-relative (from apa-kan/game/assets/).
+# Ids drop the numeric filename prefix; display names are title-cased from the
+# remaining slug. Not yet wired into tile or deck generation.
+
+[[characters]]
+id = "blue-diamond-lattice"
+path = "characters/01-blue-diamond-lattice.png"
+display_name = "Blue Diamond Lattice"
+
+[[characters]]
+id = "green-pink-diamond-heart"
+path = "characters/02-green-pink-diamond-heart.png"
+display_name = "Green Pink Diamond Heart"
+
+[[characters]]
+id = "crossed-needles"
+path = "characters/03-crossed-needles.png"
+display_name = "Crossed Needles"
+
+[[characters]]
+id = "spirograph-diamond"
+path = "characters/04-spirograph-diamond.png"
+display_name = "Spirograph Diamond"
+
+[[characters]]
+id = "bird-of-paradise-pot"
+path = "characters/05-bird-of-paradise-pot.png"
+display_name = "Bird Of Paradise Pot"
+
+[[characters]]
+id = "twin-star-comets"
+path = "characters/06-twin-star-comets.png"
+display_name = "Twin Star Comets"
+
+[[characters]]
+id = "star-medallion"
+path = "characters/07-star-medallion.png"
+display_name = "Star Medallion"
+
+[[characters]]
+id = "teal-four-point-star"
+path = "characters/08-teal-four-point-star.png"
+display_name = "Teal Four Point Star"
+
+[[characters]]
+id = "black-beaked-face"
+path = "characters/09-black-beaked-face.png"
+display_name = "Black Beaked Face"
+
+[[characters]]
+id = "pink-claw-marks"
+path = "characters/10-pink-claw-marks.png"
+display_name = "Pink Claw Marks"
+
+[[characters]]
+id = "three-rosettes"
+path = "characters/11-three-rosettes.png"
+display_name = "Three Rosettes"
+
+[[characters]]
+id = "petal-diamond-cluster"
+path = "characters/12-petal-diamond-cluster.png"
+display_name = "Petal Diamond Cluster"
+
+[[characters]]
+id = "lavender-square-spirograph"
+path = "characters/13-lavender-square-spirograph.png"
+display_name = "Lavender Square Spirograph"
+
+[[characters]]
+id = "green-hatched-bowl"
+path = "characters/14-green-hatched-bowl.png"
+display_name = "Green Hatched Bowl"
