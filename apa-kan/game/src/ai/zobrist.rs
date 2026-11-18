@@ -10,7 +10,7 @@ const MAX_NODES: usize = 32;
 /// Captures-to-bench can grow past the 11-tile draft, so copy keys go higher.
 const MAX_BENCH_COPIES: usize = 32;
 const CAPTURE_MARKS: usize = 2;
-const EMBLEMS: usize = 3;
+const EMBLEMS: usize = crate::game::Emblem::COUNT;
 
 pub struct Zobrist {
 	/// node × owner × kind, heap so the 6-color kind space cannot overflow the stack.
@@ -309,6 +309,19 @@ mod tests {
 		moon.place_tile(spawn, b);
 		assert_ne!(hash(&none), hash(&moon));
 		assert_ne!(occupancy_hash(&none), occupancy_hash(&moon));
+		let mut wall = Game::empty(RuleSet::default());
+		let mut rose = Game::empty(RuleSet::default());
+		let c = wall
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_emblem(Emblem::Blocker);
+		let d = rose
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_emblem(Emblem::Rosette);
+		wall.place_tile(spawn, c);
+		rose.place_tile(spawn, d);
+		assert_ne!(hash(&wall), hash(&rose));
+		assert_ne!(occupancy_hash(&wall), occupancy_hash(&rose));
+		assert_ne!(hash(&wall), hash(&moon));
 	}
 
 	#[test]

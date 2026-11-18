@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
-	Action, ActionOutcome, BeadScoring, BraidFailMismatch, BudgetToken, CaptureMark, Emblem,
-	EmblemWeights, EndReason, Game, GameStatus, HopWeightCmp, InsufficientTilesLoss,
+	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
+	Emblem, EmblemWeights, EndReason, Game, GameStatus, HopWeightCmp, InsufficientTilesLoss,
 	LowValueResolution, PassThroughRingCmp, PathConstraint, Player, RingType, RuleSet,
 	SamePieceTwice, Tile, TileColor, ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
@@ -330,14 +330,29 @@ pub struct RulesLog {
 	/// older logs; replay uses independent, which matches those captures.
 	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
 	pub bead_scoring: String,
-	/// `none,crescent,zs` generation weights. Absent on older logs; replay
-	/// uses the live default (200,1,1) only for new deals, not historical
-	/// tiles (those already store `emblem` per tile).
+	/// `none,crescent,zs[,blocker,rosette]` generation weights. Absent on
+	/// older logs; replay uses the live default only for new deals, not
+	/// historical tiles (those already store `emblem` per tile).
 	#[serde(
 		default = "default_emblem_weights",
 		skip_serializing_if = "skip_default_emblem_weights"
 	)]
 	pub emblem_weights: String,
+	/// What Blocker stops as a MOVE intermediate. Absent on older logs;
+	/// replay uses `traversal`.
+	#[serde(
+		default = "default_blocker_blocks",
+		skip_serializing_if = "skip_default_blocker_blocks"
+	)]
+	pub blocker_blocks: String,
+}
+
+fn default_blocker_blocks() -> String {
+	BlockerBlocks::default().name().to_string()
+}
+
+fn skip_default_blocker_blocks(v: &String) -> bool {
+	*v == BlockerBlocks::default().name()
 }
 
 impl RulesLog {
@@ -382,6 +397,7 @@ impl RulesLog {
 			zag_match_non_zag: Some(true),
 			bead_scoring: r.bead_scoring.name().into(),
 			emblem_weights: r.emblem_weights.label(),
+			blocker_blocks: r.blocker_blocks.name().into(),
 		}
 	}
 
@@ -428,6 +444,7 @@ impl RulesLog {
 			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
 				.unwrap_or_else(|_| EmblemWeights::default()),
+			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
 		})
 	}
 }

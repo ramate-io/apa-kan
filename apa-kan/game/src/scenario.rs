@@ -366,7 +366,7 @@ struct FileTile {
 	/// `dot` or `triangle`. Default triangle (spawn-token captures).
 	#[serde(default)]
 	capture: Option<String>,
-	/// `none`, `crescent`, or `zs`. Default none (empty emblem slot).
+	/// `none`, `crescent`, `zs`, `blocker`, or `rosette`. Default none.
 	#[serde(default)]
 	emblem: Option<String>,
 }
@@ -1064,6 +1064,31 @@ emblem = "zs"
 		assert_eq!(tiles[1].cost(), 2);
 		assert!(format_kind_list(tiles).contains("m"));
 		assert!(format_kind_list(tiles).contains("zz"));
+		let extra = r#"
+name = "emblems"
+shuffle = false
+[[p1.tiles]]
+color = "blue"
+weight = 1
+dots = 1
+count = 1
+emblem = "blocker"
+[[p1.tiles]]
+color = "green"
+weight = 1
+dots = 1
+count = 1
+emblem = "rosette"
+"#;
+		let s = parse_toml(extra).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		let tiles = game.collection(Player::One);
+		assert_eq!(tiles[0].emblem, crate::game::Emblem::Blocker);
+		assert_eq!(tiles[0].cost(), 2);
+		assert_eq!(tiles[1].emblem, crate::game::Emblem::Rosette);
+		assert_eq!(tiles[1].cost(), 0);
+		assert!(format_kind_list(tiles).contains("bk"));
+		assert!(format_kind_list(tiles).contains("ro"));
 	}
 
 	#[test]

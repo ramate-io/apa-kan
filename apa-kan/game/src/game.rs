@@ -99,9 +99,19 @@ pub const EMBLEM_NONE_WEIGHT_DEFAULT: u16 = 200;
 pub const EMBLEM_CRESCENT_WEIGHT_DEFAULT: u16 = 1;
 /// Generation weight for Two Zag Zs. Default 1.
 pub const EMBLEM_ZS_WEIGHT_DEFAULT: u16 = 1;
-/// Extra deck cost paid by a non-empty emblem. Overwhelm still uses
-/// [`Tile::weight`] (`n_rings`); see [`Tile::cost`].
+/// Generation weight for Blocker. Default 1 (assumption: user did not give
+/// a separate weight).
+pub const EMBLEM_BLOCKER_WEIGHT_DEFAULT: u16 = 1;
+/// Generation weight for Rosette. Default 1 (same assumption).
+pub const EMBLEM_ROSETTE_WEIGHT_DEFAULT: u16 = 1;
+/// Extra deck cost paid by a non-empty emblem except Rosette. Overwhelm still
+/// uses [`Tile::weight`] (`n_rings`); see [`Tile::cost`].
 pub const EMBLEM_COST: u8 = 1;
+/// Rosette's deck-cost delta: the opposite of [`EMBLEM_COST`].
+pub const EMBLEM_ROSETTE_COST: i8 = -1;
+/// Floor for [`Tile::cost`]. `u8` saturating arithmetic already cannot go
+/// below 0; 1-ring Rosette tiles land on this floor.
+pub const TILE_COST_MIN: u8 = 0;
 /// Per live slot: empty + (6 colors × 4 types). Kind space is this cubed.
 pub const RING_TYPE_COUNT: usize = 4;
 pub const SLOT_KINDS: usize = 1 + 6 * RING_TYPE_COUNT;
@@ -460,10 +470,11 @@ impl CaptureDest {
 
 /// One optional glyph in the tile's emblem slot (top of the face).
 ///
-/// Generation weights default to None 200 / Crescent Moon 1 / Two Zag Zs 1.
-/// Each non-empty emblem adds [`EMBLEM_COST`] to [`Tile::cost`] (deck-building
-/// statistic). Overwhelm still compares against [`Tile::weight`] (`n_rings`);
-/// Crescent Moon changes that comparison when the piece has one adjacency.
+/// Generation weights default to None 200 / Crescent 1 / Zs 1 / Blocker 1 /
+/// Rosette 1. Non-empty emblems other than Rosette add [`EMBLEM_COST`] to
+/// [`Tile::cost`]. Rosette subtracts 1, floored at [`TILE_COST_MIN`].
+/// Overwhelm still compares against [`Tile::weight`] (`n_rings`); Crescent
+/// Moon changes that comparison when the piece has one adjacency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum Emblem {
@@ -475,9 +486,16 @@ pub enum Emblem {
 	/// Each incident edge that already has a zag mismatch scores +1 more on
 	/// this tile's zag channel.
 	TwoZagZs = 2,
+	/// Other tiles cannot traverse this tile as a MOVE intermediate
+	/// (counted pass-through and hop flood). See [`BlockerBlocks`].
+	Blocker = 3,
+	/// No rule effect except deck cost: −1, opposite of the other emblems.
+	Rosette = 4,
 }
 
 impl Emblem {
+	pub const COUNT: usize = 5;
+
 	pub fn is_none(self) -> bool {
 		matches!(self, Self::None)
 	}
@@ -490,12 +508,21 @@ impl Emblem {
 		matches!(self, Self::TwoZagZs)
 	}
 
-	/// Extra deck cost. Zero for [`Self::None`], [`EMBLEM_COST`] otherwise.
-	pub fn cost(self) -> u8 {
-		if self.is_none() {
-			0
-		} else {
-			EMBLEM_COST
+	pub fn is_blocker(self) -> bool {
+		matches!(self, Self::Blocker)
+	}
+
+	pub fn is_rosette(self) -> bool {
+		matches!(self, Self::Rosette)
+	}
+
+	/// Extra deck cost. Zero for [`Self::None`], [`EMBLEM_ROSETTE_COST`] for
+	/// Rosette, [`EMBLEM_COST`] otherwise.
+	pub fn cost(self) -> i8 {
+		match self {
+			Self::None => 0,
+			Self::Rosette => EMBLEM_ROSETTE_COST,
+			_ => EMBLEM_COST as i8,
 		}
 	}
 
@@ -504,6 +531,8 @@ impl Emblem {
 			Self::None => "none",
 			Self::CrescentMoon => "crescent",
 			Self::TwoZagZs => "zs",
+			Self::Blocker => "blocker",
+			Self::Rosette => "rosette",
 		}
 	}
 
@@ -512,6 +541,8 @@ impl Emblem {
 			Self::None => "",
 			Self::CrescentMoon => "m",
 			Self::TwoZagZs => "zz",
+			Self::Blocker => "bk",
+			Self::Rosette => "ro",
 		}
 	}
 
@@ -523,6 +554,8 @@ impl Emblem {
 		match bit {
 			1 => Self::CrescentMoon,
 			2 => Self::TwoZagZs,
+			3 => Self::Blocker,
+			4 => Self::Rosette,
 			_ => Self::None,
 		}
 	}
@@ -532,19 +565,26 @@ impl Emblem {
 			"none" | "off" | "empty" | "0" => Ok(Self::None),
 			"crescent" | "crescent-moon" | "moon" | "m" => Ok(Self::CrescentMoon),
 			"zs" | "zz" | "two-zag-zs" | "two-zs" | "zags" | "zag-zs" => Ok(Self::TwoZagZs),
-			other => Err(format!("unknown emblem '{other}' (expected none|crescent|zs)")),
+			"blocker" | "block" | "diamond" | "bk" => Ok(Self::Blocker),
+			"rosette" | "rose" | "flower" | "ro" => Ok(Self::Rosette),
+			other => {
+				Err(format!("unknown emblem '{other}' (expected none|crescent|zs|blocker|rosette)"))
+			}
 		}
 	}
 }
 
-/// Independent generation weights for the emblem slot. Zero on Crescent and
-/// Two Zag Zs skips the RNG so `--emblems off` matches the pre-emblem deal
-/// for the same seed.
+/// Independent generation weights for the emblem slot. Ability weights of 0
+/// skip the RNG so `--emblems off` matches the pre-emblem deal for the same
+/// seed. Three-part `none,crescent,zs` strings (older logs / CLI) pad
+/// Blocker and Rosette as 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EmblemWeights {
 	pub none: u16,
 	pub crescent: u16,
 	pub zs: u16,
+	pub blocker: u16,
+	pub rosette: u16,
 }
 
 impl Default for EmblemWeights {
@@ -553,29 +593,50 @@ impl Default for EmblemWeights {
 			none: EMBLEM_NONE_WEIGHT_DEFAULT,
 			crescent: EMBLEM_CRESCENT_WEIGHT_DEFAULT,
 			zs: EMBLEM_ZS_WEIGHT_DEFAULT,
+			blocker: EMBLEM_BLOCKER_WEIGHT_DEFAULT,
+			rosette: EMBLEM_ROSETTE_WEIGHT_DEFAULT,
 		}
 	}
 }
 
 impl EmblemWeights {
 	pub fn off() -> Self {
-		Self { none: 1, crescent: 0, zs: 0 }
+		Self { none: 1, crescent: 0, zs: 0, blocker: 0, rosette: 0 }
+	}
+
+	pub fn abilities_on(self) -> bool {
+		self.crescent > 0 || self.zs > 0 || self.blocker > 0 || self.rosette > 0
 	}
 
 	pub fn total(self) -> u32 {
-		u32::from(self.none) + u32::from(self.crescent) + u32::from(self.zs)
+		u32::from(self.none)
+			+ u32::from(self.crescent)
+			+ u32::from(self.zs)
+			+ u32::from(self.blocker)
+			+ u32::from(self.rosette)
 	}
 
-	/// `none,crescent,zs` (e.g. `200,1,1`).
+	/// `none,crescent,zs[,blocker,rosette]` (e.g. `200,1,1,1,1`).
 	pub fn parse(s: &str) -> Result<Self, String> {
 		let mut parts = s.split(',');
 		let none = parse_weight_part(parts.next(), "none")?;
 		let crescent = parse_weight_part(parts.next(), "crescent")?;
 		let zs = parse_weight_part(parts.next(), "zs")?;
-		if parts.next().is_some() {
-			return Err("invalid --emblem-weights (expected none,crescent,zs)".into());
-		}
-		let w = Self { none, crescent, zs };
+		let (blocker, rosette) = match parts.next() {
+			None => (0, 0),
+			Some(raw) => {
+				let blocker = parse_weight_part(Some(raw), "blocker")?;
+				let rosette = parse_weight_part(parts.next(), "rosette")?;
+				if parts.next().is_some() {
+					return Err(
+						"invalid --emblem-weights (expected none,crescent,zs[,blocker,rosette])"
+							.into(),
+					);
+				}
+				(blocker, rosette)
+			}
+		};
+		let w = Self { none, crescent, zs, blocker, rosette };
 		if w.total() == 0 {
 			return Err("invalid --emblem-weights (at least one weight must be > 0)".into());
 		}
@@ -583,7 +644,7 @@ impl EmblemWeights {
 	}
 
 	pub fn label(self) -> String {
-		format!("{},{},{}", self.none, self.crescent, self.zs)
+		format!("{},{},{},{},{}", self.none, self.crescent, self.zs, self.blocker, self.rosette)
 	}
 }
 
@@ -597,7 +658,7 @@ fn parse_weight_part(part: Option<&str>, name: &str) -> Result<u16, String> {
 /// Draw one emblem from [`EmblemWeights`]. Ability weights of 0 skip the
 /// RNG so `--emblems off` matches the pre-emblem deal for the same seed.
 pub fn sample_emblem(rng: &mut impl Rng, weights: EmblemWeights) -> Emblem {
-	if weights.crescent == 0 && weights.zs == 0 {
+	if !weights.abilities_on() {
 		return Emblem::None;
 	}
 	let total = weights.total().max(1);
@@ -609,7 +670,15 @@ pub fn sample_emblem(rng: &mut impl Rng, weights: EmblemWeights) -> Emblem {
 	if roll < u32::from(weights.crescent) {
 		return Emblem::CrescentMoon;
 	}
-	Emblem::TwoZagZs
+	roll -= u32::from(weights.crescent);
+	if roll < u32::from(weights.zs) {
+		return Emblem::TwoZagZs;
+	}
+	roll -= u32::from(weights.zs);
+	if roll < u32::from(weights.blocker) {
+		return Emblem::Blocker;
+	}
+	Emblem::Rosette
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -631,8 +700,8 @@ pub struct Tile {
 	/// Dot → captured tiles join the mover's bench. Triangle → spawn tokens.
 	pub capture: CaptureMark,
 	/// Optional emblem in the single top-of-tile slot. [`Emblem::None`] is
-	/// the empty slot; a non-empty emblem adds [`EMBLEM_COST`] to
-	/// [`Self::cost`].
+	/// the empty slot. [`Self::cost`] is `n_rings` plus [`Emblem::cost`],
+	/// floored at [`TILE_COST_MIN`].
 	pub emblem: Emblem,
 }
 
@@ -719,10 +788,12 @@ impl Tile {
 		self
 	}
 
-	/// Deck-building cost: ring-slot count plus the emblem surcharge.
-	/// Overwhelm still uses [`Self::weight`] (`n_rings`).
+	/// Deck-building cost: ring-slot count plus the emblem surcharge (Rosette
+	/// is −1). Floored at [`TILE_COST_MIN`] (0). Overwhelm still uses
+	/// [`Self::weight`] (`n_rings`).
 	pub fn cost(self) -> u8 {
-		self.n_rings.saturating_add(self.emblem.cost())
+		let v = i16::from(self.n_rings) + i16::from(self.emblem.cost());
+		v.max(i16::from(TILE_COST_MIN)) as u8
 	}
 
 	pub fn ring_colors(&self) -> &[TileColor] {
@@ -1061,7 +1132,8 @@ impl Tile {
 	/// + zag_rings * w.zag_ring + braid_rings * w.braid_ring + bead_rings *
 	/// w.bead_ring + emblem_cost * w.emblem`. Used by the low-value end
 	/// condition. PRIMARY counts emblems as 0 so the first pass is still
-	/// dots+rings; TIEBREAK counts the +1 deck cost.
+	/// dots+rings; TIEBREAK counts the emblem deck-cost delta (+1, or −1
+	/// for Rosette).
 	pub fn piece_value(self, weights: PieceValueWeights) -> i32 {
 		weights.dots * i32::from(self.dots)
 			+ weights.normal_ring * i32::from(self.normal_ring_count())
@@ -1113,7 +1185,8 @@ impl PieceValueWeights {
 	pub const PRIMARY: Self =
 		Self { dots: 1, normal_ring: 1, zag_ring: 1, braid_ring: 1, bead_ring: 1, emblem: 0 };
 	/// Step 2 on a primary tie: zag, braid, and bead rings are worth 2, and
-	/// a non-empty emblem counts its +1 deck cost. Lower wins.
+	/// an emblem counts its deck-cost delta (+1, or −1 for Rosette). Lower
+	/// wins.
 	pub const TIEBREAK: Self =
 		Self { dots: 1, normal_ring: 1, zag_ring: 2, braid_ring: 2, bead_ring: 2, emblem: 1 };
 }
@@ -1420,6 +1493,56 @@ impl PassThroughRingCmp {
 	}
 }
 
+/// What a Blocker emblem stops. The only implemented "count through" in this
+/// ruleset is MOVE traversal: counted pass-through and hop flooding both
+/// treat an occupied tile as an intermediate. Overwhelm, control, and petal
+/// majority never walk a third tile, so they are unchanged.
+///
+/// CLI `--blocker-blocks`. Default [`Self::Traversal`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum BlockerBlocks {
+	/// Counted pass-through **and** hop flood cannot traverse a Blocker.
+	#[default]
+	Traversal,
+	/// Only counted pass-through. Hops (when `--graph-hops on`) still flood.
+	PassThrough,
+	/// Only hop flooding. Counted pass-through still pays a step through.
+	Hop,
+	/// Glyph and cost only; other tiles may still traverse the Blocker.
+	Off,
+}
+
+impl BlockerBlocks {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().replace('_', "-").as_str() {
+			"traversal" | "pass-hop" | "both" | "on" | "default" => Ok(Self::Traversal),
+			"pass" | "pass-through" | "passthrough" => Ok(Self::PassThrough),
+			"hop" | "hops" => Ok(Self::Hop),
+			"off" | "none" | "0" => Ok(Self::Off),
+			other => {
+				Err(format!("unknown --blocker-blocks '{other}' (expected traversal|pass|hop|off)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Traversal => "traversal",
+			Self::PassThrough => "pass",
+			Self::Hop => "hop",
+			Self::Off => "off",
+		}
+	}
+
+	pub fn stops_pass_through(self) -> bool {
+		matches!(self, Self::Traversal | Self::PassThrough)
+	}
+
+	pub fn stops_hop(self) -> bool {
+		matches!(self, Self::Traversal | Self::Hop)
+	}
+}
+
 /// How zag mismatches are counted on an occupied edge.
 ///
 /// A hitting zag on either tile is an **edge** event; both tiles take the
@@ -1711,6 +1834,9 @@ pub struct RuleSet {
 	/// Two Zag Zs 1. CLI `--emblem-weights`. Ability weights of 0 skip the
 	/// RNG (`--emblems off`).
 	pub emblem_weights: EmblemWeights,
+	/// What a Blocker tile stops as a MOVE intermediate. Default
+	/// [`BlockerBlocks::Traversal`]. CLI `--blocker-blocks`.
+	pub blocker_blocks: BlockerBlocks,
 	/// Legacy: on a MOVE, each removed opponent tile draws one hidden bag tile
 	/// onto the bench. Default **false** (the whole deck is public; captures
 	/// earn tokens only). Kept so historical JSONL logs replay.
@@ -1811,6 +1937,7 @@ impl Default for RuleSet {
 			bead_numer: BEAD_NUMER_DEFAULT,
 			dot_percent: DOT_PERCENT_DEFAULT,
 			emblem_weights: EmblemWeights::default(),
+			blocker_blocks: BlockerBlocks::default(),
 			capture_draw_on_move: false,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
@@ -3044,6 +3171,9 @@ impl Game {
 						let Some(occupant) = occupancy[next as usize] else {
 							continue;
 						};
+						if self.blocks_pass_through(occupant) {
+							continue;
+						}
 						if !self.pass_through_ok(occupant, tile) {
 							continue;
 						}
@@ -3089,7 +3219,18 @@ impl Game {
 			&& self.rules.pass_through_ring_cmp.allows(occupant.n_rings, mover.n_rings)
 	}
 
+	fn blocks_pass_through(&self, occupant: Tile) -> bool {
+		occupant.emblem.is_blocker() && self.rules.blocker_blocks.stops_pass_through()
+	}
+
+	fn blocks_hop(&self, occupant: Tile) -> bool {
+		occupant.emblem.is_blocker() && self.rules.blocker_blocks.stops_hop()
+	}
+
 	fn hop_occupant_ok(&self, occupant: Tile, mover: Tile) -> bool {
+		if self.blocks_hop(occupant) {
+			return false;
+		}
 		if self.rules.color_restricted_hops {
 			occupant.shares_normal(mover)
 				&& self.rules.hop_weight_cmp.allows(occupant.weight, mover.weight)
@@ -8774,18 +8915,132 @@ mod tests {
 		let n = 20_000u32;
 		let mut crescent = 0u32;
 		let mut zs = 0u32;
+		let mut blocker = 0u32;
+		let mut rosette = 0u32;
 		for _ in 0..n {
 			let t =
 				sample_tile(Player::One, 3, 0, 0, 0, DOT_PERCENT_DEFAULT, &mut next_id, &mut rng);
 			match t.emblem {
 				Emblem::CrescentMoon => crescent += 1,
 				Emblem::TwoZagZs => zs += 1,
+				Emblem::Blocker => blocker += 1,
+				Emblem::Rosette => rosette += 1,
 				Emblem::None => {}
 			}
 		}
 		let c_rate = f64::from(crescent) / f64::from(n);
 		let z_rate = f64::from(zs) / f64::from(n);
-		assert!((0.002..0.009).contains(&c_rate), "crescent rate={c_rate:.4} (expected ~1/202)");
-		assert!((0.002..0.009).contains(&z_rate), "zs rate={z_rate:.4} (expected ~1/202)");
+		let b_rate = f64::from(blocker) / f64::from(n);
+		let r_rate = f64::from(rosette) / f64::from(n);
+		assert!((0.002..0.009).contains(&c_rate), "crescent rate={c_rate:.4} (expected ~1/204)");
+		assert!((0.002..0.009).contains(&z_rate), "zs rate={z_rate:.4} (expected ~1/204)");
+		assert!((0.002..0.009).contains(&b_rate), "blocker rate={b_rate:.4} (expected ~1/204)");
+		assert!((0.002..0.009).contains(&r_rate), "rosette rate={r_rate:.4} (expected ~1/204)");
+	}
+
+	#[test]
+	fn blocker_stops_counted_pass_through() {
+		let mut game = pass_through_game();
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 2);
+		let wall =
+			take(&mut game, Player::Two, TileColor::Green, 1, 1).with_emblem(Emblem::Blocker);
+		game.place_tile(mid, wall);
+		game.set_current(Player::One);
+		let dests = game.destinations(from);
+		assert!(
+			!dests.contains(&land),
+			"Blocker cannot be passed through even with shared normal, got {dests:?}"
+		);
+		assert!(!dests.contains(&mid), "cannot land on the Blocker");
+		game.clear_tile(mid);
+		put(&mut game, mid, Player::Two, TileColor::Green, 1, 1);
+		assert!(
+			game.destinations(from).contains(&land),
+			"the same occupant without Blocker is a legal pass-through"
+		);
+	}
+
+	#[test]
+	fn blocker_stops_hop_flood() {
+		let mut rules = hop_rules();
+		rules.color_restricted_hops = false;
+		let mut game = Game::empty(rules);
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, hop_over, land) = (cycle[0], cycle[1], cycle[2]);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
+		let wall = game
+			.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Blue], 2, 1)
+			.with_emblem(Emblem::Blocker);
+		game.place_tile(hop_over, wall);
+		game.set_current(Player::One);
+		let dests = game.destinations(from);
+		assert!(!dests.contains(&land), "cannot hop a Blocker, got {dests:?}");
+		game.clear_tile(hop_over);
+		let heavier = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Blue], 2, 1);
+		game.place_tile(hop_over, heavier);
+		assert!(
+			game.destinations(from).contains(&land),
+			"the same occupant without Blocker is a legal hop"
+		);
+	}
+
+	#[test]
+	fn blocker_does_not_change_adjacent_overwhelm() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let wall =
+			take(&mut game, Player::One, TileColor::Green, 1, 1).with_emblem(Emblem::Blocker);
+		game.place_tile(spawn, wall);
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
+		assert!(
+			game.is_overwhelmed(spawn),
+			"Blocker still takes a 1-ring hitch from an occupied neighbor"
+		);
+		assert!(game.is_overwhelmed(nbs[0]), "the neighbor still scores against the Blocker tile");
+	}
+
+	#[test]
+	fn blocker_blocks_off_restores_pass_through() {
+		let mut rules = RuleSet::default();
+		rules.blocker_blocks = BlockerBlocks::Off;
+		let mut game = Game::empty(rules);
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 2);
+		let wall =
+			take(&mut game, Player::Two, TileColor::Green, 1, 1).with_emblem(Emblem::Blocker);
+		game.place_tile(mid, wall);
+		game.set_current(Player::One);
+		assert!(
+			game.destinations(from).contains(&land),
+			"--blocker-blocks off: glyph only, pass-through still works"
+		);
+	}
+
+	#[test]
+	fn rosette_subtracts_one_from_deck_cost() {
+		let two = Tile::with_rings(1, Player::One, &[TileColor::Green, TileColor::Blue], 2, 1)
+			.with_emblem(Emblem::Rosette);
+		assert_eq!(two.n_rings, 2);
+		assert_eq!(two.weight, 2);
+		assert_eq!(two.emblem.cost(), -1);
+		assert_eq!(two.cost(), 1);
+		let blocker = two.with_emblem(Emblem::Blocker);
+		assert_eq!(blocker.cost(), 3);
+	}
+
+	#[test]
+	fn rosette_cost_floors_at_tile_cost_min() {
+		let one = Tile::mono(1, Player::One, TileColor::Blue, 1, 1).with_emblem(Emblem::Rosette);
+		assert_eq!(one.n_rings, 1);
+		assert_eq!(one.cost(), TILE_COST_MIN);
+		assert_eq!(TILE_COST_MIN, 0, "existing u8 cost cannot go below 0");
+		assert_eq!(one.weight, 1, "overwhelm weight is unchanged at the floor");
 	}
 }

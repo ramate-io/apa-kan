@@ -6,9 +6,9 @@ use crate::game::{Action, Game, KIND_DOTS};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchMove {
 	/// Low 16 bits: [`crate::game::Tile::kind_index`] (color-state × dots).
-	/// Bit 16: [`crate::game::CaptureMark::bit`]. Bits 17–18:
-	/// [`crate::game::Emblem::bit`]. `KIND_COUNT` is not multiplied (it
-	/// already fills a `u16`).
+	/// Bit 16: [`crate::game::CaptureMark::bit`]. Bits 17–19:
+	/// [`crate::game::Emblem::bit`] (0..=4). `KIND_COUNT` is not multiplied
+	/// (it already fills a `u16`).
 	Add {
 		kind: u32,
 		node: NodeId,
@@ -58,7 +58,7 @@ impl SearchMove {
 				let dots_n = KIND_DOTS as u32;
 				let base = kind & 0xFFFF;
 				let capture = ((kind >> 16) as u8) & 1;
-				let emblem = ((kind >> 17) as u8) & 3;
+				let emblem = ((kind >> 17) as u8) & 7;
 				let state = (base / dots_n + 1) as u16;
 				let dots = (base % dots_n) as u8;
 				(state, node, dots | (capture << 2) | (emblem << 3))
@@ -76,7 +76,7 @@ impl SearchMove {
 				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
 					&& (b & 3) < KIND_DOTS as u8
 					&& ((b >> 2) & 1) <= 1
-					&& (b >> 3) <= 2 =>
+					&& (b >> 3) <= 4 =>
 			{
 				let dots = b & 3;
 				let capture = (b >> 2) & 1;
@@ -311,6 +311,15 @@ mod tests {
 		let packed = moon_add.pack();
 		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(moon_add));
 		assert_ne!(dotted_add, moon_add);
+		let wall = dotted.with_emblem(crate::game::Emblem::Blocker);
+		let wall_add = SearchMove::Add { kind: search_kind(wall), node: 4 };
+		let packed = wall_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(wall_add));
+		let rose = dotted.with_emblem(crate::game::Emblem::Rosette);
+		let rose_add = SearchMove::Add { kind: search_kind(rose), node: 4 };
+		let packed = rose_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(rose_add));
+		assert_ne!(wall_add, rose_add);
 		let mv = SearchMove::Move { from: 2, to: 7 };
 		let (k, a, b) = mv.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));
