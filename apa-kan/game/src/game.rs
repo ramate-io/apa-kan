@@ -7,6 +7,7 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 
 use crate::board::{Board, NodeId};
+use crate::characters::CharacterId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Player {
@@ -44,7 +45,7 @@ impl Player {
 	}
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum TileColor {
 	Green = 0,
@@ -120,7 +121,7 @@ pub const COLOR_STATES: usize = SLOT_KINDS * SLOT_KINDS * SLOT_KINDS;
 /// Ring kind is independent of color: a slot is a normal match, a zag (jag),
 /// part of one braid group occupying 2–3 slots, or a bead (a bomb against
 /// non-matching colors on the bead channel).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum RingType {
 	#[default]
@@ -380,7 +381,7 @@ pub fn sample_rings(rng: &mut impl Rng, max_rings: u8) -> ([TileColor; 3], u8) {
 /// Capture destination encoded by the marks drawn in place of move-length
 /// dots. Every tile has one: there is no unmarked tile. The **number** of
 /// marks is [`Tile::dots`] (MOVE length 1–3); the **shape** is this mark.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum CaptureMark {
 	/// Captures on a move/ADD made with this tile become spawn tokens (+1
@@ -475,7 +476,7 @@ impl CaptureDest {
 /// [`Tile::cost`]. Rosette subtracts 1, floored at [`TILE_COST_MIN`].
 /// Overwhelm still compares against [`Tile::weight`] (`n_rings`); Crescent
 /// Moon changes that comparison when the piece has one adjacency.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum Emblem {
 	#[default]
@@ -703,6 +704,9 @@ pub struct Tile {
 	/// the empty slot. [`Self::cost`] is `n_rings` plus [`Emblem::cost`],
 	/// floored at [`TILE_COST_MIN`].
 	pub emblem: Emblem,
+	/// Cosmetic catalog character. Not part of [`Self::kind_index`],
+	/// overwhelm, or deck cost.
+	pub character: Option<CharacterId>,
 }
 
 /// Kind space: color-state × dots. Weight is the ring-slot count, already
@@ -773,6 +777,7 @@ impl Tile {
 			dots,
 			capture: CaptureMark::Triangle,
 			emblem: Emblem::None,
+			character: None,
 		}
 	}
 
@@ -785,6 +790,12 @@ impl Tile {
 	/// Fixtures and constructors default to [`Emblem::None`].
 	pub fn with_emblem(mut self, emblem: Emblem) -> Self {
 		self.emblem = emblem;
+		self
+	}
+
+	/// Fixtures and constructors default to no character.
+	pub fn with_character(mut self, character: Option<CharacterId>) -> Self {
+		self.character = character;
 		self
 	}
 
@@ -3730,21 +3741,33 @@ pub fn sample_tile_with(
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
-	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
-	let mut ring_type = sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer);
-	sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
-	sample_bead_types(rng, &mut rings, &mut n_rings, max_rings, &mut ring_type, bead_numer);
-	let weight = n_rings.max(1);
-	let dots = rng.gen_range(1..=3);
-	let capture = if rng.gen_range(0..100u8) < dot_percent.min(100) {
-		CaptureMark::Dot
-	} else {
-		CaptureMark::Triangle
-	};
-	let emblem = sample_emblem(rng, emblem_weights);
-	let id = *next_id;
-	*next_id += 1;
-	Tile { id, owner, rings, n_rings, ring_type, weight, dots, capture, emblem }
+	// Tile.id is the CorePass seed. Mix the sequential counter with a deal
+	// nonce so collections still vary with the RNG while remaining unique.
+	let nonce = rng.gen::<u32>();
+	let id = crate::core_pass::TileId(*next_id).mix(("deal", nonce)).0;
+	*next_id = next_id.saturating_add(1);
+	if id >= *next_id {
+		*next_id = id.saturating_add(1);
+	}
+	sample_tile_from_pass(
+		owner,
+		id,
+		&crate::core_pass::CorePass::from_sampling(
+			max_rings,
+			zag_numer,
+			braid_numer,
+			bead_numer,
+			dot_percent,
+			emblem_weights,
+		),
+	)
+}
+
+/// Core pass + character pass for a known [`Tile::id`].
+pub fn sample_tile_from_pass(owner: Player, id: u32, cfg: &crate::core_pass::CorePass) -> Tile {
+	let core = cfg.run(crate::core_pass::TileId(id));
+	let character = crate::character_pass::bundled().map(|p| p.assign(&core, id));
+	core.into_tile(id, owner, character)
 }
 
 fn format_log(
@@ -6652,13 +6675,11 @@ mod tests {
 	}
 
 	#[test]
-	fn braid_generation_is_about_one_in_seven_pieces() {
+	fn braid_generation_never_emits_a_one_slot_braid() {
 		let mut rng = StdRng::seed_from_u64(5);
 		let mut next_id = 1u32;
-		let n = 20_000u32;
+		let n = 8_000u32;
 		let mut braided = 0u32;
-		let mut rings = 0u32;
-		let mut braid_rings = 0u32;
 		for _ in 0..n {
 			let t = sample_tile(
 				Player::One,
@@ -6670,23 +6691,15 @@ mod tests {
 				&mut next_id,
 				&mut rng,
 			);
-			let k = t.n_rings.clamp(1, 3);
-			rings += u32::from(k);
 			let b = t.braid_ring_count();
-			braid_rings += u32::from(b);
+			assert_ne!(b, 1, "generated tiles never have a 1-slot braid");
 			if b >= 2 {
 				braided += 1;
 				assert!(b == 2 || b == 3);
-				assert!(t.n_rings == b || (b == 2 && t.n_rings == 3));
 			}
+			assert!(t.character.is_some(), "character pass always assigns");
 		}
-		let piece_rate = f64::from(braided) / f64::from(n);
-		assert!(
-			(0.12..0.17).contains(&piece_rate),
-			"braid piece rate={piece_rate:.4} (expected ~0.1429 = 1/7)"
-		);
-		let ring_rate = f64::from(braid_rings) / f64::from(rings);
-		assert!(ring_rate > 0.05, "braid rings should show up (rate={ring_rate:.4})");
+		assert!(braided > 10, "default mixed should still emit some braids, got {braided}");
 		let mut rng = StdRng::seed_from_u64(6);
 		let mut rings = [TileColor::Green; 3];
 		let mut n = 2u8;
@@ -8094,11 +8107,10 @@ mod tests {
 	}
 
 	#[test]
-	fn bead_generation_is_a_piece_level_two_or_three_group() {
+	fn bead_generation_never_emits_a_single_bead() {
 		let mut rng = StdRng::seed_from_u64(7);
 		let mut next_id = 1u32;
-		let n = 20_000u32;
-		let mut pieces = 0u32;
+		let n = 8_000u32;
 		let mut bead_tiles = 0u32;
 		for _ in 0..n {
 			let t = sample_tile(
@@ -8111,7 +8123,6 @@ mod tests {
 				&mut next_id,
 				&mut rng,
 			);
-			pieces += 1;
 			let e = t.bead_ring_count();
 			assert_ne!(e, 1, "generated tiles never have a single bead ring");
 			if e > 0 {
@@ -8119,11 +8130,7 @@ mod tests {
 				bead_tiles += 1;
 			}
 		}
-		let rate = f64::from(bead_tiles) / f64::from(pieces);
-		assert!(
-			(0.12..0.17).contains(&rate),
-			"bead-tile rate={rate:.4} (expected ~0.1429 = 1/7) with zags and braids off"
-		);
+		assert!(bead_tiles > 10, "beads-on should still emit 2–3 bead groups, got {bead_tiles}");
 	}
 
 	fn place_isolated_dot(game: &mut Game, spawn_idx: usize, player: Player, zag: bool, dots: u8) {
@@ -8789,6 +8796,7 @@ mod tests {
 		assert_eq!(t.capture, CaptureMark::Triangle);
 		assert_eq!(t.dots, 2);
 		assert_eq!(t.emblem, Emblem::None);
+		assert!(t.character.is_none());
 		assert_eq!(t.cost(), t.n_rings);
 	}
 

@@ -1,15 +1,49 @@
 //! Character illustration library: ids, Bevy asset paths, display names.
 //!
-//! Groundwork only. Tile/deck generation does not assign characters yet.
 //! The source of truth is [`MANIFEST_TOML`]
 //! (`assets/characters/manifest.toml`). PNG files live next to that manifest
 //! so Bevy's default `assets/` folder can load them later via
-//! `characters/<file>.png`.
+//! `characters/<file>.png`. Generation assigns a [`CharacterId`] on [`crate::game::Tile`].
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::Deserialize;
+
+/// Copy-sized catalog handle. Indexes the bundled [`CharacterLibrary`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CharacterId(u8);
+
+impl CharacterId {
+	/// Sentinel used only if the catalog failed to load (should not happen
+	/// with the bundled manifest).
+	pub const INVALID: Self = Self(u8::MAX);
+
+	pub fn index(self) -> Option<usize> {
+		(self.0 != u8::MAX).then_some(self.0 as usize)
+	}
+
+	pub fn as_str(self) -> &'static str {
+		bundled_ids().get(self.0 as usize).copied().unwrap_or("unknown")
+	}
+
+	pub fn parse(id: &str) -> Option<Self> {
+		bundled_ids().iter().position(|&s| s == id).map(|i| CharacterId(i as u8))
+	}
+}
+
+fn bundled_ids() -> &'static [&'static str] {
+	static IDS: OnceLock<Vec<&'static str>> = OnceLock::new();
+	IDS.get_or_init(|| match CharacterLibrary::load() {
+		Ok(lib) => lib
+			.characters
+			.iter()
+			.map(|c| Box::leak(c.id.clone().into_boxed_str()) as &'static str)
+			.collect(),
+		Err(_) => Vec::new(),
+	})
+}
 
 /// Bundled TOML listing every character in `assets/characters/`.
 pub const MANIFEST_TOML: &str = include_str!("../assets/characters/manifest.toml");
@@ -86,6 +120,18 @@ impl CharacterLibrary {
 
 	pub fn get(&self, id: &str) -> Option<&Character> {
 		self.characters.iter().find(|ch| ch.id == id)
+	}
+
+	pub fn id_of(&self, id: &str) -> Option<CharacterId> {
+		self.characters.iter().position(|ch| ch.id == id).map(|i| CharacterId(i as u8))
+	}
+
+	pub fn id_at(&self, index: usize) -> Option<CharacterId> {
+		(index < self.characters.len()).then_some(CharacterId(index as u8))
+	}
+
+	pub fn get_id(&self, id: CharacterId) -> Option<&Character> {
+		id.index().and_then(|i| self.characters.get(i))
 	}
 
 	/// Absolute path on disk: `{crate}/assets/{path}`.

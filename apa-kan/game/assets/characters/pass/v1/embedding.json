@@ -1,0 +1,62 @@
+{
+  "rows": [
+    {
+      "id": "blue-diamond-lattice",
+      "color": { "blue": 2.0 },
+      "type": { "normal": 0.5 }
+    },
+    {
+      "id": "green-pink-diamond-heart",
+      "color": { "green": 1.5, "lavender-pink": 1.5 }
+    },
+    {
+      "id": "crossed-needles",
+      "type": { "zag": 2.0 },
+      "emblem": { "zs": 0.5 }
+    },
+    {
+      "id": "bird-of-paradise-pot",
+      "color": { "orange": 2.0 },
+      "type": { "bead": 0.8 }
+    },
+    {
+      "id": "twin-star-comets",
+      "color": { "teal": 1.2, "blue": 1.0 },
+      "type": { "braid": 0.6 }
+    },
+    {
+      "id": "teal-four-point-star",
+      "color": { "teal": 2.0 }
+    },
+    {
+      "id": "black-beaked-face",
+      "color": { "maroon": 2.0 }
+    },
+    {
+      "id": "pink-claw-marks",
+      "color": { "lavender-pink": 2.0 },
+      "type": { "zag": 1.0 },
+      "emblem": { "zs": 0.8 }
+    },
+    {
+      "id": "three-rosettes",
+      "emblem": { "rosette": 2.0 },
+      "marks": { "n_rings": 1.0 }
+    },
+    {
+      "id": "petal-diamond-cluster",
+      "color": { "lavender-pink": 1.0, "green": 0.8 },
+      "type": { "normal": 0.5 }
+    },
+    {
+      "id": "lavender-square-spirograph",
+      "color": { "lavender-pink": 2.0 },
+      "type": { "braid": 0.5 }
+    },
+    {
+      "id": "green-hatched-bowl",
+      "color": { "green": 2.0 },
+      "emblem": { "crescent": 1.2 }
+    }
+  ]
+}

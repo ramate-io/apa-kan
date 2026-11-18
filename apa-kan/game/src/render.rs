@@ -1,10 +1,12 @@
 //! Headless PNG renderer for the geometric board, tiles, and both benches.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use image::{Rgba, RgbaImage};
 
 use crate::board::NodeId;
+use crate::characters::{CharacterId, CharacterLibrary};
 use crate::game::{BudgetToken, CaptureDest, DeckSlot, Game, Player, Tile};
 use crate::visual::{self, ArcBody, BraidLane, CaptureFlash, ViewLayout};
 
@@ -473,7 +475,11 @@ fn draw_tiles_preview(
 	for id in 0..board.node_count() as u8 {
 		if let Some(tile) = game.tile_at(id) {
 			let p = image_pt(layout, board.position(id));
-			let art = characters.iter().find(|(n, _)| *n == id).map(|(_, a)| *a);
+			let art = characters
+				.iter()
+				.find(|(n, _)| *n == id)
+				.map(|(_, a)| *a)
+				.or_else(|| character_art(tile.character));
 			draw_tile_preview(img, tup(p), f64::from(layout.tile_radius), tile, art);
 		}
 	}
@@ -594,7 +600,50 @@ fn draw_solid_token(img: &mut RgbaImage, c: (f64, f64), r: f64, player: Player) 
 }
 
 fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
-	draw_tile_preview(img, c, r, tile, None);
+	draw_tile_preview(img, c, r, tile, character_art(tile.character));
+}
+
+fn character_art(id: Option<CharacterId>) -> Option<&'static RgbaImage> {
+	let id = id?;
+	let idx = id.index()?;
+	let cache = character_art_cache();
+	cache.get(idx).and_then(|img| img.as_ref())
+}
+
+fn character_art_cache() -> &'static [Option<RgbaImage>] {
+	static CACHE: OnceLock<Vec<Option<RgbaImage>>> = OnceLock::new();
+	CACHE.get_or_init(|| {
+		let Ok(lib) = CharacterLibrary::load() else {
+			return Vec::new();
+		};
+		lib.all()
+			.iter()
+			.map(|ch| {
+				let path = lib.asset_path(ch);
+				std::fs::read(&path).ok().and_then(|bytes| {
+					image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok().map(
+						|img| {
+							let img = img.to_rgba8();
+							let max_dim = 768u32;
+							let dim = img.width().max(img.height());
+							if dim <= max_dim {
+								return img;
+							}
+							let scale = max_dim as f32 / dim as f32;
+							let w = (img.width() as f32 * scale).round().max(1.0) as u32;
+							let h = (img.height() as f32 * scale).round().max(1.0) as u32;
+							image::imageops::resize(
+								&img,
+								w,
+								h,
+								image::imageops::FilterType::Triangle,
+							)
+						},
+					)
+				})
+			})
+			.collect()
+	})
 }
 
 fn draw_tile_preview(
@@ -983,18 +1032,21 @@ fn glyph(c: char) -> [u8; 7] {
 		'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
 		'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
 		'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+		'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
 		'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
 		'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
 		'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
 		'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
 		'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
 		'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+		'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
 		'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
 		'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
 		'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
 		'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
 		'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
 		'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
+		'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
 		'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
 		'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
 		'0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
@@ -1196,6 +1248,78 @@ mod tests {
 
 		assert!(shot_dir.join("character_contact_sheet.png").is_file());
 		assert!(shot_dir.join("character_board_neighbors.png").is_file());
+	}
+
+	#[test]
+	fn write_generated_character_batch() {
+		use crate::core_pass::{CorePass, TileId};
+		use crate::game::{sample_tile_from_pass, Player};
+		use std::path::PathBuf;
+
+		let cfg = CorePass::base();
+		let pass = crate::character_pass::CharacterPass::v1().unwrap();
+		let mut tiles = Vec::new();
+		let mut labels = Vec::new();
+		for i in 0..15u32 {
+			let id = 1000 + i * 17;
+			let core = cfg.run(TileId(id));
+			let ch = pass.assign(&core, id);
+			let tile = sample_tile_from_pass(Player::One, id, &cfg);
+			assert_eq!(tile.character, Some(ch));
+			labels.push(ch.as_str().to_string());
+			tiles.push(tile);
+		}
+
+		let shot_dir =
+			std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots/generation");
+		std::fs::create_dir_all(&shot_dir).unwrap();
+		let art_dir = PathBuf::from("/opt/cursor/artifacts");
+		let _ = std::fs::create_dir_all(&art_dir);
+
+		let sheet = write_generated_contact_sheet(&tiles, &labels);
+		sheet.save(shot_dir.join("generated_character_contact_sheet.png")).unwrap();
+		if art_dir.is_dir() {
+			sheet.save(art_dir.join("generated_character_contact_sheet.png")).unwrap();
+			sheet.save(art_dir.join("generated_tile_contact_sheet.png")).unwrap();
+		}
+
+		let mut game = Game::empty(RuleSet::default());
+		let board = game.board().clone();
+		let center = board.center();
+		let mut placed = 0usize;
+		game.place_tile(center, tiles[0]);
+		placed += 1;
+		for id in 0..board.node_count() as NodeId {
+			if placed >= tiles.len() {
+				break;
+			}
+			if id == center || board.is_spawn(id) || game.tile_at(id).is_some() {
+				continue;
+			}
+			game.place_tile(id, tiles[placed]);
+			placed += 1;
+		}
+		write_png_view(
+			&game,
+			shot_dir.join("generated_character_board.png"),
+			"generated tiles with assigned characters (core + character pass)",
+			1280,
+			800,
+			None,
+		)
+		.unwrap();
+		if art_dir.is_dir() {
+			let _ = std::fs::copy(
+				shot_dir.join("generated_character_board.png"),
+				art_dir.join("generated_character_board.png"),
+			);
+			let _ = std::fs::copy(
+				shot_dir.join("generated_character_board.png"),
+				art_dir.join("generated_tile_board.png"),
+			);
+		}
+		assert!(shot_dir.join("generated_character_contact_sheet.png").is_file());
+		assert!(shot_dir.join("generated_character_board.png").is_file());
 	}
 
 	#[test]
@@ -2411,6 +2535,56 @@ mod tests {
 		let c = (f64::from(size) * 0.5, f64::from(size) * 0.5);
 		draw_tile_preview(&mut img, c, radius, tile, Some(art));
 		img.save(path.as_ref()).unwrap();
+	}
+
+	fn wrap_catalog_label(text: &str, max_chars: usize) -> Vec<String> {
+		let upper = text.to_ascii_uppercase();
+		if upper.chars().count() <= max_chars {
+			return vec![upper];
+		}
+		let bytes = upper.as_bytes();
+		let mut split = None;
+		for (i, &b) in bytes.iter().enumerate() {
+			if b == b'-' && i > 0 && i < max_chars {
+				split = Some(i);
+			}
+		}
+		if let Some(i) = split {
+			vec![upper[..i].to_string(), upper[i + 1..].to_string()]
+		} else {
+			vec![upper.chars().take(max_chars).collect()]
+		}
+	}
+
+	fn write_generated_contact_sheet(tiles: &[crate::game::Tile], labels: &[String]) -> RgbaImage {
+		let cols = 5u32;
+		let rows = 3u32;
+		let cell = 340u32;
+		let label_h = 48u32;
+		let pad = 16u32;
+		let tile_r = 132.0;
+		let w = pad + cols * (cell + pad);
+		let h = pad + rows * (cell + label_h + pad);
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img = image::RgbaImage::from_pixel(w, h, rgba(bg[0], bg[1], bg[2], 255));
+		let label = rgba(230, 230, 220, 255);
+		for (i, tile) in tiles.iter().enumerate() {
+			let r = (i as u32) / cols;
+			let c = (i as u32) % cols;
+			if r >= rows {
+				break;
+			}
+			let x = pad + c * (cell + pad);
+			let y = pad + r * (cell + label_h + pad);
+			let cx = f64::from(x) + f64::from(cell) * 0.5;
+			let cy = f64::from(y) + f64::from(cell) * 0.5;
+			draw_tile(&mut img, (cx, cy), tile_r, *tile);
+			let text = labels.get(i).map(String::as_str).unwrap_or("");
+			for (line_i, line) in wrap_catalog_label(text, 22).into_iter().enumerate() {
+				draw_text(&mut img, x + 8, y + cell + 4 + (line_i as u32) * 16, &line, label);
+			}
+		}
+		img
 	}
 
 	fn write_character_contact_sheet(specs: &[CharacterPreview], arts: &[RgbaImage]) -> RgbaImage {

@@ -1,0 +1,74 @@
+{
+  "maps": [
+    {
+      "rings": [["green", "braid"], ["blue", "braid"], ["teal", "normal"]],
+      "dots": 3,
+      "capture": "dot",
+      "emblem": "rosette",
+      "characters": ["teal-four-point-star", "twin-star-comets"]
+    },
+    {
+      "rings": [["green", "normal"]],
+      "dots": 2,
+      "capture": "dot",
+      "emblem": "crescent",
+      "characters": ["green-hatched-bowl"]
+    },
+    {
+      "rings": [["lavender-pink", "zag"]],
+      "dots": 1,
+      "capture": "triangle",
+      "emblem": "zs",
+      "characters": ["pink-claw-marks"]
+    },
+    {
+      "rings": [["teal", "braid"], ["blue", "braid"]],
+      "dots": 2,
+      "capture": "triangle",
+      "emblem": "none",
+      "characters": ["teal-four-point-star"]
+    },
+    {
+      "rings": [["maroon", "normal"], ["maroon", "normal"]],
+      "dots": 3,
+      "capture": "dot",
+      "emblem": "blocker",
+      "characters": ["black-beaked-face"]
+    },
+    {
+      "rings": [["orange", "bead"], ["green", "bead"]],
+      "dots": 1,
+      "capture": "triangle",
+      "emblem": "none",
+      "characters": ["bird-of-paradise-pot"]
+    },
+    {
+      "rings": [["blue", "zag"], ["orange", "zag"]],
+      "dots": 2,
+      "capture": "triangle",
+      "emblem": "zs",
+      "characters": ["crossed-needles"]
+    },
+    {
+      "rings": [["green", "normal"], ["blue", "normal"], ["orange", "normal"]],
+      "dots": 1,
+      "capture": "triangle",
+      "emblem": "rosette",
+      "characters": ["three-rosettes"]
+    },
+    {
+      "rings": [["blue", "normal"], ["blue", "normal"]],
+      "dots": 1,
+      "capture": "dot",
+      "emblem": "none",
+      "characters": ["blue-diamond-lattice"]
+    },
+    {
+      "rings": [["green", "normal"], ["lavender-pink", "normal"]],
+      "dots": 2,
+      "capture": "triangle",
+      "emblem": "none",
+      "characters": ["green-pink-diamond-heart"]
+    }
+  ]
+}
