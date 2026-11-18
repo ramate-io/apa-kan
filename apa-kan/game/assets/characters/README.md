@@ -26,5 +26,7 @@ placeholder descriptions from the source art.
 Bevy `AssetServer` paths (once wired) are `characters/<filename>.png`, relative
 to this crate's `assets/` folder.
 
-**Not used in play yet.** Generation, rules, and the painter do not assign
-characters. See [rfc-001-001-007-character-library](../../../../rfc/rfc-001-001-007-character-library/README.md).
+**Not used in play yet.** Generation and the live painter do not assign
+characters. A preview-only PNG path draws each medallion in the tile center
+(inside the rings); see `apa-kan/game/screenshots/characters/` and
+[rfc-001-001-007-character-library](../../../../rfc/rfc-001-001-007-character-library/README.md).

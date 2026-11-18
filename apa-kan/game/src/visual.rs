@@ -1166,6 +1166,41 @@ impl TileRingDraw {
 			},
 		}
 	}
+
+	/// Inscribed radius for a centered character medallion.
+	///
+	/// Preview-only: fits inside the innermost *drawn* ring (zag/bead/braid
+	/// bulge included) and stays inward of the emblem slot so a 1-ring tile
+	/// does not cover the top glyph. Capture marks sit on the outer ring, so
+	/// the inner-ring bound already clears them. Not used by generation.
+	pub fn character_fit_radius(self, tile: Tile, tile_radius: f32) -> f32 {
+		let strokes = tile.ring_strokes();
+		let mut inner_k = 0u8;
+		let mut inner_kind = tile.stroke_type(0);
+		for k in 0..strokes {
+			if tile.stroke_is_braid(k) {
+				continue;
+			}
+			inner_k = k;
+			inner_kind = tile.stroke_type(k);
+		}
+		let rr = self.ring_radius(tile_radius, inner_k);
+		let bulge = match inner_kind {
+			RingType::Zag => self.zag_amp + self.zag_stroke * 0.5,
+			RingType::Bead => self.bead_r,
+			RingType::Braid => self.braid_amp + self.braid_stroke * 0.5,
+			RingType::Normal => self.stroke * 0.5,
+		};
+		let pad = (1.2 * self.scale).max(1.1);
+		let mut fit = rr - bulge - pad;
+		if tile.emblem != Emblem::None {
+			let half = self.emblem_half_extent();
+			let e_pad = (0.65 * self.scale).max(0.5);
+			let emblem_inner = tile_radius - 2.0 * half - e_pad;
+			fit = fit.min(emblem_inner - pad);
+		}
+		fit.max(tile_radius * 0.16)
+	}
 }
 
 /// Screen-down in Bevy world coordinates (+Y up).
@@ -4720,6 +4755,38 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn character_fit_radius_stays_inside_the_innermost_ring() {
+		use crate::game::{Emblem, Player, RingType, Tile, TileColor};
+		let r = 22.0;
+		let draw = TileRingDraw::for_radius(r);
+		let three = Tile::with_typed_rings(
+			1,
+			Player::One,
+			&[
+				(TileColor::Green, RingType::Normal),
+				(TileColor::Blue, RingType::Normal),
+				(TileColor::Orange, RingType::Zag),
+			],
+			3,
+			2,
+		);
+		let fit = draw.character_fit_radius(three, r);
+		let inner = draw.ring_radius(r, 2);
+		assert!(fit > 2.0, "preview medallion needs some air, fit={fit}");
+		assert!(
+			fit < inner,
+			"character must sit inside the innermost ring, fit={fit} inner={inner}"
+		);
+		let moon = three.with_emblem(Emblem::CrescentMoon);
+		let moon_fit = draw.character_fit_radius(moon, r);
+		assert!(moon_fit <= fit + 1e-4, "emblem shrinks or keeps the inner-ring bound");
+		let one = Tile::mono(2, Player::Two, TileColor::Teal, 1, 1).with_emblem(Emblem::Blocker);
+		let one_fit = draw.character_fit_radius(one, r);
+		let outer = draw.ring_radius(r, 0);
+		assert!(one_fit < outer, "1-ring emblem tile still keeps art inside the ring");
 	}
 
 	#[test]

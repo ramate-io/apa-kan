@@ -33,8 +33,11 @@ looks up entries by id. Tests assert every listed file exists and decodes as a
 PNG, and that every PNG in the folder is listed.
 
 **Out of scope for this RFC:** assigning a character on `Tile`, rolling one
-during `sample_tile`, painting it on the face, CLI flags, collectors, search
-encoding, JSONL, scenario TOML, or any rule change.
+during `sample_tile`, CLI flags, collectors, search encoding, JSONL, scenario
+TOML, or any rule change. The PNG renderer has a **preview-only** path that
+draws a character medallion in the tile center (inside the innermost ring) so
+the art can be judged against rings, emblems, and capture marks. Generation
+and the live Bevy painter do not use it.
 
 ### Catalog
 
@@ -64,9 +67,11 @@ circular medallion on a black field.
 - Manifest: `apa-kan/game/assets/characters/manifest.toml`
 - Registry: `apa-kan/game/src/characters.rs` (`CharacterLibrary::load` / `get`)
 - Folder note: `apa-kan/game/assets/characters/README.md`
+- Preview painter: `draw_tile_preview` / `write_png_view_preview` in `render.rs`,
+  sized by `TileRingDraw::character_fit_radius`. Screenshots:
+  `apa-kan/game/screenshots/characters/`. Not wired into `sample_tile` or Bevy.
 
-Nothing in `game.rs`, `deck.rs`, `visual.rs`, `ui.rs`, or `render.rs` reads
-this catalog yet.
+`game.rs` and `deck.rs` still do not assign characters.
 
 ## Alternatives considered
 
@@ -84,8 +89,11 @@ this catalog yet.
 
 1. **How does a character attach to a tile?** One optional slot (like emblem),
    always-on, or a rarer roll? Not decided; do not generate yet.
-2. **Where does it sit on the face?** Center under the rings, behind the fill,
-   or a new slot? Painter work is next, not this PR.
+2. **Where does it sit on the face?** The preview places a circular clip of the
+   PNG in the **center**, inside the innermost ring, under the ring strokes.
+   Cream medallions on P1's light fill (and the black-beaked face on P2's dark
+   fill) can go low-contrast. Final slot, scale, and whether to drop the
+   medallion's own background are still open.
 3. **Display names.** Filename-derived placeholders. Final names, factions, or
    rules text are TBD.
 4. **Runtime resolution.** Keep the 1–3k source files, or pack smaller
