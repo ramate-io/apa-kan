@@ -138,7 +138,7 @@ Desktop PNG close-ups: [`emblem_crescent_dot.png`](../../apa-kan/game/screenshot
 5. **Is +1 cost a fair price?** Collector H2H in [`emblems`](../../apa-kan/game/benchmark_results/emblems/) is the evidence. Against mixed, stuffed collectors are 5-0-7 calibrated (`h2h.txt`) and mixed vs crescent is 3-0-1 at 4× — not clearly underpriced. Stuffed collectors beat braid/bead at calibrated budget via opening weight (`higher_opening_strength_won=35/47`). Interpretations of questions 1–4 stay as implemented.
 6. **Blocker "count through".** Implemented as MOVE traversal (pass-through + hop), behind `--blocker-blocks`. Plausible alternatives: (a) pass-through only, (b) hops only, (c) collapse inner↔center double-petal scoring when Blocker is an endpoint, (d) invent generating-circle line-of-sight and stop it, (e) block adjacent scoring entirely. (c)–(e) are **not** implemented.
 7. **Blocker and Rosette generation weights.** Default 1 each (same as Crescent/Zs) is an assumption; the user has not given weights.
-8. **Rosette −1 vs Blocker +1 pricing.** A 1-ring Rosette floors at cost 0. Whether −1 is underpriced (more tiles in the 7+4) or Blocker +1 is overpriced (traversal denial vs Crescent's save) is an H2H question; see later logs in the emblems directory.
+8. **Rosette −1 vs Blocker +1 pricing.** A 1-ring Rosette floors at cost 0. Calibrated stuffed-rosette vs mixed is **1-0-3**; stuffed-blocker vs mixed is **2-0-2**. Rosette −1 is not clearly underpriced vs mixed; Blocker +1 is not clearly overpriced. See the blocker/rosette logs in [`emblems`](../../apa-kan/game/benchmark_results/emblems/).
 
 ## H2H
 
@@ -149,5 +149,10 @@ Release `apa-kan-bench`, zags on, doubles allowed, shared-channel 2–3 bead gro
 | `h2h.txt` | 48 | 22-0-26 | 115 (2.40/game) | 152 (3.17/game) | 972.3 s |
 | `h2h_4x.txt` | 10 | 8-0-2 | 13 (1.30/game) | 7 (0.70/game) | 736.1 s |
 | `mcts_long.txt` | 30 | 18-1-11 | 64 (2.13/game) | 142 (4.73/game) | 2665.6 s |
+| `h2h_blocker_rosette.txt` | 52 | 25-1-26 | 53 (1.02/game) | 103 (1.98/game) | 1254.5 s |
+| `h2h_blocker_rosette_4x.txt` | 10 | 3-1-6 | 0 | 0 | 1483.4 s |
+| `mcts_long_blocker_rosette.txt` | 30 | 19-1-10 | 0 | 0 | 2060.2 s |
 
-Calibrated `# archetype_seat` combined: crescent **15-0-5**, zs **12-0-8**, emblem **11-0-9**, mixed **7-0-5**, braid **2-0-10**, bead **1-0-11**. Collectors vs mixed **5-0-7**. `mcts_long` crescent vs zs is **6-0-0** (P1; 17–145 turns). +1 cost is not clearly underpriced vs mixed; stuffed collectors beat braid/bead via opening weight (`higher_opening_strength_won=35/47`). Not a four-move unbeatable line. Full tables in the emblems README.
+Crescent/Zs package: calibrated combined crescent **15-0-5**, zs **12-0-8**, emblem **11-0-9**, mixed **7-0-5**; collectors vs mixed **5-0-7**. `mcts_long` crescent vs zs is **6-0-0** (P1; 17–145 turns).
+
+Blocker/Rosette package: calibrated combined blocker **15-0-13**, rosette **13-1-14**. Both seats vs mixed: blocker **2-0-2**, rosette **1-0-3**. Blocker vs rosette is a P1 sweep both ways (2-0-0 / 2-0-0, avg 102 / 110 turns). `mcts_long` blocker vs mixed is **2-0-4** (P1). Short games 1 / 0 / 0, lockout=0. No four-move unbeatable line. Full tables in the emblems README.
