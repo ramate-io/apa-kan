@@ -16,6 +16,8 @@ shared-channel beads with 2–3 groups (live default), `--pick search`,
 Both seats `--search-profile deep_mcts` (minimax uses the enhanced ID knobs
 from that profile). Work budgets: calibrated `nodes:132000,iters:2600` and
 4× `nodes:528000,iters:10400` (MCTS long uses `iters:10400` only).
+Later emblem H2H should use **only** 4× and long deep_mcts — skip the
+calibrated short package.
 
 Collector archetypes (`--p1-deck` / `--deck-matchups`):
 

@@ -98,7 +98,7 @@ Emblems sit at the **top** of the tile.
 - Crescent Moon: a simple upright **bowl** (two-circle sliver opening up, thin horns pointing up) with a **single small filled dot** centered in the opening. No star, no rays. Does not polar-warp with the tile arc. Fully inside the tile disc.
 - Two Zag Zs: two identical parallel upright vertical zigzags (lightning: `>` stacked over `<`), sharp corners, uniform stroke. The pair rotates with the tile as a unit. Fully inside the tile disc.
 - Blocker: a **chambered diamond** — outlined four-pointed diamond with concave sides, interior split into four chambers by a cross (quatrefoil lattice). Upright in the slot, inside the rim, clear of the rings.
-- Rosette: an **eight-petal** flower of overlapping discs matching the board's eight generating-circle motif, kept small for the slot.
+- Rosette: **eight overlapping outlined rings** (stroked, unfilled, tile face showing through) matching the board's eight generating-circle motif (`d == petal_r`). Kept small for the slot.
 
 Desktop PNG close-ups: [`emblem_crescent_dot.png`](../../apa-kan/game/screenshots/emblem_crescent_dot.png), [`emblem_crescent_triangle.png`](../../apa-kan/game/screenshots/emblem_crescent_triangle.png), [`emblem_zs_dot.png`](../../apa-kan/game/screenshots/emblem_zs_dot.png), [`emblem_zs_triangle.png`](../../apa-kan/game/screenshots/emblem_zs_triangle.png), [`emblem_blocker_dot.png`](../../apa-kan/game/screenshots/emblem_blocker_dot.png), [`emblem_blocker_triangle.png`](../../apa-kan/game/screenshots/emblem_blocker_triangle.png), [`emblem_rosette_dot.png`](../../apa-kan/game/screenshots/emblem_rosette_dot.png), [`emblem_rosette_triangle.png`](../../apa-kan/game/screenshots/emblem_rosette_triangle.png).
 

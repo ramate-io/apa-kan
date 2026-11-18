@@ -1109,20 +1109,22 @@ impl TileRingDraw {
 			.collect()
 	}
 
-	/// Eight-petal rosette matching the board's generating-circle motif.
-	pub fn rosette_petals(
+	/// Eight overlapping outlined rings matching the board's generating-circle
+	/// motif (`d == petal_r`). Unfilled: tile face shows through.
+	pub fn rosette_strokes(
 		self,
 		tile_center: [f32; 2],
 		tile_radius: f32,
 		up: [f32; 2],
-	) -> Vec<Vec<[f32; 2]>> {
+	) -> Vec<EmblemStroke> {
 		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
 		let unit = self.crescent_radius();
-		let petal_r = unit * 0.33;
-		let d = unit * 0.56;
+		let petal_r = unit * 0.40;
+		let d = petal_r;
+		let width = (self.zag_stroke * 0.30).max(0.45);
 		eight_petal_local(petal_r, d)
 			.into_iter()
-			.map(|pts| emblem_place(origin, theta, rho, &pts))
+			.map(|pts| EmblemStroke { pts: emblem_place(origin, theta, rho, &pts), width })
 			.collect()
 	}
 
@@ -1159,12 +1161,8 @@ impl TileRingDraw {
 				strokes: self.blocker_strokes(tile_center, tile_radius, up),
 			},
 			Emblem::Rosette => EmblemGlyph {
-				fills: self
-					.rosette_petals(tile_center, tile_radius, up)
-					.into_iter()
-					.map(EmblemFill::Poly)
-					.collect(),
-				strokes: Vec::new(),
+				fills: Vec::new(),
+				strokes: self.rosette_strokes(tile_center, tile_radius, up),
 			},
 		}
 	}
@@ -1416,23 +1414,26 @@ fn chambered_diamond_local(h: f32, w: f32) -> Vec<Vec<[f32; 2]>> {
 	vec![outline, cross_v, cross_h]
 }
 
-/// Eight overlapping discs, one petal along +n, matching the 8-circle rosette.
-/// `d` is the center radius; `petal_r` is each generating circle. The board
-/// uses `d == petal_r`; the slot uses a slightly larger `d` so eight lobes
-/// stay readable at emblem size.
+/// Eight overlapping circles, one along +n, matching the board's 8-circle
+/// rosette. Closed polylines so they stroke as rings. The board uses
+/// `d == petal_r` (each generating circle passes through the origin).
 fn eight_petal_local(petal_r: f32, d: f32) -> Vec<Vec<[f32; 2]>> {
 	use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
-	let n = TILE_MARK_DOT_SAMPLES.max(14);
+	let n = TILE_MARK_DOT_SAMPLES.max(20);
 	(0..8)
 		.map(|k| {
 			let a = FRAC_PI_2 + k as f32 * FRAC_PI_4;
 			let c = [d * a.cos(), d * a.sin()];
-			(0..n)
+			let mut pts: Vec<[f32; 2]> = (0..n)
 				.map(|i| {
 					let t = TAU * i as f32 / n as f32;
 					[c[0] + petal_r * t.cos(), c[1] + petal_r * t.sin()]
 				})
-				.collect()
+				.collect();
+			if let Some(first) = pts.first().copied() {
+				pts.push(first);
+			}
+			pts
 		})
 		.collect()
 }
@@ -4704,16 +4705,19 @@ mod tests {
 		let min_s = outline.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
 		assert!(max_n - min_n > max_s - min_s, "diamond is taller than wide (upright)");
 		let rosette = draw.emblem_glyph(Emblem::Rosette, [0.0, 0.0], r, up);
-		assert_eq!(rosette.fills.len(), 8, "eight petals");
-		assert!(rosette.strokes.is_empty());
-		for fill in &rosette.fills {
-			let EmblemFill::Poly(poly) = fill else {
-				panic!("rosette petals are filled discs");
-			};
-			assert!(poly.len() >= 12);
-			for p in poly {
+		assert!(rosette.fills.is_empty(), "Rosette is outlined, unfilled rings");
+		assert_eq!(rosette.strokes.len(), 8, "eight generating circles");
+		for stroke in &rosette.strokes {
+			assert!(stroke.pts.len() >= 16, "each ring is a sampled circle");
+			let first = stroke.pts.first().copied();
+			let last = stroke.pts.last().copied();
+			assert_eq!(first, last, "each ring is a closed polyline");
+			for p in &stroke.pts {
 				assert!(p[1] > 0.0, "rosette sits at the top, p={p:?}");
-				assert!(p[0].hypot(p[1]) < r - 0.2, "rosette stays inside the tile, p={p:?}");
+				assert!(
+					p[0].hypot(p[1]) + stroke.width * 0.5 < r - 0.15,
+					"rosette stays inside the tile, p={p:?} r={r}"
+				);
 			}
 		}
 	}
