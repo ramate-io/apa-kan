@@ -70,6 +70,9 @@ circular medallion on a black field.
 - Preview painter: `draw_tile_preview` / `write_png_view_preview` in `render.rs`,
   sized by `TileRingDraw::character_fit_radius`. Screenshots:
   `apa-kan/game/screenshots/characters/`. Not wired into `sample_tile` or Bevy.
+- Shared layout: `TileRingDraw` emblem and capture-mark radii are smaller so
+  the center disc has more room. Glyph shapes are unchanged. That layout is
+  live tile rendering (PNG + Bevy); generation is unchanged.
 
 `game.rs` and `deck.rs` still do not assign characters.
 

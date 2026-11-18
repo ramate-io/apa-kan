@@ -1107,8 +1107,13 @@ mod tests {
 		let mut game = Game::empty(RuleSet::default());
 		let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots");
 		std::fs::create_dir_all(&dir).unwrap();
+		let art_dir = std::path::Path::new("/opt/cursor/artifacts");
+		let _ = std::fs::create_dir_all(art_dir);
 		for (tile, name) in emblem_closeup_tiles(&mut game) {
 			write_tile_closeup(tile, dir.join(name), 880, 330.0);
+			if art_dir.is_dir() {
+				let _ = std::fs::copy(dir.join(name), art_dir.join(name));
+			}
 		}
 	}
 
