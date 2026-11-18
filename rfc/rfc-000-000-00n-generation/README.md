@@ -26,6 +26,344 @@ core tile
 
 ## Core Pass
 
+- After the ID is generated, the core pass fills rings, markings, and emblem.
+- The pass is a readable decision tree. Each step is a weighted `choose` (or a coin) seeded from `id.mix(step)` so the same id always replays.
+- Parameters live on one **`CorePass`** value. `CorePass::base()` is the version's published distribution; rarity is always quoted against that, not against event skew.
+- Any other `CorePass` is a **reward table** or a **collector**: generating a 27-tile collection with it hands the AI (or a player) a skewed bag. This is the same idea as today's `DeckArchetype`, but one struct instead of a handful of numerators.
+
+```rust
+/// One versioned generator. Event rewards and collectors are other values of this.
+struct CorePass {
+    version: u16,
+    rings: RingPass,
+    colors: ColorPass,
+    markings: MarkingPass,
+    emblems: EmblemPass,
+}
+
+struct CoreTile {
+    ring_type: Vec<RingType>,   // length n_rings, slot order inner→outer
+    rings: Vec<TileColor>,      // parallel
+    dots: u8,                   // MOVE length 1..=3
+    capture: CaptureMark,       // Dot | Triangle
+    emblem: Emblem,             // None | CrescentMoon | TwoZagZs | Blocker | Rosette
+}
+
+fn core_pass(id: u32, cfg: &CorePass) -> CoreTile {
+    let ring_type = ring_pass(id, &cfg.rings);
+    let rings = color_pass(id, &cfg.colors, ring_type.len());
+    let (dots, capture) = marking_pass(id, &cfg.markings, &ring_type);
+    let emblem = emblem_pass(id, &cfg.emblems, &ring_type, dots, capture);
+    CoreTile { ring_type, rings, dots, capture, emblem }
+}
+
+impl CorePass {
+    fn base() -> Self { /* fields below; rarity is computed from this */ }
+
+    /// Example collector: more consecutive heavies resolve as braid.
+    fn braid_collector() -> Self {
+        let mut cfg = Self::base();
+        cfg.rings.heavy_weights = [1, 1];            // 50% heavy per slot
+        cfg.rings.consecutive_weights = [9, 1];      // braid vs bead
+        cfg
+    }
+}
+```
+
+`choose` draws from `from` with `weights` (zero and negative entries are floored to 0; at least one weight must stay positive). `sample(weights)` is `choose` on `[false, true]`.
+
+### Ring pass
+
+```rust
+struct RingPass {
+    /// Weights for n_rings = 1, 2, 3.
+    count_weights: [u32; 3],
+    /// Per slot: [light, heavy].
+    heavy_weights: [u32; 2],
+    /// Consecutive heavies (≥2 adjacent slots): [braid, bead].
+    /// Gapped heavies (slots 0 and 2 only) are always bead.
+    consecutive_weights: [u32; 2],
+    /// Leftover slots, including a lone heavy: [normal, zag].
+    light_weights: [u32; 2],
+}
+
+impl RingPass {
+    fn base() -> Self {
+        Self {
+            count_weights: [5, 3, 1],
+            heavy_weights: [3, 1],       // 1 in 4 heavy
+            consecutive_weights: [3, 1], // 3 in 4 braid
+            light_weights: [5, 1],
+        }
+    }
+}
+
+fn ring_pass(id: u32, cfg: &RingPass) -> Vec<RingType> {
+    let n = choose(&[1u8, 2, 3], &cfg.count_weights, id.mix("n"));
+    let heavy: Vec<usize> = (0..n as usize)
+        .filter(|&i| sample(&cfg.heavy_weights, id.mix(("h", i))))
+        .collect();
+
+    let mut types = vec![RingType::Normal; n as usize];
+
+    if heavy.len() >= 2 {
+        let group = if consecutive(&heavy) {
+            choose(
+                &[RingType::Braid, RingType::Bead],
+                &cfg.consecutive_weights,
+                id.mix("grp"),
+            )
+        } else {
+            RingType::Bead
+        };
+        for &i in &heavy {
+            types[i] = group;
+        }
+    }
+
+    // 0–1 heavies: every slot is light (a lone heavy does not make a 1-bead / 1-braid).
+    for i in 0..n as usize {
+        let in_group = heavy.len() >= 2 && heavy.contains(&i);
+        if !in_group {
+            types[i] = choose(
+                &[RingType::Normal, RingType::Zag],
+                &cfg.light_weights,
+                id.mix(("lite", i)),
+            );
+        }
+    }
+    types
+}
+
+fn consecutive(idx: &[usize]) -> bool {
+    idx.windows(2).all(|w| w[1] == w[0] + 1)
+}
+```
+
+| Step | Live type | Base weights | Odds |
+|---|---|---|---|
+| Ring count | `n_rings` 1 / 2 / 3 | 5 : 3 : 1 | 5/9 · 1/3 · 1/9 |
+| Per slot | light / heavy | 3 : 1 | 3/4 · 1/4 |
+| Consecutive heavies | `Braid` / `Bead` | 3 : 1 | 3/4 · 1/4 |
+| Gapped heavies (rings 1+3) | `Bead` | — | always |
+| Light slot | `Normal` / `Zag` | 5 : 1 | 5/6 · 1/6 |
+
+0 or 1 heavy → ignore the heavy coin; every slot is normal/zag. Generated tiles still never have a single bead or a 1-slot braid.
+
+### Color pass
+
+```rust
+struct ColorPass {
+    /// Green, Blue, Orange, LavenderPink, Teal, Maroon.
+    weights: [u32; 6],
+    /// After drawing color i, add `drift[i]` to the running weights (hysteresis).
+    /// Base is zero: independent draws. Events/collectors raise the diagonal to cluster.
+    drift: [[i32; 6]; 6],
+}
+
+impl ColorPass {
+    fn base() -> Self {
+        Self {
+            weights: [81, 81, 81, 9, 9, 3],
+            drift: [[0; 6]; 6],
+        }
+    }
+}
+
+const COLORS: [TileColor; 6] = [
+    TileColor::Green,
+    TileColor::Blue,
+    TileColor::Orange,
+    TileColor::LavenderPink,
+    TileColor::Teal,
+    TileColor::Maroon,
+];
+
+fn color_pass(id: u32, cfg: &ColorPass, n: usize) -> Vec<TileColor> {
+    let mut w: [i32; 6] = cfg.weights.map(|x| x as i32);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let color = choose(&COLORS, &w, id.mix(("c", i)));
+        out.push(color);
+        for (j, d) in cfg.drift[color as usize].iter().enumerate() {
+            w[j] += d;
+        }
+    }
+    out
+}
+```
+
+| `TileColor` | Base weight | Odds (total 264) |
+|---|---|---|
+| Green / Blue / Orange | 81 | 81/264 ≈ 30.7% each |
+| LavenderPink / Teal | 9 | 9/264 ≈ 3.4% each |
+| Maroon | 3 | 3/264 ≈ 1.1% |
+
+Base drift is all zeros. A maroon-collector might set `drift[Maroon][Maroon] = +40`; a “keep last color” event might add a large diagonal after each draw.
+
+### Marking pass
+
+```rust
+struct MarkingPass {
+    /// Weights for dots = 1, 2, 3 (MOVE length).
+    count_weights: [u32; 3],
+    /// [triangle, dot].
+    capture_weights: [u32; 2],
+    /// Per `RingType` (Normal, Zag, Braid, Bead): row = min(count, 2), col = dots 1/2/3.
+    depreciations: [[[i32; 3]; 3]; 4],
+}
+
+impl MarkingPass {
+    fn base() -> Self {
+        let tax = [
+            [0, 0, 0],
+            [0, -1, -2],
+            [0, -2, -4],
+        ];
+        Self {
+            count_weights: [17, 11, 7],
+            capture_weights: [1, 1],
+            depreciations: [tax; 4],
+        }
+    }
+}
+
+fn marking_pass(
+    id: u32,
+    cfg: &MarkingPass,
+    ring_type: &[RingType],
+) -> (u8, CaptureMark) {
+    let mut w: [i32; 3] = cfg.count_weights.map(|x| x as i32);
+    for typ in [RingType::Normal, RingType::Zag, RingType::Braid, RingType::Bead] {
+        let n = ring_type.iter().filter(|t| **t == typ).count().min(2);
+        for (j, d) in cfg.depreciations[typ as usize][n].iter().enumerate() {
+            w[j] += d;
+        }
+    }
+    let dots = choose(&[1u8, 2, 3], &w, id.mix("dots"));
+    let capture = choose(
+        &[CaptureMark::Triangle, CaptureMark::Dot],
+        &cfg.capture_weights,
+        id.mix("cap"),
+    );
+    (dots, capture)
+}
+```
+
+Busy faces (more rings of a type) tax long MOVE. Capture shape does not.
+
+| `dots` | Base weight | Odds before tax |
+|---|---|---|
+| 1 | 17 | 17/35 |
+| 2 | 11 | 11/35 |
+| 3 | 7 | 7/35 = 1/5 |
+
+| `CaptureMark` | Base weight | Odds | Rule |
+|---|---|---|---|
+| Triangle | 1 | 1/2 | captures → spawn tokens |
+| Dot | 1 | 1/2 | captures → mover's bench |
+
+Depreciation rows (same table for every `RingType` in the base). Row = how many rings of that type (0, 1, 2+). Col = added to the 1 / 2 / 3-mark weights.
+
+| Count of type | Δ 1-mark | Δ 2-mark | Δ 3-mark |
+|---|---|---|---|
+| 0 | 0 | 0 | 0 |
+| 1 | 0 | −1 | −2 |
+| 2+ | 0 | −2 | −4 |
+
+Taxes **sum** across types, then floor at 0.
+
+### Emblem pass
+
+```rust
+struct EmblemPass {
+    /// None, CrescentMoon, TwoZagZs, Blocker, Rosette.
+    weights: [u32; 5],
+    /// Per ring type, row = min(count, 2), col = emblem outcome.
+    ring_depreciations: [[[i32; 5]; 3]; 4],
+    /// Per capture (Triangle, Dot), row = dots-1, col = emblem outcome.
+    marking_depreciations: [[[i32; 5]; 3]; 2],
+}
+
+impl EmblemPass {
+    fn base() -> Self {
+        let ring_tax = [
+            [0, 0, 0, 0, 0],
+            [0, -1, -1, -1, -1],
+            [0, -2, -2, -2, -2],
+        ];
+        let mark_tax = ring_tax;
+        Self {
+            weights: [197, 7, 7, 7, 7],
+            ring_depreciations: [ring_tax; 4],
+            marking_depreciations: [mark_tax; 2],
+        }
+    }
+}
+
+const EMBLEMS: [Emblem; 5] = [
+    Emblem::None,
+    Emblem::CrescentMoon,
+    Emblem::TwoZagZs,
+    Emblem::Blocker,
+    Emblem::Rosette,
+];
+
+fn emblem_pass(
+    id: u32,
+    cfg: &EmblemPass,
+    ring_type: &[RingType],
+    dots: u8,
+    capture: CaptureMark,
+) -> Emblem {
+    let mut w: [i32; 5] = cfg.weights.map(|x| x as i32);
+    for typ in [RingType::Normal, RingType::Zag, RingType::Braid, RingType::Bead] {
+        let n = ring_type.iter().filter(|t| **t == typ).count().min(2);
+        for (j, d) in cfg.ring_depreciations[typ as usize][n].iter().enumerate() {
+            w[j] += d;
+        }
+    }
+    let cap_i = capture as usize; // Triangle = 0, Dot = 1
+    let dot_i = (dots.clamp(1, 3) - 1) as usize;
+    for (j, d) in cfg.marking_depreciations[cap_i][dot_i].iter().enumerate() {
+        w[j] += d;
+    }
+    choose(&EMBLEMS, &w, id.mix("emb"))
+}
+```
+
+Busy rings and long MOVE tax **glyphs**, not `None`.
+
+| `Emblem` | Base weight | Odds before tax |
+|---|---|---|
+| `None` | 197 | 197/225 ≈ 87.6% |
+| `CrescentMoon` | 7 | 7/225 ≈ 3.1% |
+| `TwoZagZs` | 7 | 7/225 |
+| `Blocker` | 7 | 7/225 |
+| `Rosette` | 7 | 7/225 |
+
+Ring tax (same for every `RingType`) and marking tax (same for `Dot` / `Triangle`):
+
+| Count or `dots` | Δ None | Δ each glyph |
+|---|---|---|
+| 0 rings / 1 mark | 0 | 0 |
+| 1 ring of type / 2 marks | 0 | −1 |
+| 2+ rings of type / 3 marks | 0 | −2 |
+
+### Rewards and collectors
+
+`CorePass::base()` is what players see on the rarity chart. Anything else is a named preset of the same struct:
+
+| Use | How |
+|---|---|
+| Event reward | e.g. raise `colors.weights[Maroon]`, or set a maroon drift diagonal |
+| `--p1-deck braid` (replaces `DeckArchetype::BraidHeavy`) | bump `rings.heavy_weights` and `consecutive_weights` toward braid |
+| Bead collector | same, but `consecutive_weights` toward bead |
+| Emblem collector | raise `emblems.weights[CrescentMoon]` (etc.), optionally zero the others |
+| Search H2H | deal each seat's 27 from that seat's `CorePass`; the picker still runs 7+4 |
+
+Rarity quoted in UI and this RFC is always `base()`, even when the live deal used a collector.
+
 ## Character Pass
 
 The pass is versioned. A version freezes the symbol basis, relation table, specific maps, τ, optional k, and the fallback set. Adding or reweighting a character bumps the version so old deals replay.
@@ -127,10 +465,11 @@ A disjoint reserve of catalog ids. Used only on a τ miss (neighborhood empty). 
 
 Not wired yet. When it is:
 
-- Pass tables next to the catalog (`assets/characters/pass.vN.toml`): specific maps, sparse relation rows, τ, optional k, fallback ids
+- `CorePass` + `RingPass` / `ColorPass` / `MarkingPass` / `EmblemPass` replace `sample_tile_with` knobs and `DeckArchetype` stuffing. `CorePass::base()` is the rarity chart; named presets are rewards/collectors.
+- Character pass tables next to the catalog (`assets/characters/pass.vN.toml`): specific maps, sparse relation rows, τ, optional k, fallback ids
 - `characters.rs`: `CoreKey`, `encode_tile`, `assign_character(tile, version)`
 - `Tile.character: Option<CharacterId>` — cosmetic; not in `kind_index` / search / overwhelm
-- Tests: map hits, sparse color-only rows are not the origin, preview-style neighborhoods, τ miss → fallback, version freeze
+- Tests: map hits, sparse color-only rows are not the origin, preview-style neighborhoods, τ miss → fallback, version freeze; `CorePass::base()` replay from `id`
 
 ## Alternatives considered
 
