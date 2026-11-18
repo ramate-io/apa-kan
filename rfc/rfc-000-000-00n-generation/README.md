@@ -49,16 +49,30 @@ struct CoreTile {
     emblem: Emblem,             // None | CrescentMoon | TwoZagZs | Blocker | Rosette
 }
 
-fn core_pass(id: u32, cfg: &CorePass) -> CoreTile {
-    let ring_type = ring_pass(id, &cfg.rings);
-    let rings = color_pass(id, &cfg.colors, ring_type.len());
-    let (dots, capture) = marking_pass(id, &cfg.markings, &ring_type);
-    let emblem = emblem_pass(id, &cfg.emblems, &ring_type, dots, capture);
-    CoreTile { ring_type, rings, dots, capture, emblem }
+struct TileId(u32);
+
+impl TileId {
+    fn mix(self, step: impl Hash) -> Self { /* domain-separated child of `self` */ }
+
+    /// Weighted draw. Zero and negative weights floor to 0; at least one must stay positive.
+    fn choose<T: Copy>(self, from: &[T], weights: &[i32]) -> T { /* ... */ }
+
+    /// `choose` on `[false, true]` with `[light, heavy]`-style weights.
+    fn sample(self, weights: &[u32]) -> bool {
+        Self::choose(self, &[false, true], &[weights[0] as i32, weights[1] as i32])
+    }
 }
 
 impl CorePass {
     fn base() -> Self { /* fields below; rarity is computed from this */ }
+
+    fn run(id: TileId, cfg: &CorePass) -> CoreTile {
+        let ring_type = RingPass::run(id, &cfg.rings);
+        let rings = ColorPass::run(id, &cfg.colors, ring_type.len());
+        let (dots, capture) = MarkingPass::run(id, &cfg.markings, &ring_type);
+        let emblem = EmblemPass::run(id, &cfg.emblems, &ring_type, dots, capture);
+        CoreTile { ring_type, rings, dots, capture, emblem }
+    }
 
     /// Example collector: more consecutive heavies resolve as braid.
     fn braid_collector() -> Self {
@@ -69,8 +83,6 @@ impl CorePass {
     }
 }
 ```
-
-`choose` draws from `from` with `weights` (zero and negative entries are floored to 0; at least one weight must stay positive). `sample(weights)` is `choose` on `[false, true]`.
 
 ### Ring pass
 
@@ -96,47 +108,47 @@ impl RingPass {
             light_weights: [5, 1],
         }
     }
-}
 
-fn ring_pass(id: u32, cfg: &RingPass) -> Vec<RingType> {
-    let n = choose(&[1u8, 2, 3], &cfg.count_weights, id.mix("n"));
-    let heavy: Vec<usize> = (0..n as usize)
-        .filter(|&i| sample(&cfg.heavy_weights, id.mix(("h", i))))
-        .collect();
-
-    let mut types = vec![RingType::Normal; n as usize];
-
-    if heavy.len() >= 2 {
-        let group = if consecutive(&heavy) {
-            choose(
-                &[RingType::Braid, RingType::Bead],
-                &cfg.consecutive_weights,
-                id.mix("grp"),
-            )
-        } else {
-            RingType::Bead
-        };
-        for &i in &heavy {
-            types[i] = group;
-        }
+    fn consecutive(idx: &[usize]) -> bool {
+        idx.windows(2).all(|w| w[1] == w[0] + 1)
     }
 
-    // 0–1 heavies: every slot is light (a lone heavy does not make a 1-bead / 1-braid).
-    for i in 0..n as usize {
-        let in_group = heavy.len() >= 2 && heavy.contains(&i);
-        if !in_group {
-            types[i] = choose(
-                &[RingType::Normal, RingType::Zag],
-                &cfg.light_weights,
-                id.mix(("lite", i)),
-            );
-        }
-    }
-    types
-}
+    fn run(id: TileId, cfg: &RingPass) -> Vec<RingType> {
+        let n = TileId::choose(id.mix("n"), &[1u8, 2, 3], &cfg.count_weights.map(|x| x as i32));
+        let heavy: Vec<usize> = (0..n as usize)
+            .filter(|&i| TileId::sample(id.mix(("h", i)), &cfg.heavy_weights))
+            .collect();
 
-fn consecutive(idx: &[usize]) -> bool {
-    idx.windows(2).all(|w| w[1] == w[0] + 1)
+        let mut types = vec![RingType::Normal; n as usize];
+
+        if heavy.len() >= 2 {
+            let group = if RingPass::consecutive(&heavy) {
+                TileId::choose(
+                    id.mix("grp"),
+                    &[RingType::Braid, RingType::Bead],
+                    &cfg.consecutive_weights.map(|x| x as i32),
+                )
+            } else {
+                RingType::Bead
+            };
+            for &i in &heavy {
+                types[i] = group;
+            }
+        }
+
+        // 0–1 heavies: every slot is light (a lone heavy does not make a 1-bead / 1-braid).
+        for i in 0..n as usize {
+            let in_group = heavy.len() >= 2 && heavy.contains(&i);
+            if !in_group {
+                types[i] = TileId::choose(
+                    id.mix(("lite", i)),
+                    &[RingType::Normal, RingType::Zag],
+                    &cfg.light_weights.map(|x| x as i32),
+                );
+            }
+        }
+        types
+    }
 }
 ```
 
@@ -162,34 +174,34 @@ struct ColorPass {
 }
 
 impl ColorPass {
+    const COLORS: [TileColor; 6] = [
+        TileColor::Green,
+        TileColor::Blue,
+        TileColor::Orange,
+        TileColor::LavenderPink,
+        TileColor::Teal,
+        TileColor::Maroon,
+    ];
+
     fn base() -> Self {
         Self {
             weights: [81, 81, 81, 9, 9, 3],
             drift: [[0; 6]; 6],
         }
     }
-}
 
-const COLORS: [TileColor; 6] = [
-    TileColor::Green,
-    TileColor::Blue,
-    TileColor::Orange,
-    TileColor::LavenderPink,
-    TileColor::Teal,
-    TileColor::Maroon,
-];
-
-fn color_pass(id: u32, cfg: &ColorPass, n: usize) -> Vec<TileColor> {
-    let mut w: [i32; 6] = cfg.weights.map(|x| x as i32);
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let color = choose(&COLORS, &w, id.mix(("c", i)));
-        out.push(color);
-        for (j, d) in cfg.drift[color as usize].iter().enumerate() {
-            w[j] += d;
+    fn run(id: TileId, cfg: &ColorPass, n: usize) -> Vec<TileColor> {
+        let mut w: [i32; 6] = cfg.weights.map(|x| x as i32);
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let color = TileId::choose(id.mix(("c", i)), &ColorPass::COLORS, &w);
+            out.push(color);
+            for (j, d) in cfg.drift[color as usize].iter().enumerate() {
+                w[j] += d;
+            }
         }
+        out
     }
-    out
 }
 ```
 
@@ -226,27 +238,23 @@ impl MarkingPass {
             depreciations: [tax; 4],
         }
     }
-}
 
-fn marking_pass(
-    id: u32,
-    cfg: &MarkingPass,
-    ring_type: &[RingType],
-) -> (u8, CaptureMark) {
-    let mut w: [i32; 3] = cfg.count_weights.map(|x| x as i32);
-    for typ in [RingType::Normal, RingType::Zag, RingType::Braid, RingType::Bead] {
-        let n = ring_type.iter().filter(|t| **t == typ).count().min(2);
-        for (j, d) in cfg.depreciations[typ as usize][n].iter().enumerate() {
-            w[j] += d;
+    fn run(id: TileId, cfg: &MarkingPass, ring_type: &[RingType]) -> (u8, CaptureMark) {
+        let mut w: [i32; 3] = cfg.count_weights.map(|x| x as i32);
+        for typ in [RingType::Normal, RingType::Zag, RingType::Braid, RingType::Bead] {
+            let n = ring_type.iter().filter(|t| **t == typ).count().min(2);
+            for (j, d) in cfg.depreciations[typ as usize][n].iter().enumerate() {
+                w[j] += d;
+            }
         }
+        let dots = TileId::choose(id.mix("dots"), &[1u8, 2, 3], &w);
+        let capture = TileId::choose(
+            id.mix("cap"),
+            &[CaptureMark::Triangle, CaptureMark::Dot],
+            &cfg.capture_weights.map(|x| x as i32),
+        );
+        (dots, capture)
     }
-    let dots = choose(&[1u8, 2, 3], &w, id.mix("dots"));
-    let capture = choose(
-        &[CaptureMark::Triangle, CaptureMark::Dot],
-        &cfg.capture_weights,
-        id.mix("cap"),
-    );
-    (dots, capture)
 }
 ```
 
@@ -286,6 +294,14 @@ struct EmblemPass {
 }
 
 impl EmblemPass {
+    const EMBLEMS: [Emblem; 5] = [
+        Emblem::None,
+        Emblem::CrescentMoon,
+        Emblem::TwoZagZs,
+        Emblem::Blocker,
+        Emblem::Rosette,
+    ];
+
     fn base() -> Self {
         let ring_tax = [
             [0, 0, 0, 0, 0],
@@ -299,36 +315,28 @@ impl EmblemPass {
             marking_depreciations: [mark_tax; 2],
         }
     }
-}
 
-const EMBLEMS: [Emblem; 5] = [
-    Emblem::None,
-    Emblem::CrescentMoon,
-    Emblem::TwoZagZs,
-    Emblem::Blocker,
-    Emblem::Rosette,
-];
-
-fn emblem_pass(
-    id: u32,
-    cfg: &EmblemPass,
-    ring_type: &[RingType],
-    dots: u8,
-    capture: CaptureMark,
-) -> Emblem {
-    let mut w: [i32; 5] = cfg.weights.map(|x| x as i32);
-    for typ in [RingType::Normal, RingType::Zag, RingType::Braid, RingType::Bead] {
-        let n = ring_type.iter().filter(|t| **t == typ).count().min(2);
-        for (j, d) in cfg.ring_depreciations[typ as usize][n].iter().enumerate() {
+    fn run(
+        id: TileId,
+        cfg: &EmblemPass,
+        ring_type: &[RingType],
+        dots: u8,
+        capture: CaptureMark,
+    ) -> Emblem {
+        let mut w: [i32; 5] = cfg.weights.map(|x| x as i32);
+        for typ in [RingType::Normal, RingType::Zag, RingType::Braid, RingType::Bead] {
+            let n = ring_type.iter().filter(|t| **t == typ).count().min(2);
+            for (j, d) in cfg.ring_depreciations[typ as usize][n].iter().enumerate() {
+                w[j] += d;
+            }
+        }
+        let cap_i = capture as usize; // Triangle = 0, Dot = 1
+        let dot_i = (dots.clamp(1, 3) - 1) as usize;
+        for (j, d) in cfg.marking_depreciations[cap_i][dot_i].iter().enumerate() {
             w[j] += d;
         }
+        TileId::choose(id.mix("emb"), &EmblemPass::EMBLEMS, &w)
     }
-    let cap_i = capture as usize; // Triangle = 0, Dot = 1
-    let dot_i = (dots.clamp(1, 3) - 1) as usize;
-    for (j, d) in cfg.marking_depreciations[cap_i][dot_i].iter().enumerate() {
-        w[j] += d;
-    }
-    choose(&EMBLEMS, &w, id.mix("emb"))
 }
 ```
 
