@@ -589,6 +589,7 @@ fn center_relevant(game: &Game, mv: SearchMove) -> bool {
 	match mv {
 		SearchMove::Move { to, .. } => to == center || game.board().inner_ring().contains(&to),
 		SearchMove::Add { node, .. } => game.board().inner_ring().contains(&node),
+		SearchMove::Remove { node } => node == center || game.board().inner_ring().contains(&node),
 		SearchMove::Pass => false,
 	}
 }
@@ -660,6 +661,13 @@ fn capture_hint(game: &Game, mv: SearchMove) -> i32 {
 				80_000
 			} else {
 				0
+			}
+		}
+		SearchMove::Remove { node } => {
+			if game.tile_at(node).is_some_and(|t| t.owner != game.current_player()) {
+				200_000
+			} else {
+				40_000
 			}
 		}
 		SearchMove::Pass => 0,

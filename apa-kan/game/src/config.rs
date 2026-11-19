@@ -10,7 +10,7 @@ use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, D
 use crate::game::{
 	BeadScoring, BlockerBlocks, BraidFailMismatch, EmblemWeights, HopWeightCmp,
 	InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet, SamePieceTwice,
-	ZagMismatchCount, BAG_SIZE,
+	WinCondition, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -391,6 +391,13 @@ where
 		"--braid-fail-mismatch" => {
 			rules.braid_fail_mismatch = BraidFailMismatch::parse(&require_value(arg, it.next())?)?;
 		}
+		"--win-condition" => {
+			rules.win_condition = WinCondition::parse(&require_value(arg, it.next())?)?;
+			if rules.win_condition.is_placement_only() {
+				// Two-tier hold/low-value do not fire; keep the log honest.
+				rules.control_win = false;
+			}
+		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
 		}
@@ -457,6 +464,9 @@ pub fn usage() -> &'static str {
 	   --control-win <on|off>                     Center+inner-ring control win (default: on)\n\
 	   --control-n <1..9>                         Control-set occupancy needed (default: 5)\n\
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
+	   --win-condition <two-tier|placement-only>  Default two-tier (control then low-value).\n\
+	                                              placement-only: ADD or REMOVE, no suicide ADD,\n\
+	                                              no auto-removal; cannot-place loses\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
@@ -647,6 +657,7 @@ mod tests {
 		assert!(!cfg.rules.petal_majority_win);
 		assert_eq!(cfg.rules.petal_majority_n, 1);
 		assert!(cfg.rules.control_win);
+		assert_eq!(cfg.rules.win_condition, crate::game::WinCondition::TwoTier);
 		assert_eq!(cfg.rules.control_n, 5);
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
@@ -917,5 +928,17 @@ mod tests {
 		assert!(s.complementary.is_some());
 		let err = GameConfig::parse(["--scenario", "nope"]).unwrap_err();
 		assert!(err.contains("unknown scenario"), "{err}");
+	}
+
+	#[test]
+	fn parses_placement_only_win_condition() {
+		let cfg = GameConfig::parse(["--win-condition", "placement-only"]).unwrap();
+		assert_eq!(cfg.rules.win_condition, crate::game::WinCondition::PlacementOnly);
+		assert!(!cfg.rules.control_win);
+		let two = GameConfig::parse(["--win-condition", "two-tier"]).unwrap();
+		assert_eq!(two.rules.win_condition, crate::game::WinCondition::TwoTier);
+		assert!(two.rules.control_win);
+		let err = GameConfig::parse(["--win-condition", "ko"]).unwrap_err();
+		assert!(err.contains("win-condition"), "{err}");
 	}
 }

@@ -7,7 +7,13 @@ pub const WIN: i32 = 50_000;
 pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 	match game.status() {
 		GameStatus::InProgress => {
-			if game.rules().no_moves_loses && !game.has_add_or_move() {
+			if game.rules().win_condition.is_placement_only() {
+				if !game.has_legal_placement() {
+					Some(lockout_terminal(game, me))
+				} else {
+					None
+				}
+			} else if game.rules().no_moves_loses && !game.has_add_or_move() {
 				Some(lockout_terminal(game, me))
 			} else if game.low_value_applies() {
 				// `finish_turn` already records this; search also sees constructed
@@ -539,6 +545,17 @@ mod tests {
 		let game = Game::empty(RuleSet::default());
 		assert!(game.rules().no_moves_loses);
 		assert!(!game.has_add_or_move());
+		assert_eq!(terminal_score(&game, Player::One), Some(-WIN));
+		assert_eq!(terminal_score(&game, Player::Two), Some(WIN));
+	}
+
+	#[test]
+	fn placement_only_no_legal_placement_is_a_loss_for_the_side_to_move() {
+		let mut rules = RuleSet::default();
+		rules.win_condition = crate::game::WinCondition::PlacementOnly;
+		rules.control_win = false;
+		let game = Game::empty(rules);
+		assert!(!game.has_legal_placement());
 		assert_eq!(terminal_score(&game, Player::One), Some(-WIN));
 		assert_eq!(terminal_score(&game, Player::Two), Some(WIN));
 	}

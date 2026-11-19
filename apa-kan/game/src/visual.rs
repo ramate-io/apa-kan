@@ -2611,7 +2611,9 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 					game.rules().petal_majority_n
 				));
 			}
-			if game.rules().control_win {
+			if game.rules().win_condition.is_placement_only() {
+				extra.push_str(&format!("{HUD_SEP}placement-only"));
+			} else if game.rules().control_win {
 				extra.push_str(&format!(
 					"{HUD_SEP}ctl P1 {}/{} {}/{} P2 {}/{} {}/{}",
 					game.control_count(Player::One),

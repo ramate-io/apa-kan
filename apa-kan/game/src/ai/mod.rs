@@ -179,6 +179,7 @@ impl HistoryTable {
 		match mv {
 			SearchMove::Move { from, to } => self.moves[from as usize * 32 + to as usize],
 			SearchMove::Add { kind, node } => self.adds[Self::add_ix(kind, node)],
+			SearchMove::Remove { node } => self.moves[node as usize],
 			SearchMove::Pass => 0,
 		}
 	}
@@ -192,6 +193,10 @@ impl HistoryTable {
 			}
 			SearchMove::Add { kind, node } => {
 				let slot = &mut self.adds[Self::add_ix(kind, node)];
+				*slot = (*slot + inc).min(20_000);
+			}
+			SearchMove::Remove { node } => {
+				let slot = &mut self.moves[node as usize];
 				*slot = (*slot + inc).min(20_000);
 			}
 			SearchMove::Pass => {}

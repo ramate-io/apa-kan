@@ -213,6 +213,19 @@ The **control set** is the center (node 0) plus the 8 inner-ring nodes (`Board::
 - Chosen default package (from [`control_win_t1_bench7.txt`](../../apa-kan/game/benchmark_results/control_win_t1_bench7.txt)): control-win **on** (5 of 9, t=1), center-hold **off**, starting bench 7, insufficient-tiles **off**, petal-majority **off**. Restore the previous package with `--center-hold-win on --control-win off --starting-bench 5`.
 - Total game clocks (a draw condition) are a planned follow-up; they are not implemented here.
 
+#### 6b. `win_condition` (default **two-tier**)
+
+CLI: `--win-condition <two-tier|placement-only>`
+
+Default **two-tier** is the control-then-low-value package above. **placement-only** is an alternate game:
+
+1. A turn is **ADD** a remaining bench tile (still spawn-only, still spends one spawn token) **or REMOVE** an overwhelmed tile. MOVE is off.
+2. ADD is illegal if the tile would be immediately overwhelmed under the live channel rules (`would_overwhelm_add`). Tiles that later become overwhelmed **stay**; there is no simultaneous capture and no chain reaction.
+3. REMOVE uses the existing capture dest / token rules on that one tile (dot → mover's bench, triangle → spawn token). Opponent tiles always earn a token; own-tile harvests follow `self_capture_budget`.
+4. The player to move **loses** (`EndReason::NoLegalPlacement`) when they have **no legal ADD**, even if a REMOVE is still available. That reading is an open question.
+
+Search uses the same legal-move generator (`legal_adds` / `legal_removes`) and treats no-legal-placement as a terminal.
+
 #### 7. `insufficient_tiles_loss` (experimental, default **off**) — "can't reach control"
 
 CLI: `--insufficient-tiles-loss <off|strict|no-recapture>`
@@ -259,6 +272,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --pass-through-ring-cmp ge|gt
         --petal-majority-win on|off --petal-majority-n N
         --control-win on|off --control-n K --control-hold-turns T
+        --win-condition two-tier|placement-only
         --insufficient-tiles-loss off|strict|no-recapture
         --starting-tokens N --deck-size N --deck-seed N --deck-noise 0..100 --pick heuristic|search|greedy --self-capture-budget on|off
         --max-rings 1..3 --zag-chance 0..7 --zags on|off

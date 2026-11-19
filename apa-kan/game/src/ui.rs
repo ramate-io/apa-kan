@@ -714,6 +714,17 @@ fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
 			_ => {}
 		}
 		if let Some(tile) = play.game.tile_at(node) {
+			if play.game.rules().win_condition.is_placement_only() {
+				if play.game.is_overwhelmed(node) {
+					apply_action(play, Action::Remove { node });
+					return;
+				}
+				play.warning = format!(
+					"{} at {node} is not overwhelmed (REMOVE is harvest-only).",
+					tile.kind_label()
+				);
+				return;
+			}
 			if tile.owner == current {
 				play.selection = Selection::Piece(node);
 				play.warning.clear();
@@ -781,6 +792,11 @@ fn update_add_warning(play: &mut PlayState) {
 				.collect();
 			if killers.is_empty() {
 				play.warning = format!("Spawn {node}: pick an unplaced deck tile to ADD.");
+			} else if play.game.rules().win_condition.is_placement_only() {
+				play.warning = format!(
+					"Illegal: spawn {node} would immediately overwhelm: {}",
+					killers.join(", ")
+				);
 			} else {
 				play.warning = format!(
 					"Warning: spawn {node} would immediately overwhelm: {}",
@@ -805,6 +821,12 @@ fn update_add_warning(play: &mut PlayState) {
 					play.warning = format!(
 						"Selected {} - click a yellow spawn (ADD markers).",
 						tile.kind_label()
+					);
+				} else if play.game.rules().win_condition.is_placement_only() {
+					play.warning = format!(
+						"Illegal: {} would be immediately overwhelmed on spawn(s) {}.",
+						tile.kind_label(),
+						bad.join(", ")
 					);
 				} else {
 					play.warning = format!(
