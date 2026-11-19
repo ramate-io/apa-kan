@@ -122,3 +122,7 @@ rings and ≥2 stacked (2+) bead tiles. Custom TOML may list a single bead.
 - `independent_max_light_election_is_five_three_one` (n=20000)
 
 RFC 002 additive table tests pin `--channel-mode additive`.
+
+Light old-vs-new H2H (doubles allowed, zags on, `zag_mismatch=sum`):
+[`apa-kan/game/benchmark_results/independent_max/`](../../apa-kan/game/benchmark_results/independent_max/).
+Quote numbers only from those committed logs.
