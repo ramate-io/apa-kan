@@ -111,7 +111,7 @@ fn usage() -> &'static str {
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
-	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --beads, --dot-chance, --zag-mismatch,\n\
+	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
 	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\

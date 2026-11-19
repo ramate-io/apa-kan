@@ -48,7 +48,7 @@ Beads do **not** enable pass-through or hops (same as zags). Low-value: beads co
 
 Under `--channel-mode additive`, a piece forms a **2–3 bead group** with chance `bead_numer / 7` (default 1), rolled after braid and zag, occupying remaining **normal** slots (padding a short tile by repeating its last color, like braids). Generated tiles never have a single bead ring.
 
-The experimental default (`--channel-mode independent-max`, [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md)) elects beads per light slot with normal:zag:bead = 5:3:1. Single-bead tiles are allowed; custom TOML may list one bead. `--bead-chance 0` / `--beads off` drops the bead weight. Scoring accepts 1-bead fixtures in both modes.
+The experimental default (`--channel-mode independent-max`, [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md)) elects beads per light slot with normal:zag:bead = 5:3:1. Single-bead tiles are allowed; custom TOML may list one bead. `--bead-chance 0` drops the bead weight. There is no `--beads` flag. Scoring accepts 1-bead fixtures in both modes.
 
 Beads count toward the **6-per-type cap** on the 11-tile bench (6 bead rings max), alongside zag and braid, counted by ring slots. Normal stays uncapped. Enforced at the 7-pick and the +4.
 
@@ -77,7 +77,7 @@ Unit tests in `game::tests` (`bead_unmatched_counts_rings_not_color_pairs`, `bea
 ## Implementation
 
 - `RingType::Bead`, `Tile::bead_channel`, `EdgeChannels::{bead_match,bead_mismatch}` in `apa-kan/game/src/game.rs`
-- `--bead-chance` / `--beads`; `RuleSet::bead_numer` (default 1)
+- `--bead-chance`; `RuleSet::bead_numer` (default 1)
 - Cap DP in `deck.rs` is 3-dimensional (zag, braid, bead)
 - JSONL: ring flag `e`, `bead_rings`, `bead_numer` (absent/0 on older logs), `bead_scoring`
 - Visual: `bead_ring_centers` / bead lane in `visual.rs`, `ui.rs`, `render.rs`

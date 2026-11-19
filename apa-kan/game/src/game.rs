@@ -76,8 +76,8 @@ pub const ZAG_NUMER_DEFAULT: u8 = 1;
 pub const BRAID_DENOM: u8 = 7;
 pub const BRAID_NUMER_DEFAULT: u8 = 1;
 /// A piece forms a 2–3 bead group with probability `bead_numer / BEAD_DENOM`.
-/// Rolled after braid and zag so `--beads off` skips the RNG and matches the
-/// pre-bead deal for the same seed. Used under [`ChannelMode::Additive`].
+/// Rolled after braid and zag. `bead_numer == 0` (`--bead-chance 0`) skips the
+/// RNG and matches the pre-bead deal. Used under [`ChannelMode::Additive`].
 /// [`ChannelMode::IndependentMax`] elects beads per light slot instead.
 pub const BEAD_DENOM: u8 = 7;
 pub const BEAD_NUMER_DEFAULT: u8 = 1;
@@ -293,6 +293,35 @@ pub fn sample_braid(
 	types
 }
 
+/// Per-slot heavy coin (`braid_numer / 7`) for [`ChannelMode::IndependentMax`].
+/// `braid_numer == 0` skips the RNG so `--braids off` matches the no-braid deal.
+pub fn sample_heavy_slots(rng: &mut impl Rng, n_rings: u8, braid_numer: u8) -> [bool; 3] {
+	let mut heavy = [false; 3];
+	if braid_numer == 0 {
+		return heavy;
+	}
+	let numer = u32::from(braid_numer.min(BRAID_DENOM));
+	for flag in heavy.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+		*flag = rng.gen_range(0..u32::from(BRAID_DENOM)) < numer;
+	}
+	heavy
+}
+
+/// Two or more **consecutive** heavies become a braid. A lone or gapped heavy
+/// stays [`RingType::Normal`] so the 5:3:1 light election can turn it into a
+/// single bead. 1-ring tiles never braid (a lone heavy always falls through).
+pub fn cluster_consecutive_heavies(heavy: [bool; 3], n_rings: u8) -> [RingType; 3] {
+	let n = n_rings.clamp(1, MAX_COLOR_RINGS) as usize;
+	let idx: Vec<usize> = (0..n).filter(|&i| heavy[i]).collect();
+	let mut types = [RingType::Normal; 3];
+	if idx.len() >= 2 && idx.windows(2).all(|w| w[1] == w[0] + 1) {
+		for i in idx {
+			types[i] = RingType::Braid;
+		}
+	}
+	types
+}
+
 /// Light-election weights for remaining normal slots under
 /// [`ChannelMode::IndependentMax`]. Base chart is normal:zag:bead = 5:3:1.
 /// A zero numerator drops that type (no RNG for it). A non-default numerator
@@ -319,7 +348,7 @@ pub fn light_election_weights(zag_numer: u8, bead_numer: u8) -> [u32; 3] {
 /// Per remaining **normal** slot, elect normal / zag / bead with
 /// [`light_election_weights`]. Braid slots stay braid. Single-bead tiles are
 /// allowed. If zag and bead weights are both 0, slots stay normal and no RNG
-/// is consumed (`--zags off --beads off` after braid).
+/// is consumed (`--zags off` and `--bead-chance 0` after heavy clustering).
 pub fn sample_light_types(
 	rng: &mut impl Rng,
 	n_rings: u8,
@@ -365,7 +394,7 @@ pub fn sample_zag_types(rng: &mut impl Rng, n_rings: u8, types: &mut [RingType; 
 /// Piece-level bead group (`bead_numer / 7`). Occupies 2 or 3 remaining
 /// **normal** slots (padding a short tile by repeating its last color, like
 /// [`sample_braid`]). Never leaves a 1-bead tile. Zag and braid stay put.
-/// `bead_numer == 0` skips the RNG so `--beads off` matches the pre-bead deal.
+/// `bead_numer == 0` skips the RNG so `--bead-chance 0` matches the pre-bead deal.
 pub fn sample_bead_types(
 	rng: &mut impl Rng,
 	rings: &mut [TileColor; 3],
@@ -1741,8 +1770,9 @@ impl BeadScoring {
 pub enum ChannelMode {
 	/// Independent channels; the edge takes the **maximum** match and the
 	/// **maximum** mismatch of any single channel. Beads are light
-	/// (normal:zag:bead = 5:3:1); braids remain the only heavy group.
-	/// CLI: `--channel-mode independent-max` (this branch's default).
+	/// (normal:zag:bead = 5:3:1). Per-slot heavies cluster: consecutive ≥2
+	/// become a braid; a lone or gapped heavy falls through to the light
+	/// election. CLI: `--channel-mode independent-max` (this branch's default).
 	#[default]
 	IndependentMax,
 	/// RFC 001-001-002 additive stacking: `--bead-scoring` combines normal
@@ -1772,6 +1802,17 @@ impl ChannelMode {
 	pub fn is_independent_max(self) -> bool {
 		matches!(self, Self::IndependentMax)
 	}
+}
+
+/// Which independent channel won an edge's max match or max mismatch.
+/// Tie-break for HUD: match order normal → bead → braid; mismatch order
+/// normal → zag → bead → braid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelKind {
+	Normal,
+	Zag,
+	Braid,
+	Bead,
 }
 
 /// Independent per-type edge channels. Match weights are positive here; the
@@ -1869,6 +1910,92 @@ impl EdgeChannels {
 
 	pub fn effective_for_rules(self, rules: &RuleSet) -> i32 {
 		self.effective_for_mode(rules.channel_mode, rules.bead_scoring)
+	}
+
+	/// Per-type channels on the directed edge `tile` → `other` under `rules`
+	/// (Two Zag Zs bonus applies only on `tile`).
+	pub fn between(tile: Tile, other: Tile, rules: &RuleSet) -> Self {
+		let mut ch = Self::default();
+		if tile.normal_ring_count() > 0 || other.normal_ring_count() > 0 {
+			if tile.normal_channel_matches(other) {
+				ch.normal_match = 1;
+			} else if rules.mismatch_uses_neighbor_weight {
+				ch.normal_mismatch = i32::from(other.weight);
+			} else {
+				ch.normal_mismatch = 1;
+			}
+		}
+		if tile.zag_ring_count() > 0 || other.zag_ring_count() > 0 {
+			ch.zag_mismatch = rules.zag_mismatch.count(tile, other);
+		}
+		if tile.emblem.is_two_zag_zs() && ch.zag_mismatch > 0 {
+			ch.zag_mismatch += 1;
+		}
+		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
+			if let Some((_, n)) = selected_braid(tile, other) {
+				ch.braid_match = i32::from(n);
+			} else {
+				ch.braid_mismatch = rules.braid_fail_mismatch.cost(tile, other);
+			}
+		}
+		if tile.bead_ring_count() > 0 || other.bead_ring_count() > 0 {
+			let (m, x) = tile.bead_channel(other);
+			ch.bead_match = m;
+			ch.bead_mismatch = x;
+		}
+		ch
+	}
+
+	/// Max of each component from both directions (HUD / undirected edge).
+	pub fn undirected(a: Tile, b: Tile, rules: &RuleSet) -> Self {
+		let ab = Self::between(a, b, rules);
+		let ba = Self::between(b, a, rules);
+		Self {
+			normal_match: ab.normal_match.max(ba.normal_match),
+			normal_mismatch: ab.normal_mismatch.max(ba.normal_mismatch),
+			zag_mismatch: ab.zag_mismatch.max(ba.zag_mismatch),
+			braid_match: ab.braid_match.max(ba.braid_match),
+			braid_mismatch: ab.braid_mismatch.max(ba.braid_mismatch),
+			bead_match: ab.bead_match.max(ba.bead_match),
+			bead_mismatch: ab.bead_mismatch.max(ba.bead_mismatch),
+		}
+	}
+
+	/// Channel that supplies the independent-max match. `None` if match is 0.
+	pub fn max_match_kind(self) -> Option<ChannelKind> {
+		let n = self.normal_match;
+		let bead = self.bead_match;
+		let braid = self.braid_match;
+		let m = n.max(bead).max(braid);
+		if m <= 0 {
+			None
+		} else if n == m {
+			Some(ChannelKind::Normal)
+		} else if bead == m {
+			Some(ChannelKind::Bead)
+		} else {
+			Some(ChannelKind::Braid)
+		}
+	}
+
+	/// Channel that supplies the independent-max mismatch. `None` if 0.
+	pub fn max_mismatch_kind(self) -> Option<ChannelKind> {
+		let n = self.normal_mismatch;
+		let zag = self.zag_mismatch;
+		let bead = self.bead_mismatch;
+		let braid = self.braid_mismatch;
+		let m = n.max(zag).max(bead).max(braid);
+		if m <= 0 {
+			None
+		} else if n == m {
+			Some(ChannelKind::Normal)
+		} else if zag == m {
+			Some(ChannelKind::Zag)
+		} else if bead == m {
+			Some(ChannelKind::Bead)
+		} else {
+			Some(ChannelKind::Braid)
+		}
 	}
 }
 
@@ -1973,7 +2100,7 @@ pub struct RuleSet {
 	/// probability `bead_numer / 7`. Under [`ChannelMode::IndependentMax`]:
 	/// default `1` is the bead weight 1 in the 5:3:1 light election (singles
 	/// allowed); a stuffed numerator (collectors) replaces that weight.
-	/// `0` disables beads (`--beads off`).
+	/// `0` disables beads (`--bead-chance 0`).
 	pub bead_numer: u8,
 	/// Percent of generated tiles that carry a **dot** capture mark (rest
 	/// triangles). Default [`DOT_PERCENT_DEFAULT`] (50). CLI `--dot-chance`.
@@ -2885,38 +3012,7 @@ impl Game {
 	///   a single match of 1 (one −1 at most per edge). Mixed edges can
 	///   score both.
 	pub fn edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
-		let mut ch = EdgeChannels::default();
-		if tile.normal_ring_count() > 0 || other.normal_ring_count() > 0 {
-			if tile.normal_channel_matches(other) {
-				ch.normal_match = 1;
-			} else if self.rules.mismatch_uses_neighbor_weight {
-				ch.normal_mismatch = i32::from(other.weight);
-			} else {
-				ch.normal_mismatch = 1;
-			}
-		}
-		if tile.zag_ring_count() > 0 || other.zag_ring_count() > 0 {
-			ch.zag_mismatch = self.rules.zag_mismatch.count(tile, other);
-		}
-		// Two Zag Zs: +1 on this tile's zag channel per incident edge that
-		// already has a zag mismatch. Applied when scoring `tile`, not
-		// mirrored onto `other` unless `other` also has the emblem.
-		if tile.emblem.is_two_zag_zs() && ch.zag_mismatch > 0 {
-			ch.zag_mismatch += 1;
-		}
-		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
-			if let Some((_, n)) = selected_braid(tile, other) {
-				ch.braid_match = i32::from(n);
-			} else {
-				ch.braid_mismatch = self.rules.braid_fail_mismatch.cost(tile, other);
-			}
-		}
-		if tile.bead_ring_count() > 0 || other.bead_ring_count() > 0 {
-			let (m, x) = tile.bead_channel(other);
-			ch.bead_match = m;
-			ch.bead_mismatch = x;
-		}
-		ch
+		EdgeChannels::between(tile, other, &self.rules)
 	}
 
 	/// Match/mismatch this `tile` receives from neighbor `other`.
@@ -3917,7 +4013,15 @@ pub fn sample_tile_with(
 	rng: &mut impl Rng,
 ) -> Tile {
 	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
-	let mut ring_type = sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer);
+	let mut ring_type = match channel_mode {
+		ChannelMode::IndependentMax => {
+			let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
+			cluster_consecutive_heavies(heavy, n_rings)
+		}
+		ChannelMode::Additive => {
+			sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer)
+		}
+	};
 	match channel_mode {
 		ChannelMode::IndependentMax => {
 			sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
@@ -6854,13 +6958,15 @@ mod tests {
 		let mut rings = 0u32;
 		let mut braid_rings = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(
+			let t = sample_tile_with(
 				Player::One,
 				3,
 				0,
 				BRAID_NUMER_DEFAULT,
 				0,
 				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::Additive,
 				&mut next_id,
 				&mut rng,
 			);
@@ -8580,8 +8686,100 @@ mod tests {
 		assert!(bead_singles > 0, "independent-max allows single-bead tiles (got {bead_singles})");
 		let piece_rate = f64::from(braided) / f64::from(n);
 		assert!(
-			(0.12..0.17).contains(&piece_rate),
-			"braid piece rate={piece_rate:.4} (expected ~1/7); rings={rings}"
+			piece_rate < 0.08,
+			"consecutive-heavy braids are rarer than piece-level 1/7 (got {piece_rate:.4}); rings={rings}"
+		);
+	}
+
+	#[test]
+	fn consecutive_heavies_become_a_braid_lone_and_gapped_fall_through() {
+		assert_eq!(
+			cluster_consecutive_heavies([true, true, false], 2),
+			[RingType::Braid, RingType::Braid, RingType::Normal]
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, true, true], 3),
+			[RingType::Braid, RingType::Braid, RingType::Braid]
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([false, true, true], 3),
+			[RingType::Normal, RingType::Braid, RingType::Braid]
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, false, false], 1),
+			[RingType::Normal; 3],
+			"a 1-ring lone heavy never braids"
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, false, false], 3),
+			[RingType::Normal; 3],
+			"a lone heavy among three slots falls through"
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, false, true], 3),
+			[RingType::Normal; 3],
+			"gapped heavies are not a braid"
+		);
+	}
+
+	#[test]
+	fn independent_max_always_heavy_braids_two_and_three_rings_never_ones() {
+		let mut rng = StdRng::seed_from_u64(19);
+		let mut next_id = 1u32;
+		let n = 4_000u32;
+		let mut ones = 0u32;
+		let mut multi = 0u32;
+		let mut braided_ones = 0u32;
+		let mut braided_multi = 0u32;
+		for _ in 0..n {
+			let t = sample_tile_with(
+				Player::One,
+				3,
+				0,
+				BRAID_DENOM,
+				0,
+				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::IndependentMax,
+				&mut next_id,
+				&mut rng,
+			);
+			if t.n_rings <= 1 {
+				ones += 1;
+				if t.braid_ring_count() >= 2 {
+					braided_ones += 1;
+				}
+			} else {
+				multi += 1;
+				if t.braid_ring_count() >= 2 {
+					braided_multi += 1;
+					assert_eq!(t.braid_ring_count(), t.n_rings);
+				}
+			}
+		}
+		assert!(ones > 0 && multi > 0, "ones={ones} multi={multi}");
+		assert_eq!(braided_ones, 0, "1-ring tiles cannot cluster a braid");
+		assert_eq!(braided_multi, multi, "every 2–3 ring tile is all-heavy → one braid");
+	}
+
+	#[test]
+	fn independent_max_gapped_heavy_can_elect_a_single_bead() {
+		let clustered = cluster_consecutive_heavies([true, false, true], 3);
+		assert_eq!(clustered, [RingType::Normal; 3]);
+		let mut rng = StdRng::seed_from_u64(3);
+		let mut saw_single_bead = false;
+		for _ in 0..200 {
+			let mut types = clustered;
+			sample_light_types(&mut rng, 3, &mut types, 0, 7);
+			assert!(types.iter().all(|t| *t != RingType::Braid));
+			if types.iter().filter(|t| **t == RingType::Bead).count() == 1 {
+				saw_single_bead = true;
+				break;
+			}
+		}
+		assert!(
+			saw_single_bead,
+			"gapped heavies fall through to 5:3:1; a stuffed bead roll can leave a single bead"
 		);
 	}
 

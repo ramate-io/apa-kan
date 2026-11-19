@@ -145,7 +145,7 @@ impl RingPass {
 | Consecutive heavies (≥2) | `Braid` | — | always |
 | Light slot | `Normal` / `Zag` / `Bead` | 5 : 3 : 1 | 5/9 · 1/3 · 1/9 |
 
-Live `sample_tile_with` on this branch (CorePass not wired): piece-level braid `1/7` (size 2–3), then remaining slots elect 5:3:1. Single-bead tiles are allowed. `--channel-mode additive` restores 2–3 bead groups. See [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md).
+Live `sample_tile_with` IndependentMax: per-slot heavy coin `braid_numer / 7`; consecutive ≥2 heavies → braid; lone/gapped heavies fall through to 5:3:1 light (single beads allowed). `--channel-mode additive` restores piece-level 1/7 braid occupying the first 2–3 slots, then 2–3 bead groups. See [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md).
 
 ### Color pass
 

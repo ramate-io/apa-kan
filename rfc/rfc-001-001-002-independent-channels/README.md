@@ -101,7 +101,7 @@ Unit tests in `game::tests::independent_channel_table_rows` cover every row.
 
 ## Visual lane spec
 
-Each channel that **fires** (nonzero ink: a normal match or hitch, at least one hitting/potential zag, a braid weave/fail, or a bead match/unmatched) gets its own lane. Fixed order: **normal, zag, braid, bead**. Quiet channels are omitted.
+Each channel that **fires** (nonzero ink: a normal match or hitch, at least one hitting/potential zag, a braid weave/fail, or a bead match/unmatched) gets its own lane. Fixed order: **normal, zag, braid, bead**. Quiet channels are omitted. `--channel-mode independent-max` HUD keeps only the max-match channel and the max-mismatch channel; additive still paints every firing channel.
 
 Lane offsets, given pitch `≈ 2.4 ×` highway stripe offset:
 

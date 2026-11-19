@@ -69,8 +69,11 @@ pub enum DeckArchetype {
 	Rosette,
 }
 
-/// Braid roll used for [`DeckArchetype::BraidHeavy`] (5/7).
-pub const ARCHETYPE_BRAID_NUMER: u8 = 5;
+/// Braid roll used for [`DeckArchetype::BraidHeavy`]. Independent-max: per-slot
+/// heavy chance; 7/7 so every 2–3 ring tile clusters into a braid (1-ring
+/// tiles never braid under consecutive-heavy clustering). Additive: 7/7
+/// piece-level group.
+pub const ARCHETYPE_BRAID_NUMER: u8 = 7;
 /// Bead roll used for [`DeckArchetype::BeadHeavy`]. Additive: 5/7 piece-level
 /// 2–3 group. Independent-max: bead weight 5 in the light election.
 pub const ARCHETYPE_BEAD_NUMER: u8 = 5;

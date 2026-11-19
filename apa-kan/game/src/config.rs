@@ -361,10 +361,6 @@ where
 			}
 			rules.bead_numer = n as u8;
 		}
-		"--beads" => {
-			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
-			rules.bead_numer = if on { crate::game::BEAD_NUMER_DEFAULT } else { 0 };
-		}
 		"--bead-scoring" => {
 			rules.bead_scoring = BeadScoring::parse(&require_value(arg, it.next())?)?;
 		}
@@ -471,7 +467,6 @@ pub fn usage() -> &'static str {
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --bead-chance <0..7>                       Additive: 2–3 bead group k/7. Independent-max: bead light weight (default: 1)\n\
-	   --beads <on|off>                           Alias for --bead-chance 1 or 0 (default: on)\n\
 	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (ignored by independent-max)\n\
 	   --channel-mode <independent-max|additive>  Edge combine + generation (default: independent-max)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
@@ -763,16 +758,14 @@ mod tests {
 
 	#[test]
 	fn parses_bead_flags() {
-		let off = GameConfig::parse(["--beads", "off"]).unwrap();
-		assert_eq!(off.rules.bead_numer, 0);
 		let chance = GameConfig::parse(["--bead-chance", "0"]).unwrap();
 		assert_eq!(chance.rules.bead_numer, 0);
-		let on = GameConfig::parse(["--beads", "on"]).unwrap();
-		assert_eq!(on.rules.bead_numer, 1);
 		let three = GameConfig::parse(["--bead-chance", "3"]).unwrap();
 		assert_eq!(three.rules.bead_numer, 3);
 		let err = GameConfig::parse(["--bead-chance", "8"]).unwrap_err();
 		assert!(err.contains("bead-chance"));
+		let gone = GameConfig::parse(["--beads", "off"]).unwrap_err();
+		assert!(gone.contains("--beads") || gone.contains("unknown"), "{gone}");
 	}
 
 	#[test]

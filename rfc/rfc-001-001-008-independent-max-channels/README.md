@@ -28,10 +28,12 @@ should be playable over the board.
 
    Tile-level `effective` is still the **sum of those per-edge signed
    values** over `Board::incident_others` (inner↔center is two petals).
-3. **Generation.** Braids are the only heavy group (existing piece-level
-   2–3 `braid_numer / 7` roll). Remaining light slots elect
-   `normal : zag : bead = 5 : 3 : 1`. Single-bead tiles are allowed.
-   Emblems stay None 200 / Crescent 1 / Zs 1 / Blocker 1 / Rosette 1.
+3. **Generation.** Each ring slot rolls a heavy coin (`braid_numer / 7`).
+   Two or more consecutive heavies become a braid. A lone or gapped heavy
+   falls through to the light election (can be a single bead). Remaining
+   light slots elect `normal : zag : bead = 5 : 3 : 1`. `--zags off` /
+   `--bead-chance 0` drop that weight. Emblems stay None 200 / Crescent 1 /
+   Zs 1 / Blocker 1 / Rosette 1.
 
 `--channel-mode additive` keeps RFC 002 stacking (`--bead-scoring` then
 zag+braid add) and 2–3 bead groups.
@@ -54,7 +56,7 @@ aggregation changes. `--bead-scoring` is ignored under independent-max.
 | Overwhelm | `Σ(mismatch − match) >= weight` | same inequality, new totals |
 | HUD `tile_score` | `(weight + Σ match, Σ mismatch)` | same shape, per-edge maxes |
 | `classify_bead_capture` | with vs without bead fields, then aggregate | same, through max |
-| Lane paint | every firing channel | **unchanged** (visuals still show all lanes) |
+| Lane paint | every firing channel | only the max-match channel and the max-mismatch channel |
 
 ### Worked edges (simplest hand reading)
 
@@ -74,44 +76,43 @@ survives). The productive case is a bead **plus another ring**.
 
 ## Generation
 
-Live `sample_tile_with` on this branch (CorePass is still RFC-only):
+Live `sample_tile_with` on this branch (CorePass is still RFC-only; this
+clustering rule is the live IndependentMax path):
 
 1. Color tree / ring count unchanged.
-2. Piece-level braid (`braid_numer / 7`, size 2 or 3, padding). Only heavy type.
+2. Each ring slot rolls a heavy coin (`braid_numer / 7`). Two or more
+   consecutive heavies become a braid. A lone or gapped heavy stays a light
+   slot (a 1-ring tile never braids). `--braids off` skips the heavy RNG.
 3. Each remaining **normal** slot: weighted draw 5:3:1 normal/zag/bead.
-   `--zags off` / `--beads off` drop that weight and skip its RNG.
+   `--zags off` / `--bead-chance 0` drop that weight and skip its RNG.
    Non-default `--zag-chance` / `--bead-chance` replace that type's weight
-   so collectors stay one knob (`--p1-deck bead` → bead weight 5).
+   so collectors stay one knob (`--p1-deck bead` → bead weight 5). There is
+   no `--beads` flag.
 
 `CorePass::base()` rarity chart (when wired) matches that light table:
-`light_weights = [5, 3, 1]`, heavy = braid only. See
+`light_weights = [5, 3, 1]`, heavy = braid only, consecutive ≥2. See
 [`rfc-000-000-00n-generation`](../rfc-000-000-00n-generation/README.md).
 
 Bead-heavy quota no longer forbids 1-bead tiles or requires a 3-bead tile
 (independent light rolls make triples rare). It still asks for ≥10 bead
 rings and ≥2 stacked (2+) bead tiles. Custom TOML may list a single bead.
 
+HUD lanes paint only the max-match channel and the max-mismatch channel
+(tie-break: match normal → bead → braid; mismatch normal → zag → bead →
+braid). Additive still paints every firing channel.
+
 ## Open design questions
 
-1. **Gapped CorePass heavies.** Live generation never emits a gapped braid
-   (the piece-level roll occupies the first 2–3 slots). The RFC CorePass
-   previously treated gapped heavies as beads. Simplest hand reading once
-   beads are light: gapped / lone heavy coins fall through to the 5:3:1
-   light election (they can become a single bead). Consecutive ≥2 heavies
-   stay a braid. Not wired; CorePass is still RFC-only on this stack.
-2. **`--zag-chance` / `--bead-chance` stuffing.** Independent-max maps
+1. **`--zag-chance` / `--bead-chance` stuffing.** Independent-max maps
    default `1` onto weights 3 and 1, and any other positive numerator onto
    that weight directly. That is simpler than a 7-denominator coin, but it
    is not the same as additive-mode `k/7`.
-3. **`--beads off` seed match.** Additive mode skipped a later bead roll so
-   the deal matched pre-bead. Independent-max elects zag and bead jointly,
-   so `--beads off` changes the zag/normal split (5:3:0 vs 5:3:1). Accepted
-   here; `--zags off --beads off` still skips light RNG after braid.
-4. **Whether HUD / lane paint should hide non-winning channels.** Chosen:
-   paint every firing channel; only the numeric totals use max.
-5. **Bead collector triples.** Dropped the ≥1 triple quota so bead-heavy
+2. **Bead collector triples.** Dropped the ≥1 triple quota so bead-heavy
    27-tile bags still form under 5:3:5 light stuffing. Revisit if collectors
    should force a 3-bead tile some other way.
+3. **Braid piece rate.** Per-slot `1/7` consecutive clustering is rarer
+   than the old piece-level 1/7 (1-ring tiles never braid). Collectors stuff
+   `braid_numer=7` so every 2–3 ring tile clusters into a braid.
 
 ## Tests
 
@@ -120,6 +121,10 @@ rings and ≥2 stacked (2+) bead tiles. Custom TOML may list a single bead.
 - `independent_max_braid_does_not_stack_with_leftover_normal`
 - `independent_max_mixed_bead_zag_braid_takes_per_kind_maxima`
 - `independent_max_light_election_is_five_three_one` (n=20000)
+- `consecutive_heavies_become_a_braid_lone_and_gapped_fall_through`
+- `independent_max_always_heavy_braids_two_and_three_rings_never_ones`
+- `independent_max_gapped_heavy_can_elect_a_single_bead`
+- `independent_max_hud_paints_only_the_two_winning_channels`
 
 RFC 002 additive table tests pin `--channel-mode additive`.
 

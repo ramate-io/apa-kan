@@ -14,9 +14,7 @@ use crate::config::GameConfig;
 use crate::deck::{
 	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
 };
-use crate::game::{
-	Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile, ZagMismatchCount,
-};
+use crate::game::{Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
@@ -963,7 +961,7 @@ fn refresh_view(
 			play.game.tile_at(arc.from),
 			play.game.tile_at(arc.to),
 			board.center(),
-			play.game.rules().zag_mismatch,
+			play.game.rules(),
 		);
 	}
 
@@ -1212,7 +1210,7 @@ fn spawn_arc(
 	from: Option<Tile>,
 	to: Option<Tile>,
 	center: NodeId,
-	zag_mismatch: ZagMismatchCount,
+	rules: &crate::game::RuleSet,
 ) {
 	let samples = arc.sample(visual::ARC_SAMPLES);
 	let pts: Vec<[f64; 2]> = samples
@@ -1223,7 +1221,7 @@ fn spawn_arc(
 		})
 		.collect();
 	let width = layout.arc_width;
-	let paint = visual::arc_paint_with(from, to, zag_mismatch);
+	let paint = visual::arc_paint_for_rules(from, to, rules);
 	let stripe_off = if visual::arc_touches_center(arc, center) {
 		f64::from(layout.stripe_off_center)
 	} else {
