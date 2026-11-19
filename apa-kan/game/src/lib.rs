@@ -3,8 +3,10 @@
 pub mod ai;
 pub mod bench_log;
 pub mod board;
+pub mod character_pass;
 pub mod characters;
 pub mod config;
+pub mod core_pass;
 pub mod deck;
 pub mod game;
 pub mod render;

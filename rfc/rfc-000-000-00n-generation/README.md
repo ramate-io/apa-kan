@@ -1,6 +1,6 @@
 # RFC 000-000-00n: Tile generation
 
-Follow-up to [rfc-001-001-007-character-library](../rfc-001-001-007-character-library/README.md). That RFC catalogs twenty-five character ids; this one assigns a character to a generated tile.
+Follow-up to [rfc-001-001-007-character-library](../rfc-001-001-007-character-library/README.md). That RFC catalogs twenty-five painted ids plus an explicit `faceless` id; this one assigns a character to a generated tile.
 
 ## Problem
 
@@ -20,6 +20,7 @@ core tile
   → exact CoreKey in the specific map?
         yes → authored set, pick tile.id % len
   → else neighborhood { c | cosine(tile, c) ≥ τ } minus fallback-reserved
+        (`faceless` may also have an embedding row and stay in S)
         non-empty → sort by id, pick tile.id % len
         empty     → fallback set, hash(tile.id) % len
 ```
@@ -382,9 +383,11 @@ Three tiers:
 2. **Aesthetic embedding** — sparse admin weights place a character in a frozen symbol space; unmapped tiles take a neighborhood under cosine τ, then the same `id % len` pick as the map.
 3. **Fallback set** — reserved ids used only when the neighborhood is empty.
 
-Keys and table rows use catalog ids (`teal-four-point-star`), not display names.
+Keys and table rows use catalog ids (`westerlit`), not display names.
 
-Owner is not part of the key. Mapped characters stay in the embedding so unmapped cousins can still land nearby. Fallback ids are omitted from the embedding so they cannot steal a neighborhood slot.
+Owner is not part of the key. Mapped characters stay in the embedding so unmapped cousins can still land nearby. Fallback ids are omitted from the embedding so they cannot steal a neighborhood slot, **except `faceless`**, which is allowed in the specific map, the embedding, and the fallback set.
+
+`faceless` is an explicit catalog id (no PNG). Generation never uses `Option::None` for the empty face.
 
 ### Specific mapping
 
@@ -432,7 +435,7 @@ Counts, not a binary “has braid.” Inner vs outer slot order is not a v1 dim.
 **Admin insert (sparse).** A new character is a row of weights on the attributes the author cares about. Omitted keys are 0: no opinion, not “a bit of everything.” An all-zero row is invalid.
 
 ```toml
-id = "pink-claw-marks"
+id = "skulkenflock"
 color.lavender-pink = 2.0
 type.zag = 1.0
 emblem.zs = 0.8
@@ -467,17 +470,17 @@ Do not take argmin (every teal tile would collapse onto one face). Optional cap:
 
 ### Fallback set
 
-A disjoint reserve of catalog ids. Used only on a τ miss (neighborhood empty). Pick `hash(tile.id) % set.len()`. These ids are excluded from cosine neighborhoods.
+A disjoint reserve of catalog ids. Used only on a τ miss (neighborhood empty). Pick `hash(tile.id) % set.len()`. These ids are excluded from cosine neighborhoods, except `faceless`, which may also have an embedding row and appear in specific-map sets. v1 fallback is `zaster`, `nocunist`, `faceless`.
 
 ## Implementation
 
 Not wired yet. When it is:
 
 - `CorePass` + `RingPass` / `ColorPass` / `MarkingPass` / `EmblemPass` replace `sample_tile_with` knobs and `DeckArchetype` stuffing. `CorePass::base()` is the rarity chart; named presets are rewards/collectors.
-- Character pass tables next to the catalog (`assets/characters/pass.vN.toml`): specific maps, sparse relation rows, τ, optional k, fallback ids
-- `characters.rs`: `CoreKey`, `encode_tile`, `assign_character(tile, version)`
-- `Tile.character: Option<CharacterId>` — cosmetic; not in `kind_index` / search / overwhelm
-- Tests: map hits, sparse color-only rows are not the origin, preview-style neighborhoods, τ miss → fallback, version freeze; `CorePass::base()` replay from `id`
+- Character pass tables next to the catalog (`assets/characters/pass/vN/*.json`): specific maps, sparse relation rows, τ, optional k, fallback ids
+- `characters.rs`: `CoreKey`, `encode_tile`, `assign_character(tile, version)`, catalog id `faceless`
+- `Tile.character: CharacterId` — cosmetic; always set; `faceless` is the empty face. Not in `kind_index` / search / overwhelm
+- Tests: map hits, faceless via specific / embedding / fallback, sparse color-only rows are not the origin, preview-style neighborhoods, τ miss → fallback, version freeze; `CorePass::base()` replay from `id`
 
 ## Alternatives considered
 
@@ -491,9 +494,9 @@ Not wired yet. When it is:
 
 ## Open questions
 
-1. Always-on character vs a rarer roll (still open in 007).
-2. Numeric τ / k after plotting the twenty-five against a sampled core deal.
+1. **Always-on vs rarer roll.** Decided: every generated tile gets a [`CharacterId`]. The empty face is the explicit catalog id `faceless`, not `None`. `faceless` can be selected by the specific map, the embedding neighborhood, or fallback. Fixtures default to `faceless`.
+2. **Numeric τ / k.** Decided for v1: τ = **0.32**, k unused. Neighborhood then `id % |S|`, not argmin.
 3. Inner/outer ring order as a later dim.
-4. Fallback membership: a hard-reserved disjoint set vs “catalog minus mapped.”
-5. Personal names vs catalog ids in the specific-map examples.
-6. Whether a color-only row spreads across all four types or only the three common colors.
+4. **Fallback membership.** Decided: a hard-reserved set (`zaster`, `nocunist`, `faceless`). Other fallback ids stay out of the embedding; `faceless` is the exception that may appear in all three tables.
+5. Personal names vs catalog ids in the specific-map examples. v1 uses catalog ids.
+6. Whether a color-only row spreads across all four types or only the three common colors. v1 spreads across all four types.
