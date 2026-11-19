@@ -579,10 +579,6 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 	if braid_n == 1 {
 		return Err("a braid occupies 2 or 3 ring slots".into());
 	}
-	let bead_n = types.iter().take(out.len()).filter(|t| t.is_bead()).count();
-	if bead_n == 1 {
-		return Err("bead rings occupy 2 or 3 slots on a tile".into());
-	}
 	Ok((out, types))
 }
 
@@ -981,7 +977,7 @@ count = 1
 	}
 
 	#[test]
-	fn custom_toml_rejects_a_single_bead_ring() {
+	fn custom_toml_allows_a_single_bead_ring() {
 		let toml = r#"
 name = "bead1"
 shuffle = false
@@ -992,8 +988,14 @@ weight = 1
 dots = 1
 count = 1
 "#;
-		let err = parse_toml(toml).unwrap_err();
-		assert!(err.contains("bead rings occupy 2 or 3"), "{err}");
+		let s = parse_toml(toml).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		let t = game.bench(Player::One)[0];
+		assert_eq!(t.bead_ring_count(), 1);
+		assert!(t.ring_is_bead(1));
+		assert!(!t.ring_is_bead(0));
+		assert!(!t.ring_is_zag(0));
+		assert!(!t.ring_is_braid(0));
 	}
 
 	#[test]
