@@ -1,24 +1,35 @@
 # Character illustrations
 
-Fourteen square PNG medallions for later tile/deck generation. Filenames are
-placeholder descriptions from the source art.
+Twenty-five PNG medallions for later tile/deck generation. Ids are the file
+stem; display names title-case that stem with dashes turned into spaces.
 
 | Id | File | Display name |
 |---|---|---|
-| `blue-diamond-lattice` | `01-blue-diamond-lattice.png` | Blue Diamond Lattice |
-| `green-pink-diamond-heart` | `02-green-pink-diamond-heart.png` | Green Pink Diamond Heart |
-| `crossed-needles` | `03-crossed-needles.png` | Crossed Needles |
-| `spirograph-diamond` | `04-spirograph-diamond.png` | Spirograph Diamond |
-| `bird-of-paradise-pot` | `05-bird-of-paradise-pot.png` | Bird Of Paradise Pot |
-| `twin-star-comets` | `06-twin-star-comets.png` | Twin Star Comets |
-| `star-medallion` | `07-star-medallion.png` | Star Medallion |
-| `teal-four-point-star` | `08-teal-four-point-star.png` | Teal Four Point Star |
-| `black-beaked-face` | `09-black-beaked-face.png` | Black Beaked Face |
-| `pink-claw-marks` | `10-pink-claw-marks.png` | Pink Claw Marks |
-| `three-rosettes` | `11-three-rosettes.png` | Three Rosettes |
-| `petal-diamond-cluster` | `12-petal-diamond-cluster.png` | Petal Diamond Cluster |
-| `lavender-square-spirograph` | `13-lavender-square-spirograph.png` | Lavender Square Spirograph |
-| `green-hatched-bowl` | `14-green-hatched-bowl.png` | Green Hatched Bowl |
+| `cadredl` | `cadredl.png` | Cadredl |
+| `captain` | `captain.png` | Captain |
+| `cosam` | `cosam.png` | Cosam |
+| `harteld` | `harteld.png` | Harteld |
+| `hartish` | `hartish.png` | Hartish |
+| `lanyan` | `lanyan.png` | Lanyan |
+| `magrenedl` | `magrenedl.png` | Magrenedl |
+| `melets` | `melets.png` | Melets |
+| `merenmarch` | `merenmarch.png` | Merenmarch |
+| `nocunfall` | `nocunfall.png` | Nocunfall |
+| `nocunist` | `nocunist.png` | Nocunist |
+| `ocunbun` | `ocunbun.png` | Ocunbun |
+| `sam` | `sam.png` | Sam |
+| `savist` | `savist.png` | Savist |
+| `skulkenflock` | `skulkenflock.png` | Skulkenflock |
+| `springfall` | `springfall.png` | Springfall |
+| `squib` | `squib.png` | Squib |
+| `tellbrok` | `tellbrok.png` | Tellbrok |
+| `tiblone` | `tiblone.png` | Tiblone |
+| `tissen` | `tissen.png` | Tissen |
+| `toppenpol` | `toppenpol.png` | Toppenpol |
+| `waking-rose` | `waking-rose.png` | Waking Rose |
+| `warsam` | `warsam.png` | Warsam |
+| `westerlit` | `westerlit.png` | Westerlit |
+| `zaster` | `zaster.png` | Zaster |
 
 `manifest.toml` is the source of truth for id / Bevy path / display name.
 `CharacterLibrary` in `apa-kan/game/src/characters.rs` parses it.

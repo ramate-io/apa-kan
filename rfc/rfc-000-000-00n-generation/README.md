@@ -1,6 +1,6 @@
 # RFC 000-000-00n: Tile generation
 
-Follow-up to [rfc-001-001-007-character-library](../rfc-001-001-007-character-library/README.md). That RFC catalogs fourteen character ids; this one assigns a character to a generated tile.
+Follow-up to [rfc-001-001-007-character-library](../rfc-001-001-007-character-library/README.md). That RFC catalogs twenty-five character ids; this one assigns a character to a generated tile.
 
 ## Problem
 
@@ -485,14 +485,14 @@ Not wired yet. When it is:
 - **Type counts + color histogram.** Loses which color is the zag.
 - **Outer-product of the admin’s sparse color and type maps.** A color-only insert is the zero vector.
 - **Unspecified = uniform over colors.** Washes out type-only characters.
-- **Train / CLIP / pHash the PNGs.** Undiffable, ignores authored weights, fourteen points.
+- **Train / CLIP / pHash the PNGs.** Undiffable, ignores authored weights, twenty-five points.
 - **Always nearest neighbor.** Zero variety inside a color family.
 - **pHash(tile render, character PNG) as the τ gate.** Different pixel domains.
 
 ## Open questions
 
 1. Always-on character vs a rarer roll (still open in 007).
-2. Numeric τ / k after plotting the fourteen against a sampled core deal.
+2. Numeric τ / k after plotting the twenty-five against a sampled core deal.
 3. Inner/outer ring order as a later dim.
 4. Fallback membership: a hard-reserved disjoint set vs “catalog minus mapped.”
 5. Personal names vs catalog ids in the specific-map examples.
