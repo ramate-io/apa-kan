@@ -128,6 +128,9 @@ braid). Additive still paints every firing channel.
 
 RFC 002 additive table tests pin `--channel-mode additive`.
 
-Light old-vs-new H2H (doubles allowed, zags on, `zag_mismatch=sum`):
+Light old-vs-new H2H and a shallow 100-game independent-max package
+(doubles allowed, zags on, `zag_mismatch=sum`):
 [`apa-kan/game/benchmark_results/independent_max/`](../../apa-kan/game/benchmark_results/independent_max/).
-Quote numbers only from those committed logs.
+Quote numbers only from those committed logs. The light independent-max
+log predates consecutive-heavy clustering; the shallow log is the live
+generator.
