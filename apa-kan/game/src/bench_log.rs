@@ -76,6 +76,14 @@ fn skip_none(v: &String) -> bool {
 	v == "none"
 }
 
+fn default_faceless() -> String {
+	crate::characters::FACELESS_ID.to_string()
+}
+
+fn skip_faceless(v: &String) -> bool {
+	v == crate::characters::FACELESS_ID
+}
+
 fn default_emblem_weights() -> String {
 	EmblemWeights::default().label()
 }
@@ -166,9 +174,10 @@ pub struct TileLog {
 	/// Emblem slot. Absent on logs from before emblems; those replay as none.
 	#[serde(default = "default_none", skip_serializing_if = "skip_none")]
 	pub emblem: String,
-	/// Cosmetic character id. Absent on logs from before the character pass.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub character: Option<String>,
+	/// Cosmetic character id. Absent on logs from before the character pass;
+	/// those replay as [`crate::characters::FACELESS_ID`].
+	#[serde(default = "default_faceless", skip_serializing_if = "skip_faceless")]
+	pub character: String,
 	pub rings: Vec<RingLog>,
 }
 
@@ -197,7 +206,7 @@ impl TileLog {
 			bead_rings: tile.bead_ring_count(),
 			capture: tile.capture.name().to_string(),
 			emblem: tile.emblem.name().to_string(),
-			character: tile.character.map(|c| c.as_str().to_string()),
+			character: tile.character.as_str().to_string(),
 			rings,
 		}
 	}
@@ -220,7 +229,8 @@ impl TileLog {
 				Ok((TileColor::parse(&r.c)?, typ))
 			})
 			.collect();
-		let character = self.character.as_deref().and_then(crate::characters::CharacterId::parse);
+		let character = crate::characters::CharacterId::parse(&self.character)
+			.unwrap_or_else(crate::characters::CharacterId::faceless);
 		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.n_rings, self.dots)
 			.with_capture(CaptureMark::parse(&self.capture).unwrap_or(CaptureMark::Triangle))
 			.with_emblem(Emblem::parse(&self.emblem).unwrap_or(Emblem::None))

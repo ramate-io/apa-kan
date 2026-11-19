@@ -1,7 +1,11 @@
 # Character illustration library.
 # Paths are Bevy-relative (from apa-kan/game/assets/).
 # Ids drop the numeric filename prefix; display names are title-cased from the
-# remaining slug. Not yet wired into tile or deck generation.
+# remaining slug. `faceless` is an explicit no-art catalog id (no PNG).
+
+[[characters]]
+id = "faceless"
+display_name = "Faceless"
 
 [[characters]]
 id = "blue-diamond-lattice"

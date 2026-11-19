@@ -1,6 +1,11 @@
 {
   "rows": [
     {
+      "id": "faceless",
+      "type": { "normal": 1.2 },
+      "color": { "green": 0.5, "blue": 0.5, "orange": 0.5 }
+    },
+    {
       "id": "blue-diamond-lattice",
       "color": { "blue": 2.0 },
       "type": { "normal": 0.5 }

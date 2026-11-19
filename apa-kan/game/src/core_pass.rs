@@ -148,7 +148,7 @@ impl CoreTile {
 		self,
 		id: u32,
 		owner: crate::game::Player,
-		character: Option<crate::characters::CharacterId>,
+		character: crate::characters::CharacterId,
 	) -> Tile {
 		let n = self.n_rings().clamp(1, MAX_COLOR_RINGS as usize);
 		let first = self.rings.first().copied().unwrap_or(TileColor::Green);
@@ -614,14 +614,16 @@ mod tests {
 	#[test]
 	fn into_tile_keeps_core_fields() {
 		let core = CorePass::base().run(TileId(12345));
-		let tile = core.clone().into_tile(12345, Player::One, None);
+		let tile =
+			core.clone()
+				.into_tile(12345, Player::One, crate::characters::CharacterId::faceless());
 		assert_eq!(tile.id, 12345);
 		assert_eq!(tile.n_rings as usize, core.n_rings());
 		assert_eq!(tile.dots, core.dots);
 		assert_eq!(tile.capture, core.capture);
 		assert_eq!(tile.emblem, core.emblem);
 		assert_eq!(tile.weight, tile.n_rings);
-		assert!(tile.character.is_none());
+		assert!(tile.character.is_faceless());
 		assert_eq!(CoreTile::from_tile(&tile), core);
 	}
 

@@ -1,10 +1,11 @@
 # Character illustrations
 
-Fourteen square PNG medallions for later tile/deck generation. Filenames are
-placeholder descriptions from the source art.
+Fourteen square PNG medallions plus an explicit **`faceless`** catalog id (no
+PNG). Filenames are placeholder descriptions from the source art.
 
 | Id | File | Display name |
 |---|---|---|
+| `faceless` | — | Faceless |
 | `blue-diamond-lattice` | `01-blue-diamond-lattice.png` | Blue Diamond Lattice |
 | `green-pink-diamond-heart` | `02-green-pink-diamond-heart.png` | Green Pink Diamond Heart |
 | `crossed-needles` | `03-crossed-needles.png` | Crossed Needles |
@@ -30,7 +31,12 @@ fallback set, plus `config.json` for version / τ / k). They sit behind
 Bevy `AssetServer` paths (once wired) are `characters/<filename>.png`, relative
 to this crate's `assets/` folder.
 
-Generation assigns a character on each tile (cosmetic). The PNG renderer
-draws the medallion in the tile center; see
+Generation assigns a character on each tile (cosmetic), including `faceless`.
+The PNG renderer draws painted medallions in the tile center and leaves
+`faceless` as the plain inner disc. See
 `apa-kan/game/screenshots/generation/` and
 [rfc-000-000-00n-generation](../../../../rfc/rfc-000-000-00n-generation/README.md).
+
+`faceless` may appear in the specific map, the aesthetic embedding, and the
+fallback set. It is the only catalog id allowed to sit in both embedding and
+fallback.

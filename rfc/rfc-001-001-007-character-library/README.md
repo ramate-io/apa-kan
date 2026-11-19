@@ -90,8 +90,10 @@ circular medallion on a black field.
 
 ## Open questions
 
-1. **How does a character attach to a tile?** One optional slot (like emblem),
-   always-on, or a rarer roll? Not decided; do not generate yet.
+1. **How does a character attach to a tile?** Decided in
+   [rfc-000-000-00n-generation](../rfc-000-000-00n-generation/README.md):
+   always a `CharacterId`. The empty face is the explicit catalog id
+   `faceless` (no PNG), not `None`.
 2. **Where does it sit on the face?** The preview places a circular clip of the
    PNG in the **center**, inside the innermost ring, under the ring strokes.
    Cream medallions on P1's light fill (and the black-beaked face on P2's dark

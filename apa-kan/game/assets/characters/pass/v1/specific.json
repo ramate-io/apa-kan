@@ -61,7 +61,14 @@
       "dots": 1,
       "capture": "dot",
       "emblem": "none",
-      "characters": ["blue-diamond-lattice"]
+      "characters": ["blue-diamond-lattice", "faceless"]
+    },
+    {
+      "rings": [["maroon", "zag"]],
+      "dots": 3,
+      "capture": "dot",
+      "emblem": "none",
+      "characters": ["faceless"]
     },
     {
       "rings": [["green", "normal"], ["lavender-pink", "normal"]],

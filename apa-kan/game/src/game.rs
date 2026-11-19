@@ -704,9 +704,10 @@ pub struct Tile {
 	/// the empty slot. [`Self::cost`] is `n_rings` plus [`Emblem::cost`],
 	/// floored at [`TILE_COST_MIN`].
 	pub emblem: Emblem,
-	/// Cosmetic catalog character. Not part of [`Self::kind_index`],
-	/// overwhelm, or deck cost.
-	pub character: Option<CharacterId>,
+	/// Cosmetic catalog character. Always a [`CharacterId`], including the
+	/// explicit [`crate::characters::FACELESS_ID`] empty face. Not part of
+	/// [`Self::kind_index`], overwhelm, or deck cost.
+	pub character: CharacterId,
 }
 
 /// Kind space: color-state × dots. Weight is the ring-slot count, already
@@ -777,7 +778,7 @@ impl Tile {
 			dots,
 			capture: CaptureMark::Triangle,
 			emblem: Emblem::None,
-			character: None,
+			character: CharacterId::faceless(),
 		}
 	}
 
@@ -793,8 +794,8 @@ impl Tile {
 		self
 	}
 
-	/// Fixtures and constructors default to no character.
-	pub fn with_character(mut self, character: Option<CharacterId>) -> Self {
+	/// Fixtures and constructors default to [`CharacterId::faceless`].
+	pub fn with_character(mut self, character: CharacterId) -> Self {
 		self.character = character;
 		self
 	}
@@ -3766,7 +3767,9 @@ pub fn sample_tile_with(
 /// Core pass + character pass for a known [`Tile::id`].
 pub fn sample_tile_from_pass(owner: Player, id: u32, cfg: &crate::core_pass::CorePass) -> Tile {
 	let core = cfg.run(crate::core_pass::TileId(id));
-	let character = crate::character_pass::bundled().map(|p| p.assign(&core, id));
+	let character = crate::character_pass::bundled()
+		.map(|p| p.assign(&core, id))
+		.unwrap_or_else(CharacterId::faceless);
 	core.into_tile(id, owner, character)
 }
 
@@ -6697,7 +6700,13 @@ mod tests {
 				braided += 1;
 				assert!(b == 2 || b == 3);
 			}
-			assert!(t.character.is_some(), "character pass always assigns");
+			assert!(
+				crate::characters::CharacterLibrary::load()
+					.unwrap()
+					.get(t.character.as_str())
+					.is_some(),
+				"character pass always assigns a catalog id"
+			);
 		}
 		assert!(braided > 10, "default mixed should still emit some braids, got {braided}");
 		let mut rng = StdRng::seed_from_u64(6);
@@ -8796,7 +8805,7 @@ mod tests {
 		assert_eq!(t.capture, CaptureMark::Triangle);
 		assert_eq!(t.dots, 2);
 		assert_eq!(t.emblem, Emblem::None);
-		assert!(t.character.is_none());
+		assert!(t.character.is_faceless());
 		assert_eq!(t.cost(), t.n_rings);
 	}
 

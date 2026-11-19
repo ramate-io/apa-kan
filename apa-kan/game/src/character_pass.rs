@@ -1,7 +1,8 @@
 //! Character assignment pass: specific map, aesthetic embedding, fallback.
 //!
 //! A pure function of `(core tile, tile.id, pass version)`. Cosmetic: does
-//! not affect overwhelm, search `kind_index`, or deck cost.
+//! not affect overwhelm, search `kind_index`, or deck cost. Always returns a
+//! [`CharacterId`], including [`crate::characters::FACELESS_ID`].
 //!
 //! The three tables the RFC calls for (specific mapping, aesthetic embedding,
 //! fallback set) sit behind [`CharacterTables`] so a later database / admin
@@ -238,7 +239,7 @@ impl JsonCharacterTables {
 			if !seen_fb.insert(id.clone()) {
 				return Err(format!("duplicate fallback id '{id}'"));
 			}
-			if seen_rows.contains(id) {
+			if seen_rows.contains(id) && id != crate::characters::FACELESS_ID {
 				return Err(format!(
 					"fallback id '{id}' also appears in the embedding (must be disjoint)"
 				));
@@ -362,7 +363,7 @@ impl<T: CharacterTables> CharacterPass<T> {
 		}
 		let mut encoded = Vec::new();
 		for row in tables.embedding_rows() {
-			if fallback.contains(row.id.as_str()) {
+			if fallback.contains(row.id.as_str()) && row.id != crate::characters::FACELESS_ID {
 				return Err(format!("embedding row '{}' is reserved for fallback", row.id));
 			}
 			let ch = library
@@ -635,11 +636,13 @@ mod tests {
 	fn json_tables_load_and_cover_the_catalog() {
 		let tables = JsonCharacterTables::load_v1().unwrap();
 		assert_eq!(tables.version(), 1);
-		assert!(tables.tau() > 0.0 && tables.tau() < 1.0);
+		assert_eq!(tables.tau(), 0.32);
 		assert!(tables.k().is_none());
-		assert_eq!(tables.fallback_ids().len(), 2);
+		assert_eq!(tables.fallback_ids().len(), 3);
 		assert!(tables.fallback_ids().contains(&"spirograph-diamond".to_string()));
 		assert!(tables.fallback_ids().contains(&"star-medallion".to_string()));
+		assert!(tables.fallback_ids().contains(&"faceless".to_string()));
+		assert!(tables.embedding_rows().iter().any(|r| r.id == "faceless"));
 		let lib = CharacterLibrary::load().unwrap();
 		let mut covered: BTreeSet<&str> =
 			tables.fallback_ids().iter().map(String::as_str).collect();
@@ -669,6 +672,14 @@ mod tests {
 		)
 		.unwrap_err();
 		assert!(err.contains("disjoint") || err.contains("also appears"), "{err}");
+
+		JsonCharacterTables::parse(
+			r#"{"version":1,"tau":0.5,"k":null}"#,
+			r#"{"maps":[]}"#,
+			r#"{"rows":[{"id":"faceless","type":{"normal":1.0}}]}"#,
+			r#"{"ids":["faceless","spirograph-diamond"]}"#,
+		)
+		.expect("faceless may sit in both embedding and fallback");
 	}
 
 	#[test]
@@ -780,6 +791,43 @@ mod tests {
 	}
 
 	#[test]
+	fn specific_mapping_can_assign_faceless() {
+		let p = pass();
+		let tile =
+			core_with(&[(TileColor::Maroon, RingType::Zag)], 3, CaptureMark::Dot, Emblem::None);
+		assert!(p.assign(&tile, 0).is_faceless());
+		assert!(p.assign(&tile, 99).is_faceless());
+		let mixed = core_with(
+			&[(TileColor::Blue, RingType::Normal), (TileColor::Blue, RingType::Normal)],
+			1,
+			CaptureMark::Dot,
+			Emblem::None,
+		);
+		assert_eq!(p.assign(&mixed, 0).as_str(), "blue-diamond-lattice");
+		assert!(p.assign(&mixed, 1).is_faceless());
+	}
+
+	#[test]
+	fn embedding_neighborhood_can_assign_faceless() {
+		let tables = JsonCharacterTables::parse(
+			r#"{"version":1,"tau":0.32,"k":null}"#,
+			r#"{"maps":[]}"#,
+			r#"{"rows":[{"id":"faceless","type":{"normal":2.0},"color":{"green":1.0}}]}"#,
+			r#"{"ids":["faceless","spirograph-diamond"]}"#,
+		)
+		.unwrap();
+		let p = CharacterPass::new(tables, CharacterLibrary::load().unwrap()).unwrap();
+		let tile = core_with(
+			&[(TileColor::Green, RingType::Normal)],
+			1,
+			CaptureMark::Triangle,
+			Emblem::None,
+		);
+		assert!(p.assign(&tile, 0).is_faceless(), "faceless embedding row is in the neighborhood");
+		assert!(p.assign(&tile, 7).is_faceless());
+	}
+
+	#[test]
 	fn tau_miss_uses_fallback_hash() {
 		let tables = JsonCharacterTables::parse(
 			r#"{"version":1,"tau":0.99,"k":null}"#,
@@ -806,6 +854,26 @@ mod tests {
 	}
 
 	#[test]
+	fn fallback_can_assign_faceless() {
+		let tables = JsonCharacterTables::parse(
+			r#"{"version":1,"tau":0.99,"k":null}"#,
+			r#"{"maps":[]}"#,
+			r#"{"rows":[{"id":"teal-four-point-star","color":{"teal":2.0}}]}"#,
+			r#"{"ids":["faceless"]}"#,
+		)
+		.unwrap();
+		let p = CharacterPass::new(tables, CharacterLibrary::load().unwrap()).unwrap();
+		let tile = core_with(
+			&[(TileColor::Green, RingType::Normal)],
+			1,
+			CaptureMark::Triangle,
+			Emblem::None,
+		);
+		assert!(p.assign(&tile, 0).is_faceless());
+		assert!(p.assign(&tile, 7).is_faceless());
+	}
+
+	#[test]
 	fn assign_is_deterministic_for_core_pass_ids() {
 		let p = pass();
 		let cfg = CorePass::base();
@@ -824,11 +892,13 @@ mod tests {
 			let core = cfg.run(TileId(id));
 			let ch = p.assign(&core, id);
 			assert!(lib.get(ch.as_str()).is_some(), "{}", ch.as_str());
-			let tile = core.into_tile(id, Player::One, Some(ch));
-			assert_eq!(tile.character, Some(ch));
+			let tile = core.into_tile(id, Player::One, ch);
+			assert_eq!(tile.character, ch);
 			assert_eq!(
 				tile.kind_index(),
-				CoreTile::from_tile(&tile).into_tile(id, Player::One, None).kind_index()
+				CoreTile::from_tile(&tile)
+					.into_tile(id, Player::One, CharacterId::faceless())
+					.kind_index()
 			);
 		}
 	}

@@ -603,8 +603,10 @@ fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
 	draw_tile_preview(img, c, r, tile, character_art(tile.character));
 }
 
-fn character_art(id: Option<CharacterId>) -> Option<&'static RgbaImage> {
-	let id = id?;
+fn character_art(id: CharacterId) -> Option<&'static RgbaImage> {
+	if id.is_faceless() {
+		return None;
+	}
 	let idx = id.index()?;
 	let cache = character_art_cache();
 	cache.get(idx).and_then(|img| img.as_ref())
@@ -619,7 +621,7 @@ fn character_art_cache() -> &'static [Option<RgbaImage>] {
 		lib.all()
 			.iter()
 			.map(|ch| {
-				let path = lib.asset_path(ch);
+				let path = lib.asset_path(ch)?;
 				std::fs::read(&path).ok().and_then(|bytes| {
 					image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok().map(
 						|img| {
@@ -1175,7 +1177,7 @@ mod tests {
 		use std::path::PathBuf;
 
 		let lib = CharacterLibrary::load().unwrap();
-		assert_eq!(lib.len(), 14);
+		assert_eq!(lib.len(), 15);
 		let mut game = Game::empty(RuleSet::default());
 		let specs = character_preview_specs(&mut game);
 		assert_eq!(specs.len(), 14);
@@ -1189,7 +1191,9 @@ mod tests {
 		let mut arts: Vec<RgbaImage> = Vec::with_capacity(specs.len());
 		for spec in &specs {
 			let ch = lib.get(spec.id).unwrap_or_else(|| panic!("missing character {}", spec.id));
-			arts.push(load_preview_art(&lib.asset_path(ch)));
+			arts.push(load_preview_art(
+				&lib.asset_path(ch).unwrap_or_else(|| panic!("character {} has no PNG", spec.id)),
+			));
 		}
 
 		for (i, spec) in specs.iter().enumerate() {
@@ -1260,15 +1264,32 @@ mod tests {
 		let pass = crate::character_pass::CharacterPass::v1().unwrap();
 		let mut tiles = Vec::new();
 		let mut labels = Vec::new();
-		for i in 0..15u32 {
+		for i in 0..14u32 {
 			let id = 1000 + i * 17;
 			let core = cfg.run(TileId(id));
 			let ch = pass.assign(&core, id);
 			let tile = sample_tile_from_pass(Player::One, id, &cfg);
-			assert_eq!(tile.character, Some(ch));
+			assert_eq!(tile.character, ch);
 			labels.push(ch.as_str().to_string());
 			tiles.push(tile);
 		}
+		// Always include an explicit faceless tile so the sheet shows the
+		// empty-center outcome next to painted faces.
+		let faceless_core = crate::core_pass::CoreTile {
+			ring_type: vec![crate::game::RingType::Zag],
+			rings: vec![crate::game::TileColor::Maroon],
+			dots: 3,
+			capture: crate::game::CaptureMark::Dot,
+			emblem: crate::game::Emblem::None,
+		};
+		let faceless_id = 0u32;
+		assert_eq!(pass.assign(&faceless_core, faceless_id).as_str(), "faceless");
+		tiles.push(faceless_core.into_tile(
+			faceless_id,
+			Player::One,
+			crate::characters::CharacterId::faceless(),
+		));
+		labels.push("faceless".into());
 
 		let shot_dir =
 			std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots/generation");
