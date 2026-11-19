@@ -2,66 +2,122 @@
   "rows": [
     {
       "id": "faceless",
-      "type": { "normal": 1.2 },
-      "color": { "green": 0.5, "blue": 0.5, "orange": 0.5 }
+      "type": { "normal": 0.9 },
+      "color": { "green": 0.35, "blue": 0.35, "orange": 0.35 }
     },
     {
-      "id": "blue-diamond-lattice",
-      "color": { "blue": 2.0 },
-      "type": { "normal": 0.5 }
+      "id": "tissen",
+      "color": { "blue": 1.6 },
+      "type": { "normal": 0.4 }
     },
     {
-      "id": "green-pink-diamond-heart",
-      "color": { "green": 1.5, "lavender-pink": 1.5 }
+      "id": "tellbrok",
+      "color": { "green": 1.2, "lavender-pink": 1.2 }
     },
     {
-      "id": "crossed-needles",
-      "type": { "zag": 2.0 },
+      "id": "melets",
+      "type": { "zag": 1.6 },
       "emblem": { "zs": 0.5 }
     },
     {
-      "id": "bird-of-paradise-pot",
-      "color": { "orange": 2.0 },
-      "type": { "bead": 0.8 }
+      "id": "tiblone",
+      "color": { "orange": 1.4, "teal": 0.6 },
+      "type": { "bead": 0.7 }
     },
     {
-      "id": "twin-star-comets",
-      "color": { "teal": 1.2, "blue": 1.0 },
+      "id": "nocunfall",
+      "color": { "teal": 1.2, "blue": 0.8 },
       "type": { "braid": 0.6 }
     },
     {
-      "id": "teal-four-point-star",
-      "color": { "teal": 2.0 }
+      "id": "westerlit",
+      "color": { "teal": 1.8 }
     },
     {
-      "id": "black-beaked-face",
-      "color": { "maroon": 2.0 }
+      "id": "magrenedl",
+      "color": { "maroon": 1.8 }
     },
     {
-      "id": "pink-claw-marks",
-      "color": { "lavender-pink": 2.0 },
-      "type": { "zag": 1.0 },
-      "emblem": { "zs": 0.8 }
+      "id": "skulkenflock",
+      "color": { "lavender-pink": 1.6 },
+      "type": { "zag": 0.8 },
+      "emblem": { "zs": 0.6 }
     },
     {
-      "id": "three-rosettes",
-      "emblem": { "rosette": 2.0 },
-      "marks": { "n_rings": 1.0 }
+      "id": "springfall",
+      "color": { "lavender-pink": 1.2 },
+      "emblem": { "rosette": 0.7 },
+      "marks": { "n_rings": 0.5 }
     },
     {
-      "id": "petal-diamond-cluster",
-      "color": { "lavender-pink": 1.0, "green": 0.8 },
-      "type": { "normal": 0.5 }
+      "id": "merenmarch",
+      "color": { "lavender-pink": 1.0, "green": 0.7 },
+      "type": { "normal": 0.4 }
     },
     {
-      "id": "lavender-square-spirograph",
-      "color": { "lavender-pink": 2.0 },
+      "id": "cadredl",
+      "color": { "lavender-pink": 1.6 },
       "type": { "braid": 0.5 }
     },
     {
-      "id": "green-hatched-bowl",
-      "color": { "green": 2.0 },
-      "emblem": { "crescent": 1.2 }
+      "id": "lanyan",
+      "color": { "green": 1.2 },
+      "emblem": { "crescent": 0.5 }
+    },
+    {
+      "id": "captain",
+      "color": { "blue": 1.4, "orange": 0.8 },
+      "marks": { "n_rings": 0.7 }
+    },
+    {
+      "id": "cosam",
+      "color": { "maroon": 1.2, "lavender-pink": 0.8 },
+      "type": { "zag": 0.7 }
+    },
+    {
+      "id": "harteld",
+      "color": { "orange": 1.4, "maroon": 0.6 },
+      "type": { "zag": 0.6 }
+    },
+    {
+      "id": "hartish",
+      "color": { "lavender-pink": 1.4, "maroon": 0.4 },
+      "type": { "zag": 0.5 }
+    },
+    {
+      "id": "ocunbun",
+      "color": { "teal": 1.1, "orange": 0.7, "lavender-pink": 0.5 },
+      "type": { "braid": 0.5 }
+    },
+    {
+      "id": "sam",
+      "color": { "maroon": 1.4 },
+      "type": { "zag": 1.0 }
+    },
+    {
+      "id": "savist",
+      "color": { "teal": 1.4, "blue": 0.6, "orange": 0.3 },
+      "marks": { "capture": { "triangle": 0.4 } }
+    },
+    {
+      "id": "squib",
+      "color": { "teal": 1.1, "orange": 0.8 },
+      "type": { "bead": 0.6 }
+    },
+    {
+      "id": "toppenpol",
+      "color": { "teal": 1.1, "blue": 1.0 },
+      "marks": { "dots": 0.8 }
+    },
+    {
+      "id": "waking-rose",
+      "color": { "blue": 1.1, "lavender-pink": 1.0 },
+      "type": { "braid": 0.5 }
+    },
+    {
+      "id": "warsam",
+      "color": { "blue": 1.4, "maroon": 0.4, "lavender-pink": 0.5 },
+      "type": { "zag": 0.4 }
     }
   ]
 }

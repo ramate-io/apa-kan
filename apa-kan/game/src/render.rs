@@ -1034,7 +1034,7 @@ fn glyph(c: char) -> [u8; 7] {
 		'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
 		'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
 		'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-		'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+		'J' => [0b01111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
 		'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
 		'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
 		'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
@@ -1177,10 +1177,10 @@ mod tests {
 		use std::path::PathBuf;
 
 		let lib = CharacterLibrary::load().unwrap();
-		assert_eq!(lib.len(), 15);
+		assert_eq!(lib.len(), 26);
 		let mut game = Game::empty(RuleSet::default());
 		let specs = character_preview_specs(&mut game);
-		assert_eq!(specs.len(), 14);
+		assert_eq!(specs.len(), 25);
 
 		let shot_dir =
 			std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots/characters");
@@ -1214,6 +1214,11 @@ mod tests {
 		sheet.save(shot_dir.join("character_contact_sheet.png")).unwrap();
 		if art_dir.is_dir() {
 			sheet.save(art_dir.join("character_contact_sheet.png")).unwrap();
+		}
+
+		let source = write_source_character_sheet(&specs, &arts);
+		if art_dir.is_dir() {
+			source.save(art_dir.join("character_library_contact_sheet.png")).unwrap();
 		}
 
 		let (neighbors, overlays) = character_neighbor_board(&specs, &arts);
@@ -1264,7 +1269,7 @@ mod tests {
 		let pass = crate::character_pass::CharacterPass::v1().unwrap();
 		let mut tiles = Vec::new();
 		let mut labels = Vec::new();
-		for i in 0..14u32 {
+		for i in 0..24u32 {
 			let id = 1000 + i * 17;
 			let core = cfg.run(TileId(id));
 			let ch = pass.assign(&core, id);
@@ -2327,8 +2332,21 @@ mod tests {
 
 	struct CharacterPreview {
 		id: &'static str,
-		label: &'static str,
+		label: String,
 		tile: crate::game::Tile,
+	}
+
+	fn character_display_name(id: &str) -> String {
+		id.split('-')
+			.map(|word| {
+				let mut chars = word.chars();
+				match chars.next() {
+					Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+					None => String::new(),
+				}
+			})
+			.collect::<Vec<_>>()
+			.join(" ")
 	}
 
 	fn character_preview_specs(game: &mut Game) -> Vec<CharacterPreview> {
@@ -2338,197 +2356,176 @@ mod tests {
 				.with_capture(capture)
 				.with_emblem(emblem)
 		};
-		vec![
-			CharacterPreview {
-				id: "blue-diamond-lattice",
-				label: "01 lattice",
-				tile: t(
-					Player::One,
-					&[
-						(TileColor::Green, RingType::Normal),
-						(TileColor::Blue, RingType::Normal),
-						(TileColor::Orange, RingType::Normal),
-					],
-					2,
-					CaptureMark::Dot,
-					Emblem::None,
-				),
-			},
-			CharacterPreview {
-				id: "green-pink-diamond-heart",
-				label: "02 heart",
-				tile: t(
-					Player::Two,
-					&[(TileColor::Green, RingType::Normal)],
-					1,
-					CaptureMark::Triangle,
-					Emblem::CrescentMoon,
-				),
-			},
-			CharacterPreview {
-				id: "crossed-needles",
-				label: "03 needles",
-				tile: t(
-					Player::One,
-					&[
-						(TileColor::Orange, RingType::Zag),
-						(TileColor::Blue, RingType::Zag),
-						(TileColor::Green, RingType::Normal),
-					],
-					3,
-					CaptureMark::Dot,
-					Emblem::TwoZagZs,
-				),
-			},
-			CharacterPreview {
-				id: "spirograph-diamond",
-				label: "04 spiro",
-				tile: t(
-					Player::Two,
-					&[(TileColor::Teal, RingType::Normal), (TileColor::Orange, RingType::Normal)],
-					2,
-					CaptureMark::Triangle,
-					Emblem::None,
-				),
-			},
-			CharacterPreview {
-				id: "bird-of-paradise-pot",
-				label: "05 bird",
-				tile: t(
-					Player::One,
-					&[
-						(TileColor::Blue, RingType::Normal),
-						(TileColor::Green, RingType::Normal),
-						(TileColor::Orange, RingType::Normal),
-					],
-					1,
-					CaptureMark::Dot,
-					Emblem::Blocker,
-				),
-			},
-			CharacterPreview {
-				id: "twin-star-comets",
-				label: "06 comets",
-				tile: t(
-					Player::Two,
-					&[
-						(TileColor::Green, RingType::Braid),
-						(TileColor::Blue, RingType::Braid),
-						(TileColor::Orange, RingType::Normal),
-					],
-					2,
-					CaptureMark::Triangle,
-					Emblem::Rosette,
-				),
-			},
-			CharacterPreview {
-				id: "star-medallion",
-				label: "07 star",
-				tile: t(
-					Player::One,
-					&[
-						(TileColor::Orange, RingType::Bead),
-						(TileColor::Blue, RingType::Bead),
-						(TileColor::Green, RingType::Normal),
-					],
-					3,
-					CaptureMark::Dot,
-					Emblem::None,
-				),
-			},
-			CharacterPreview {
-				id: "teal-four-point-star",
-				label: "08 teal star",
-				tile: t(
-					Player::Two,
-					&[(TileColor::Teal, RingType::Normal)],
-					1,
-					CaptureMark::Triangle,
-					Emblem::CrescentMoon,
-				),
-			},
-			CharacterPreview {
-				id: "black-beaked-face",
-				label: "09 beak",
-				tile: t(
-					Player::One,
-					&[
-						(TileColor::Maroon, RingType::Normal),
-						(TileColor::Teal, RingType::Normal),
-						(TileColor::Green, RingType::Normal),
-					],
-					2,
-					CaptureMark::Dot,
-					Emblem::None,
-				),
-			},
-			CharacterPreview {
-				id: "pink-claw-marks",
-				label: "10 claws",
-				tile: t(
-					Player::Two,
-					&[(TileColor::LavenderPink, RingType::Zag), (TileColor::Orange, RingType::Zag)],
-					2,
-					CaptureMark::Triangle,
-					Emblem::TwoZagZs,
-				),
-			},
-			CharacterPreview {
-				id: "three-rosettes",
-				label: "11 rosettes",
-				tile: t(
-					Player::One,
-					&[
-						(TileColor::Green, RingType::Braid),
-						(TileColor::Blue, RingType::Braid),
-						(TileColor::Orange, RingType::Braid),
-					],
-					1,
-					CaptureMark::Dot,
-					Emblem::Rosette,
-				),
-			},
-			CharacterPreview {
-				id: "petal-diamond-cluster",
-				label: "12 petals",
-				tile: t(
-					Player::Two,
-					&[(TileColor::Orange, RingType::Normal)],
-					3,
-					CaptureMark::Triangle,
-					Emblem::Blocker,
-				),
-			},
-			CharacterPreview {
-				id: "lavender-square-spirograph",
-				label: "13 lavender",
-				tile: t(
-					Player::One,
-					&[
-						(TileColor::LavenderPink, RingType::Normal),
-						(TileColor::Teal, RingType::Normal),
-					],
-					1,
-					CaptureMark::Dot,
-					Emblem::None,
-				),
-			},
-			CharacterPreview {
-				id: "green-hatched-bowl",
-				label: "14 bowl",
-				tile: t(
-					Player::Two,
-					&[
-						(TileColor::Green, RingType::Bead),
-						(TileColor::Blue, RingType::Normal),
-						(TileColor::Orange, RingType::Normal),
-					],
-					2,
-					CaptureMark::Triangle,
-					Emblem::None,
-				),
-			},
-		]
+		let templates: [(Player, &[(TileColor, RingType)], u8, CaptureMark, Emblem); 14] = [
+			(
+				Player::One,
+				&[
+					(TileColor::Green, RingType::Normal),
+					(TileColor::Blue, RingType::Normal),
+					(TileColor::Orange, RingType::Normal),
+				],
+				2,
+				CaptureMark::Dot,
+				Emblem::None,
+			),
+			(
+				Player::Two,
+				&[(TileColor::Green, RingType::Normal)],
+				1,
+				CaptureMark::Triangle,
+				Emblem::CrescentMoon,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Orange, RingType::Zag),
+					(TileColor::Blue, RingType::Zag),
+					(TileColor::Green, RingType::Normal),
+				],
+				3,
+				CaptureMark::Dot,
+				Emblem::TwoZagZs,
+			),
+			(
+				Player::Two,
+				&[(TileColor::Teal, RingType::Normal), (TileColor::Orange, RingType::Normal)],
+				2,
+				CaptureMark::Triangle,
+				Emblem::None,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Blue, RingType::Normal),
+					(TileColor::Green, RingType::Normal),
+					(TileColor::Orange, RingType::Normal),
+				],
+				1,
+				CaptureMark::Dot,
+				Emblem::Blocker,
+			),
+			(
+				Player::Two,
+				&[
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Braid),
+					(TileColor::Orange, RingType::Normal),
+				],
+				2,
+				CaptureMark::Triangle,
+				Emblem::Rosette,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Blue, RingType::Bead),
+					(TileColor::Green, RingType::Normal),
+				],
+				3,
+				CaptureMark::Dot,
+				Emblem::None,
+			),
+			(
+				Player::Two,
+				&[(TileColor::Teal, RingType::Normal)],
+				1,
+				CaptureMark::Triangle,
+				Emblem::CrescentMoon,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Maroon, RingType::Normal),
+					(TileColor::Teal, RingType::Normal),
+					(TileColor::Green, RingType::Normal),
+				],
+				2,
+				CaptureMark::Dot,
+				Emblem::None,
+			),
+			(
+				Player::Two,
+				&[(TileColor::LavenderPink, RingType::Zag), (TileColor::Orange, RingType::Zag)],
+				2,
+				CaptureMark::Triangle,
+				Emblem::TwoZagZs,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Braid),
+					(TileColor::Orange, RingType::Braid),
+				],
+				1,
+				CaptureMark::Dot,
+				Emblem::Rosette,
+			),
+			(
+				Player::Two,
+				&[(TileColor::Orange, RingType::Normal)],
+				3,
+				CaptureMark::Triangle,
+				Emblem::Blocker,
+			),
+			(
+				Player::One,
+				&[(TileColor::LavenderPink, RingType::Normal), (TileColor::Teal, RingType::Normal)],
+				1,
+				CaptureMark::Dot,
+				Emblem::None,
+			),
+			(
+				Player::Two,
+				&[
+					(TileColor::Green, RingType::Bead),
+					(TileColor::Blue, RingType::Normal),
+					(TileColor::Orange, RingType::Normal),
+				],
+				2,
+				CaptureMark::Triangle,
+				Emblem::None,
+			),
+		];
+		const IDS: &[&str] = &[
+			"cadredl",
+			"captain",
+			"cosam",
+			"harteld",
+			"hartish",
+			"lanyan",
+			"magrenedl",
+			"melets",
+			"merenmarch",
+			"nocunfall",
+			"nocunist",
+			"ocunbun",
+			"sam",
+			"savist",
+			"skulkenflock",
+			"springfall",
+			"squib",
+			"tellbrok",
+			"tiblone",
+			"tissen",
+			"toppenpol",
+			"waking-rose",
+			"warsam",
+			"westerlit",
+			"zaster",
+		];
+		IDS.iter()
+			.enumerate()
+			.map(|(i, id)| {
+				let (owner, rings, dots, capture, emblem) = templates[i % templates.len()];
+				CharacterPreview {
+					id,
+					label: character_display_name(id),
+					tile: t(owner, rings, dots, capture, emblem),
+				}
+			})
+			.collect()
 	}
 
 	fn load_preview_art(path: &std::path::Path) -> RgbaImage {
@@ -2566,7 +2563,7 @@ mod tests {
 		let bytes = upper.as_bytes();
 		let mut split = None;
 		for (i, &b) in bytes.iter().enumerate() {
-			if b == b'-' && i > 0 && i < max_chars {
+			if (b == b'-' || b == b' ') && i > 0 && i < max_chars {
 				split = Some(i);
 			}
 		}
@@ -2579,7 +2576,7 @@ mod tests {
 
 	fn write_generated_contact_sheet(tiles: &[crate::game::Tile], labels: &[String]) -> RgbaImage {
 		let cols = 5u32;
-		let rows = 3u32;
+		let rows = 5u32;
 		let cell = 340u32;
 		let label_h = 48u32;
 		let pad = 16u32;
@@ -2608,9 +2605,40 @@ mod tests {
 		img
 	}
 
+	fn write_source_character_sheet(specs: &[CharacterPreview], arts: &[RgbaImage]) -> RgbaImage {
+		let cols = 5u32;
+		let rows = 5u32;
+		let cell = 280u32;
+		let label_h = 28u32;
+		let pad = 16u32;
+		let w = pad + cols * (cell + pad);
+		let h = pad + rows * (cell + label_h + pad);
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img = image::RgbaImage::from_pixel(w, h, rgba(bg[0], bg[1], bg[2], 255));
+		let label = rgba(230, 230, 220, 255);
+		for (i, spec) in specs.iter().enumerate() {
+			let r = (i as u32) / cols;
+			let c = (i as u32) % cols;
+			let x = pad + c * (cell + pad);
+			let y = pad + r * (cell + label_h + pad);
+			let art = &arts[i];
+			let fit = cell - 16;
+			let scale = fit as f32 / art.width().max(art.height()) as f32;
+			let dw = (art.width() as f32 * scale).round().max(1.0) as u32;
+			let dh = (art.height() as f32 * scale).round().max(1.0) as u32;
+			let resized =
+				image::imageops::resize(art, dw, dh, image::imageops::FilterType::Triangle);
+			let ox = x + (cell - dw) / 2;
+			let oy = y + (cell - dh) / 2;
+			image::imageops::overlay(&mut img, &resized, i64::from(ox), i64::from(oy));
+			draw_text(&mut img, x + 8, y + cell + 6, &spec.label, label);
+		}
+		img
+	}
+
 	fn write_character_contact_sheet(specs: &[CharacterPreview], arts: &[RgbaImage]) -> RgbaImage {
 		let cols = 5u32;
-		let rows = 3u32;
+		let rows = 5u32;
 		let cell = 340u32;
 		let label_h = 28u32;
 		let pad = 16u32;
@@ -2628,7 +2656,7 @@ mod tests {
 			let cx = f64::from(x) + f64::from(cell) * 0.5;
 			let cy = f64::from(y) + f64::from(cell) * 0.5;
 			draw_tile_preview(&mut img, (cx, cy), tile_r, spec.tile, Some(&arts[i]));
-			draw_text(&mut img, x + 8, y + cell + 6, spec.label, label);
+			draw_text(&mut img, x + 8, y + cell + 6, &spec.label, label);
 		}
 		img
 	}
@@ -2655,9 +2683,10 @@ mod tests {
 	) -> (Game, Vec<(NodeId, &'a RgbaImage)>) {
 		let mut game = Game::empty(RuleSet::default());
 		let (a, b) = empty_inner_pair(&game);
-		game.place_tile(a, specs[0].tile);
-		game.place_tile(b, specs[4].tile);
-		(game, vec![(a, &arts[0]), (b, &arts[4])])
+		// Tissen (old lattice) beside Tiblone (updated bird).
+		game.place_tile(a, specs[19].tile);
+		game.place_tile(b, specs[18].tile);
+		(game, vec![(a, &arts[19]), (b, &arts[18])])
 	}
 
 	fn character_cluster_board<'a>(
@@ -2667,9 +2696,9 @@ mod tests {
 		let mut game = Game::empty(RuleSet::default());
 		let board = game.board().clone();
 		let center = board.center();
-		game.place_tile(center, specs[8].tile);
-		let mut overlays = vec![(center, &arts[8])];
-		let picks = [1usize, 2, 6, 9, 11, 13];
+		game.place_tile(center, specs[6].tile);
+		let mut overlays = vec![(center, &arts[6])];
+		let picks = [1usize, 14, 15, 18, 21, 22];
 		let mut pi = 0;
 		for id in 0..board.node_count() as NodeId {
 			if id == center || board.is_spawn(id) || game.tile_at(id).is_some() {

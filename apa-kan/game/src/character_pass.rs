@@ -639,8 +639,8 @@ mod tests {
 		assert_eq!(tables.tau(), 0.32);
 		assert!(tables.k().is_none());
 		assert_eq!(tables.fallback_ids().len(), 3);
-		assert!(tables.fallback_ids().contains(&"spirograph-diamond".to_string()));
-		assert!(tables.fallback_ids().contains(&"star-medallion".to_string()));
+		assert!(tables.fallback_ids().contains(&"zaster".to_string()));
+		assert!(tables.fallback_ids().contains(&"nocunist".to_string()));
 		assert!(tables.fallback_ids().contains(&"faceless".to_string()));
 		assert!(tables.embedding_rows().iter().any(|r| r.id == "faceless"));
 		let lib = CharacterLibrary::load().unwrap();
@@ -658,8 +658,8 @@ mod tests {
 		let err = JsonCharacterTables::parse(
 			r#"{"version":1,"tau":0.5,"k":null}"#,
 			r#"{"maps":[]}"#,
-			r#"{"rows":[{"id":"blue-diamond-lattice"}]}"#,
-			r#"{"ids":["star-medallion"]}"#,
+			r#"{"rows":[{"id":"tissen"}]}"#,
+			r#"{"ids":["nocunist"]}"#,
 		)
 		.unwrap_err();
 		assert!(err.contains("all-zero"), "{err}");
@@ -667,8 +667,8 @@ mod tests {
 		let err = JsonCharacterTables::parse(
 			r#"{"version":1,"tau":0.5,"k":null}"#,
 			r#"{"maps":[]}"#,
-			r#"{"rows":[{"id":"star-medallion","color":{"blue":1.0}}]}"#,
-			r#"{"ids":["star-medallion"]}"#,
+			r#"{"rows":[{"id":"nocunist","color":{"blue":1.0}}]}"#,
+			r#"{"ids":["nocunist"]}"#,
 		)
 		.unwrap_err();
 		assert!(err.contains("disjoint") || err.contains("also appears"), "{err}");
@@ -677,7 +677,7 @@ mod tests {
 			r#"{"version":1,"tau":0.5,"k":null}"#,
 			r#"{"maps":[]}"#,
 			r#"{"rows":[{"id":"faceless","type":{"normal":1.0}}]}"#,
-			r#"{"ids":["faceless","spirograph-diamond"]}"#,
+			r#"{"ids":["faceless","zaster"]}"#,
 		)
 		.expect("faceless may sit in both embedding and fallback");
 	}
@@ -685,7 +685,7 @@ mod tests {
 	#[test]
 	fn color_only_row_is_not_the_origin() {
 		let row = SparseCharacterRow {
-			id: "teal-four-point-star".into(),
+			id: "westerlit".into(),
 			color: BTreeMap::from([(TileColor::Teal, 2.0)]),
 			ring_type: BTreeMap::new(),
 			emblem: BTreeMap::new(),
@@ -716,9 +716,9 @@ mod tests {
 		let a = p.assign(&tile, 0);
 		let b = p.assign(&tile, 1);
 		let c = p.assign(&tile, 2);
-		assert_eq!(a.as_str(), "teal-four-point-star");
-		assert_eq!(b.as_str(), "twin-star-comets");
-		assert_eq!(c.as_str(), "teal-four-point-star");
+		assert_eq!(a.as_str(), "westerlit");
+		assert_eq!(b.as_str(), "nocunfall");
+		assert_eq!(c.as_str(), "westerlit");
 		assert_eq!(p.assign(&tile, 0), p.assign(&tile, 0));
 	}
 
@@ -735,7 +735,7 @@ mod tests {
 			CaptureMark::Dot,
 			Emblem::Rosette,
 		);
-		assert_eq!(p.assign(&a, 0).as_str(), "teal-four-point-star");
+		assert_eq!(p.assign(&a, 0).as_str(), "westerlit");
 	}
 
 	#[test]
@@ -753,18 +753,10 @@ mod tests {
 			Emblem::None,
 		);
 		let bundled = pass();
-		let teal_row = bundled
-			.tables
-			.embedding_rows()
-			.iter()
-			.find(|r| r.id == "teal-four-point-star")
-			.unwrap();
-		let maroon_row = bundled
-			.tables
-			.embedding_rows()
-			.iter()
-			.find(|r| r.id == "black-beaked-face")
-			.unwrap();
+		let teal_row =
+			bundled.tables.embedding_rows().iter().find(|r| r.id == "westerlit").unwrap();
+		let maroon_row =
+			bundled.tables.embedding_rows().iter().find(|r| r.id == "magrenedl").unwrap();
 		let tt = cosine(&encode_tile(&teal), &encode_character(teal_row));
 		let tm = cosine(&encode_tile(&teal), &encode_character(maroon_row));
 		let mm = cosine(&encode_tile(&maroon), &encode_character(maroon_row));
@@ -779,15 +771,15 @@ mod tests {
 		let tables = JsonCharacterTables::parse(
 			&format!(r#"{{"version":1,"tau":{tau},"k":null}}"#),
 			r#"{"maps":[]}"#,
-			r#"{"rows":[{"id":"teal-four-point-star","color":{"teal":2.0}},{"id":"black-beaked-face","color":{"maroon":2.0}}]}"#,
-			r#"{"ids":["spirograph-diamond"]}"#,
+			r#"{"rows":[{"id":"westerlit","color":{"teal":2.0}},{"id":"magrenedl","color":{"maroon":2.0}}]}"#,
+			r#"{"ids":["zaster"]}"#,
 		)
 		.unwrap();
 		let p = CharacterPass::new(tables, CharacterLibrary::load().unwrap()).unwrap();
-		assert_eq!(p.assign(&teal, 0).as_str(), "teal-four-point-star");
-		assert_eq!(p.assign(&teal, 99).as_str(), "teal-four-point-star");
-		assert_eq!(p.assign(&maroon, 0).as_str(), "black-beaked-face");
-		assert_eq!(p.assign(&maroon, 11).as_str(), "black-beaked-face");
+		assert_eq!(p.assign(&teal, 0).as_str(), "westerlit");
+		assert_eq!(p.assign(&teal, 99).as_str(), "westerlit");
+		assert_eq!(p.assign(&maroon, 0).as_str(), "magrenedl");
+		assert_eq!(p.assign(&maroon, 11).as_str(), "magrenedl");
 	}
 
 	#[test]
@@ -803,7 +795,7 @@ mod tests {
 			CaptureMark::Dot,
 			Emblem::None,
 		);
-		assert_eq!(p.assign(&mixed, 0).as_str(), "blue-diamond-lattice");
+		assert_eq!(p.assign(&mixed, 0).as_str(), "tissen");
 		assert!(p.assign(&mixed, 1).is_faceless());
 	}
 
@@ -813,7 +805,7 @@ mod tests {
 			r#"{"version":1,"tau":0.32,"k":null}"#,
 			r#"{"maps":[]}"#,
 			r#"{"rows":[{"id":"faceless","type":{"normal":2.0},"color":{"green":1.0}}]}"#,
-			r#"{"ids":["faceless","spirograph-diamond"]}"#,
+			r#"{"ids":["faceless","zaster"]}"#,
 		)
 		.unwrap();
 		let p = CharacterPass::new(tables, CharacterLibrary::load().unwrap()).unwrap();
@@ -832,8 +824,8 @@ mod tests {
 		let tables = JsonCharacterTables::parse(
 			r#"{"version":1,"tau":0.99,"k":null}"#,
 			r#"{"maps":[]}"#,
-			r#"{"rows":[{"id":"teal-four-point-star","color":{"teal":2.0}}]}"#,
-			r#"{"ids":["spirograph-diamond","star-medallion"]}"#,
+			r#"{"rows":[{"id":"westerlit","color":{"teal":2.0}}]}"#,
+			r#"{"ids":["zaster","nocunist"]}"#,
 		)
 		.unwrap();
 		let p = CharacterPass::new(tables, CharacterLibrary::load().unwrap()).unwrap();
@@ -846,11 +838,11 @@ mod tests {
 		let a = p.assign(&tile, 7);
 		let b = p.assign(&tile, 7);
 		assert_eq!(a, b);
-		assert!(a.as_str() == "spirograph-diamond" || a.as_str() == "star-medallion");
+		assert!(a.as_str() == "zaster" || a.as_str() == "nocunist");
 		let other = p.assign(&tile, 8);
 		// hash(id) % 2 should vary across nearby ids often enough; if not,
 		// at least both remain in the fallback set.
-		assert!(other.as_str() == "spirograph-diamond" || other.as_str() == "star-medallion");
+		assert!(other.as_str() == "zaster" || other.as_str() == "nocunist");
 	}
 
 	#[test]
@@ -858,7 +850,7 @@ mod tests {
 		let tables = JsonCharacterTables::parse(
 			r#"{"version":1,"tau":0.99,"k":null}"#,
 			r#"{"maps":[]}"#,
-			r#"{"rows":[{"id":"teal-four-point-star","color":{"teal":2.0}}]}"#,
+			r#"{"rows":[{"id":"westerlit","color":{"teal":2.0}}]}"#,
 			r#"{"ids":["faceless"]}"#,
 		)
 		.unwrap();
@@ -906,5 +898,30 @@ mod tests {
 	#[test]
 	fn version_is_frozen_at_one() {
 		assert_eq!(pass().version(), 1);
+	}
+
+	#[test]
+	fn bundled_pass_spreads_across_the_catalog() {
+		let p = pass();
+		let cfg = CorePass::base();
+		let lib = CharacterLibrary::load().unwrap();
+		let n = 20_000u32;
+		let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+		for id in 0..n {
+			let ch = p.assign(&cfg.run(TileId(id)), id);
+			*counts.entry(ch.as_str().to_string()).or_insert(0) += 1;
+		}
+		let mut ranked: Vec<_> = counts.iter().collect();
+		ranked.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+		for (id, c) in &ranked {
+			eprintln!("{id:>14} {c:>5} ({:.2}%)", 100.0 * f64::from(**c) / f64::from(n));
+		}
+		let max = counts.values().copied().max().unwrap_or(0);
+		let max_share = f64::from(max) / f64::from(n);
+		assert!(max_share < 0.12, "one character dominates {max_share:.3}: {counts:?}");
+		for ch in lib.all() {
+			let c = counts.get(&ch.id).copied().unwrap_or(0);
+			assert!(c > 0, "catalog id {} never assigned in {n} samples", ch.id);
+		}
 	}
 }

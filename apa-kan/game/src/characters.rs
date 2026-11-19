@@ -69,13 +69,13 @@ pub const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'
 /// One character medallion in the library.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Character {
-	/// Stable kebab-case id (filename slug without the numeric prefix).
+	/// Stable kebab-case id (PNG file stem, e.g. `waking-rose`).
 	pub id: String,
-	/// Path relative to the Bevy `assets/` folder, e.g. `characters/01-….png`.
+	/// Path relative to the Bevy `assets/` folder, e.g. `characters/waking-rose.png`.
 	/// [`FACELESS_ID`] omits this: there is no PNG.
 	#[serde(default)]
 	pub path: Option<String>,
-	/// Human-readable name, currently derived from the filename.
+	/// Human-readable name: file stem, dashes turned into spaces, title-cased.
 	pub display_name: String,
 }
 
@@ -195,8 +195,9 @@ fn validate_asset_path(id: &str, path: &str) -> Result<(), String> {
 			"character '{id}' path '{path}' must be relative and stay under assets/"
 		));
 	}
-	if !path.starts_with("characters/") || !path.ends_with(".png") {
-		return Err(format!("character '{id}' path '{path}' must look like characters/<file>.png"));
+	let expected = format!("characters/{id}.png");
+	if path != expected {
+		return Err(format!("character '{id}' path '{path}' must be '{expected}'"));
 	}
 	Ok(())
 }
@@ -208,21 +209,32 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn bundled_manifest_has_fourteen_painted_and_faceless() {
+	fn bundled_manifest_has_twenty_five_painted_and_faceless() {
 		let lib = CharacterLibrary::load().unwrap();
-		assert_eq!(lib.len(), 15);
+		assert_eq!(lib.len(), 26);
 		assert!(!lib.is_empty());
 		let faceless = lib.get(FACELESS_ID).expect("faceless catalog id");
 		assert!(faceless.is_faceless());
 		assert!(!faceless.has_art());
 		assert_eq!(CharacterId::faceless().as_str(), FACELESS_ID);
 		assert!(CharacterId::faceless().is_faceless());
-		let first = lib.get("blue-diamond-lattice").expect("first painted catalog id");
-		assert_eq!(first.display_name, "Blue Diamond Lattice");
-		assert_eq!(first.path.as_deref(), Some("characters/01-blue-diamond-lattice.png"));
-		let last = lib.get("green-hatched-bowl").expect("last painted catalog id");
-		assert_eq!(last.display_name, "Green Hatched Bowl");
-		assert_eq!(last.path.as_deref(), Some("characters/14-green-hatched-bowl.png"));
+		let first = lib.get("cadredl").expect("first painted catalog id");
+		assert_eq!(first.display_name, "Cadredl");
+		assert_eq!(first.path.as_deref(), Some("characters/cadredl.png"));
+		let rose = lib.get("waking-rose").expect("dashed id");
+		assert_eq!(rose.display_name, "Waking Rose");
+		assert_eq!(rose.path.as_deref(), Some("characters/waking-rose.png"));
+		let last = lib.get("zaster").expect("last painted catalog id");
+		assert_eq!(last.display_name, "Zaster");
+		assert_eq!(last.path.as_deref(), Some("characters/zaster.png"));
+		for ch in lib.all() {
+			if ch.is_faceless() {
+				continue;
+			}
+			let stem =
+				Path::new(ch.path.as_deref().unwrap()).file_stem().unwrap().to_str().unwrap();
+			assert_eq!(ch.id, stem, "id must match the PNG file stem");
+		}
 	}
 
 	#[test]
@@ -255,7 +267,7 @@ mod tests {
 				ch.id
 			);
 		}
-		assert_eq!(painted, 14, "fourteen painted medallions");
+		assert_eq!(painted, 25, "twenty-five painted medallions");
 	}
 
 	#[test]
@@ -283,11 +295,11 @@ mod tests {
 			r#"
 [[characters]]
 id = "dup"
-path = "characters/a.png"
+path = "characters/dup.png"
 display_name = "A"
 [[characters]]
 id = "dup"
-path = "characters/b.png"
+path = "characters/dup.png"
 display_name = "B"
 "#,
 		)

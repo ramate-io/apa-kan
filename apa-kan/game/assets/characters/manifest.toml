@@ -1,78 +1,133 @@
 # Character illustration library.
 # Paths are Bevy-relative (from apa-kan/game/assets/).
-# Ids drop the numeric filename prefix; display names are title-cased from the
-# remaining slug. `faceless` is an explicit no-art catalog id (no PNG).
+# Ids are the PNG file stem; display names title-case the stem with dashes
+# turned into spaces. `faceless` is an explicit no-art catalog id (no PNG).
 
 [[characters]]
 id = "faceless"
 display_name = "Faceless"
 
 [[characters]]
-id = "blue-diamond-lattice"
-path = "characters/01-blue-diamond-lattice.png"
-display_name = "Blue Diamond Lattice"
+id = "cadredl"
+path = "characters/cadredl.png"
+display_name = "Cadredl"
 
 [[characters]]
-id = "green-pink-diamond-heart"
-path = "characters/02-green-pink-diamond-heart.png"
-display_name = "Green Pink Diamond Heart"
+id = "captain"
+path = "characters/captain.png"
+display_name = "Captain"
 
 [[characters]]
-id = "crossed-needles"
-path = "characters/03-crossed-needles.png"
-display_name = "Crossed Needles"
+id = "cosam"
+path = "characters/cosam.png"
+display_name = "Cosam"
 
 [[characters]]
-id = "spirograph-diamond"
-path = "characters/04-spirograph-diamond.png"
-display_name = "Spirograph Diamond"
+id = "harteld"
+path = "characters/harteld.png"
+display_name = "Harteld"
 
 [[characters]]
-id = "bird-of-paradise-pot"
-path = "characters/05-bird-of-paradise-pot.png"
-display_name = "Bird Of Paradise Pot"
+id = "hartish"
+path = "characters/hartish.png"
+display_name = "Hartish"
 
 [[characters]]
-id = "twin-star-comets"
-path = "characters/06-twin-star-comets.png"
-display_name = "Twin Star Comets"
+id = "lanyan"
+path = "characters/lanyan.png"
+display_name = "Lanyan"
 
 [[characters]]
-id = "star-medallion"
-path = "characters/07-star-medallion.png"
-display_name = "Star Medallion"
+id = "magrenedl"
+path = "characters/magrenedl.png"
+display_name = "Magrenedl"
 
 [[characters]]
-id = "teal-four-point-star"
-path = "characters/08-teal-four-point-star.png"
-display_name = "Teal Four Point Star"
+id = "melets"
+path = "characters/melets.png"
+display_name = "Melets"
 
 [[characters]]
-id = "black-beaked-face"
-path = "characters/09-black-beaked-face.png"
-display_name = "Black Beaked Face"
+id = "merenmarch"
+path = "characters/merenmarch.png"
+display_name = "Merenmarch"
 
 [[characters]]
-id = "pink-claw-marks"
-path = "characters/10-pink-claw-marks.png"
-display_name = "Pink Claw Marks"
+id = "nocunfall"
+path = "characters/nocunfall.png"
+display_name = "Nocunfall"
 
 [[characters]]
-id = "three-rosettes"
-path = "characters/11-three-rosettes.png"
-display_name = "Three Rosettes"
+id = "nocunist"
+path = "characters/nocunist.png"
+display_name = "Nocunist"
 
 [[characters]]
-id = "petal-diamond-cluster"
-path = "characters/12-petal-diamond-cluster.png"
-display_name = "Petal Diamond Cluster"
+id = "ocunbun"
+path = "characters/ocunbun.png"
+display_name = "Ocunbun"
 
 [[characters]]
-id = "lavender-square-spirograph"
-path = "characters/13-lavender-square-spirograph.png"
-display_name = "Lavender Square Spirograph"
+id = "sam"
+path = "characters/sam.png"
+display_name = "Sam"
 
 [[characters]]
-id = "green-hatched-bowl"
-path = "characters/14-green-hatched-bowl.png"
-display_name = "Green Hatched Bowl"
+id = "savist"
+path = "characters/savist.png"
+display_name = "Savist"
+
+[[characters]]
+id = "skulkenflock"
+path = "characters/skulkenflock.png"
+display_name = "Skulkenflock"
+
+[[characters]]
+id = "springfall"
+path = "characters/springfall.png"
+display_name = "Springfall"
+
+[[characters]]
+id = "squib"
+path = "characters/squib.png"
+display_name = "Squib"
+
+[[characters]]
+id = "tellbrok"
+path = "characters/tellbrok.png"
+display_name = "Tellbrok"
+
+[[characters]]
+id = "tiblone"
+path = "characters/tiblone.png"
+display_name = "Tiblone"
+
+[[characters]]
+id = "tissen"
+path = "characters/tissen.png"
+display_name = "Tissen"
+
+[[characters]]
+id = "toppenpol"
+path = "characters/toppenpol.png"
+display_name = "Toppenpol"
+
+[[characters]]
+id = "waking-rose"
+path = "characters/waking-rose.png"
+display_name = "Waking Rose"
+
+[[characters]]
+id = "warsam"
+path = "characters/warsam.png"
+display_name = "Warsam"
+
+[[characters]]
+id = "westerlit"
+path = "characters/westerlit.png"
+display_name = "Westerlit"
+
+[[characters]]
+id = "zaster"
+path = "characters/zaster.png"
+display_name = "Zaster"
