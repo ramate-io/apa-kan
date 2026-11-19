@@ -123,8 +123,11 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	let mut out = Vec::new();
 	let current = game.current_player();
 	let bench = game.bench(current);
-	// `budget()` is usable ADD permission (min(tokens, remaining deck)).
-	if game.budget(current) > 0 && !bench.is_empty() {
+	// Two-tier: `budget()` is usable ADD permission. Placement-only has
+	// no spawn-token cap, so a non-empty bench is enough.
+	let can_add = !bench.is_empty()
+		&& (game.rules().win_condition.is_placement_only() || game.budget(current) > 0);
+	if can_add {
 		let mut seen = std::collections::HashSet::<u32>::new();
 		let dests: Vec<NodeId> = if game.rules().add_only_on_spawns {
 			game.board()
@@ -153,12 +156,11 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 			}
 		}
 	}
+	for mv in game.legal_moves() {
+		out.push(SearchMove::from_action(game, mv));
+	}
 	if game.rules().win_condition.is_placement_only() {
 		for mv in game.legal_removes() {
-			out.push(SearchMove::from_action(game, mv));
-		}
-	} else {
-		for mv in game.legal_moves() {
 			out.push(SearchMove::from_action(game, mv));
 		}
 	}
@@ -402,6 +404,21 @@ mod tests {
 		let game = Game::empty(RuleSet::default());
 		assert!(game.rules().no_moves_loses);
 		assert!(legal_search_moves(&game).is_empty());
+	}
+
+	#[test]
+	fn placement_only_search_includes_moves() {
+		let mut rules = RuleSet::default();
+		rules.win_condition = crate::game::WinCondition::PlacementOnly;
+		rules.control_win = false;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let tile = game.alloc_tile(crate::game::Player::One, crate::game::TileColor::Green, 3, 1);
+		game.place_tile(spawn, tile);
+		game.set_current(crate::game::Player::One);
+		assert!(legal_search_moves(&game)
+			.iter()
+			.any(|mv| matches!(mv, SearchMove::Move { from, .. } if *from == spawn)));
 	}
 
 	#[test]

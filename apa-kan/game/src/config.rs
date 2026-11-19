@@ -10,7 +10,7 @@ use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, D
 use crate::game::{
 	BeadScoring, BlockerBlocks, BraidFailMismatch, ChannelMode, EmblemWeights, HopWeightCmp,
 	InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet, SamePieceTwice,
-	WinCondition, ZagMismatchCount, BAG_SIZE,
+	WinCondition, ZagMismatchCount, BAG_SIZE, PLACEMENT_ONLY_BENCH_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -399,6 +399,7 @@ where
 			if rules.win_condition.is_placement_only() {
 				// Two-tier hold/low-value do not fire; keep the log honest.
 				rules.control_win = false;
+				rules.bag_size = PLACEMENT_ONLY_BENCH_SIZE as u8;
 			}
 		}
 		"--path-constraint" => {
@@ -468,8 +469,10 @@ pub fn usage() -> &'static str {
 	   --control-n <1..9>                         Control-set occupancy needed (default: 5)\n\
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --win-condition <two-tier|placement-only>  Default two-tier (control then low-value).\n\
-	                                              placement-only: ADD or REMOVE, no suicide ADD,\n\
-	                                              no auto-removal; cannot-place loses\n\
+	                                              placement-only: 13-tile bench, ADD on empty\n\
+	                                              spawns with no token cap, MOVE on, REMOVE of\n\
+	                                              overwhelmed tiles; no suicide landing; lose\n\
+	                                              when no legal ADD or MOVE\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
@@ -954,6 +957,8 @@ mod tests {
 		let cfg = GameConfig::parse(["--win-condition", "placement-only"]).unwrap();
 		assert_eq!(cfg.rules.win_condition, crate::game::WinCondition::PlacementOnly);
 		assert!(!cfg.rules.control_win);
+		assert_eq!(cfg.rules.bag_size, crate::game::PLACEMENT_ONLY_BENCH_SIZE as u8);
+		assert!(cfg.rules.add_only_on_spawns);
 		let two = GameConfig::parse(["--win-condition", "two-tier"]).unwrap();
 		assert_eq!(two.rules.win_condition, crate::game::WinCondition::TwoTier);
 		assert!(two.rules.control_win);

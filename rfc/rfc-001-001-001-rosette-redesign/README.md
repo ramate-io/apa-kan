@@ -219,12 +219,12 @@ CLI: `--win-condition <two-tier|placement-only>`
 
 Default **two-tier** is the control-then-low-value package above. **placement-only** is an alternate game:
 
-1. A turn is **ADD** a remaining bench tile (still spawn-only, still spends one spawn token) **or REMOVE** an overwhelmed tile. MOVE is off.
-2. ADD is illegal if the tile would be immediately overwhelmed under the live channel rules (`would_overwhelm_add`). On this stack that is **independent-max** (max match / max mismatch of any single channel per edge; [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md)). Tiles that later become overwhelmed **stay**; there is no simultaneous capture and no chain reaction.
+1. A turn is **ADD** a remaining bench tile on an empty spawn, **MOVE** a tile with the usual dest rules, or **REMOVE** an overwhelmed tile. ADD stays spawn-only (`add_only_on_spawns`); it is not any empty board cell. There is **no spawn-token cap**: `--win-condition placement-only` sets `bag_size=13` (7+6 from the 27) and every remaining bench tile is usable. MOVE off a spawn frees it for a later ADD.
+2. ADD is illegal if the tile would be immediately overwhelmed (`would_overwhelm_add`). MOVE is illegal if the landing would be immediately overwhelmed (`would_overwhelm_move`, origin vacated so a neighboring start square is not counted). On this stack overwhelm uses **independent-max** (max match / max mismatch of any single channel per edge; [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md)). Tiles that later become overwhelmed **stay**; there is no simultaneous capture and no chain reaction.
 3. REMOVE uses the existing capture dest / token rules on that one tile (dot → mover's bench, triangle → spawn token). Opponent tiles always earn a token; own-tile harvests follow `self_capture_budget`.
-4. The player to move **loses** (`EndReason::NoLegalPlacement`) when they have **no legal ADD**, even if a REMOVE is still available. That reading is an open question. Light H2H on this stack (`placement_only/h2h.txt`) is **60/60 P2** in exactly 8 turns: the eight spawns fill, then P1 cannot ADD and never gets to harvest. Alternative: lose only when ADD **and** REMOVE are both empty.
+4. The player to move **loses** (`EndReason::NoLegalPlacement`) when they have **no legal ADD and no legal MOVE**. A leftover REMOVE of an overwhelmed tile does **not** count as placement and does not delay the loss. A legal MOVE does count: a player with an empty bench (or filled spawns) who can still MOVE is not locked out.
 
-Search uses the same legal-move generator (`legal_adds` / `legal_removes`) and treats no-legal-placement as a terminal.
+Search uses the same legal-move generator (`legal_adds` / `legal_moves` / `legal_removes`) and treats no-legal-placement as a terminal.
 
 #### 7. `insufficient_tiles_loss` (experimental, default **off**) — "can't reach control"
 
