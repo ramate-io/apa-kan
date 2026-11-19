@@ -82,11 +82,8 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 		let samples = arc.sample(visual::ARC_SAMPLES);
 		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
 		let width = f64::from(layout.arc_width);
-		let paint = visual::arc_paint_with(
-			game.tile_at(arc.from),
-			game.tile_at(arc.to),
-			game.rules().zag_mismatch,
-		);
+		let paint =
+			visual::arc_paint_for_rules(game.tile_at(arc.from), game.tile_at(arc.to), game.rules());
 		let stripe_off = if visual::arc_touches_center(arc, board.center()) {
 			f64::from(layout.stripe_off_center)
 		} else {
@@ -244,11 +241,8 @@ fn draw_arcs(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	for arc in board.arcs() {
 		let samples = arc.sample(visual::ARC_SAMPLES);
 		let pts: Vec<[f64; 2]> = samples.iter().map(|p| image_pt(layout, *p)).collect();
-		let paint = visual::arc_paint_with(
-			game.tile_at(arc.from),
-			game.tile_at(arc.to),
-			game.rules().zag_mismatch,
-		);
+		let paint =
+			visual::arc_paint_for_rules(game.tile_at(arc.from), game.tile_at(arc.to), game.rules());
 		if !paint.has_bead_lane() {
 			continue;
 		}
@@ -1870,7 +1864,7 @@ mod tests {
 		write_cropped(
 			&demo_pair(&[(TileColor::Orange, true)], 1, &[(TileColor::Orange, false)], 1),
 			dir.join("lane_zag_plus_normal.png"),
-			"zag hit plus hitch: same-color zag is not a match for the normal",
+			"independent-max HUD: hitch wins the tied mismatch, zag lane omitted",
 			48.0,
 		);
 		write_cropped(
@@ -1885,7 +1879,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_braid_plus_normal.png"),
-			"fulfilled braid stacks with the leftover orange normal match",
+			"independent-max HUD: braid match 2 beats leftover normal match 1",
 			48.0,
 		);
 		write_cropped(
@@ -1904,7 +1898,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_all_three.png"),
-			"all three lanes: normal match, zag, fulfilled braid",
+			"independent-max HUD: braid match + zag mismatch; leftover normal omitted",
 			48.0,
 		);
 		write_cropped(
@@ -1952,7 +1946,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_braid_failed_plus_lanes.png"),
-			"failed braid plus hitch and zag lanes",
+			"independent-max HUD: hitch wins tied mismatch 1; failed braid and zag omitted",
 			48.0,
 		);
 		write_cropped(
@@ -1967,7 +1961,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_bead_bomb_vs_braid.png"),
-			"bead lane: unmatched orange bead-chain bombs a non-matching braid",
+			"independent-max HUD: bead mismatch 3 beats failed-braid 1",
 			48.0,
 		);
 		write_cropped(
@@ -1978,7 +1972,7 @@ mod tests {
 				1,
 			),
 			dir.join("lane_bead_match.png"),
-			"bead match: two connected bead chains plus the orange normal highway",
+			"independent-max HUD: tied match 1 prefers the normal highway",
 			48.0,
 		);
 		write_png_sized(
@@ -2567,10 +2561,10 @@ mod tests {
 		let mut line: Option<Vec<[f64; 2]>> = None;
 		let mut color = crate::game::TileColor::Orange;
 		for arc in board.arcs() {
-			let paint = visual::arc_paint_with(
+			let paint = visual::arc_paint_for_rules(
 				game.tile_at(arc.from),
 				game.tile_at(arc.to),
-				game.rules().zag_mismatch,
+				game.rules(),
 			);
 			if !paint.has_bead_lane() {
 				continue;

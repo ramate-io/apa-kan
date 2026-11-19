@@ -1,0 +1,184 @@
+# apa-kan search benchmark
+# budget=nodes:33000,iters:650 jobs=4 games_per_pairing_per_seat=10 seed_base=1 turn_limit=200
+
+# branching factor (legal actions per position, from greedy/random games)
+# sample_games=12  (greedy vs random, random vs greedy, greedy vs greedy)
+# kind     n_positions  avg    max
+ADD       351          43.07  88
+MOVE      355          17.45  54
+ALL       394          54.09  110
+
+# independent-max shallow H2H (zags on, doubles allowed, quarter budget)
+# budget=nodes:33000,iters:650 jobs=4 games_per_pairing_per_seat=10 seed_base=1 turn_limit=200
+# search  p1=profile=enhanced ordering=on tt=on/18 lmr=on pvs=on q=on/4 pw=off heur_playouts=on puct=1.60 cutoff=12 threads=1 priors=off pw_order=off reuse=on mcts_tt=off factored=off leaf=0 solver=off  p2=profile=enhanced ordering=on tt=on/18 lmr=on pvs=on q=on/4 pw=off heur_playouts=on puct=1.60 cutoff=12 threads=1 priors=off pw_order=off reuse=on mcts_tt=off factored=off leaf=0 solver=off
+# rules: no_moves_loses=on center_hold_win=off center_hold_n=5 no_same_piece_twice=off color_restricted_hops=on hop_weight_cmp=le counted_pass_through=on pass_through_ring_cmp=ge petal_majority_win=off petal_majority_n=1 control_win=on control_n=5 control_hold_turns=1 insufficient_tiles_loss=off starting_bench=7 bag_size=11 deck_size=27 pick=search deck_noise=0 self_capture_budget=on max_rings=3 zag_numer=1 braid_numer=1 bead_numer=1 bead_scoring=shared channel_mode=independent-max dot_percent=50 emblem_weights=200,1,1,1,1 blocker_blocks=traversal zag_mismatch=sum path_constraint=no-edge-revisit scenario=default
+# ring_process  sample=20000 max_rings=3 zag_numer=1 braid_numer=1 bead_numer=1  n1=16634 n2=3259 n3=107
+# ring_process_zags  rings=23473 zags=7758 rate=0.3305
+# ring_process_braids  pieces=20000 braided=65 piece_rate=0.0032 rings=23473 braid_rings=130 ring_rate=0.0055
+# ring_process_beads  pieces=20000 grouped=40 piece_rate=0.0020 rings=23473 beads=2602 ring_rate=0.1109
+# ring_process_emblems  pieces=20000 weights=200,1,1,1,1 crescent=110 rate=0.0055 zs=99 zs_rate=0.0050 blocker=94 blocker_rate=0.0047 rosette=98 rosette_rate=0.0049
+# ring_process_colors  green=7183 blue=7299 orange=7213 lavender-pink=837 teal=848 maroon=93
+# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.
+# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).
+# search_depth: mm_avg/mm_max = completed iterative-deepening depth; mcts_avg/mcts_max = visit-weighted tree depth (root excluded from the mean).
+# root_spread: visit entropy / effective branching, top-1 visit share, #moves within 1/sqrt(n) of best Q, Q spread of top 10, best-move stability.
+# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures
+minimax         vs mcts             mixed vs mixed  P1  4-0-6  40.80  0  1  0  0  5  0  4  0  0  0  1.00  3.20  650.0  cap=4.30  self=6.00  mm_max=7 mcts_avg=1.73 mcts_max=6
+mcts            vs minimax          mixed vs mixed  P1  1-0-9  45.70  0  3  0  0  3  0  4  0  0  0  1.00  3.00  650.0  cap=7.00  self=6.20  mm_max=9 mcts_avg=1.77 mcts_max=6
+minimax         vs mcts             braid vs braid  P1  5-1-4  50.40  0  3  0  0  0  0  7  0  0  0  1.00  2.90  650.0  cap=6.20  self=8.20  mm_max=7 mcts_avg=1.73 mcts_max=6
+mcts            vs minimax          braid vs braid  P1  6-0-4  68.60  0  1  0  0  0  0  9  0  0  0  1.00  3.33  650.0  cap=7.00  self=8.30  mm_max=7 mcts_avg=1.70 mcts_max=6
+minimax         vs mcts             bead vs bead   P1  4-0-6  58.00  0  1  0  0  3  0  6  0  0  0  1.00  3.09  650.0  cap=6.60  self=8.10  mm_max=8 mcts_avg=1.72 mcts_max=6
+mcts            vs minimax          bead vs bead   P1  4-0-6  34.50  1  3  0  0  1  0  5  0  0  0  1.00  3.50  650.0  cap=7.00  self=6.60  mm_max=16 mcts_avg=1.76 mcts_max=6
+minimax         vs mcts             braid vs bead  P1  4-0-6  69.20  0  3  0  0  2  0  5  0  0  0  1.00  3.73  650.0  cap=6.50  self=8.10  mm_max=12 mcts_avg=1.76 mcts_max=6
+mcts            vs minimax          braid vs bead  P1  1-2-7  72.10  0  1  0  0  1  0  6  2  0  0  1.00  3.46  650.0  cap=5.40  self=6.80  mm_max=16 mcts_avg=1.72 mcts_max=6
+minimax         vs mcts             bead vs braid  P1  7-2-1  81.10  0  4  0  0  2  0  2  2  0  0  1.00  3.65  650.0  cap=7.50  self=6.80  mm_max=16 mcts_avg=1.76 mcts_max=6
+mcts            vs minimax          bead vs braid  P1  5-1-4  78.30  0  3  0  0  3  0  3  1  0  0  1.20  3.44  650.0  cap=6.50  self=7.30  mm_max=16 mcts_avg=1.69 mcts_max=6
+# seat_totals  P1 41-6-53  P2 53-6-41  games=100
+# end_reasons  elim=1 locked_out=23 center_hold=0 petal_maj=0 control=20 insuff=0 low_value=51 low_value_wins=50 low_value_draws=1 turn_limit=5 double_pass=0
+# low_value_pairs  pair0=33 later=7 piece_count=10
+# captures  opponent_tiles_removed=640  avg_per_game=6.40  self_captures=724  self_avg_per_game=7.24
+# center_captures  opponent_tiles_removed=45  avg_per_game=0.45  self_captures=39  self_avg_per_game=0.39
+# capture_dest  bench=623 avg_per_game=6.23  tokens=741 avg_per_game=7.41
+# bead_captures  contrib=590 needed=206 spawn_two_ring_single_bead=8  of_total=640
+# emblems  crescent_saves=24 avg_per_game=0.24  zs_bonuses=6 avg_per_game=0.06
+# search_depth  mm_avg=3.37 mm_max=16 mm_n=2998  mcts_avg=1.73 mcts_max=6 mcts_n=2990
+# root_spread  entropy=2.78 eff_branch=21.6 top1=0.27 near_q=21.9 q_spread10=0.163 stability=0.54 legal=48.0 n=2990
+# matchup_totals  mixed vs mixed 5-0-15 avg_turns=43.25  |  braid vs braid 11-1-8 avg_turns=59.50  |  bead vs bead 8-0-12 avg_turns=46.25  |  braid vs bead 5-2-13 avg_turns=70.65  |  bead vs braid 12-3-5 avg_turns=79.70
+# archetype_seat  mixed P1=5-0-15 P2=15-0-5  |  braid P1=16-3-21 P2=13-4-23  |  bead P1=20-3-17 P2=25-2-13
+# short_games  turns_le_20=4 lockout=0 control=1
+# tokens_bench_over_time  mean_tokens_per_side=2.89  mean_bench_per_side=5.49  snapshots=6088
+# pick_dot_ratio  P1_opening_dots W-D-L  dots5=39-6-46  dots6=2-0-6  dots7=0-0-1
+
+# stalling (rules unchanged; no threefold draw)
+# games=100  visible_pos_seen_>=2=2  visible_pos_seen_>=3=0  occupancy_seen_>=3=5
+# games_that_both_hit_turn_limit_and_had_a_visible_repeat_>=3 (lower bound via pairing mins) ~ 0
+# Visible hash covers occupancy, tile kind, owner, the public remaining deck, spawn-token count (including surplus), side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).
+# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.
+
+# observed_opening_rings  tiles=2200  n1=1391 n2=780 n3=29
+# observed_opening_colors  green=865 blue=891 orange=890 lavender-pink=167 teal=194 maroon=31
+# add_rings  tiles=1874  n1=1040 n2=805 n3=29
+# move_rings  tiles=4114  n1=1061 n2=2984 n3=69
+# board_sample  positions=6088 avg_tiles=5.46 avg_rings=1.765 avg_weight=1.765
+# braid_edges  occupied_with_braid=8849 satisfied=3316 rate=0.3747
+
+# deck fairness
+# games=100
+# opening_strength_equal=60/100
+# strength = weight_sum + dots_sum + n_colors on the opening bench (and on tiles that entered play).
+# pearson(opening_combined_diff, outcome +1/0/-1)=0.201
+# pearson(opening_weight_diff, outcome)=0.300
+# pearson(opening_dots_diff, outcome)=-0.069
+# pearson(opening_color_diff, outcome)=0.111
+# pearson(p1_opening_weight, outcome)=0.122  (shared-deal / first-player view)
+# pearson(p1_opening_weight, turns)=-0.011
+# pearson(played_combined_diff, outcome)=0.741  (board+bench at end; play-influenced)
+# higher_opening_strength_won=22/31 (excludes draws and equal opening strength)
+# higher_played_strength_won=84/93 (excludes draws and equal end strength)
+# opening_deal  pairing  game  seed  p1  p2  p1_bench  p2_bench  outcome  turns
+#   mcts vs minimax [bead vs bead]  g1  seed=210001  p1=n11 w15 d25 c5  p2=n11 w15 d25 c5  [b1-3o,g1-3^,o1-1^,ge+be2-2^,tz+be2-1o,gz+b2-3^,p1-3o,ge+be2-1o,ge1-2^,gz1-3^,o1-3o]  [b1-3o,g1-3^,o1-1^,ge+be2-2^,tz+be2-1o,gz+b2-3^,p1-3o,ge+be2-1o,ge1-2^,gz1-3^,o1-3o]  P1  t39
+#   mcts vs minimax [bead vs bead]  g2  seed=210002  p1=n11 w17 d21 c4  p2=n11 w17 d21 c4  [o+ge2-2o,oe+ge2-1o,oe+be2-3^,g1-3^,o+ge2-1^,g+b2-1^,p+o2-3o,o1-1^,bz1-2o,o1-3o,oz1-1^]  [o+ge2-2o,oe+ge2-1o,oe+be2-3^,g1-3^,o+ge2-1^,g+b2-1^,p+o2-3o,o1-1^,bz1-2o,o1-3o,oz1-1^]  P1  t29
+#   mcts vs minimax [bead vs bead]  g3  seed=210003  p1=n11 w16 d20 c5  p2=n11 w16 d20 c5  [bz1-3^,be+oe2-1^,o1-2^,tz1-2^,o1-2om,oz+bz2-2o,ge+oe2-2o,be1-1^m,bz1-3^,oz1-1o,pe1-1o]  [bz1-3^,be+oe2-1^,o1-2^,tz1-2^,o1-2om,oz+bz2-2o,ge+oe2-2o,be1-1^m,bz1-3^,oz1-1o,pe1-1o]  P2  t30
+#   mcts vs minimax [bead vs bead]  g4  seed=210004  p1=n11 w17 d26 c4  p2=n11 w17 d26 c4  [ge+b2-3^,b1-1^,te+ge2-2o,oz+t2-3o,b+ge2-3o,o+ge2-3^,g+bz2-3^,gz1-1^,bz1-3^,oe1-3o,gz1-1o]  [ge+b2-3^,b1-1^,te+ge2-2o,oz+t2-3o,b+ge2-3o,o+ge2-3^,g+bz2-3^,gz1-1^,bz1-3^,oe1-3o,gz1-1o]  P2  t26
+#   mcts vs minimax [bead vs bead]  g5  seed=210005  p1=n11 w18 d29 c5  p2=n11 w18 d29 c5  [pe1-3^,ge+be2-3o,te1-2^,oe+ge2-3o,b1-2^m,g+b2-3^,oz+g2-3o,o1-3^,oz1-3^zz,gz1-1o,oz+bz2-3o]  [pe1-3^,ge+be2-3o,te1-2^,oe+ge2-3o,b1-2^m,g+b2-3^,oz+g2-3o,o1-3^,oz1-3^zz,gz1-1o,oz+bz2-3o]  P1  t53
+#   mcts vs minimax [bead vs bead]  g6  seed=210006  p1=n11 w17 d23 c4  p2=n11 w17 d23 c4  [g+o2-1^,be+ge2-3^,be+gz2-2^,te1-3^,b+o2-1o,ge+oe2-1o,o+g2-1o,bz1-3o,g1-3^,oz1-3^,o1-2o]  [g+o2-1^,be+ge2-3^,be+gz2-2^,te1-3^,b+o2-1o,ge+oe2-1o,o+g2-1o,bz1-3o,g1-3^,oz1-3^,o1-2o]  P2  t34
+#   mcts vs minimax [bead vs bead]  g7  seed=210007  p1=n11 w17 d25 c4  p2=n11 w17 d25 c4  [oz+g2-2o,t1-3^,be+oe2-3^,b1-3o,o+g2-1^,oz+be2-2o,oe+ge2-2^,oz1-2^,oe1-3o,g1-3o,b+oz2-1^]  [oz+g2-2o,t1-3^,be+oe2-3^,b1-3o,o+g2-1^,oz+be2-2o,oe+ge2-2^,oz1-2^,oe1-3o,g1-3o,b+oz2-1^]  P2  t24
+#   mcts vs minimax [bead vs bead]  g8  seed=210008  p1=n11 w17 d26 c5  p2=n11 w17 d26 c5  [g+bz2-1o,pe+be2-3^,b1-3^,te1-2o,oe+b2-3^,gz+oz2-2o,b+oe2-3^,g1-3o,oe+bz2-1o,g1-2^,g1-3^]  [g+bz2-1o,pe+be2-3^,b1-3^,te1-2o,oe+b2-3^,gz+oz2-2o,b+oe2-3^,g1-3o,oe+bz2-1o,g1-2^,g1-3^]  P2  t33
+#   mcts vs minimax [bead vs bead]  g9  seed=210009  p1=n11 w15 d22 c5  p2=n11 w15 d22 c5  [ge1-3o,oe+be2-1^,b1-3^,te+pe2-3^,b+oe2-2^,g1-2o,o1-2o,b1-2^,bz1-2o,oz1-1^,oz1-1obk]  [ge1-3o,oe+be2-1^,b1-3^,te+pe2-3^,b+oe2-2^,g1-2o,o1-2o,b1-2^,bz1-2o,oz1-1^,oz1-1obk]  P2  t32
+#   mcts vs minimax [bead vs bead]  g10  seed=210010  p1=n11 w16 d23 c4  p2=n11 w16 d23 c4  [tz1-1o,bz+oe2-2^,g1-2^,be+ge2-2o,oz+gz2-1^,b1-2^bk,ge+be2-3o,gz1-3^,o1-2^,oz1-3o,oe1-2o]  [tz1-1o,bz+oe2-2^,g1-2^,be+ge2-2o,oz+gz2-1^,b1-2^bk,ge+be2-3o,gz1-3^,o1-2^,oz1-3o,oe1-2o]  P1  t45
+#   mcts vs minimax [bead vs braid]  g1  seed=410001  p1=n11 w16 d25 c5  p2=n11 w15 d28 c5  [b1-3o,oe+be2-3o,b+pe2-1o,g1-3^,te+bz2-2^,g+be2-3^,t+be2-3^,bz1-1^,gz1-2^,oz1-3o,oz1-1o]  [t1-1o,od+bd2-3^,g1-3^,pd+bd2-2o,o1-3o,b1-3^m,od+gd2-3^,bz1-2^,bz1-2o,bz1-3o,bz1-3^]  P1  t137
+#   mcts vs minimax [bead vs braid]  g2  seed=410002  p1=n11 w17 d25 c4  p2=n11 w14 d26 c3  [o+g2-1^,be+o2-3^,g+be2-3o,oe+pe2-2^,o+be2-1o,oz+ge2-3o,o1-3^,bz1-2^,b1-1o,bz1-3^,b1-3o]  [bd+gd2-2^,o1-3o,b1-3^,bd+od2-3^,g1-3^,b1-3o,gd+bd2-1o,bz1-3o,oz1-2^,oz1-2o,oz1-1o]  P1  t35
+#   mcts vs minimax [bead vs braid]  g3  seed=410003  p1=n11 w14 d24 c5  p2=n11 w14 d28 c5  [ge+be2-3^,o1-2o,b1-2o,g+oe2-3^,p1-2^,g1-2o,ge+te2-3^,oz1-1o,oz1-2o,oz1-2^,te1-2^]  [bd+od2-3^,od+gd2-3^,o1-3^,b1-3o,o1-3o,gd+pd2-2^,t1-3o,gz1-2^,gz1-2^,pz1-3o,gz1-1o]  P2  t158
+#   mcts vs minimax [bead vs braid]  g4  seed=410004  p1=n11 w17 d21 c5  p2=n11 w14 d28 c5  [pz1-2^,o1-2^,oe+b2-2o,be+t2-1o,gz1-3^,be1-3^,o+p+ge3-2o,bz1-3o,o+bz2-1o,oe+b2-1o,ge1-1^]  [bd+od2-2o,gd+bd2-3^,t1-1o,bd+gd2-3^,m1-3o,b1-3^,b1-3^,bz1-2o,o1-3o,gz1-3^,gz1-2^]  P1  t45
+#   mcts vs minimax [bead vs braid]  g5  seed=410005  p1=n11 w17 d23 c4  p2=n11 w14 d27 c4  [bz+ge2-2^ro,bz+o2-2o,g+oe2-2o,ge+oe2-3o,bz+ge2-1^,o+pz2-2^,o1-3^,g1-2^,oz+bz2-2o,p1-2o,be1-2^]  [g1-3^,od+bd2-3o,g1-3^,od+bd2-3^,m1-2o,bd+gd2-3o,b1-3^,bz1-3o,gz1-2^,bz1-1o,bz1-1^]  P1  t73
+#   mcts vs minimax [bead vs braid]  g6  seed=410006  p1=n11 w19 d29 c5  p2=n11 w14 d24 c4  [oz+g+be3-3^,g1-3o,g+oe2-3^,o1-2o,t+b2-3o,pe+ge2-3^,t+ge2-3^,bz1-2o,gz1-3o,oz1-1^bk,oe+g2-3^]  [od+bd2-1^,gd+td2-2^,g1-3^,bd+od2-2o,b1-3^,g1-3o,b1-3o,bz1-2o,oz1-1^,bz1-3^,o1-1o]  D  t200
+#   mcts vs minimax [bead vs braid]  g7  seed=410007  p1=n11 w18 d28 c5  p2=n11 w14 d28 c4  [oe+bz+ge3-2o,p1-1^,be+oz2-3^,g+o2-3o,te+be2-3o,b1-3^,g+o2-3o,bz1-2^,gz1-2^,gz1-3o,gz+be2-3o]  [g1-3o,od+td2-2o,o1-3^,bd+gd2-3^,o1-3o,bd+gd2-3^,b1-3^,bz1-1o,bz1-2^,oz1-2^,gz1-3o]  P2  t44
+#   mcts vs minimax [bead vs braid]  g8  seed=410008  p1=n11 w18 d26 c5  p2=n11 w14 d26 c4  [b1-3^,t1-2^,oz+g2-3o,be+oz2-3o,b+ge2-2^,b+g2-2^,p+ge+o3-1o,bz1-3o,bz1-3^,pe1-3o,oe+ge2-1^]  [b1-3^,gd+bd2-1^,t1-3o,g1-3o,g1-3^,gd+bd2-3^,od+bd2-2o,gz1-3^,bz1-1^,gz1-2o,bz1-2o]  P1  t29
+#   mcts vs minimax [bead vs braid]  g9  seed=410009  p1=n11 w15 d24 c5  p2=n11 w16 d23 c5  [g+b2-3^,ge1-3^,o+be2-1o,t1-3^,oz+gz2-2o,pe+oe2-1^,o1-3oro,g1-2^,oz1-2^,gz1-3o,ge+be2-1o]  [g1-3^,tz1-3o,bd+od2-3^,b1-3^,g1-3om,bd+pd+od3-1o,g1-2^,o1-1^zz,gz1-2^,oz1-1o,oz1-1o]  P2  t38
+#   mcts vs minimax [bead vs braid]  g10  seed=410010  p1=n11 w16 d29 c5  p2=n11 w14 d23 c5  [g1-3o,te+oe2-3^,b1-2o,o1-3^zz,oe+pe2-1o,ge+be2-3^,b+oz2-2^,gz1-3o,oz1-3o,bz1-3^,o1-3^]  [p1-1^,o1-3o,od+bd2-3o,b1-2^,o1-3^,gd+od2-1^,td+gd2-3o,oz1-1^,oz1-2o,oz1-2o,oz1-2^]  P2  t24
+#   mcts vs minimax [braid vs bead]  g1  seed=310001  p1=n11 w14 d29 c4  p2=n11 w16 d28 c4  [gz1-3o,o1-1o,od+bd2-3^,td+gd2-3^,t1-3^,od+bd2-3^,b1-2o,bz1-3^,gz1-3o,b1-3^,gz1-2o]  [g+bz2-1o,pe1-3o,oe+be2-3^,b+oe2-2o,oz1-3^,ge+be2-3^,o+b2-3^,oz1-3o,gz1-2^,bz1-2^,bz1-3o]  D  t200
+#   mcts vs minimax [braid vs bead]  g2  seed=310002  p1=n11 w15 d26 c5  p2=n11 w14 d27 c5  [b1-3^,bd+gd2-3^,p1-1o,gd+bd2-3o,oz1-3^zz,tz1-2o,od+bd2-3^,gz1-2^,o1-3o,gz1-2^,gz1-1o]  [ge+pe2-1^,g1-3o,b1-3o,oe+ge2-1o,tz1-3^,b+g2-2^,o1-3^,o1-2o,oe1-3o,oz1-3^,oe1-3^]  D  t200
+#   mcts vs minimax [braid vs bead]  g3  seed=310003  p1=n11 w14 d26 c4  p2=n11 w16 d27 c5  [gd+bd2-1^,mz1-2o,g1-3^,b1-3^,g1-3^,bd+gd2-3o,od+bd2-3o,oz1-3o,gz1-1o,g1-2^,o1-2^]  [ge+be2-1o,oe+p+be3-1^,g1-3o,t1-3^,o+be2-2^,o+gz2-3^,g1-3o,g1-3^,oe1-3^,bz1-2o,gz1-3o]  P2  t62
+#   mcts vs minimax [braid vs bead]  g4  seed=310004  p1=n11 w14 d26 c6  p2=n11 w17 d28 c6  [gd+bd2-3^,g1-3o,b1-3^,p1-1^,td+bd2-3o,gd+od2-3o,m1-2^,oz1-2^,gz1-3o,gz1-1^,oz1-2o]  [te1-1^,oe+pe+bz3-3o,g+b2-3o,m1-3^,ge+oe2-3o,g+o2-1^,o+gz2-2^,gz1-3^,gz1-3o,bz1-3^,te1-3o]  P2  t24
+#   mcts vs minimax [braid vs bead]  g5  seed=310005  p1=n11 w15 d28 c5  p2=n11 w16 d21 c6  [b1-2^,t1-1^,od+bd2-3o,od+pd2-1o,g1-3^,g1-3^,gd+od2-3o,gz1-3^,oz1-3o,o1-3^,gz1-3ozz]  [o+b2-1^,te+ge2-3o,o1-2o,ge+me2-1^,p1-1o,o+b2-2^,ge+t2-2^,oz1-1o,be1-3^,gz1-2o,oz1-3^]  P1  t45
+#   mcts vs minimax [braid vs bead]  g6  seed=310006  p1=n11 w15 d28 c4  p2=n11 w16 d27 c6  [od+td2-3^,o1-3^,gz1-3o,o1-2^,b1-1o,gd+bd2-3obk,od+gd2-3^,gz1-3o,oz1-3^,oz1-3^,oz1-1o]  [gz+be2-2o,o1-3^,pe1-3^,oe+be2-2^,mz1-3o,tz+g2-1o,ge+oe2-3^,t1-2^,oz+bz2-2o,b1-3^,oz1-3o]  P2  t22
+#   mcts vs minimax [braid vs bead]  g7  seed=310007  p1=n11 w14 d25 c4  p2=n11 w20 d26 c3  [o1-3^,o1-3o,gd+pd2-1o,g1-2^,b1-2^,bd+od2-2o,gd+od2-3^,gz1-3o,bz1-2o,gz1-1o,gz1-3o]  [g1-3^,bz+oe2-3^,b+gz2-3o,oe+bz+ge3-3o,g+be2-1om,g+b2-3^,be+g2-1^,g1-3o,oe+bz2-1o,oz1-3^,oz1-2^]  P2  t98
+#   mcts vs minimax [braid vs bead]  g8  seed=310008  p1=n11 w14 d25 c6  p2=n11 w18 d25 c5  [g1-3^,m1-2^,o1-3^,gd+pd2-2o,bd+od2-3o,b1-3o,td+gd2-1^,bz1-2o,bz1-2o,b1-3^,bz1-1^]  [g+bz2-1^,o+m2-3o,oz+bz+p3-3o,pe+g2-3^,oz1-3^ro,b1-3^,o+bz2-2o,pe1-2^,ge+pe2-1o,bz1-2^,be+ge2-2o]  P2  t20
+#   mcts vs minimax [braid vs bead]  g9  seed=310009  p1=n11 w14 d26 c5  p2=n11 w19 d25 c5  [b1-3^,o1-3o,gd+bd2-3o,p1-3o,od+bd+gd3-2^,tz1-3^,o1-3^,gz1-1o,gz1-2o,oz1-1^,o1-2^]  [p1-2^,ge+b2-3o,g1-3^,t+p2-2^,t+ge2-1o,g+oe+t3-3o,t+o2-2o,oe+ge2-3o,gz1-3^,bz+ge2-1o,gz1-2^]  P2  t30
+#   mcts vs minimax [braid vs bead]  g10  seed=310010  p1=n11 w14 d25 c5  p2=n11 w18 d18 c5  [g1-2^,td+od2-2o,o1-3o,bd+gd2-3o,p1-1^,bd+od2-2^,b1-3^,oz1-2o,oz1-3o,oz1-2o,gz1-2^]  [o+gz2-1o,pz+oe2-3o,be+oz2-3^,ge+be2-1o,oz+te2-1^,ge+oz2-2^,o+gz2-1^,g1-1oro,g1-1^,t1-1^bk,o1-3o]  P2  t20
+#   mcts vs minimax [braid vs braid]  g1  seed=110001  p1=n11 w15 d26 c4  p2=n11 w15 d26 c4  [g1-2^,bd+od2-1^,b1-3ozz,gd+bd2-3o,o1-3^,md+bd2-2o,g1-2^,b1-1^,oz1-3^,bz1-3o,bz1-3o]  [g1-2^,bd+od2-1^,b1-3ozz,gd+bd2-3o,o1-3^,md+bd2-2o,g1-2^,b1-1^,oz1-3^,bz1-3o,bz1-3o]  P1  t63
+#   mcts vs minimax [braid vs braid]  g2  seed=110002  p1=n11 w15 d28 c5  p2=n11 w15 d28 c5  [bd+od2-3^,g1-3^,gd+bd2-3o,o1-3o,gz1-2om,p1-1^,bd+gd2-3^,tz1-1o,bz1-3^,gz1-3o,bz1-3^]  [bd+od2-3^,g1-3^,gd+bd2-3o,o1-3o,gz1-2om,p1-1^,bd+gd2-3^,tz1-1o,bz1-3^,gz1-3o,bz1-3^]  P1  t127
+#   mcts vs minimax [braid vs braid]  g3  seed=110003  p1=n11 w15 d29 c5  p2=n11 w15 d29 c5  [o1-2^,p1-1^,t1-3o,gd+pd2-3o,bd+od2-3^,g1-3ozz,bd+gd2-3^,gz1-3^,oz1-2o,bz1-3^,t1-3o]  [o1-2^,p1-1^,t1-3o,gd+pd2-3o,bd+od2-3^,g1-3ozz,bd+gd2-3^,gz1-3^,oz1-2o,bz1-3^,t1-3o]  P2  t30
+#   mcts vs minimax [braid vs braid]  g4  seed=110004  p1=n11 w14 d28 c5  p2=n11 w14 d28 c5  [bd+od2-2^,o1-3o,od+pd2-1o,gz1-3^,o1-2^,bd+td2-3o,b1-2^,bz1-3o,oz1-3o,gz1-3^,bz1-3^]  [bd+od2-2^,o1-3o,od+pd2-1o,gz1-3^,o1-2^,bd+td2-3o,b1-2^,bz1-3o,oz1-3o,gz1-3^,bz1-3^]  P1  t47
+#   mcts vs minimax [braid vs braid]  g5  seed=110005  p1=n11 w13 d29 c4  p2=n11 w13 d29 c4  [b1-2^,g1-3^,b1-3^,od+gd2-3o,o1-3oro,td+od2-1o,gd+bd2-3^,gz1-2^,bz1-3o,bz1-3^,oz1-3o]  [b1-2^,g1-3^,b1-3^,od+gd2-3o,o1-3oro,td+od2-1o,gd+bd2-3^,gz1-2^,bz1-3o,bz1-3^,oz1-3o]  P1  t29
+#   mcts vs minimax [braid vs braid]  g6  seed=110006  p1=n11 w14 d25 c4  p2=n11 w14 d25 c4  [od+bd2-3^,o1-3^,o1-3^,t1-2o,bz1-1o,gd+od2-2^,od+bd2-3o,oz1-1^,bz1-2o,oz1-3^,gz1-2o]  [od+bd2-3^,o1-3^,o1-3^,t1-2o,bz1-1o,gd+od2-2^,od+bd2-3o,oz1-1^,bz1-2o,oz1-3^,gz1-2o]  P2  t180
+#   mcts vs minimax [braid vs braid]  g7  seed=110007  p1=n11 w14 d24 c4  p2=n11 w14 d24 c4  [b1-3o,tz1-2o,gd+bd2-2^,od+bd2-3^,o1-3^,b1-3^,bd+gd2-1o,g1-3o,bz1-1^,bz1-2^,gz1-1o]  [b1-3o,tz1-2o,gd+bd2-2^,od+bd2-3^,o1-3^,b1-3^,bd+gd2-1o,g1-3o,bz1-1^,bz1-2^,gz1-1o]  P1  t73
+#   mcts vs minimax [braid vs braid]  g8  seed=110008  p1=n11 w13 d23 c5  p2=n11 w13 d23 c5  [pd+gd2-1^,b1-2o,g1-3^,o1-2^,gd+bd2-2oro,b1-3o,td+gd2-3^,bz1-2o,bz1-2^,o1-2o,gz1-1^]  [pd+gd2-1^,b1-2o,g1-3^,o1-2^,gd+bd2-2oro,b1-3o,td+gd2-3^,bz1-2o,bz1-2^,o1-2o,gz1-1^]  P2  t26
+#   mcts vs minimax [braid vs braid]  g9  seed=110009  p1=n11 w14 d28 c4  p2=n11 w14 d28 c4  [o1-2^,g1-2^,o1-3o,b1-3o,b1-3^,bd+gd+od3-1o,pd+bd2-3^,bz1-2^,bz1-3^,oz1-3o,bz1-3o]  [o1-2^,g1-2^,o1-3o,b1-3o,b1-3^,bd+gd+od3-1o,pd+bd2-3^,bz1-2^,bz1-3^,oz1-3o,bz1-3o]  P2  t50
+#   mcts vs minimax [braid vs braid]  g10  seed=110010  p1=n11 w16 d29 c5  p2=n11 w16 d29 c5  [td+gd2-2o,bd+od2-3^,o1-3^,g1-3^,b1-1o,g1-3^,pd+od2-3om,oz1-3^,oz1-3o,gz1-2^bk,oz1-3o]  [td+gd2-2o,bd+od2-3^,o1-3^,g1-3^,b1-1o,g1-3^,pd+od2-3om,oz1-3^,oz1-3o,gz1-2^bk,oz1-3o]  P1  t61
+#   mcts vs minimax [mixed vs mixed]  g1  seed=10001  p1=n11 w16 d26 c5  p2=n11 w16 d26 c5  [b+t2-2o,g1-3^,b1-3^,p+o2-2^,o+bz2-1o,gz+b2-3o,gz+o2-1^,ge1-3o,te1-2^,gz1-3o,be1-3^]  [b+t2-2o,g1-3^,b1-3^,p+o2-2^,o+bz2-1o,gz+b2-3o,gz+o2-1^,ge1-3o,te1-2^,gz1-3o,be1-3^]  P2  t44
+#   mcts vs minimax [mixed vs mixed]  g2  seed=10002  p1=n11 w19 d27 c6  p2=n11 w19 d27 c6  [b+gz2-2o,g+o2-3o,g+mz2-2^,t1-3^,gz+b2-3^,g+o2-2o,p1-3^,bz+g2-2^,gz+b2-2o,oe1-3o,gz+b2-2^]  [b+gz2-2o,g+o2-3o,g+mz2-2^,t1-3^,gz+b2-3^,g+o2-2o,p1-3^,bz+g2-2^,gz+b2-2o,oe1-3o,gz+b2-2^]  P1  t87
+#   mcts vs minimax [mixed vs mixed]  g3  seed=10003  p1=n11 w11 d27 c6  p2=n11 w11 d27 c6  [b1-3^,o1-3o,g1-2^,o1-3^,pz1-2^,t1-1o,m1-3o,be1-2o,be1-3^,ge1-3^,be1-2o]  [b1-3^,o1-3o,g1-2^,o1-3^,pz1-2^,t1-1o,m1-3o,be1-2o,be1-3^,ge1-3^,be1-2o]  P2  t40
+#   mcts vs minimax [mixed vs mixed]  g4  seed=10004  p1=n11 w14 d26 c5  p2=n11 w14 d26 c5  [b1-3^,g+bz2-3o,o1-3^,bz+o2-1^,b1-3^,pz1-3o,o+tz2-2o,ge1-1^,bz1-1^,bz1-3o,oe1-3o]  [b1-3^,g+bz2-3o,o1-3^,bz+o2-1^,b1-3^,pz1-3o,o+tz2-2o,ge1-1^,bz1-1^,bz1-3o,oe1-3o]  P2  t26
+#   mcts vs minimax [mixed vs mixed]  g5  seed=10005  p1=n11 w17 d22 c5  p2=n11 w17 d22 c5  [o1-3o,g+b2-3^,b+o2-1o,tz+oe2-1^,oz+b2-1^,g+o2-3o,oe+pe2-2^,oz1-2o,oz1-2o,bz1-3^,oz1-1o]  [o1-3o,g+b2-3^,b+o2-1o,tz+oe2-1^,oz+b2-1^,g+o2-3o,oe+pe2-2^,oz1-2o,oz1-2o,bz1-3^,oz1-1o]  P2  t30
+#   mcts vs minimax [mixed vs mixed]  g6  seed=10006  p1=n11 w14 d26 c5  p2=n11 w14 d26 c5  [o+be2-3^,pe1-2^,g1-3o,ge+o2-3^,oz+b2-1o,b1-3o,t1-1^,o1-3^,oz1-3^,oe1-3o,oe1-1o]  [o+be2-3^,pe1-2^,g1-3o,ge+o2-3^,oz+b2-1o,b1-3o,t1-1^,o1-3^,oz1-3^,oe1-3o,oe1-1o]  P2  t42
+#   mcts vs minimax [mixed vs mixed]  g7  seed=10007  p1=n11 w15 d26 c4  p2=n11 w15 d26 c4  [b1-3^,b1-3o,o1-3^,t1-1o,b1-2obk,bz+gz2-3^,g1-3^,b1-3o,ge+bz2-1^,oz+gz2-1^,oe1-3o]  [b1-3^,b1-3o,o1-3^,t1-1o,b1-2obk,bz+gz2-3^,g1-3^,b1-3o,ge+bz2-1^,oz+gz2-1^,oe1-3o]  P2  t54
+#   mcts vs minimax [mixed vs mixed]  g8  seed=10008  p1=n11 w13 d30 c5  p2=n11 w13 d30 c5  [o1-3o,t+o2-2^,b1-3^,p1-2^,t1-3o,b1-3^,b+gz2-3o,bz1-2o,be1-3^,be1-3o,bz1-3^]  [o1-3o,t+o2-2^,b1-3^,p1-2^,t1-3o,b1-3^,b+gz2-3o,bz1-2o,be1-3^,be1-3o,bz1-3^]  P2  t82
+#   mcts vs minimax [mixed vs mixed]  g9  seed=10009  p1=n11 w19 d20 c4  p2=n11 w19 d20 c4  [g+oz2-2obk,pz+b2-1^,g+o2-1^,o+b2-1o,o1-3^,g+b2-2o,b+oz2-1^,b+ge2-2o,ge1-3^,oe1-2o,oz1-2^]  [g+oz2-2obk,pz+b2-1^,g+o2-1^,o+b2-1o,o1-3^,g+b2-2o,b+oz2-1^,b+ge2-2o,ge1-3^,oe1-2o,oz1-2^]  P2  t24
+#   mcts vs minimax [mixed vs mixed]  g10  seed=10010  p1=n11 w14 d25 c5  p2=n11 w14 d25 c5  [t1-3^,pz+bz2-2^,g1-2o,g1-3^,t1-1o,bz+oz+gz3-2^,b1-3o,ge1-1^,gz1-3o,ge1-2o,b1-3^]  [t1-3^,pz+bz2-2^,g1-2o,g1-3^,t1-1o,bz+oz+gz3-2^,b1-3o,ge1-1^,gz1-3o,ge1-2o,b1-3^]  P2  t28
+#   minimax vs mcts [bead vs bead]  g1  seed=200001  p1=n11 w16 d26 c4  p2=n11 w16 d26 c4  [g1-2^,oe+ge2-1^,o1-2^,t+o2-2o,o+ge2-3o,te+g2-3^,be+oe2-2o,oz1-3o,oz1-3^,oz1-3^,oz1-2o]  [g1-2^,oe+ge2-1^,o1-2^,t+o2-2o,o+ge2-3o,te+g2-3^,be+oe2-2o,oz1-3o,oz1-3^,oz1-3^,oz1-2o]  P1  t37
+#   minimax vs mcts [bead vs bead]  g2  seed=200002  p1=n11 w18 d23 c4  p2=n11 w18 d23 c4  [o1-2o,oz+be2-3^,gz+oe2-3o,oe+be2-3^bk,b+gz2-1^,oe+b2-2o,oz+g2-2^,oz1-1^,pe1-1^,oz1-3o,g1-2o]  [o1-2o,oz+be2-3^,gz+oe2-3o,oe+be2-3^bk,b+gz2-1^,oe+b2-2o,oz+g2-2^,oz1-1^,pe1-1^,oz1-3o,g1-2o]  P2  t100
+#   minimax vs mcts [bead vs bead]  g3  seed=200003  p1=n11 w17 d27 c5  p2=n11 w17 d27 c5  [g+bz2-3o,g1-3o,oz1-2oro,oe+t2-3^,g+oe2-3^,o1-3^zz,pe+bz2-1^,gz1-3o,oz+ge2-2^,be+ge2-2^,gz1-2o]  [g+bz2-3o,g1-3o,oz1-2oro,oe+t2-3^,g+oe2-3^,o1-3^zz,pe+bz2-1^,gz1-3o,oz+ge2-2^,be+ge2-2^,gz1-2o]  P1  t47
+#   minimax vs mcts [bead vs bead]  g4  seed=200004  p1=n11 w15 d21 c5  p2=n11 w15 d21 c5  [gz+b2-1o,mz1-3o,g1-2^,g1-2^,be+g2-3^,o1-3^,p1-2o,oe1-1^,oe+be2-1o,gz1-2^,be+ge2-1o]  [gz+b2-1o,mz1-3o,g1-2^,g1-2^,be+g2-3^,o1-3^,p1-2o,oe1-1^,oe+be2-1o,gz1-2^,be+ge2-1o]  P1  t31
+#   minimax vs mcts [bead vs bead]  g5  seed=200005  p1=n11 w14 d23 c4  p2=n11 w14 d23 c4  [pe+ge2-2o,gz+oe2-3o,pz1-2^,be+g2-3^,be1-3^,p+bz2-1o,be1-3^,gz1-1^,g1-1^,gz1-2oro,gz1-2o]  [pe+ge2-2o,gz+oe2-3o,pz1-2^,be+g2-3^,be1-3^,p+bz2-1o,be1-3^,gz1-1^,g1-1^,gz1-2oro,gz1-2o]  P1  t31
+#   minimax vs mcts [bead vs bead]  g6  seed=200006  p1=n11 w21 d25 c5  p2=n11 w21 d25 c5  [p+oz2-3o,bz1-3^zz,ge+oe2-1^,g+be2-3o,bz+oz2-2^,b+te2-1^,o+be2-3o,b+oe2-1o,bz1-3om,o1-2^,oz1-3ozz]  [p+oz2-3o,bz1-3^zz,ge+oe2-1^,g+be2-3o,bz+oz2-2^,b+te2-1^,o+be2-3o,b+oe2-1o,bz1-3om,o1-2^,oz1-3ozz]  P2  t38
+#   minimax vs mcts [bead vs bead]  g7  seed=200007  p1=n11 w17 d22 c4  p2=n11 w17 d22 c4  [ge+b2-3^,t+oz2-2oro,gz+be2-3^,b+g2-2^,oe+ge2-2^,o+b2-2o,o+ge2-1o,oz1-1^,gz1-1o,gz1-2o,oz1-3^]  [ge+b2-3^,t+oz2-2oro,gz+be2-3^,b+g2-2^,oe+ge2-2^,o+b2-2o,o+ge2-1o,oz1-1^,gz1-1o,gz1-2o,oz1-3^]  P2  t40
+#   minimax vs mcts [bead vs bead]  g8  seed=200008  p1=n11 w13 d27 c3  p2=n11 w13 d27 c3  [o+bz2-3^ro,o1-3^,oe+ge2-3^,oz1-3oro,b1-2o,b+g2-3^,ge+oe2-1o,oz1-3^,be1-2o,oz1-1^,be1-3o]  [o+bz2-3^ro,o1-3^,oe+ge2-3^,oz1-3oro,b1-2o,b+g2-3^,ge+oe2-1o,oz1-3^,be1-2o,oz1-1^,be1-3o]  P2  t62
+#   minimax vs mcts [bead vs bead]  g9  seed=200009  p1=n11 w17 d24 c5  p2=n11 w17 d24 c5  [p+oe2-1o,ge+b+te3-3^,o1-2^,t1-3o,b+o2-1o,g1-3^,b1-3^,oz1-1^m,be+ge2-1o,b1-3o,te1-3^]  [p+oe2-1o,ge+b+te3-3^,o1-2^,t1-3o,b+o2-1o,g1-3^,b1-3^,oz1-1^m,be+ge2-1o,b1-3o,te1-3^]  P2  t52
+#   minimax vs mcts [bead vs bead]  g10  seed=200010  p1=n11 w16 d24 c5  p2=n11 w16 d24 c5  [o1-3^,o+g2-3o,oe+ge2-3o,o1-3^,b+g2-2o,b1-2^zz,pe1-1^,gz1-3^,gz1-2^,oe+be2-1o,te1-1o]  [o1-3^,o+g2-3o,oe+ge2-3o,o1-3^,b+g2-2o,b1-2^zz,pe1-1^,gz1-3^,gz1-2^,oe+be2-1o,te1-1o]  P2  t142
+#   minimax vs mcts [bead vs braid]  g1  seed=400001  p1=n11 w17 d26 c5  p2=n11 w14 d25 c5  [oe+ge2-2^,b+ge2-3^,p1-3^,ge+o2-1^,te+be2-2o,oz+p2-2o,gz+p2-3o,bz1-3o,bz1-1^,gz1-3o,p1-3^]  [m1-1^,b1-2^,gd+td+od3-1^,b1-3^,gd+bd2-3o,t1-3o,t1-3o,oz1-3^,bz1-2o,gz1-2o,oz1-2^]  P1  t47
+#   minimax vs mcts [bead vs braid]  g2  seed=400002  p1=n11 w17 d24 c5  p2=n11 w13 d25 c5  [o1-2^,g1-3^,ge+b2-1^,ge+pz2-3o,oe+te2-3o,be+oe2-2^,bz+oz2-2o,gz+bz2-1o,oz1-3^,b1-3o,g1-1^]  [o1-2^,gz1-3o,gd+od2-3^,o1-2o,p1-1^,gd+bd2-3oro,od+td2-3^,gz1-1^,bz1-3o,gz1-2^,oz1-2o]  P1  t37
+#   minimax vs mcts [bead vs braid]  g3  seed=400003  p1=n11 w17 d27 c3  p2=n11 w14 d30 c5  [be+oe2-3o,ge+oe2-2^,o1-3o,bz+o2-3^,o+be2-3^,o1-3o,oz+bz+ge3-1^,bz1-3^,gz1-2^,g1-2o,bz1-2o]  [o1-3^,g1-3o,g1-3^,g1-2o,bd+td2-3^,bd+pd2-1o,bd+gd2-3^,oz1-3o,o1-3^,oz1-3o,bz1-3o]  P1  t31
+#   minimax vs mcts [bead vs braid]  g4  seed=400004  p1=n11 w15 d25 c5  p2=n11 w14 d26 c5  [te+ge2-1^,b1-3o,b1-3o,oe+gz2-2^,b+g2-1^,pe+oe2-2o,t1-3^,bz1-1^,g1-3^,b1-3o,te1-3o]  [p1-1o,o1-2^,b1-3o,gd+td2-3^,bd+od2-3^,od+bd2-3o,b1-3^,gz1-2^,gz1-2o,bz1-1^,gz1-3o]  P1  t129
+#   minimax vs mcts [bead vs braid]  g5  seed=400005  p1=n11 w16 d25 c4  p2=n11 w14 d24 c5  [oe+g2-2o,g1-3^,o1-2^,oe+ge2-3o,b1-2^,ge+oe2-1^,gz+t2-3o,gz1-2^,g1-2^,ge1-3o,bz+gz2-2o]  [od+bd2-2o,b1-3^,bd+pd2-3^,g1-3o,gd+bd2-1^,o1-3^,t1-3o,oz1-1^,oz1-1o,oz1-2^,oz1-2o]  P1  t17
+#   minimax vs mcts [bead vs braid]  g6  seed=400006  p1=n11 w18 d27 c5  p2=n11 w14 d28 c3  [p1-3^,ge+be2-3^,t+oz2-3o,o1-3o,oe+be2-2^,g+o2-1^,oz+g+be3-2o,oz+bz2-1^,bz1-3^,te1-3o,bz1-3o]  [b1-3o,gd+od2-1^,od+gd2-2^,b1-3^,od+bd2-3o,g1-3^,b1-3o,gz1-2^,oz1-2o,gz1-3^,bz1-3o]  P1  t31
+#   minimax vs mcts [bead vs braid]  g7  seed=400007  p1=n11 w18 d23 c5  p2=n11 w13 d24 c4  [g+be2-2^,gz+o2-1^,te+be2-1^,t+b2-2o,g+be2-3o,p+b2-2o,be+g2-1^,gz1-3o,bz1-2^,bz1-3o,te1-3^]  [o1-2^,b1-2^,g1-3o,o1-2o,bd+gd2-3^,bd+md2-1o,bd+od2-3^,gz1-2o,bz1-1^ro,gz1-3o,g1-2^]  P1  t27
+#   minimax vs mcts [bead vs braid]  g8  seed=400008  p1=n11 w15 d27 c5  p2=n11 w14 d30 c5  [t1-1o,oe+ge2-2^,ge+be2-2o,gz+pe2-3^,te1-3^,o1-3^,gz+o2-3o,p1-2o,b1-3o,o1-3o,g1-2^]  [g1-3^,b1-3^,o1-3^,od+bd+pd3-3o,o1-3o,g1-3o,gd+td2-2^,o1-3^,gz1-3o,gz1-3^,oz1-1o]  P2  t92
+#   minimax vs mcts [bead vs braid]  g9  seed=400009  p1=n11 w15 d28 c5  p2=n11 w14 d26 c5  [g1-3o,o+pe2-2o,g1-3^,te1-3o,oe+ge2-3^,ge+be2-3^,b+o2-1^,b1-3o,g1-3o,bz1-2^,b1-2^]  [o1-3o,o1-3o,pd+bd2-3o,gd+od2-2^,tz1-1^,p1-3^,od+gd2-3^,o1-3^,o1-3^,oz1-1o,oz1-1o]  D  t200
+#   minimax vs mcts [bead vs braid]  g10  seed=400010  p1=n11 w18 d22 c4  p2=n11 w14 d28 c5  [b1-3^,p1-1^,ge1-3^,bz+oe2-2o,b1-3om,be+oe2-2^,b+o2-2o,o1-2om,o1-1^,bz+oz2-2o,oe+be2-1^]  [o1-3o,o1-3o,p1-1^,bd+pd2-3^,t1-3o,gd+bd2-2^,od+bd2-3^,b1-2^,b1-2o,b1-3^,bz1-3o]  D  t200
+#   minimax vs mcts [braid vs bead]  g1  seed=300001  p1=n11 w14 d28 c3  p2=n11 w14 d26 c5  [g1-3o,od+bd2-3o,o1-2o,o1-3^,o1-3^,gd+bd2-3^,bd+od2-3^,bz1-2^,bz1-2^,g1-3o,o1-1o]  [ge1-3o,gz+o2-3^,b1-2o,be+oe2-1^,bz1-3o,t1-2^,me1-3^,oe+ge2-2^,gz1-3o,gz1-3o,oz1-1^]  P2  t108
+#   minimax vs mcts [braid vs bead]  g2  seed=300002  p1=n11 w14 d24 c4  p2=n11 w15 d22 c4  [b1-2^,gd+bd2-3o,gd+od2-2o,g1-1^,g1-2^,o1-3^,gd+pd2-2o,bz1-3^,bz1-3o,bz1-2o,bz1-1o]  [t1-2^,o+be2-1^,ge+oe2-1o,b1-2^,oe+be2-3^,bz+oe2-1o,b1-3o,oz1-2^,gz1-3^,oz1-3o,g1-1o]  P1  t35
+#   minimax vs mcts [braid vs bead]  g3  seed=300003  p1=n11 w14 d29 c4  p2=n11 w18 d25 c5  [gd+bd2-3^,o1-3^,b1-3o,g1-3o,bd+gd2-3^,b1-1o,td+bd2-2^,gz1-2^,gz1-3o,bz1-3^,bz1-3o]  [oe+b2-1^,o+pe2-3o,ge+pe2-2^,tz1-3^,ge+bz2-2^,ge+p2-2o,g+b2-2o,oz+g2-2o,bz1-2^,gz1-3^,bz1-3o]  P2  t136
+#   minimax vs mcts [braid vs bead]  g4  seed=300004  p1=n11 w14 d28 c4  p2=n11 w15 d24 c4  [od+gd2-3o,od+gd2-3o,b1-3^,o1-3o,t1-3^,gd+td2-2^,t1-3^,oz1-1^,oz1-1o,b1-3o,gz1-3^]  [oe1-3^,ge+me2-3^,me+oe2-1^,bz1-3o,o1-2o,be+o2-2^,o+b2-3o,o1-1^,g1-2^,gz1-3o,oz1-1o]  P1  t31
+#   minimax vs mcts [braid vs bead]  g5  seed=300005  p1=n11 w14 d29 c5  p2=n11 w19 d26 c3  [g1-3^,b1-2o,md+od2-3o,od+td2-3o,t1-3^,od+gd2-3^,t1-3^,oz1-3^,gz1-2^,oz1-3o,gz1-1o]  [b1-3^bk,oe+gz+be3-2o,oe+be2-1^,gz+b2-3o,b1-3o,o1-3^bk,bz+o2-1^,b1-3^,bz+oe2-1o,be1-3o,g1-3^]  P1  t31
+#   minimax vs mcts [braid vs bead]  g6  seed=300006  p1=n11 w14 d25 c5  p2=n11 w16 d23 c4  [t1-2o,b1-2o,t1-3^,bd+od+gd3-1^,o1-3o,od+pd2-2^,o1-3^,bz1-3^,bz1-1o,b1-2o,gz1-3^]  [oe+ge2-3^,be+ge2-3o,oe+bz2-2o,pe1-1^,b+gz2-1o,o1-3^,o+b2-2^,gz1-2^,oz1-1o,bz1-2^,b1-3o]  P1  t47
+#   minimax vs mcts [braid vs bead]  g7  seed=300007  p1=n11 w14 d24 c5  p2=n11 w19 d25 c5  [p1-1^,o1-3^,od+bd2-3o,o1-3^,b1-3^,td+od2-2o,bd+gd2-2o,g1-1^,gz1-2o,t1-1^,gz1-3o]  [g1-3o,gz+be2-1o,t+g2-2^,o+g2-2^,be+oe2-3^,p+be2-3o,b1-3^bk,gz1-3o,o1-3o,be+ge2-1^,oz+gz2-1^]  P2  t54
+#   minimax vs mcts [braid vs bead]  g8  seed=300008  p1=n11 w15 d25 c5  p2=n11 w15 d29 c5  [bd+gd2-3o,td+bd2-3o,od+gd2-3^,g1-3^,o1-2^,pz1-1o,b1-3^,bz1-1^,oz1-3obk,bz1-2o,oz1-1^]  [be+g2-3^,te+oe2-3o,b+g2-2^,b1-3o,b1-3o,ge+be2-2^,p1-3^,gz1-3^,pe1-1o,gz1-3^,g1-3o]  P2  t20
+#   minimax vs mcts [braid vs bead]  g9  seed=300009  p1=n11 w15 d28 c5  p2=n11 w15 d23 c4  [td+bd2-2^,p1-3^,g1-3o,b1-3o,b1-3o,gd+od2-1^zz,od+pd2-3^,bz1-2^,oz1-2o,bz1-3^,bz1-3o]  [g1-3^,oe+ge2-1o,b+oe2-1^,pe1-1o,oe+ge2-3o,o1-2^,o+b2-1^,gz1-3o,g1-3^,b1-2o,gz1-3^]  P2  t52
+#   minimax vs mcts [braid vs bead]  g10  seed=300010  p1=n11 w15 d27 c4  p2=n11 w16 d25 c4  [g1-3^,gd+bd2-2^,g1-2^zz,g1-2o,bd+td2-2^,bd+od2-1o,b1-3o,bz1-3^,gz1-3^,oz1-3o,oz1-3o]  [be+o2-2^,g+t2-3o,ge+oe2-2^,g1-3^,b1-3^,b+oe2-3o,be+ge2-1o,bz1-3o,g1-1o,g1-3^,gz1-1^]  P2  t178
+#   minimax vs mcts [braid vs braid]  g1  seed=100001  p1=n11 w14 d23 c4  p2=n11 w14 d23 c4  [o1-3^,b1-3^,g1-3^,od+bd2-2o,gd+od2-2o,g1-3^,pd+bd2-1o,oz1-2o,bz1-1^,bz1-1o,oz1-2^]  [o1-3^,b1-3^,g1-3^,od+bd2-2o,gd+od2-2o,g1-3^,pd+bd2-1o,oz1-2o,bz1-1^,bz1-1o,oz1-2^]  P1  t25
+#   minimax vs mcts [braid vs braid]  g2  seed=100002  p1=n11 w14 d28 c5  p2=n11 w14 d28 c5  [od+td2-1^,pd+od2-2o,gd+bd2-3^,g1-3^,b1-3o,o1-3^,b1-3o,bz1-3^,oz1-2o,oz1-2o,b1-3^]  [od+td2-1^,pd+od2-2o,gd+bd2-3^,g1-3^,b1-3o,o1-3^,b1-3o,bz1-3^,oz1-2o,oz1-2o,b1-3^]  P1  t39
+#   minimax vs mcts [braid vs braid]  g3  seed=100003  p1=n11 w15 d25 c4  p2=n11 w15 d25 c4  [gd+od2-1^,od+bd2-3o,bd+pd2-2o,o1-3^,g1-3^,o1-2ozz,o1-3^,gz1-3^,oz1-2o,oz1-1o,oz1-2^]  [gd+od2-1^,od+bd2-3o,bd+pd2-2o,o1-3^,g1-3^,o1-2ozz,o1-3^,gz1-3^,oz1-2o,oz1-1o,oz1-2^]  P2  t118
+#   minimax vs mcts [braid vs braid]  g4  seed=100004  p1=n11 w14 d28 c5  p2=n11 w14 d28 c5  [o1-3o,gd+od2-3^,gd+od2-3o,pz1-2o,b1-3^,bd+gd2-3^,t1-3^,oz1-1^,b1-3o,tz1-2^,oz1-2o]  [o1-3o,gd+od2-3^,gd+od2-3o,pz1-2o,b1-3^,bd+gd2-3^,t1-3^,oz1-1^,b1-3o,tz1-2^,oz1-2o]  P1  t59
+#   minimax vs mcts [braid vs braid]  g5  seed=100005  p1=n11 w14 d27 c4  p2=n11 w14 d27 c4  [bd+od2-3^,bd+td2-3o,b1-3o,o1-3^,od+bd2-3^,t1-2^,g1-1o,bz1-3^,bz1-2o,bz1-2^,bz1-2o]  [bd+od2-3^,bd+td2-3o,b1-3o,o1-3^,od+bd2-3^,t1-2^,g1-1o,bz1-3^,bz1-2o,bz1-2^,bz1-2o]  P2  t54
+#   minimax vs mcts [braid vs braid]  g6  seed=100006  p1=n11 w14 d28 c5  p2=n11 w14 d28 c5  [o1-3o,bd+od2-1^,g1-3^,pz1-3o,bd+gd2-2^,g1-3o,bd+td2-3^,g1-3^,gz1-1^,tz1-3o,gz1-3o]  [o1-3o,bd+od2-1^,g1-3^,pz1-3o,bd+gd2-2^,g1-3o,bd+td2-3^,g1-3^,gz1-1^,tz1-3o,gz1-3o]  P1  t37
+#   minimax vs mcts [braid vs braid]  g7  seed=100007  p1=n11 w15 d25 c5  p2=n11 w15 d25 c5  [td+bd2-1^,o1-3^,gd+bd2-2o,p1-1^,g1-3^,b1-3o,od+gd2-3om,b1-2o,gz1-1^,bz1-3o,oz1-3^]  [td+bd2-1^,o1-3^,gd+bd2-2o,p1-1^,g1-3^,b1-3o,od+gd2-3om,b1-2o,gz1-1^,bz1-3o,oz1-3^]  P1  t41
+#   minimax vs mcts [braid vs braid]  g8  seed=100008  p1=n11 w14 d27 c5  p2=n11 w14 d27 c5  [g1-3o,od+bd2-3^,bd+od2-2^,g1-3^,tz1-2^,gd+bd2-3o,mz1-1o,gz1-3o,gz1-3o,gz1-2^,bz1-2^]  [g1-3o,od+bd2-3^,bd+od2-2^,g1-3^,tz1-2^,gd+bd2-3o,mz1-1o,gz1-3o,gz1-3o,gz1-2^,bz1-2^]  D  t39
+#   minimax vs mcts [braid vs braid]  g9  seed=100009  p1=n11 w13 d26 c4  p2=n11 w13 d26 c4  [bd+od+gd3-3o,o1-3^,b1-1o,g1-3o,o1-2^,p1-2^,bd+pd2-2^ro,gz1-3o,bz1-1o,oz1-3^,oz1-3^]  [bd+od+gd3-3o,o1-3^,b1-1o,g1-3o,o1-2^,p1-2^,bd+pd2-2^ro,gz1-3o,bz1-1o,oz1-3^,oz1-3^]  P2  t46
+#   minimax vs mcts [braid vs braid]  g10  seed=100010  p1=n11 w14 d24 c3  p2=n11 w14 d24 c3  [g1-3^,bd+gd2-3o,g1-1^,g1-2^,bd+gd2-3o,o1-2^,bd+gd2-3o,gz1-3^,gz1-1^,gz1-2o,gz1-1o]  [g1-3^,bd+gd2-3o,g1-1^,g1-2^,bd+gd2-3o,o1-2^,bd+gd2-3o,gz1-3^,gz1-1^,gz1-2o,gz1-1o]  P2  t46
+#   minimax vs mcts [mixed vs mixed]  g1  seed=1  p1=n11 w16 d26 c5  p2=n11 w16 d26 c5  [oe+be2-2^,gz+t2-1o,tz+o+b3-2^,o1-3o,g1-3o,bz+gz2-3^,pz1-2^,ge1-3^,ge1-3^,gz1-3o,be1-1o]  [oe+be2-2^,gz+t2-1o,tz+o+b3-2^,o1-3o,g1-3o,bz+gz2-3^,pz1-2^,ge1-3^,ge1-3^,gz1-3o,be1-1o]  P2  t30
+#   minimax vs mcts [mixed vs mixed]  g2  seed=2  p1=n11 w18 d26 c5  p2=n11 w18 d26 c5  [gz+t2-3o,g+bz2-3^,b+g2-3^,o1-3o,b+mz2-1o,o+b2-2^,g+m2-2^,ge1-2o,g+bz2-1^,gz1-3^,oe1-3o]  [gz+t2-3o,g+bz2-3^,b+g2-3^,o1-3o,b+mz2-1o,o+b2-2^,g+m2-2^,ge1-2o,g+bz2-1^,gz1-3^,oe1-3o]  P1  t31
+#   minimax vs mcts [mixed vs mixed]  g3  seed=3  p1=n11 w20 d21 c4  p2=n11 w20 d21 c4  [b+o2-1o,gz+b+oz3-1^,b+g2-1^,od+gd2-2o,mz1-3o,oz1-3^bk,g+b2-3^,ge1-3o,gd+bd2-1o,oz+bz2-1^,oe1-2o]  [b+o2-1o,gz+b+oz3-1^,b+g2-1^,od+gd2-2o,mz1-3o,oz1-3^bk,g+b2-3^,ge1-3o,gd+bd2-1o,oz+bz2-1^,oe1-2o]  P2  t44
+#   minimax vs mcts [mixed vs mixed]  g4  seed=4  p1=n11 w15 d28 c4  p2=n11 w15 d28 c4  [g1-3o,o1-3^,gz+p2-1^,b1-3o,g+o2-2^,o1-2om,oz+b2-3^,ge1-3^,gz1-3^,gz1-3o,oe1-2o]  [g1-3o,o1-3^,gz+p2-1^,b1-3o,g+o2-2^,o1-2om,oz+b2-3^,ge1-3^,gz1-3^,gz1-3o,oe1-2o]  P2  t96
+#   minimax vs mcts [mixed vs mixed]  g5  seed=5  p1=n11 w16 d26 c4  p2=n11 w16 d26 c4  [o1-3^,b1-3^,oz+b2-3o,o+bz2-1^,g1-3^,od+pd2-2o,b+o2-3o,ge1-1o,oz1-3o,gz+bz2-1^,oe1-3^]  [o1-3^,b1-3^,oz+b2-3o,o+bz2-1^,g1-3^,od+pd2-2o,b+o2-3o,ge1-1o,oz1-3o,gz+bz2-1^,oe1-3^]  P1  t35
+#   minimax vs mcts [mixed vs mixed]  g6  seed=6  p1=n11 w16 d23 c4  p2=n11 w16 d23 c4  [g1-3^,b1-2^,g+b2-3^,g1-3^,bz+o2-1o,pe+gz2-1o,bz+g2-1o,gz+oz2-2o,gz1-3^,o1-2^,be1-2o]  [g1-3^,b1-2^,g+b2-3^,g1-3^,bz+o2-1o,pe+gz2-1o,bz+g2-1o,gz+oz2-2o,gz1-3^,o1-2^,be1-2o]  P2  t50
+#   minimax vs mcts [mixed vs mixed]  g7  seed=7  p1=n11 w14 d25 c5  p2=n11 w14 d25 c5  [t+gz2-2^,b+oe2-3o,p1-3o,g1-2^,be+g2-2o,g1-2^,b1-1^,be1-3o,oe1-2o,ge1-2^,oe1-3^]  [t+gz2-2^,b+oe2-3o,p1-3o,g1-2^,be+g2-2o,g1-2^,b1-1^,be1-3o,oe1-2o,ge1-2^,oe1-3^]  P1  t31
+#   minimax vs mcts [mixed vs mixed]  g8  seed=8  p1=n11 w15 d24 c4  p2=n11 w15 d24 c4  [p1-2o,b+o2-3^,o1-3o,b1-3^,be+o2-1^,b+o2-1^,g+oz2-2o,oz1-3o,ge1-2^,oz1-3o,oz1-1^]  [p1-2o,b+o2-3^,o1-3o,b1-3^,be+o2-1^,b+o2-1^,g+oz2-2o,oz1-3o,ge1-2^,oz1-3o,oz1-1^]  P2  t26
+#   minimax vs mcts [mixed vs mixed]  g9  seed=9  p1=n11 w15 d29 c5  p2=n11 w15 d29 c5  [pz1-2^,t+ge2-3^,gz+bz2-3^,ge+o2-2o,o1-3o,be+g2-3^,g1-3o,gz1-3o,bz1-3^,oe1-1^,gz1-3o]  [pz1-2^,t+ge2-3^,gz+bz2-3^,ge+o2-2o,o1-3o,be+g2-3^,g1-3o,gz1-3o,bz1-3^,oe1-1^,gz1-3o]  P1  t27
+#   minimax vs mcts [mixed vs mixed]  g10  seed=10  p1=n11 w15 d26 c4  p2=n11 w15 d26 c4  [bz+o2-2^,p1-3^zz,o1-3o,oz+bz2-2o,oz+g2-3^,b1-2^ro,oz+g2-3o,o1-3^,ge1-2^,o1-2o,oz1-1o]  [bz+o2-2^,p1-3^zz,o1-3o,oz+bz2-2o,oz+g2-3^,b1-2^ro,oz+g2-3o,o1-3^,ge1-2^,o1-2o,oz1-1o]  P2  t38
+
+# MCTS: the remaining deck is public, so bag shuffle is a no-op on default rules. Legacy `capture_draw_on_move` logs still shuffle hidden remainders. Minimax searches the live position.
+# Minimax: iterative deepening alpha-beta, Zobrist TT, TT/capture/killer/history ordering, quiescence on capture sequences.
+# game_record=/agent/repos/apa-kan/apa-kan/game/benchmark_results/independent_max/h2h_shallow_record.txt
+# games_log=/agent/repos/apa-kan/apa-kan/game/benchmark_results/independent_max/h2h_shallow.jsonl.gz
+# elapsed_sec=756.8

@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	BeadScoring, BlockerBlocks, BraidFailMismatch, EmblemWeights, HopWeightCmp,
+	BeadScoring, BlockerBlocks, BraidFailMismatch, ChannelMode, EmblemWeights, HopWeightCmp,
 	InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet, SamePieceTwice,
 	ZagMismatchCount, BAG_SIZE,
 };
@@ -361,12 +361,11 @@ where
 			}
 			rules.bead_numer = n as u8;
 		}
-		"--beads" => {
-			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
-			rules.bead_numer = if on { crate::game::BEAD_NUMER_DEFAULT } else { 0 };
-		}
 		"--bead-scoring" => {
 			rules.bead_scoring = BeadScoring::parse(&require_value(arg, it.next())?)?;
+		}
+		"--channel-mode" => {
+			rules.channel_mode = ChannelMode::parse(&require_value(arg, it.next())?)?;
 		}
 		"--dot-chance" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
@@ -467,9 +466,9 @@ pub fn usage() -> &'static str {
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
-	   --bead-chance <0..7>                       A piece forms a 2–3 bead group with k/7 chance (default: 1)\n\
-	   --beads <on|off>                           Alias for --bead-chance 1 or 0 (default: on)\n\
-	   --bead-scoring <independent|shared>        Normal/bead combine: max (B, default) or sum (A)\n\
+	   --bead-chance <0..7>                       Additive: 2–3 bead group k/7. Independent-max: bead light weight (default: 1)\n\
+	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (ignored by independent-max)\n\
+	   --channel-mode <independent-max|additive>  Edge combine + generation (default: independent-max)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
 	                                              Emblem generation weights (default: 200,1,1,1,1)\n\
@@ -661,6 +660,7 @@ mod tests {
 		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.bead_numer, 1);
 		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
+		assert_eq!(cfg.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
 		assert_eq!(cfg.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.setup.p2_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.rules.dot_percent, crate::game::DOT_PERCENT_DEFAULT);
@@ -758,16 +758,14 @@ mod tests {
 
 	#[test]
 	fn parses_bead_flags() {
-		let off = GameConfig::parse(["--beads", "off"]).unwrap();
-		assert_eq!(off.rules.bead_numer, 0);
 		let chance = GameConfig::parse(["--bead-chance", "0"]).unwrap();
 		assert_eq!(chance.rules.bead_numer, 0);
-		let on = GameConfig::parse(["--beads", "on"]).unwrap();
-		assert_eq!(on.rules.bead_numer, 1);
 		let three = GameConfig::parse(["--bead-chance", "3"]).unwrap();
 		assert_eq!(three.rules.bead_numer, 3);
 		let err = GameConfig::parse(["--bead-chance", "8"]).unwrap_err();
 		assert!(err.contains("bead-chance"));
+		let gone = GameConfig::parse(["--beads", "off"]).unwrap_err();
+		assert!(gone.contains("--beads") || gone.contains("unknown"), "{gone}");
 	}
 
 	#[test]
@@ -781,6 +779,20 @@ mod tests {
 		let decks = GameConfig::parse(["--p1-deck", "braid", "--p2-deck", "bead"]).unwrap();
 		assert_eq!(decks.setup.p1_deck, crate::deck::DeckArchetype::BraidHeavy);
 		assert_eq!(decks.setup.p2_deck, crate::deck::DeckArchetype::BeadHeavy);
+	}
+
+	#[test]
+	fn parses_channel_mode() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		let max = GameConfig::parse(["--channel-mode", "independent-max"]).unwrap();
+		assert_eq!(max.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		let add = GameConfig::parse(["--channel-mode", "additive"]).unwrap();
+		assert_eq!(add.rules.channel_mode, crate::game::ChannelMode::Additive);
+		let legacy = GameConfig::parse(["--channel-mode", "legacy"]).unwrap();
+		assert_eq!(legacy.rules.channel_mode, crate::game::ChannelMode::Additive);
+		let err = GameConfig::parse(["--channel-mode", "average"]).unwrap_err();
+		assert!(err.contains("channel-mode"));
 	}
 
 	#[test]

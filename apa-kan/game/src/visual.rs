@@ -8,8 +8,9 @@ use std::f64::consts::PI;
 
 use crate::board::{ArcEdge, Board, NodeId};
 use crate::game::{
-	selected_braid, ActionOutcome, BudgetToken, CaptureDest, CaptureMark, Emblem, Game, GameStatus,
-	Player, RingType, RuleSet, Tile, TileColor, ZagMismatchCount, BAG_SIZE_DEFAULT,
+	selected_braid, ActionOutcome, BudgetToken, CaptureDest, CaptureMark, ChannelKind,
+	EdgeChannels, Emblem, Game, GameStatus, Player, RingType, RuleSet, Tile, TileColor,
+	ZagMismatchCount, BAG_SIZE_DEFAULT,
 };
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
@@ -480,6 +481,46 @@ impl ArcPaint {
 	pub fn bead_mid_count(self) -> usize {
 		self.beads_mid.iter().filter(|z| z.is_some()).count()
 	}
+
+	/// Independent-max HUD: keep only the max-match channel and the
+	/// max-mismatch channel. Quiet and losing channels are omitted. One
+	/// channel can win both.
+	pub fn keep_independent_max_lanes(mut self, ch: EdgeChannels) -> Self {
+		let match_k = ch.max_match_kind();
+		let mismatch_k = ch.max_mismatch_kind();
+		let keep_normal_match = match_k == Some(ChannelKind::Normal);
+		let keep_normal_mis = mismatch_k == Some(ChannelKind::Normal);
+		self.body = match self.body {
+			ArcBody::Solid { .. } | ArcBody::Stripes { .. } if !keep_normal_match => {
+				ArcBody::Hidden
+			}
+			ArcBody::Hitch { .. } if !keep_normal_mis => ArcBody::Hidden,
+			other => other,
+		};
+		if mismatch_k != Some(ChannelKind::Zag) {
+			self.zags_from = Self::no_zags();
+			self.zags_to = Self::no_zags();
+			self.zags_mid = Self::no_mid();
+		}
+		self.braid = match self.braid {
+			Some(BraidLane::Weave { colors }) if match_k == Some(ChannelKind::Braid) => {
+				Some(BraidLane::Weave { colors })
+			}
+			Some(BraidLane::Failed { from, to }) if mismatch_k == Some(ChannelKind::Braid) => {
+				Some(BraidLane::Failed { from, to })
+			}
+			_ => None,
+		};
+		if match_k != Some(ChannelKind::Bead) {
+			self.bead_match = None;
+		}
+		if mismatch_k != Some(ChannelKind::Bead) {
+			self.beads_from = Self::no_beads();
+			self.beads_to = Self::no_beads();
+			self.beads_mid = Self::no_bead_mid();
+		}
+		self
+	}
 }
 
 pub fn shared_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
@@ -802,6 +843,7 @@ fn two_ended(a: Tile, b: Tile, mode: ZagMismatchCount) -> ArcPaint {
 }
 
 /// Paint an arc using the default SUM zag-mismatch rule.
+/// Component lanes (every firing channel). HUD uses [`arc_paint_for_rules`].
 pub fn arc_paint(from: Option<Tile>, to: Option<Tile>) -> ArcPaint {
 	arc_paint_with(from, to, ZagMismatchCount::Sum)
 }
@@ -812,6 +854,21 @@ pub fn arc_paint_with(from: Option<Tile>, to: Option<Tile>, mode: ZagMismatchCou
 		(Some(t), None) => one_ended(t, true),
 		(None, Some(t)) => one_ended(t, false),
 		(Some(a), Some(b)) => two_ended(a, b, mode),
+	}
+}
+
+/// Live HUD/renderer paint: independent-max keeps only the two winning
+/// channels; additive still draws every firing channel.
+pub fn arc_paint_for_rules(from: Option<Tile>, to: Option<Tile>, rules: &RuleSet) -> ArcPaint {
+	let paint = arc_paint_with(from, to, rules.zag_mismatch);
+	if !rules.channel_mode.is_independent_max() {
+		return paint;
+	}
+	match (from, to) {
+		(Some(a), Some(b)) => {
+			paint.keep_independent_max_lanes(EdgeChannels::undirected(a, b, rules))
+		}
+		_ => paint,
 	}
 }
 
@@ -3443,6 +3500,43 @@ mod tests {
 		assert!(matches!(paint.braid, Some(BraidLane::Weave { .. })));
 		let offs = paint.lane_offsets(pitch);
 		assert_eq!(offs, [Some(pitch), Some(0.0), Some(-pitch), None]);
+	}
+
+	#[test]
+	fn independent_max_hud_paints_only_the_two_winning_channels() {
+		let rules = RuleSet::default();
+		assert!(rules.channel_mode.is_independent_max());
+		let zag =
+			Tile::with_typed_rings(1, Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		let normal =
+			Tile::with_typed_rings(2, Player::Two, &[(TileColor::Orange, RingType::Normal)], 1, 1);
+		let all = arc_paint(Some(zag), Some(normal));
+		assert!(all.has_zag_lane() && all.has_normal_lane());
+		let hud = arc_paint_for_rules(Some(zag), Some(normal), &rules);
+		assert!(hud.has_normal_lane(), "tied mismatch 1 prefers the hitch");
+		assert!(!hud.has_zag_lane(), "zag is not the unique max mismatch");
+		let beads = Tile::with_typed_rings(
+			3,
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Bead),
+				(TileColor::Orange, RingType::Bead),
+				(TileColor::Orange, RingType::Bead),
+			],
+			1,
+			1,
+		);
+		let fail = Tile::with_typed_rings(
+			4,
+			Player::Two,
+			&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+			1,
+			1,
+		);
+		let bomb = arc_paint_for_rules(Some(beads), Some(fail), &rules);
+		assert!(bomb.has_bead_lane());
+		assert!(!bomb.has_braid_lane(), "bead mismatch 3 beats failed-braid 1");
+		assert!(!bomb.has_normal_lane());
 	}
 
 	#[test]

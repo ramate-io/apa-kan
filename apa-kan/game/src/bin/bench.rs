@@ -14,8 +14,8 @@ use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig};
 use apa_kan::game::{
-	sample_tile_with, Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet,
-	Tile, TileColor,
+	sample_tile_from_rules, Action, EndReason, Game, GameStatus, LowValueResolution, Player,
+	RuleSet, Tile, TileColor,
 };
 use apa_kan::scenario::{self, DeckStrength, Scenario};
 use rand::rngs::StdRng;
@@ -111,8 +111,8 @@ fn usage() -> &'static str {
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
-	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --beads, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --bead-scoring, --dot-chance,\n\
+	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
+	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -624,7 +624,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -650,6 +650,7 @@ fn run(cfg: BenchConfig) {
 		rules.braid_numer,
 		rules.bead_numer,
 		rules.bead_scoring.name(),
+		rules.channel_mode.name(),
 		rules.dot_percent,
 		rules.emblem_weights.label(),
 		rules.blocker_blocks.name(),
@@ -2243,17 +2244,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut rosette = 0u32;
 	let mut rings = 0u32;
 	for _ in 0..n {
-		let t = sample_tile_with(
-			Player::One,
-			rules.max_rings,
-			rules.zag_numer,
-			rules.braid_numer,
-			rules.bead_numer,
-			rules.dot_percent,
-			rules.emblem_weights,
-			&mut next_id,
-			&mut rng,
-		);
+		let t = sample_tile_from_rules(Player::One, &rules, &mut next_id, &mut rng);
 		tally_tiles(std::iter::once(&t), &mut ring_n, &mut color_n);
 		let k = t.n_rings.clamp(1, 3) as usize;
 		zag_rings += u32::from(t.zag_ring_count());
@@ -2673,6 +2664,7 @@ mod tests {
 		assert_eq!(cfg.matchups.len(), 3);
 		assert_eq!(cfg.matchups[0], (DeckArchetype::BraidHeavy, DeckArchetype::BeadHeavy));
 		assert_eq!(cfg.rules.bead_scoring, apa_kan::game::BeadScoring::SharedChannel);
+		assert_eq!(cfg.rules.channel_mode, apa_kan::game::ChannelMode::IndependentMax);
 		let emblems = parse(vec![
 			"--deck-matchups".to_string(),
 			"crescent:mixed,zs:emblem,emblem:bead".to_string(),

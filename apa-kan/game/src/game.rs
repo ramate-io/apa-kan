@@ -76,10 +76,17 @@ pub const ZAG_NUMER_DEFAULT: u8 = 1;
 pub const BRAID_DENOM: u8 = 7;
 pub const BRAID_NUMER_DEFAULT: u8 = 1;
 /// A piece forms a 2–3 bead group with probability `bead_numer / BEAD_DENOM`.
-/// Rolled after braid and zag so `--beads off` skips the RNG and matches the
-/// pre-bead deal for the same seed. Never a single-bead tile.
+/// Rolled after braid and zag. `bead_numer == 0` (`--bead-chance 0`) skips the
+/// RNG and matches the pre-bead deal. Used under [`ChannelMode::Additive`].
+/// [`ChannelMode::IndependentMax`] elects beads per light slot instead.
 pub const BEAD_DENOM: u8 = 7;
 pub const BEAD_NUMER_DEFAULT: u8 = 1;
+/// Light-slot election under [`ChannelMode::IndependentMax`]:
+/// `normal : zag : bead = 5 : 3 : 1`.
+pub const LIGHT_NORMAL_WEIGHT: u32 = 5;
+pub const LIGHT_ZAG_WEIGHT: u32 = 3;
+pub const LIGHT_BEAD_WEIGHT: u32 = 1;
+pub const LIGHT_WEIGHT_TOTAL: u32 = LIGHT_NORMAL_WEIGHT + LIGHT_ZAG_WEIGHT + LIGHT_BEAD_WEIGHT;
 /// Maximum collection size (the old 27 unique 3-color kinds). CLI `--deck-size`
 /// / `--bag-size` accept `1..=BAG_SIZE`. The default collection is [`BAG_SIZE`].
 pub const BAG_SIZE: usize = 27;
@@ -286,6 +293,91 @@ pub fn sample_braid(
 	types
 }
 
+/// Per-slot heavy coin (`braid_numer / 7`) for [`ChannelMode::IndependentMax`].
+/// `braid_numer == 0` skips the RNG so `--braids off` matches the no-braid deal.
+pub fn sample_heavy_slots(rng: &mut impl Rng, n_rings: u8, braid_numer: u8) -> [bool; 3] {
+	let mut heavy = [false; 3];
+	if braid_numer == 0 {
+		return heavy;
+	}
+	let numer = u32::from(braid_numer.min(BRAID_DENOM));
+	for flag in heavy.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+		*flag = rng.gen_range(0..u32::from(BRAID_DENOM)) < numer;
+	}
+	heavy
+}
+
+/// Two or more **consecutive** heavies become a braid. A lone or gapped heavy
+/// stays [`RingType::Normal`] so the 5:3:1 light election can turn it into a
+/// single bead. 1-ring tiles never braid (a lone heavy always falls through).
+pub fn cluster_consecutive_heavies(heavy: [bool; 3], n_rings: u8) -> [RingType; 3] {
+	let n = n_rings.clamp(1, MAX_COLOR_RINGS) as usize;
+	let idx: Vec<usize> = (0..n).filter(|&i| heavy[i]).collect();
+	let mut types = [RingType::Normal; 3];
+	if idx.len() >= 2 && idx.windows(2).all(|w| w[1] == w[0] + 1) {
+		for i in idx {
+			types[i] = RingType::Braid;
+		}
+	}
+	types
+}
+
+/// Light-election weights for remaining normal slots under
+/// [`ChannelMode::IndependentMax`]. Base chart is normal:zag:bead = 5:3:1.
+/// A zero numerator drops that type (no RNG for it). A non-default numerator
+/// (collectors / `--zag-chance` / `--bead-chance`) replaces that type's weight
+/// so stuffing stays a single knob.
+pub fn light_election_weights(zag_numer: u8, bead_numer: u8) -> [u32; 3] {
+	let zag = if zag_numer == 0 {
+		0
+	} else if zag_numer == ZAG_NUMER_DEFAULT {
+		LIGHT_ZAG_WEIGHT
+	} else {
+		u32::from(zag_numer)
+	};
+	let bead = if bead_numer == 0 {
+		0
+	} else if bead_numer == BEAD_NUMER_DEFAULT {
+		LIGHT_BEAD_WEIGHT
+	} else {
+		u32::from(bead_numer)
+	};
+	[LIGHT_NORMAL_WEIGHT, zag, bead]
+}
+
+/// Per remaining **normal** slot, elect normal / zag / bead with
+/// [`light_election_weights`]. Braid slots stay braid. Single-bead tiles are
+/// allowed. If zag and bead weights are both 0, slots stay normal and no RNG
+/// is consumed (`--zags off` and `--bead-chance 0` after heavy clustering).
+pub fn sample_light_types(
+	rng: &mut impl Rng,
+	n_rings: u8,
+	types: &mut [RingType; 3],
+	zag_numer: u8,
+	bead_numer: u8,
+) {
+	let [normal_w, zag_w, bead_w] = light_election_weights(zag_numer, bead_numer);
+	let total = normal_w + zag_w + bead_w;
+	if total == 0 || (zag_w == 0 && bead_w == 0) {
+		return;
+	}
+	for slot in types.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+		if *slot != RingType::Normal {
+			continue;
+		}
+		let mut roll = rng.gen_range(0..total);
+		if roll < normal_w {
+			continue;
+		}
+		roll -= normal_w;
+		if roll < zag_w {
+			*slot = RingType::Zag;
+		} else {
+			*slot = RingType::Bead;
+		}
+	}
+}
+
 /// Independent zag rolls on remaining **normal** slots. Braid slots stay braid.
 pub fn sample_zag_types(rng: &mut impl Rng, n_rings: u8, types: &mut [RingType; 3], zag_numer: u8) {
 	if zag_numer == 0 {
@@ -302,7 +394,7 @@ pub fn sample_zag_types(rng: &mut impl Rng, n_rings: u8, types: &mut [RingType; 
 /// Piece-level bead group (`bead_numer / 7`). Occupies 2 or 3 remaining
 /// **normal** slots (padding a short tile by repeating its last color, like
 /// [`sample_braid`]). Never leaves a 1-bead tile. Zag and braid stay put.
-/// `bead_numer == 0` skips the RNG so `--beads off` matches the pre-bead deal.
+/// `bead_numer == 0` skips the RNG so `--bead-chance 0` matches the pre-bead deal.
 pub fn sample_bead_types(
 	rng: &mut impl Rng,
 	rings: &mut [TileColor; 3],
@@ -1668,6 +1760,61 @@ impl BeadScoring {
 	}
 }
 
+/// How per-channel match/mismatch combine into the edge totals used for
+/// overwhelm, HUD `tile_score`, and search.
+///
+/// Channel *components* ([`EdgeChannels`]) are always independent. This flag
+/// only changes aggregation, and (for generation) whether beads are a light
+/// per-slot election or a 2–3 heavy group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ChannelMode {
+	/// Independent channels; the edge takes the **maximum** match and the
+	/// **maximum** mismatch of any single channel. Beads are light
+	/// (normal:zag:bead = 5:3:1). Per-slot heavies cluster: consecutive ≥2
+	/// become a braid; a lone or gapped heavy falls through to the light
+	/// election. CLI: `--channel-mode independent-max` (this branch's default).
+	#[default]
+	IndependentMax,
+	/// RFC 001-001-002 additive stacking: `--bead-scoring` combines normal
+	/// and bead, then zag and braid add. Beads generate as 2–3 groups.
+	/// CLI: `--channel-mode additive` (legacy comparison).
+	Additive,
+}
+
+impl ChannelMode {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"independent-max" | "independent_max" | "max" | "indep-max" => Ok(Self::IndependentMax),
+			"additive" | "legacy" | "sum" | "shared-sum" | "add" => Ok(Self::Additive),
+			other => {
+				Err(format!("unknown channel-mode '{other}' (expected independent-max|additive)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::IndependentMax => "independent-max",
+			Self::Additive => "additive",
+		}
+	}
+
+	pub fn is_independent_max(self) -> bool {
+		matches!(self, Self::IndependentMax)
+	}
+}
+
+/// Which independent channel won an edge's max match or max mismatch.
+/// Tie-break for HUD: match order normal → bead → braid; mismatch order
+/// normal → zag → bead → braid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelKind {
+	Normal,
+	Zag,
+	Braid,
+	Bead,
+}
+
 /// Independent per-type edge channels. Match weights are positive here; the
 /// signed edge total is [`Self::effective`] (`mismatch − match`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1725,6 +1872,130 @@ impl EdgeChannels {
 
 	pub fn score_for(self, scoring: BeadScoring) -> (i32, i32) {
 		(self.match_weight_for(scoring), self.mismatch_weight_for(scoring))
+	}
+
+	/// Match total under [`ChannelMode`]: max of any channel, or additive
+	/// stacking with [`BeadScoring`].
+	pub fn match_weight_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> i32 {
+		match mode {
+			ChannelMode::IndependentMax => {
+				self.normal_match.max(self.bead_match).max(self.braid_match)
+			}
+			ChannelMode::Additive => self.match_weight_for(scoring),
+		}
+	}
+
+	pub fn mismatch_weight_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> i32 {
+		match mode {
+			ChannelMode::IndependentMax => self
+				.normal_mismatch
+				.max(self.bead_mismatch)
+				.max(self.zag_mismatch)
+				.max(self.braid_mismatch),
+			ChannelMode::Additive => self.mismatch_weight_for(scoring),
+		}
+	}
+
+	pub fn effective_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> i32 {
+		self.mismatch_weight_for_mode(mode, scoring) - self.match_weight_for_mode(mode, scoring)
+	}
+
+	pub fn score_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> (i32, i32) {
+		(self.match_weight_for_mode(mode, scoring), self.mismatch_weight_for_mode(mode, scoring))
+	}
+
+	pub fn score_for_rules(self, rules: &RuleSet) -> (i32, i32) {
+		self.score_for_mode(rules.channel_mode, rules.bead_scoring)
+	}
+
+	pub fn effective_for_rules(self, rules: &RuleSet) -> i32 {
+		self.effective_for_mode(rules.channel_mode, rules.bead_scoring)
+	}
+
+	/// Per-type channels on the directed edge `tile` → `other` under `rules`
+	/// (Two Zag Zs bonus applies only on `tile`).
+	pub fn between(tile: Tile, other: Tile, rules: &RuleSet) -> Self {
+		let mut ch = Self::default();
+		if tile.normal_ring_count() > 0 || other.normal_ring_count() > 0 {
+			if tile.normal_channel_matches(other) {
+				ch.normal_match = 1;
+			} else if rules.mismatch_uses_neighbor_weight {
+				ch.normal_mismatch = i32::from(other.weight);
+			} else {
+				ch.normal_mismatch = 1;
+			}
+		}
+		if tile.zag_ring_count() > 0 || other.zag_ring_count() > 0 {
+			ch.zag_mismatch = rules.zag_mismatch.count(tile, other);
+		}
+		if tile.emblem.is_two_zag_zs() && ch.zag_mismatch > 0 {
+			ch.zag_mismatch += 1;
+		}
+		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
+			if let Some((_, n)) = selected_braid(tile, other) {
+				ch.braid_match = i32::from(n);
+			} else {
+				ch.braid_mismatch = rules.braid_fail_mismatch.cost(tile, other);
+			}
+		}
+		if tile.bead_ring_count() > 0 || other.bead_ring_count() > 0 {
+			let (m, x) = tile.bead_channel(other);
+			ch.bead_match = m;
+			ch.bead_mismatch = x;
+		}
+		ch
+	}
+
+	/// Max of each component from both directions (HUD / undirected edge).
+	pub fn undirected(a: Tile, b: Tile, rules: &RuleSet) -> Self {
+		let ab = Self::between(a, b, rules);
+		let ba = Self::between(b, a, rules);
+		Self {
+			normal_match: ab.normal_match.max(ba.normal_match),
+			normal_mismatch: ab.normal_mismatch.max(ba.normal_mismatch),
+			zag_mismatch: ab.zag_mismatch.max(ba.zag_mismatch),
+			braid_match: ab.braid_match.max(ba.braid_match),
+			braid_mismatch: ab.braid_mismatch.max(ba.braid_mismatch),
+			bead_match: ab.bead_match.max(ba.bead_match),
+			bead_mismatch: ab.bead_mismatch.max(ba.bead_mismatch),
+		}
+	}
+
+	/// Channel that supplies the independent-max match. `None` if match is 0.
+	pub fn max_match_kind(self) -> Option<ChannelKind> {
+		let n = self.normal_match;
+		let bead = self.bead_match;
+		let braid = self.braid_match;
+		let m = n.max(bead).max(braid);
+		if m <= 0 {
+			None
+		} else if n == m {
+			Some(ChannelKind::Normal)
+		} else if bead == m {
+			Some(ChannelKind::Bead)
+		} else {
+			Some(ChannelKind::Braid)
+		}
+	}
+
+	/// Channel that supplies the independent-max mismatch. `None` if 0.
+	pub fn max_mismatch_kind(self) -> Option<ChannelKind> {
+		let n = self.normal_mismatch;
+		let zag = self.zag_mismatch;
+		let bead = self.bead_mismatch;
+		let braid = self.braid_mismatch;
+		let m = n.max(zag).max(bead).max(braid);
+		if m <= 0 {
+			None
+		} else if n == m {
+			Some(ChannelKind::Normal)
+		} else if zag == m {
+			Some(ChannelKind::Zag)
+		} else if bead == m {
+			Some(ChannelKind::Bead)
+		} else {
+			Some(ChannelKind::Braid)
+		}
 	}
 }
 
@@ -1816,16 +2087,20 @@ pub struct RuleSet {
 	/// Max distinct rings per tile (1–3). Default 3. `1` is the
 	/// single-ring baseline (still the six-color tree).
 	pub max_rings: u8,
-	/// Each ring is a zag with probability `zag_numer / 7`. Default 1 (1/7).
-	/// `0` disables zags (`--zags off` / `--zag-chance 0`).
+	/// Each ring is a zag with probability `zag_numer / 7` under
+	/// [`ChannelMode::Additive`]. Under [`ChannelMode::IndependentMax`],
+	/// default `1` is the zag weight 3 in the 5:3:1 light election; `0`
+	/// disables zags (`--zags off` / `--zag-chance 0`).
 	pub zag_numer: u8,
 	/// A piece forms a braid with probability `braid_numer / 7`. Default 1
 	/// (1/7, same rate as zags). `0` disables braids (`--braids off` /
-	/// `--braid-chance 0`).
+	/// `--braid-chance 0`). Braids are the only heavy group in both modes.
 	pub braid_numer: u8,
-	/// A piece forms a 2–3 bead group with probability `bead_numer / 7`.
-	/// Default 1 (1/7, same rate as braids). Rolled after braid and zag.
-	/// Never a single-bead tile. `0` disables beads (`--beads off`).
+	/// Under [`ChannelMode::Additive`]: a piece forms a 2–3 bead group with
+	/// probability `bead_numer / 7`. Under [`ChannelMode::IndependentMax`]:
+	/// default `1` is the bead weight 1 in the 5:3:1 light election (singles
+	/// allowed); a stuffed numerator (collectors) replaces that weight.
+	/// `0` disables beads (`--bead-chance 0`).
 	pub bead_numer: u8,
 	/// Percent of generated tiles that carry a **dot** capture mark (rest
 	/// triangles). Default [`DOT_PERCENT_DEFAULT`] (50). CLI `--dot-chance`.
@@ -1916,10 +2191,16 @@ pub struct RuleSet {
 	/// [`BraidFailMismatch::Weight`] / [`BraidFailMismatch::Sum`] are
 	/// research variants (issue #39).
 	pub braid_fail_mismatch: BraidFailMismatch,
-	/// How normal and bead channels combine. Default
-	/// [`BeadScoring::SharedChannel`] (rule B): `max` instead of sum.
+	/// How normal and bead channels combine under [`ChannelMode::Additive`].
+	/// Default [`BeadScoring::SharedChannel`] (rule B): `max` instead of sum.
 	/// [`BeadScoring::Independent`] is rule A (`--bead-scoring independent`).
+	/// Ignored under [`ChannelMode::IndependentMax`] (all four channels are
+	/// independent, then the edge takes max match and max mismatch).
 	pub bead_scoring: BeadScoring,
+	/// How channel totals combine, and how beads generate. Default
+	/// [`ChannelMode::IndependentMax`]. `--channel-mode additive` restores
+	/// RFC 001-001-002 additive stacking and 2–3 bead groups.
+	pub channel_mode: ChannelMode,
 }
 
 impl Default for RuleSet {
@@ -1963,6 +2244,7 @@ impl Default for RuleSet {
 			zag_mismatch: ZagMismatchCount::Sum,
 			braid_fail_mismatch: BraidFailMismatch::One,
 			bead_scoring: BeadScoring::SharedChannel,
+			channel_mode: ChannelMode::IndependentMax,
 		}
 	}
 }
@@ -1970,6 +2252,15 @@ impl Default for RuleSet {
 impl RuleSet {
 	pub fn default_rules() -> Self {
 		Self::default()
+	}
+
+	/// RFC 001-001-002 additive stacking with shared-channel beads and 2–3
+	/// bead groups. Used by `--channel-mode additive` and by tests that lock
+	/// the previous default.
+	pub fn additive() -> Self {
+		let mut rules = Self::default();
+		rules.channel_mode = ChannelMode::Additive;
+		rules
 	}
 }
 
@@ -2700,10 +2991,10 @@ impl Game {
 	/// A channel contributes only if at least one of the two tiles has a ring
 	/// of that type. Zag and braid never override other types. Zag colors are
 	/// excluded from every match except zag-on-zag: a zag vs a same-color
-	/// normal is a hitch plus a zag hit, a fulfilled braid still stacks with
-	/// a leftover normal match. Under default [`BeadScoring::SharedChannel`],
-	/// the normal/bead contribution is `max(normal, bead)` per match and per
-	/// mismatch; [`BeadScoring::Independent`] adds the two channels.
+	/// normal is a hitch plus a zag hit. Aggregation into edge totals is
+	/// [`RuleSet::channel_mode`]: [`ChannelMode::IndependentMax`] (default)
+	/// takes max match and max mismatch of any one channel;
+	/// [`ChannelMode::Additive`] stacks with [`BeadScoring`].
 	///
 	/// - **Normal:** match 1 if some normal-ring color of either tile is in
 	///   the other tile's [`Tile::non_zag_colors_multiset`]; otherwise
@@ -2721,48 +3012,17 @@ impl Game {
 	///   a single match of 1 (one −1 at most per edge). Mixed edges can
 	///   score both.
 	pub fn edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
-		let mut ch = EdgeChannels::default();
-		if tile.normal_ring_count() > 0 || other.normal_ring_count() > 0 {
-			if tile.normal_channel_matches(other) {
-				ch.normal_match = 1;
-			} else if self.rules.mismatch_uses_neighbor_weight {
-				ch.normal_mismatch = i32::from(other.weight);
-			} else {
-				ch.normal_mismatch = 1;
-			}
-		}
-		if tile.zag_ring_count() > 0 || other.zag_ring_count() > 0 {
-			ch.zag_mismatch = self.rules.zag_mismatch.count(tile, other);
-		}
-		// Two Zag Zs: +1 on this tile's zag channel per incident edge that
-		// already has a zag mismatch. Applied when scoring `tile`, not
-		// mirrored onto `other` unless `other` also has the emblem.
-		if tile.emblem.is_two_zag_zs() && ch.zag_mismatch > 0 {
-			ch.zag_mismatch += 1;
-		}
-		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
-			if let Some((_, n)) = selected_braid(tile, other) {
-				ch.braid_match = i32::from(n);
-			} else {
-				ch.braid_mismatch = self.rules.braid_fail_mismatch.cost(tile, other);
-			}
-		}
-		if tile.bead_ring_count() > 0 || other.bead_ring_count() > 0 {
-			let (m, x) = tile.bead_channel(other);
-			ch.bead_match = m;
-			ch.bead_mismatch = x;
-		}
-		ch
+		EdgeChannels::between(tile, other, &self.rules)
 	}
 
 	/// Match/mismatch this `tile` receives from neighbor `other`.
 	///
 	/// Returns `(match_weight, mismatch_weight)` combined across channels
-	/// under [`RuleSet::bead_scoring`]. The signed edge total is
-	/// `mismatch − match` ([`EdgeChannels::effective_for`]). A tile is
-	/// overwhelmed when the sum of those edge totals is `>=` its ring count.
+	/// under [`RuleSet::channel_mode`]. The signed edge total is
+	/// `mismatch − match`. A tile is overwhelmed when the sum of those edge
+	/// totals is `>=` its ring count.
 	pub fn edge_score(&self, tile: Tile, other: Tile) -> (i32, i32) {
-		self.edge_channels(tile, other).score_for(self.rules.bead_scoring)
+		self.edge_channels(tile, other).score_for_rules(&self.rules)
 	}
 
 	/// Sum of per-edge `mismatch − match` against every incident
@@ -2796,7 +3056,7 @@ impl Game {
 		let mut effective = 0i32;
 		for nb in self.board.incident_others(node) {
 			if let Some(other) = self.tile_at(nb) {
-				effective += self.edge_channels(tile, other).effective_for(self.rules.bead_scoring);
+				effective += self.edge_channels(tile, other).effective_for_rules(&self.rules);
 			}
 		}
 		effective
@@ -2925,8 +3185,8 @@ impl Game {
 			if other.bead_ring_count() == 1 {
 				single_bead_neighbor = true;
 			}
-			with += ch.effective_for(self.rules.bead_scoring);
-			without += ch.without_beads().effective_for(self.rules.bead_scoring);
+			with += ch.effective_for_rules(&self.rules);
+			without += ch.without_beads().effective_for_rules(&self.rules);
 		}
 		let adj = self.occupied_adjacency_count(node);
 		let needed = Self::overwhelms(tile, adj, with) && !Self::overwhelms(tile, adj, without);
@@ -3714,6 +3974,27 @@ pub fn sample_tile(
 		bead_numer,
 		dot_percent,
 		EmblemWeights::default(),
+		ChannelMode::IndependentMax,
+		next_id,
+		rng,
+	)
+}
+
+pub fn sample_tile_from_rules(
+	owner: Player,
+	rules: &RuleSet,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+) -> Tile {
+	sample_tile_with(
+		owner,
+		rules.max_rings,
+		rules.zag_numer,
+		rules.braid_numer,
+		rules.bead_numer,
+		rules.dot_percent,
+		rules.emblem_weights,
+		rules.channel_mode,
 		next_id,
 		rng,
 	)
@@ -3727,13 +4008,29 @@ pub fn sample_tile_with(
 	bead_numer: u8,
 	dot_percent: u8,
 	emblem_weights: EmblemWeights,
+	channel_mode: ChannelMode,
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
 	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
-	let mut ring_type = sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer);
-	sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
-	sample_bead_types(rng, &mut rings, &mut n_rings, max_rings, &mut ring_type, bead_numer);
+	let mut ring_type = match channel_mode {
+		ChannelMode::IndependentMax => {
+			let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
+			cluster_consecutive_heavies(heavy, n_rings)
+		}
+		ChannelMode::Additive => {
+			sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer)
+		}
+	};
+	match channel_mode {
+		ChannelMode::IndependentMax => {
+			sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
+		}
+		ChannelMode::Additive => {
+			sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
+			sample_bead_types(rng, &mut rings, &mut n_rings, max_rings, &mut ring_type, bead_numer);
+		}
+	}
 	let weight = n_rings.max(1);
 	let dots = rng.gen_range(1..=3);
 	let capture = if rng.gen_range(0..100u8) < dot_percent.min(100) {
@@ -3972,6 +4269,7 @@ mod tests {
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
 		assert_eq!(rules.braid_fail_mismatch, BraidFailMismatch::One);
 		assert_eq!(rules.bead_scoring, BeadScoring::SharedChannel);
+		assert_eq!(rules.channel_mode, ChannelMode::IndependentMax);
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
 		assert_eq!(rules.no_same_piece_twice, SamePieceTwice::Off);
 		assert!(rules.no_moves_loses);
@@ -4016,7 +4314,7 @@ mod tests {
 
 	#[test]
 	fn double_green_overwhelmed_by_two_oranges_survives_with_green_neighbor() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		assert!(nbs.len() >= 3);
@@ -4041,7 +4339,7 @@ mod tests {
 
 	#[test]
 	fn overwhelm_is_by_color_not_owner() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[1];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
@@ -4075,7 +4373,7 @@ mod tests {
 
 	#[test]
 	fn simultaneous_removal_logs_owner_node_and_counts() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let s0 = game.board().spawns()[0];
 		let s1 = game.board().spawns()[1];
 		let n0 = game.board().neighbors(s0).to_vec();
@@ -4111,7 +4409,7 @@ mod tests {
 
 	#[test]
 	fn move_is_exactly_d_steps_not_up_to_d() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let from = game.board().spawns()[0];
 		let mut step1 = 0u8;
 		let mut step2 = 0u8;
@@ -4152,7 +4450,7 @@ mod tests {
 
 	#[test]
 	fn move_cannot_revisit_a_node() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let from = game.board().spawns()[3];
 		put(&mut game, from, Player::One, TileColor::Blue, 1, 2);
 		game.set_current(Player::One);
@@ -4290,7 +4588,7 @@ mod tests {
 	}
 
 	fn pass_through_game() -> Game {
-		Game::empty(RuleSet::default())
+		Game::empty(RuleSet::additive())
 	}
 
 	fn pass_through_with(cmp: PassThroughRingCmp) -> Game {
@@ -4502,7 +4800,7 @@ mod tests {
 
 	#[test]
 	fn add_only_on_empty_spawns_and_suicidal_add_is_legal() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
@@ -4518,7 +4816,7 @@ mod tests {
 
 	#[test]
 	fn capture_does_not_draw_on_add_or_move() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
@@ -4545,7 +4843,7 @@ mod tests {
 
 	#[test]
 	fn move_capture_earns_a_token_and_does_not_draw() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		assert!(nbs.len() >= 3);
@@ -4587,7 +4885,7 @@ mod tests {
 
 	#[test]
 	fn win_when_opponent_has_empty_board_and_empty_bench() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
 		{
@@ -4609,7 +4907,7 @@ mod tests {
 
 	#[test]
 	fn hidden_bag_does_not_keep_a_player_alive() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		{
 			let _t = take(&mut game, Player::Two, TileColor::Orange, 1, 1);
 			game.set_bag(Player::Two, vec![_t]);
@@ -4677,7 +4975,7 @@ mod tests {
 
 	#[test]
 	fn pass_rejected_when_add_exists() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		{
 			let _t = take(&mut game, Player::One, TileColor::Green, 1, 1);
 			game.set_bench(Player::One, vec![_t]);
@@ -5350,7 +5648,7 @@ mod tests {
 	#[test]
 	fn no_same_piece_twice_defaults_to_off() {
 		assert_eq!(RuleSet::default().no_same_piece_twice, SamePieceTwice::Off);
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let inner = inner_ring(&game);
 		let a = inner[0];
 		let center = game.board().center();
@@ -5625,7 +5923,7 @@ mod tests {
 		assert!(
 			via_edge.contains(&{
 				// spawn neighbor of start; identified inside dests() but recompute
-				let game = Game::empty(RuleSet::default());
+				let game = Game::empty(RuleSet::additive());
 				let inner = inner_ring(&game);
 				let start = inner[0];
 				*game
@@ -5638,7 +5936,7 @@ mod tests {
 			"NoEdgeRevisit may return through the second center-arc and land on the spawn, got {via_edge:?}"
 		);
 		let spawn = {
-			let game = Game::empty(RuleSet::default());
+			let game = Game::empty(RuleSet::additive());
 			let inner = inner_ring(&game);
 			let start = inner[0];
 			*game
@@ -5760,7 +6058,7 @@ mod tests {
 
 	#[test]
 	fn multi_color_tiles_match_on_any_shared_ring() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		let a = game.alloc_rings(Player::One, &[TileColor::Green, TileColor::Teal], 1, 1);
@@ -5870,14 +6168,14 @@ mod tests {
 	}
 
 	fn rules_with_zag_mismatch(mode: ZagMismatchCount) -> RuleSet {
-		let mut rules = RuleSet::default();
+		let mut rules = RuleSet::additive();
 		rules.zag_mismatch = mode;
 		rules
 	}
 
 	#[test]
 	fn zag_blue_normal_orange_zag_sums_both_hitting_zags() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let a = game.alloc_ring_kinds(
@@ -5903,7 +6201,7 @@ mod tests {
 
 	#[test]
 	fn double_orange_zag_counts_two_mismatches() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let t = game.alloc_ring_kinds(
@@ -5933,7 +6231,7 @@ mod tests {
 
 	#[test]
 	fn one_ring_zag_nets_zero_against_same_color_normal() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
@@ -5957,7 +6255,7 @@ mod tests {
 
 	#[test]
 	fn one_ring_zag_dies_against_heavier_color_carrier() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
@@ -5981,7 +6279,7 @@ mod tests {
 
 	#[test]
 	fn zag_mismatches_zag_of_the_same_color() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
@@ -5998,7 +6296,7 @@ mod tests {
 
 	#[test]
 	fn three_blue_zags_vs_three_blue_zags_is_six_under_sum() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let rings = [(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
@@ -6016,7 +6314,7 @@ mod tests {
 
 	#[test]
 	fn one_ring_zag_counts_one_zag_stroke() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 3, 1);
@@ -6075,7 +6373,7 @@ mod tests {
 
 	#[test]
 	fn one_zag_vs_one_zag_of_the_same_color_is_captured() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
@@ -6092,7 +6390,7 @@ mod tests {
 
 	#[test]
 	fn zag_vs_same_color_normal_gets_no_match_credit() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
 		let normal =
 			game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Normal)], 1, 1);
@@ -6112,7 +6410,7 @@ mod tests {
 		game.place_tile(nb, normal);
 		assert!(game.is_overwhelmed(spawn));
 		assert!(game.is_overwhelmed(nb));
-		let mut preview = Game::empty(RuleSet::default());
+		let mut preview = Game::empty(RuleSet::additive());
 		let holder =
 			preview.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Normal)], 1, 1);
 		let incoming =
@@ -6126,7 +6424,7 @@ mod tests {
 
 	#[test]
 	fn zag_vs_same_color_bead_gets_no_match_credit() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
 		let bead =
 			game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Bead)], 1, 1);
@@ -6214,7 +6512,7 @@ mod tests {
 
 	#[test]
 	fn non_adjacent_tiles_do_not_score_or_capture_each_other() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let a = game.board().spawns()[0];
 		let b = game.board().spawns()[4];
 		assert!(!game.board().neighbors(a).contains(&b), "opposite spawns must not share an edge");
@@ -6240,7 +6538,7 @@ mod tests {
 
 	#[test]
 	fn zag_vs_zag_still_hits_on_the_full_color_multiset() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let a = game.alloc_typed_rings(Player::One, &[(TileColor::Blue, RingType::Zag)], 1, 1);
 		let b = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Zag)], 1, 1);
 		assert_eq!(a.colors_multiset()[TileColor::Blue as usize], 1);
@@ -6257,7 +6555,7 @@ mod tests {
 
 	#[test]
 	fn center_double_zag_vs_same_color_normal() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let center = game.board().center();
 		let inner = game.board().inner_ring()[0];
 		let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
@@ -6276,7 +6574,7 @@ mod tests {
 
 	#[test]
 	fn center_double_zag_vs_zag_still_hits() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let center = game.board().center();
 		let inner = game.board().inner_ring()[0];
 		let a = game.alloc_typed_rings(Player::One, &[(TileColor::Blue, RingType::Zag)], 1, 1);
@@ -6293,7 +6591,7 @@ mod tests {
 
 	#[test]
 	fn zag_color_alone_never_counts_as_a_zag_match() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
 		assert!(!a.shares_normal(b));
@@ -6313,7 +6611,7 @@ mod tests {
 
 	#[test]
 	fn zag_only_vs_other_color_normal_is_a_normal_mismatch() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
@@ -6335,7 +6633,7 @@ mod tests {
 
 	#[test]
 	fn blue_normal_plus_orange_zag_vs_blue_is_one_match_zero_mismatches() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let mixed = game.alloc_ring_kinds(
 			Player::One,
 			&[(TileColor::Blue, false), (TileColor::Orange, true)],
@@ -6357,7 +6655,7 @@ mod tests {
 
 	#[test]
 	fn non_matching_zag_does_not_hide_a_normal_conflict() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let mixed = game.alloc_ring_kinds(
 			Player::One,
 			&[(TileColor::Blue, false), (TileColor::Orange, true)],
@@ -6371,7 +6669,7 @@ mod tests {
 
 	#[test]
 	fn blue_vs_orange_plus_green_zag_is_a_normal_mismatch() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let blue = game.alloc_rings(Player::One, &[TileColor::Blue], 1, 1);
 		let orange_green_zag = game.alloc_ring_kinds(
 			Player::Two,
@@ -6392,7 +6690,7 @@ mod tests {
 
 	#[test]
 	fn green_zag_vs_orange_plus_two_greens_is_a_zag_hit() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Green, true)], 1, 1);
 		let holder = game.alloc_rings(
 			Player::Two,
@@ -6413,7 +6711,7 @@ mod tests {
 
 	#[test]
 	fn own_zag_does_not_mismatch_self() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let t = game.alloc_ring_kinds(
@@ -6660,13 +6958,15 @@ mod tests {
 		let mut rings = 0u32;
 		let mut braid_rings = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(
+			let t = sample_tile_with(
 				Player::One,
 				3,
 				0,
 				BRAID_NUMER_DEFAULT,
 				0,
 				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::Additive,
 				&mut next_id,
 				&mut rng,
 			);
@@ -6737,7 +7037,7 @@ mod tests {
 
 	#[test]
 	fn shuffle_bags_determinizes_a_legacy_hidden_remainder() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let leftovers: Vec<_> =
 			(0..4).map(|_| game.alloc_tile(Player::One, TileColor::Orange, 1, 1)).collect();
 		game.set_bag(Player::One, leftovers);
@@ -6780,7 +7080,7 @@ mod tests {
 
 	#[test]
 	fn add_is_legal_from_any_bench_index() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		stock_bench(&mut game, Player::One, 3);
 		game.set_current(Player::One);
 		let adds = game.legal_adds();
@@ -6799,7 +7099,7 @@ mod tests {
 
 	#[test]
 	fn zero_budget_blocks_add_even_with_bench_tiles() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		stock_bench(&mut game, Player::One, 3);
 		game.set_budget_tokens(Player::One, Vec::new());
 		game.set_current(Player::One);
@@ -6810,7 +7110,7 @@ mod tests {
 
 	#[test]
 	fn opponent_capture_earns_budget() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		assert!(nbs.len() >= 3);
@@ -6843,7 +7143,7 @@ mod tests {
 		// Overwhelm already removes own tiles. A MOVE that leaves an existing
 		// own tile overwhelmed is a self-capture; it must earn +1 without a
 		// new capture rule.
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
@@ -6893,7 +7193,7 @@ mod tests {
 
 	#[test]
 	fn suicidal_add_is_self_capture_and_nets_zero_budget() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put_rings(
@@ -7069,7 +7369,7 @@ mod tests {
 
 	#[test]
 	fn piece_value_weights_are_dots_plus_rings() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let normal = game.alloc_rings(Player::One, &[TileColor::Green], 1, 1);
 		assert_eq!(normal.piece_value(PieceValueWeights::PRIMARY), 2);
 		assert_eq!(normal.piece_value(PieceValueWeights::TIEBREAK), 2);
@@ -7136,7 +7436,7 @@ mod tests {
 
 	#[test]
 	fn braid_satisfied_when_neighbor_covers_color_counts() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let a = orange_green_braid(&mut game, Player::One);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
 		assert_eq!(
@@ -7149,7 +7449,7 @@ mod tests {
 
 	#[test]
 	fn braid_unsatisfied_is_a_braid_mismatch() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let a = orange_green_braid(&mut game, Player::One);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
 		let ch = game.edge_channels(a, b);
@@ -7161,7 +7461,7 @@ mod tests {
 
 	#[test]
 	fn single_color_braid_needs_two_of_that_color() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let braid = game.alloc_typed_rings(
 			Player::One,
 			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
@@ -7210,7 +7510,7 @@ mod tests {
 
 	#[test]
 	fn failed_braid_still_allows_a_leftover_normal_match() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let mixed = game.alloc_typed_rings(
 			Player::One,
 			&[
@@ -7238,7 +7538,7 @@ mod tests {
 
 	#[test]
 	fn largest_fulfilled_braid_wins_the_edge() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let size3 = game.alloc_typed_rings(
 			Player::One,
 			&[
@@ -7279,7 +7579,7 @@ mod tests {
 
 	#[test]
 	fn braid_and_jag_scores_sum() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let braid_plus_zag = game.alloc_typed_rings(
 			Player::One,
 			&[
@@ -7405,7 +7705,7 @@ mod tests {
 			},
 		];
 		for row in rows {
-			let mut game = Game::empty(RuleSet::default());
+			let mut game = Game::empty(RuleSet::additive());
 			let a = game.alloc_typed_rings(Player::One, row.a, 1, 1);
 			let b = game.alloc_typed_rings(Player::Two, row.b, 1, 1);
 			let ch = game.edge_channels(a, b);
@@ -7443,7 +7743,7 @@ mod tests {
 
 	#[test]
 	fn center_inner_failed_braid_scores_plus_two_on_each_side() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let board = game.board();
 		let center = board.center();
 		assert_eq!(board.neighbors(center).len(), 8);
@@ -7488,7 +7788,7 @@ mod tests {
 
 	#[test]
 	fn center_inner_normal_match_scores_minus_two_on_each_side() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let center = game.board().center();
 		let inner = game.board().inner_ring()[0];
 		let a = game.alloc_rings(Player::One, &[TileColor::Orange], 1, 1);
@@ -7579,7 +7879,7 @@ mod tests {
 
 	#[test]
 	fn spawn_inner_is_still_one_scoring_edge() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let inner = *game
 			.board()
@@ -7647,7 +7947,7 @@ mod tests {
 
 	#[test]
 	fn failed_braid_weight_variant_uses_the_braid_slot_count() {
-		let mut rules = RuleSet::default();
+		let mut rules = RuleSet::additive();
 		rules.braid_fail_mismatch = BraidFailMismatch::Weight;
 		let mut game = Game::empty(rules);
 		let a = orange_green_braid(&mut game, Player::One);
@@ -7715,7 +8015,7 @@ mod tests {
 
 	#[test]
 	fn ring_weight_is_the_live_ring_count() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let mixed = game.alloc_typed_rings(
 			Player::One,
 			&[
@@ -7744,7 +8044,7 @@ mod tests {
 	}
 
 	fn empty_independent() -> Game {
-		let mut rules = RuleSet::default();
+		let mut rules = RuleSet::additive();
 		rules.bead_scoring = BeadScoring::Independent;
 		Game::empty(rules)
 	}
@@ -7787,7 +8087,7 @@ mod tests {
 
 	#[test]
 	fn bead_matching_uses_normal_channel_presence() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let bead = beads(&mut game, Player::One, &[TileColor::Orange]);
 		let zag = game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Zag)], 1, 1);
 		let braid = game.alloc_typed_rings(
@@ -7819,7 +8119,7 @@ mod tests {
 
 	#[test]
 	fn beads_bomb_unmatched_braids_and_stack_with_fail() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let bomb = beads(
 			&mut game,
 			Player::One,
@@ -7884,7 +8184,7 @@ mod tests {
 
 	#[test]
 	fn both_sides_unmatched_beads_sum() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let a = beads(&mut game, Player::One, &[TileColor::Orange]);
 		let b = beads(&mut game, Player::Two, &[TileColor::Green, TileColor::Blue]);
 		let ch = game.edge_channels(a, b);
@@ -7897,7 +8197,7 @@ mod tests {
 	/// outer (non-center) edge, no other neighbors.
 	#[test]
 	fn one_blue_bead_vs_two_thread_orange_braid_on_one_outer_edge() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let bead = beads(&mut game, Player::Two, &[TileColor::Blue]);
 		let braid = game.alloc_typed_rings(
 			Player::One,
@@ -7955,7 +8255,7 @@ mod tests {
 	}
 
 	fn shared_game() -> Game {
-		Game::empty(RuleSet::default())
+		Game::empty(RuleSet::additive())
 	}
 
 	#[test]
@@ -8081,6 +8381,196 @@ mod tests {
 		assert_eq!(game.edge_score(a, b), (0, 2), "max(normal hitch 1, unmatched bead 1) + zag 1");
 	}
 
+	fn empty_independent_max() -> Game {
+		assert_eq!(RuleSet::default().channel_mode, ChannelMode::IndependentMax);
+		Game::empty(RuleSet::default_rules())
+	}
+
+	/// Single bead + other ring: bead mismatch can be the edge's max mismatch
+	/// even when another channel matches (productive mismatch). A lone 1-bead
+	/// vs a 2-ring is still only +1, so the 2-ring survives.
+	#[test]
+	fn independent_max_single_bead_plus_normal_is_a_productive_mismatch() {
+		let mut game = empty_independent_max();
+		let mixed = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal), (TileColor::Blue, RingType::Bead)],
+			1,
+			1,
+		);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(mixed, hit);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(ch.bead_mismatch, 1);
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(
+			game.edge_score(mixed, hit),
+			(1, 1),
+			"max match 1 (normal), max mismatch 1 (bead); wash, not a free match"
+		);
+		let lone = beads(&mut game, Player::One, &[TileColor::Blue]);
+		let two = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Teal], 2, 1);
+		assert_eq!(
+			game.edge_score(lone, two),
+			(0, 1),
+			"lone bead vs 2-ring: max(hitch 1, unmatched 1) = 1; 2-ring survives"
+		);
+		let spawn = game.board().spawns()[0];
+		let outer = *game
+			.board()
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| n != game.board().center() && !game.board().inner_ring().contains(&n))
+			.expect("outer neighbor");
+		game.place_tile(spawn, two);
+		game.place_tile(outer, lone);
+		assert!(!game.is_overwhelmed(spawn), "2-ring survives effective 1");
+		assert!(game.is_overwhelmed(outer), "1-bead still pops");
+	}
+
+	#[test]
+	fn independent_max_zag_on_zag_takes_the_channel_max() {
+		let mut game = empty_independent_max();
+		let a = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Zag), (TileColor::Blue, RingType::Normal)],
+			1,
+			1,
+		);
+		let b = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Orange, RingType::Zag), (TileColor::Green, RingType::Normal)],
+			1,
+			1,
+		);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.normal_mismatch, 1, "leftover normals hitch");
+		assert!(ch.zag_mismatch >= 1, "orange zags hit each other");
+		assert_eq!(
+			game.edge_score(a, b),
+			(0, ch.normal_mismatch.max(ch.zag_mismatch)),
+			"zag-on-zag does not add on top of the hitch"
+		);
+		assert_eq!(game.edge_score(a, b), game.edge_score(b, a));
+		let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		let normal = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(zag, normal);
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(ch.zag_mismatch, 1);
+		assert_eq!(
+			game.edge_score(zag, normal),
+			(0, 1),
+			"same-color zag vs normal: max(hitch, zag hit) = 1, not 2"
+		);
+	}
+
+	#[test]
+	fn independent_max_braid_does_not_stack_with_leftover_normal() {
+		let mut game = empty_independent_max();
+		let braid_plus = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Orange, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		let cover = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
+		let ch = game.edge_channels(braid_plus, cover);
+		assert_eq!(ch.braid_match, 2);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(
+			game.edge_score(braid_plus, cover),
+			(2, 0),
+			"max(normal 1, braid 2) = 2, not the additive 3"
+		);
+		let fail = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			1,
+		);
+		let miss = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_eq!(game.edge_score(fail, miss), (0, 1), "failed braid is still +1");
+	}
+
+	#[test]
+	fn independent_max_mixed_bead_zag_braid_takes_per_kind_maxima() {
+		let mut game = empty_independent_max();
+		let a = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Bead),
+				(TileColor::Blue, RingType::Zag),
+				(TileColor::Green, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		let b = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Blue, RingType::Braid),
+				(TileColor::Teal, RingType::Braid),
+				(TileColor::Orange, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.bead_match, 1, "orange bead matches B's orange normal");
+		assert_eq!(ch.zag_mismatch, 1, "blue zag hits braid blue");
+		assert_eq!(ch.braid_mismatch, 1, "blue+teal braid is not covered");
+		assert_eq!(ch.normal_match, 1, "B's orange normal matches A's orange bead");
+		assert_eq!(ch.normal_mismatch, 0);
+		assert_eq!(
+			game.edge_score(a, b),
+			(1, 1),
+			"max match 1 (bead/normal), max mismatch 1 (zag/braid); not a sum"
+		);
+		let bomb = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let braid = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Blue, RingType::Braid),
+				(TileColor::Teal, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+			],
+			1,
+			1,
+		);
+		assert_eq!(
+			game.edge_score(bomb, braid),
+			(0, 3),
+			"max(unmatched beads 3, failed-braid 1) = 3, not additive 4"
+		);
+	}
+
+	#[test]
+	fn independent_max_and_additive_disagree_on_stacked_channels() {
+		let mut max_game = empty_independent_max();
+		let mut add_game = Game::empty(RuleSet::additive());
+		let parts_a = [(TileColor::Orange, RingType::Zag), (TileColor::Blue, RingType::Normal)];
+		let parts_b = [(TileColor::Orange, RingType::Normal)];
+		let a_max = max_game.alloc_typed_rings(Player::One, &parts_a, 1, 1);
+		let b_max = max_game.alloc_typed_rings(Player::Two, &parts_b, 1, 1);
+		let a_add = add_game.alloc_typed_rings(Player::One, &parts_a, 1, 1);
+		let b_add = add_game.alloc_typed_rings(Player::Two, &parts_b, 1, 1);
+		assert_eq!(add_game.edge_score(a_add, b_add), (0, 2), "additive hitch + zag");
+		assert_eq!(max_game.edge_score(a_max, b_max), (0, 1), "independent-max of the two");
+	}
+
 	#[test]
 	fn bead_off_deal_has_no_bead_rings() {
 		let mut off = RuleSet::default();
@@ -8101,13 +8591,15 @@ mod tests {
 		let mut pieces = 0u32;
 		let mut bead_tiles = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(
+			let t = sample_tile_with(
 				Player::One,
 				3,
 				0,
 				0,
 				BEAD_NUMER_DEFAULT,
 				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::Additive,
 				&mut next_id,
 				&mut rng,
 			);
@@ -8123,6 +8615,171 @@ mod tests {
 		assert!(
 			(0.12..0.17).contains(&rate),
 			"bead-tile rate={rate:.4} (expected ~0.1429 = 1/7) with zags and braids off"
+		);
+	}
+
+	#[test]
+	fn independent_max_light_election_is_five_three_one() {
+		let mut rng = StdRng::seed_from_u64(11);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut light = 0u32;
+		let mut normals = 0u32;
+		let mut zags = 0u32;
+		let mut beads = 0u32;
+		let mut bead_singles = 0u32;
+		let mut braided = 0u32;
+		let mut rings = 0u32;
+		for _ in 0..n {
+			let t = sample_tile(
+				Player::One,
+				3,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				&mut next_id,
+				&mut rng,
+			);
+			let k = t.n_rings.clamp(1, 3) as usize;
+			rings += k as u32;
+			if t.braid_ring_count() >= 2 {
+				braided += 1;
+			}
+			if t.bead_ring_count() == 1 {
+				bead_singles += 1;
+			}
+			for i in 0..k {
+				match t.ring_type_at(i) {
+					RingType::Braid => {}
+					RingType::Normal => {
+						light += 1;
+						normals += 1;
+					}
+					RingType::Zag => {
+						light += 1;
+						zags += 1;
+					}
+					RingType::Bead => {
+						light += 1;
+						beads += 1;
+					}
+				}
+			}
+		}
+		assert!(light > 0);
+		let n_rate = f64::from(normals) / f64::from(light);
+		let z_rate = f64::from(zags) / f64::from(light);
+		let b_rate = f64::from(beads) / f64::from(light);
+		assert!(
+			(0.52..0.60).contains(&n_rate),
+			"normal light rate={n_rate:.4} (expected 5/9 ≈ 0.5556); n={n} light={light}"
+		);
+		assert!(
+			(0.30..0.37).contains(&z_rate),
+			"zag light rate={z_rate:.4} (expected 3/9 ≈ 0.3333)"
+		);
+		assert!(
+			(0.09..0.14).contains(&b_rate),
+			"bead light rate={b_rate:.4} (expected 1/9 ≈ 0.1111)"
+		);
+		assert!(bead_singles > 0, "independent-max allows single-bead tiles (got {bead_singles})");
+		let piece_rate = f64::from(braided) / f64::from(n);
+		assert!(
+			piece_rate < 0.08,
+			"consecutive-heavy braids are rarer than piece-level 1/7 (got {piece_rate:.4}); rings={rings}"
+		);
+	}
+
+	#[test]
+	fn consecutive_heavies_become_a_braid_lone_and_gapped_fall_through() {
+		assert_eq!(
+			cluster_consecutive_heavies([true, true, false], 2),
+			[RingType::Braid, RingType::Braid, RingType::Normal]
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, true, true], 3),
+			[RingType::Braid, RingType::Braid, RingType::Braid]
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([false, true, true], 3),
+			[RingType::Normal, RingType::Braid, RingType::Braid]
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, false, false], 1),
+			[RingType::Normal; 3],
+			"a 1-ring lone heavy never braids"
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, false, false], 3),
+			[RingType::Normal; 3],
+			"a lone heavy among three slots falls through"
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, false, true], 3),
+			[RingType::Normal; 3],
+			"gapped heavies are not a braid"
+		);
+	}
+
+	#[test]
+	fn independent_max_always_heavy_braids_two_and_three_rings_never_ones() {
+		let mut rng = StdRng::seed_from_u64(19);
+		let mut next_id = 1u32;
+		let n = 4_000u32;
+		let mut ones = 0u32;
+		let mut multi = 0u32;
+		let mut braided_ones = 0u32;
+		let mut braided_multi = 0u32;
+		for _ in 0..n {
+			let t = sample_tile_with(
+				Player::One,
+				3,
+				0,
+				BRAID_DENOM,
+				0,
+				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::IndependentMax,
+				&mut next_id,
+				&mut rng,
+			);
+			if t.n_rings <= 1 {
+				ones += 1;
+				if t.braid_ring_count() >= 2 {
+					braided_ones += 1;
+				}
+			} else {
+				multi += 1;
+				if t.braid_ring_count() >= 2 {
+					braided_multi += 1;
+					assert_eq!(t.braid_ring_count(), t.n_rings);
+				}
+			}
+		}
+		assert!(ones > 0 && multi > 0, "ones={ones} multi={multi}");
+		assert_eq!(braided_ones, 0, "1-ring tiles cannot cluster a braid");
+		assert_eq!(braided_multi, multi, "every 2–3 ring tile is all-heavy → one braid");
+	}
+
+	#[test]
+	fn independent_max_gapped_heavy_can_elect_a_single_bead() {
+		let clustered = cluster_consecutive_heavies([true, false, true], 3);
+		assert_eq!(clustered, [RingType::Normal; 3]);
+		let mut rng = StdRng::seed_from_u64(3);
+		let mut saw_single_bead = false;
+		for _ in 0..200 {
+			let mut types = clustered;
+			sample_light_types(&mut rng, 3, &mut types, 0, 7);
+			assert!(types.iter().all(|t| *t != RingType::Braid));
+			if types.iter().filter(|t| **t == RingType::Bead).count() == 1 {
+				saw_single_bead = true;
+				break;
+			}
+		}
+		assert!(
+			saw_single_bead,
+			"gapped heavies fall through to 5:3:1; a stuffed bead roll can leave a single bead"
 		);
 	}
 
@@ -8298,7 +8955,7 @@ mod tests {
 
 	#[test]
 	fn surplus_tokens_are_not_usable_for_add() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		game.set_current(Player::One);
 		assert_eq!(game.budget_token_count(Player::One), 7);
 		assert_eq!(game.budget(Player::One), 0);
@@ -8440,7 +9097,7 @@ mod tests {
 
 	#[test]
 	fn triangle_opponent_capture_earns_tokens() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		let land = nbs[0];
@@ -8470,7 +9127,7 @@ mod tests {
 
 	#[test]
 	fn dot_opponent_capture_joins_mover_bench_and_changes_owner() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		let land = nbs[0];
@@ -8645,7 +9302,7 @@ mod tests {
 
 	#[test]
 	fn dot_self_capture_joins_mover_bench() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		overwhelm_neighbors(&mut game, spawn, Player::Two);
 		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
@@ -8673,7 +9330,7 @@ mod tests {
 
 	#[test]
 	fn mixed_multi_capture_shares_one_destination() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		overwhelm_neighbors(&mut game, spawn, Player::Two);
@@ -8714,7 +9371,7 @@ mod tests {
 
 	#[test]
 	fn captured_to_bench_may_exceed_eleven_and_type_cap() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		let land = nbs[0];
@@ -8807,7 +9464,7 @@ mod tests {
 
 	#[test]
 	fn crescent_saves_a_one_adjacency_equal_rings_overwhelm() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		let moon =
@@ -8830,7 +9487,7 @@ mod tests {
 
 	#[test]
 	fn crescent_does_not_save_mismatch_strictly_above_rings() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		let moon = game
@@ -8853,7 +9510,7 @@ mod tests {
 
 	#[test]
 	fn two_zag_zs_adds_one_per_mismatching_edge_on_the_emblem_tile() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		let zs = game
@@ -8888,6 +9545,7 @@ mod tests {
 			0,
 			50,
 			EmblemWeights::off(),
+			ChannelMode::IndependentMax,
 			&mut a_id,
 			&mut a_rng,
 		);
@@ -8899,6 +9557,7 @@ mod tests {
 			0,
 			50,
 			EmblemWeights::off(),
+			ChannelMode::IndependentMax,
 			&mut b_id,
 			&mut b_rng,
 		);
@@ -8990,7 +9649,7 @@ mod tests {
 
 	#[test]
 	fn blocker_does_not_change_adjacent_overwhelm() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		let wall =
