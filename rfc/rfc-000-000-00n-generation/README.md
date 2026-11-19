@@ -78,7 +78,6 @@ impl CorePass {
     fn braid_collector() -> Self {
         let mut cfg = Self::base();
         cfg.rings.heavy_weights = [1, 1];            // 50% heavy per slot
-        cfg.rings.consecutive_weights = [9, 1];      // braid vs bead
         cfg
     }
 }
@@ -90,22 +89,18 @@ impl CorePass {
 struct RingPass {
     /// Weights for n_rings = 1, 2, 3.
     count_weights: [u32; 3],
-    /// Per slot: [light, heavy].
+    /// Per slot: [light, heavy]. Heavy is **braid only**.
     heavy_weights: [u32; 2],
-    /// Consecutive heavies (≥2 adjacent slots): [braid, bead].
-    /// Gapped heavies (slots 0 and 2 only) are always bead.
-    consecutive_weights: [u32; 2],
-    /// Leftover slots, including a lone heavy: [normal, zag].
-    light_weights: [u32; 2],
+    /// Leftover slots, including a lone / gapped heavy coin: [normal, zag, bead].
+    light_weights: [u32; 3],
 }
 
 impl RingPass {
     fn base() -> Self {
         Self {
             count_weights: [5, 3, 1],
-            heavy_weights: [3, 1],       // 1 in 4 heavy
-            consecutive_weights: [3, 1], // 3 in 4 braid
-            light_weights: [5, 1],
+            heavy_weights: [3, 1],        // 1 in 4 heavy (braid group)
+            light_weights: [5, 3, 1],    // normal : zag : bead
         }
     }
 
@@ -121,28 +116,19 @@ impl RingPass {
 
         let mut types = vec![RingType::Normal; n as usize];
 
-        if heavy.len() >= 2 {
-            let group = if RingPass::consecutive(&heavy) {
-                TileId::choose(
-                    id.mix("grp"),
-                    &[RingType::Braid, RingType::Bead],
-                    &cfg.consecutive_weights.map(|x| x as i32),
-                )
-            } else {
-                RingType::Bead
-            };
+        if heavy.len() >= 2 && RingPass::consecutive(&heavy) {
             for &i in &heavy {
-                types[i] = group;
+                types[i] = RingType::Braid;
             }
         }
 
-        // 0–1 heavies: every slot is light (a lone heavy does not make a 1-bead / 1-braid).
+        // Lone or gapped heavy coins fall through to light (single beads allowed).
         for i in 0..n as usize {
-            let in_group = heavy.len() >= 2 && heavy.contains(&i);
+            let in_group = heavy.len() >= 2 && RingPass::consecutive(&heavy) && heavy.contains(&i);
             if !in_group {
                 types[i] = TileId::choose(
                     id.mix(("lite", i)),
-                    &[RingType::Normal, RingType::Zag],
+                    &[RingType::Normal, RingType::Zag, RingType::Bead],
                     &cfg.light_weights.map(|x| x as i32),
                 );
             }
@@ -155,12 +141,11 @@ impl RingPass {
 | Step | Live type | Base weights | Odds |
 |---|---|---|---|
 | Ring count | `n_rings` 1 / 2 / 3 | 5 : 3 : 1 | 5/9 · 1/3 · 1/9 |
-| Per slot | light / heavy | 3 : 1 | 3/4 · 1/4 |
-| Consecutive heavies | `Braid` / `Bead` | 3 : 1 | 3/4 · 1/4 |
-| Gapped heavies (rings 1+3) | `Bead` | — | always |
-| Light slot | `Normal` / `Zag` | 5 : 1 | 5/6 · 1/6 |
+| Per slot | light / heavy (braid) | 3 : 1 | 3/4 · 1/4 |
+| Consecutive heavies (≥2) | `Braid` | — | always |
+| Light slot | `Normal` / `Zag` / `Bead` | 5 : 3 : 1 | 5/9 · 1/3 · 1/9 |
 
-0 or 1 heavy → ignore the heavy coin; every slot is normal/zag. Generated tiles still never have a single bead or a 1-slot braid.
+Live `sample_tile_with` on this branch (CorePass not wired): piece-level braid `1/7` (size 2–3), then remaining slots elect 5:3:1. Single-bead tiles are allowed. `--channel-mode additive` restores 2–3 bead groups. See [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md).
 
 ### Color pass
 
@@ -365,8 +350,8 @@ Ring tax (same for every `RingType`) and marking tax (same for `Dot` / `Triangle
 | Use | How |
 |---|---|
 | Event reward | e.g. raise `colors.weights[Maroon]`, or set a maroon drift diagonal |
-| `--p1-deck braid` (replaces `DeckArchetype::BraidHeavy`) | bump `rings.heavy_weights` and `consecutive_weights` toward braid |
-| Bead collector | same, but `consecutive_weights` toward bead |
+| `--p1-deck braid` (replaces `DeckArchetype::BraidHeavy`) | bump `rings.heavy_weights` toward braid |
+| Bead collector | bump `rings.light_weights` toward bead (beads are light) |
 | Emblem collector | raise `emblems.weights[CrescentMoon]` (etc.), optionally zero the others |
 | Search H2H | deal each seat's 27 from that seat's `CorePass`; the picker still runs 7+4 |
 

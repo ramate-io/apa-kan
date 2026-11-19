@@ -5,7 +5,7 @@ use rand::{Rng, SeedableRng};
 
 use crate::ai::{evaluate, SearchLimit};
 use crate::game::{
-	sample_tile_with, EmblemWeights, Game, Player, RingType, RuleSet, Tile, BAG_SIZE,
+	sample_tile_from_rules, EmblemWeights, Game, Player, RingType, RuleSet, Tile, BAG_SIZE,
 	MAX_COLOR_RINGS,
 };
 
@@ -52,7 +52,8 @@ pub enum DeckArchetype {
 	/// Multi-braid tiles (2–3 slots) and leftover braid+normal packing.
 	BraidHeavy,
 	/// Strong bead opportunities: `bead_numer=5`, `braid_numer=0`, zags on.
-	/// 2–3 bead tiles only (generation never emits a single-bead tile).
+	/// Under [`crate::game::ChannelMode::IndependentMax`] singles are allowed
+	/// (beads are light); under additive mode generation is still 2–3 groups.
 	BeadHeavy,
 	/// Collector: many Crescent Moon tiles. Default ring mix, emblem weights
 	/// stuffed toward crescent (`none=1,crescent=20`, others 0).
@@ -70,16 +71,15 @@ pub enum DeckArchetype {
 
 /// Braid roll used for [`DeckArchetype::BraidHeavy`] (5/7).
 pub const ARCHETYPE_BRAID_NUMER: u8 = 5;
-/// Bead roll used for [`DeckArchetype::BeadHeavy`] (5/7 piece-level 2–3 group).
+/// Bead roll used for [`DeckArchetype::BeadHeavy`]. Additive: 5/7 piece-level
+/// 2–3 group. Independent-max: bead weight 5 in the light election.
 pub const ARCHETYPE_BEAD_NUMER: u8 = 5;
 /// Minimum braid rings in a 27-tile braid-heavy collection.
 pub const BRAID_HEAVY_MIN_RINGS: u8 = 10;
 /// Minimum bead rings in a 27-tile bead-heavy collection.
 pub const BEAD_HEAVY_MIN_RINGS: u8 = 10;
-/// At least this many 2–3 bead tiles in a bead-heavy collection.
+/// At least this many 2+ bead tiles in a bead-heavy collection.
 pub const BEAD_HEAVY_MIN_STACKED: usize = 2;
-/// At least this many 3-bead tiles in a bead-heavy collection.
-pub const BEAD_HEAVY_MIN_TRIPLE: usize = 1;
 /// At least this many tiles whose braid occupies 2–3 slots.
 pub const BRAID_HEAVY_MIN_MULTI: usize = 2;
 /// Minimum Crescent Moon tiles in a crescent collector collection.
@@ -220,12 +220,7 @@ impl DeckArchetype {
 			Self::BeadHeavy => {
 				let rings = bead_ring_count(tiles);
 				let stacked = tiles.iter().filter(|t| t.bead_ring_count() >= 2).count();
-				let triple = tiles.iter().filter(|t| t.bead_ring_count() >= 3).count();
-				let no_singles = tiles.iter().all(|t| t.bead_ring_count() != 1);
-				rings >= BEAD_HEAVY_MIN_RINGS
-					&& stacked >= BEAD_HEAVY_MIN_STACKED
-					&& triple >= BEAD_HEAVY_MIN_TRIPLE
-					&& no_singles
+				rings >= BEAD_HEAVY_MIN_RINGS && stacked >= BEAD_HEAVY_MIN_STACKED
 			}
 			Self::Crescent => {
 				tiles.iter().filter(|t| t.emblem.is_crescent()).count() >= CRESCENT_MIN_TILES
@@ -511,17 +506,7 @@ pub fn generate_archetype_collection(
 	for _ in 0..128 {
 		let mut deck = Vec::with_capacity(size);
 		for _ in 0..size {
-			deck.push(sample_tile_with(
-				owner,
-				rules.max_rings,
-				rules.zag_numer,
-				rules.braid_numer,
-				rules.bead_numer,
-				rules.dot_percent,
-				rules.emblem_weights,
-				next_id,
-				rng,
-			));
+			deck.push(sample_tile_from_rules(owner, &rules, next_id, rng));
 		}
 		if !has_legal_subset(&deck, want) {
 			continue;
@@ -548,17 +533,7 @@ fn repair_collection(
 ) -> Vec<Tile> {
 	let mut deck = Vec::with_capacity(size);
 	for _ in 0..size {
-		deck.push(sample_tile_with(
-			owner,
-			rules.max_rings,
-			rules.zag_numer,
-			rules.braid_numer,
-			rules.bead_numer,
-			rules.dot_percent,
-			rules.emblem_weights,
-			next_id,
-			rng,
-		));
+		deck.push(sample_tile_from_rules(owner, rules, next_id, rng));
 	}
 	let mut guard = 0u32;
 	while !has_legal_subset(&deck, want) && guard < 64 {
@@ -605,17 +580,7 @@ pub fn apply_deck_noise(
 	let mut out = Vec::with_capacity(base.len());
 	for &src in base {
 		if rng.gen_range(0..100u8) < noise {
-			out.push(sample_tile_with(
-				owner,
-				rules.max_rings,
-				rules.zag_numer,
-				rules.braid_numer,
-				rules.bead_numer,
-				rules.dot_percent,
-				rules.emblem_weights,
-				next_id,
-				rng,
-			));
+			out.push(sample_tile_from_rules(owner, rules, next_id, rng));
 		} else {
 			out.push(mirror_tile(src, owner, next_id));
 		}
@@ -1518,7 +1483,7 @@ mod tests {
 	}
 
 	#[test]
-	fn bead_heavy_collection_has_stacked_groups_not_singles() {
+	fn bead_heavy_collection_has_stacked_groups() {
 		let rules = RuleSet::default();
 		let mut setup = SetupConfig::for_seed(21);
 		setup.p1_deck = DeckArchetype::BeadHeavy;
@@ -1529,7 +1494,6 @@ mod tests {
 		let rec = deal_and_pick(&rules, &setup, 21, &mut next);
 		assert!(DeckArchetype::BeadHeavy.meets_quota(&rec.decks[0]));
 		assert_eq!(braid_ring_count(&rec.decks[0]), 0, "bead-heavy rolls braids off");
-		assert!(rec.decks[0].iter().all(|t| t.bead_ring_count() != 1));
 		assert!(rec.decks[0].iter().filter(|t| t.bead_ring_count() >= 2).count() >= 2);
 		assert!(respects_type_cap(&rec.bench(Player::One)));
 		assert!(bead_ring_count(&rec.bench(Player::One)) > 0);

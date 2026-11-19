@@ -7,10 +7,10 @@ use rand::Rng;
 
 use crate::game::{Action, Game, Player};
 
-use super::eval::{evaluate, evaluate_legacy, terminal_score, WIN};
-use super::search_move::{apply_move, cheap_order, is_capture, legal_search_moves, SearchMove};
+use super::eval::{WIN, evaluate, evaluate_legacy, terminal_score};
+use super::search_move::{SearchMove, apply_move, cheap_order, is_capture, legal_search_moves};
 use super::zobrist;
-use super::{count_repeats, HistoryTable, SearchConfig, SearchLimit, SearchStats};
+use super::{HistoryTable, SearchConfig, SearchLimit, SearchStats, count_repeats};
 
 enum Stop {
 	Time(Instant),
@@ -55,11 +55,7 @@ impl TranspositionTable {
 
 	fn probe(&self, hash: u64) -> Option<&TTEntry> {
 		let e = &self.entries[hash as usize & self.mask];
-		if e.hash == hash {
-			Some(e)
-		} else {
-			None
-		}
+		if e.hash == hash { Some(e) } else { None }
 	}
 
 	fn store(&mut self, hash: u64, depth: u8, score: i32, flag: Bound, best: Option<SearchMove>) {
@@ -304,11 +300,7 @@ fn value_at_depth(game: &Game, depth: u8, played: &[u64], config: SearchConfig) 
 			alpha = best;
 		}
 	}
-	if best < -WIN {
-		None
-	} else {
-		Some(best)
-	}
+	if best < -WIN { None } else { Some(best) }
 }
 
 fn child_pos(game: &Game, mv: SearchMove) -> Option<(Game, bool)> {
@@ -577,11 +569,7 @@ fn eval_now(game: &Game, ctx: &Ctx<'_>) -> i32 {
 	let h = zobrist::occupancy_hash(game);
 	let repeats = count_repeats(ctx.played, &ctx.path_occ, h);
 	let me = game.current_player();
-	if ctx.legacy {
-		evaluate_legacy(game, me, repeats)
-	} else {
-		evaluate(game, me, repeats)
-	}
+	if ctx.legacy { evaluate_legacy(game, me, repeats) } else { evaluate(game, me, repeats) }
 }
 
 fn center_relevant(game: &Game, mv: SearchMove) -> bool {
@@ -638,11 +626,7 @@ fn capture_hint(game: &Game, mv: SearchMove) -> i32 {
 					return 250_000;
 				}
 			}
-			if adj {
-				120_000
-			} else {
-				0
-			}
+			if adj { 120_000 } else { 0 }
 		}
 		SearchMove::Add { kind, node } => {
 			let me = game.current_player();
@@ -657,11 +641,7 @@ fn capture_hint(game: &Game, mv: SearchMove) -> i32 {
 				adj = true;
 				let _ = kind;
 			}
-			if adj {
-				80_000
-			} else {
-				0
-			}
+			if adj { 80_000 } else { 0 }
 		}
 		SearchMove::Remove { node } => {
 			if game.tile_at(node).is_some_and(|t| t.owner != game.current_player()) {
@@ -723,8 +703,8 @@ mod tests {
 
 	use super::*;
 	use crate::game::{Player, RuleSet, TileColor};
-	use rand::rngs::StdRng;
 	use rand::SeedableRng;
+	use rand::rngs::StdRng;
 
 	fn sample_positions() -> Vec<Game> {
 		let mut out = vec![Game::new(RuleSet::default(), 1), Game::new(RuleSet::default(), 11)];

@@ -8,11 +8,7 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 	match game.status() {
 		GameStatus::InProgress => {
 			if game.rules().win_condition.is_placement_only() {
-				if !game.has_legal_placement() {
-					Some(lockout_terminal(game, me))
-				} else {
-					None
-				}
+				if !game.has_legal_placement() { Some(lockout_terminal(game, me)) } else { None }
 			} else if game.rules().no_moves_loses && !game.has_add_or_move() {
 				Some(lockout_terminal(game, me))
 			} else if game.low_value_applies() {
@@ -25,11 +21,7 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 		}
 		GameStatus::Won { winner, .. } => {
 			let ply = game.turn_count() as i32;
-			if winner == me {
-				Some(WIN - ply)
-			} else {
-				Some(-WIN + ply)
-			}
+			if winner == me { Some(WIN - ply) } else { Some(-WIN + ply) }
 		}
 		// Turn-limit and low-value (equal-count full tie) draws are 0 so a
 		// side that is ahead will not turtle into the 200-turn cap.
@@ -39,11 +31,7 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 
 fn lockout_terminal(game: &Game, me: Player) -> i32 {
 	let ply = game.turn_count() as i32;
-	if game.current_player() == me {
-		-WIN + ply
-	} else {
-		WIN - ply
-	}
+	if game.current_player() == me { -WIN + ply } else { WIN - ply }
 }
 
 fn low_value_terminal(game: &Game, me: Player) -> i32 {
@@ -108,17 +96,9 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 
 		let r = board.radius_of(node);
 		let geo = if node == board.center() {
-			if game.rules().center_hold_win {
-				180
-			} else {
-				22
-			}
+			if game.rules().center_hold_win { 180 } else { 22 }
 		} else if board.is_spawn(node) {
-			if turn > 20 {
-				-12
-			} else {
-				3
-			}
+			if turn > 20 { -12 } else { 3 }
 		} else if r < r0 * 1.15 {
 			16
 		} else {
@@ -260,11 +240,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 				16
 			}
 		} else if board.is_spawn(node) {
-			if turn > 20 {
-				-12
-			} else {
-				3
-			}
+			if turn > 20 { -12 } else { 3 }
 		} else if r < r0 * 1.15 {
 			16
 		} else {

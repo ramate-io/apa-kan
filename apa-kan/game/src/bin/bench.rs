@@ -7,19 +7,19 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apa_kan::ai::{
-	self, Actor, BranchingReport, SearchConfig, SearchLimit, Searcher, CALIBRATED_ITERS_PER_MOVE,
-	CALIBRATED_NODES_PER_MOVE,
+	self, Actor, BranchingReport, CALIBRATED_ITERS_PER_MOVE, CALIBRATED_NODES_PER_MOVE,
+	SearchConfig, SearchLimit, Searcher,
 };
 use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig};
 use apa_kan::game::{
-	sample_tile_with, Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet,
-	Tile, TileColor,
+	Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet, Tile, TileColor,
+	sample_tile_from_rules,
 };
 use apa_kan::scenario::{self, DeckStrength, Scenario};
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 fn main() {
 	match parse(std::env::args().skip(1)) {
@@ -112,7 +112,7 @@ fn usage() -> &'static str {
 	   --control-win, --control-n, --control-hold-turns,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --beads, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --bead-scoring, --dot-chance,\n\
+	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit,\n\
 	   --win-condition two-tier|placement-only\n\
@@ -407,13 +407,15 @@ where
 	let slots: Vec<Mutex<Option<R>>> = (0..n).map(|_| Mutex::new(None)).collect();
 	std::thread::scope(|scope| {
 		for _ in 0..jobs {
-			scope.spawn(|| loop {
-				let next = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
-				let Some((i, item)) = next else {
-					break;
-				};
-				let r = f(item);
-				*slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+			scope.spawn(|| {
+				loop {
+					let next = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
+					let Some((i, item)) = next else {
+						break;
+					};
+					let r = f(item);
+					*slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+				}
 			});
 		}
 	});
@@ -566,11 +568,7 @@ fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
 }
 
 fn on_off(v: bool) -> &'static str {
-	if v {
-		"on"
-	} else {
-		"off"
-	}
+	if v { "on" } else { "off" }
 }
 
 fn seat_search(cfg: &BenchConfig, p1: bool) -> SearchConfig {
@@ -626,7 +624,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} win_condition={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} win_condition={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -652,6 +650,7 @@ fn run(cfg: BenchConfig) {
 		rules.braid_numer,
 		rules.bead_numer,
 		rules.bead_scoring.name(),
+		rules.channel_mode.name(),
 		rules.dot_percent,
 		rules.emblem_weights.label(),
 		rules.blocker_blocks.name(),
@@ -1127,8 +1126,12 @@ fn run(cfg: BenchConfig) {
 		.map(|i| format!("dots{}={}-{}-{}", i, pick_w[i], pick_d[i], pick_l[i]))
 		.collect();
 	lines.push(format!("# pick_dot_ratio  P1_opening_dots W-D-L  {}", pick_bits.join("  ")));
-	println!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}");
-	println!("# center_captures  opponent_tiles_removed={center_captures}  avg_per_game={avg_center:.2}  self_captures={center_self_captures}  self_avg_per_game={avg_center_self:.2}");
+	println!(
+		"# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}"
+	);
+	println!(
+		"# center_captures  opponent_tiles_removed={center_captures}  avg_per_game={avg_center:.2}  self_captures={center_self_captures}  self_avg_per_game={avg_center_self:.2}"
+	);
 	println!(
 		"# capture_dest  bench={bench_captures} avg_per_game={avg_bench_cap:.2}  tokens={token_captures} avg_per_game={avg_token_cap:.2}"
 	);
@@ -1295,7 +1298,9 @@ fn run_calibrate(cfg: &BenchConfig) {
 		think.as_millis(),
 		seeds.len()
 	);
-	println!("# minimax_nodes n={node_n} mean={mean_nodes:.0} min={node_min} max={node_max} mean_depth={mean_depth:.2}");
+	println!(
+		"# minimax_nodes n={node_n} mean={mean_nodes:.0} min={node_min} max={node_max} mean_depth={mean_depth:.2}"
+	);
 	println!("# mcts_iters n={iter_n} mean={mean_iters:.0} min={iter_min} max={iter_max}");
 	println!("# search_depth  mm_avg={mean_depth:.2}");
 	println!("# recommended --budget nodes:{rec_nodes},iters:{rec_iters}");
@@ -1647,8 +1652,7 @@ fn run_ablate(cfg: &BenchConfig) {
 		"# positions: opening seeds 1,2,3 and 6 greedy plies from seed 4. jobs={}",
 		cfg.jobs
 	));
-	let header =
-		"# profile  pos  mm_depth  mm_nodes  mcts_avg  mcts_max  mcts_iters  entropy  eff_branch  top1  near_q  q_spread10  stability  legal  mm_ms  mcts_ms";
+	let header = "# profile  pos  mm_depth  mm_nodes  mcts_avg  mcts_max  mcts_iters  entropy  eff_branch  top1  near_q  q_spread10  stability  legal  mm_ms  mcts_ms";
 	lines.push(header.into());
 	println!("{header}");
 	let mut positions = Vec::new();
@@ -1699,9 +1703,18 @@ fn run_ablate(cfg: &BenchConfig) {
 			let mt = mcts.stats();
 			let line = format!(
 				"{name}  {pos_name}  mm_depth={} mm_nodes={}  mcts_avg={:.2} mcts_max={} mcts_iters={}  entropy={:.2} eff_branch={:.1} top1={:.2} near_q={} q_spread10={:.3} stability={:.2} legal={}  mm_ms={mm_ms:.0} mcts_ms={mcts_ms:.0}",
-				st.depth, st.nodes, mt.mcts_avg_depth, mt.mcts_max_depth, mt.iterations,
-				mt.root_entropy, mt.root_eff_branch, mt.root_top1_share, mt.root_near_best_q,
-				mt.root_q_spread_top10, mt.root_best_stability, mt.root_legal
+				st.depth,
+				st.nodes,
+				mt.mcts_avg_depth,
+				mt.mcts_max_depth,
+				mt.iterations,
+				mt.root_entropy,
+				mt.root_eff_branch,
+				mt.root_top1_share,
+				mt.root_near_best_q,
+				mt.root_q_spread_top10,
+				mt.root_best_stability,
+				mt.root_legal
 			);
 			println!("{line}");
 			lines.push(line);
@@ -2287,17 +2300,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut rosette = 0u32;
 	let mut rings = 0u32;
 	for _ in 0..n {
-		let t = sample_tile_with(
-			Player::One,
-			rules.max_rings,
-			rules.zag_numer,
-			rules.braid_numer,
-			rules.bead_numer,
-			rules.dot_percent,
-			rules.emblem_weights,
-			&mut next_id,
-			&mut rng,
-		);
+		let t = sample_tile_from_rules(Player::One, &rules, &mut next_id, &mut rng);
 		tally_tiles(std::iter::once(&t), &mut ring_n, &mut color_n);
 		let k = t.n_rings.clamp(1, 3) as usize;
 		zag_rings += u32::from(t.zag_ring_count());
@@ -2718,6 +2721,7 @@ mod tests {
 		assert_eq!(cfg.matchups.len(), 3);
 		assert_eq!(cfg.matchups[0], (DeckArchetype::BraidHeavy, DeckArchetype::BeadHeavy));
 		assert_eq!(cfg.rules.bead_scoring, apa_kan::game::BeadScoring::SharedChannel);
+		assert_eq!(cfg.rules.channel_mode, apa_kan::game::ChannelMode::IndependentMax);
 		let emblems = parse(vec![
 			"--deck-matchups".to_string(),
 			"crescent:mixed,zs:emblem,emblem:bead".to_string(),

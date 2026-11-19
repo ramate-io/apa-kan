@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
 	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
-	Emblem, EmblemWeights, EndReason, Game, GameStatus, HopWeightCmp, InsufficientTilesLoss,
-	LowValueResolution, PassThroughRingCmp, PathConstraint, Player, RingType, RuleSet,
-	SamePieceTwice, Tile, TileColor, WinCondition, ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	ChannelMode, DOT_PERCENT_DEFAULT, Emblem, EmblemWeights, EndReason, Game, GameStatus,
+	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
+	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, WinCondition, ZagMismatchCount,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -50,6 +50,14 @@ fn default_independent() -> String {
 
 fn skip_independent(v: &String) -> bool {
 	v == BeadScoring::Independent.name()
+}
+
+fn default_additive_channel_mode() -> String {
+	ChannelMode::Additive.name().to_string()
+}
+
+fn skip_additive_channel_mode(v: &String) -> bool {
+	v == ChannelMode::Additive.name()
 }
 
 fn default_mixed() -> String {
@@ -328,10 +336,17 @@ pub struct RulesLog {
 	/// those is skipped because capture outcomes differ.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub zag_match_non_zag: Option<bool>,
-	/// `shared` (rule B, live default) or `independent` (rule A). Absent on
-	/// older logs; replay uses independent, which matches those captures.
+	/// `shared` (rule B, live default for additive) or `independent` (rule A).
+	/// Absent on older logs; replay uses independent, which matches those captures.
 	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
 	pub bead_scoring: String,
+	/// `independent-max` (live default) or `additive` (RFC 001-001-002).
+	/// Absent on older logs; replay uses additive, which matches those captures.
+	#[serde(
+		default = "default_additive_channel_mode",
+		skip_serializing_if = "skip_additive_channel_mode"
+	)]
+	pub channel_mode: String,
 	/// `none,crescent,zs[,blocker,rosette]` generation weights. Absent on
 	/// older logs; replay uses the live default only for new deals, not
 	/// historical tiles (those already store `emblem` per tile).
@@ -410,6 +425,7 @@ impl RulesLog {
 			score_incident_arcs: Some(true),
 			zag_match_non_zag: Some(true),
 			bead_scoring: r.bead_scoring.name().into(),
+			channel_mode: r.channel_mode.name().into(),
 			emblem_weights: r.emblem_weights.label(),
 			blocker_blocks: r.blocker_blocks.name().into(),
 			win_condition: r.win_condition.name().into(),
@@ -457,6 +473,7 @@ impl RulesLog {
 				None => BraidFailMismatch::One,
 			},
 			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
+			channel_mode: ChannelMode::parse(&self.channel_mode)?,
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
 				.unwrap_or_else(|_| EmblemWeights::default()),
 			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
@@ -1283,8 +1300,8 @@ mod tests {
 
 	use super::*;
 	use crate::ai::{Actor, Searcher};
-	use rand::rngs::StdRng;
 	use rand::SeedableRng;
+	use rand::rngs::StdRng;
 	use std::time::Duration;
 
 	fn play_to_log(
@@ -1553,6 +1570,18 @@ mod tests {
 		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
 		assert_eq!(parsed.bead_scoring, "independent");
 		assert_eq!(parsed.to_rules().unwrap().bead_scoring, BeadScoring::Independent);
+	}
+
+	#[test]
+	fn missing_channel_mode_replays_as_additive() {
+		let mut r = RuleSet::additive();
+		r.bead_scoring = BeadScoring::Independent;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("channel_mode"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.channel_mode, "additive");
+		assert_eq!(parsed.to_rules().unwrap().channel_mode, ChannelMode::Additive);
 	}
 
 	#[test]
