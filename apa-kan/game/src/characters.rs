@@ -192,11 +192,11 @@ mod tests {
 			r#"
 [[characters]]
 id = "dup"
-path = "characters/a.png"
+path = "characters/dup.png"
 display_name = "A"
 [[characters]]
 id = "dup"
-path = "characters/b.png"
+path = "characters/dup.png"
 display_name = "B"
 "#,
 		)
