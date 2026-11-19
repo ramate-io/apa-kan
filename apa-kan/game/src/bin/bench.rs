@@ -7,19 +7,19 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apa_kan::ai::{
-	self, Actor, BranchingReport, CALIBRATED_ITERS_PER_MOVE, CALIBRATED_NODES_PER_MOVE,
-	SearchConfig, SearchLimit, Searcher,
+	self, Actor, BranchingReport, SearchConfig, SearchLimit, Searcher, CALIBRATED_ITERS_PER_MOVE,
+	CALIBRATED_NODES_PER_MOVE,
 };
 use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig};
 use apa_kan::game::{
-	Action, EndReason, Game, GameStatus, LowValueResolution, Player, RuleSet, Tile, TileColor,
-	sample_tile_from_rules,
+	sample_tile_from_rules, Action, EndReason, Game, GameStatus, LowValueResolution, Player,
+	RuleSet, Tile, TileColor,
 };
 use apa_kan::scenario::{self, DeckStrength, Scenario};
-use rand::SeedableRng;
 use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 fn main() {
 	match parse(std::env::args().skip(1)) {
@@ -407,15 +407,13 @@ where
 	let slots: Vec<Mutex<Option<R>>> = (0..n).map(|_| Mutex::new(None)).collect();
 	std::thread::scope(|scope| {
 		for _ in 0..jobs {
-			scope.spawn(|| {
-				loop {
-					let next = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
-					let Some((i, item)) = next else {
-						break;
-					};
-					let r = f(item);
-					*slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
-				}
+			scope.spawn(|| loop {
+				let next = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
+				let Some((i, item)) = next else {
+					break;
+				};
+				let r = f(item);
+				*slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
 			});
 		}
 	});
@@ -568,7 +566,11 @@ fn pairings(bots: &[Actor]) -> Vec<(Actor, Actor)> {
 }
 
 fn on_off(v: bool) -> &'static str {
-	if v { "on" } else { "off" }
+	if v {
+		"on"
+	} else {
+		"off"
+	}
 }
 
 fn seat_search(cfg: &BenchConfig, p1: bool) -> SearchConfig {

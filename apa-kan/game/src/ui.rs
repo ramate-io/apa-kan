@@ -3,16 +3,16 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Capturing, Screenshot, save_to_disk};
+use bevy::render::view::window::screenshot::{save_to_disk, Capturing, Screenshot};
 use bevy::window::WindowResolution;
-use rand::SeedableRng;
 use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
 use crate::deck::{
-	self, SetupConfig, SetupRecord, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap,
+	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
 };
 use crate::game::{
 	Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile, ZagMismatchCount,

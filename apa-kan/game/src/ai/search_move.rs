@@ -424,11 +424,9 @@ mod tests {
 		assert!(game.would_overwhelm_add(tile, spawn));
 		game.set_bench(crate::game::Player::One, vec![tile]);
 		game.set_current(crate::game::Player::One);
-		assert!(
-			!legal_search_moves(&game)
-				.iter()
-				.any(|mv| matches!(mv, SearchMove::Add { node, .. } if *node == spawn))
-		);
+		assert!(!legal_search_moves(&game)
+			.iter()
+			.any(|mv| matches!(mv, SearchMove::Add { node, .. } if *node == spawn)));
 	}
 
 	#[test]
@@ -464,11 +462,10 @@ mod tests {
 		game.set_current(crate::game::Player::One);
 		let outcome = apply_move(&mut game, SearchMove::Move { from, to: land }).unwrap();
 		assert!(outcome.removals.iter().any(|r| r.tile.id == opp_id));
-		assert!(
-			game.bench(crate::game::Player::One)
-				.iter()
-				.any(|t| t.id == opp_id && t.owner == crate::game::Player::One)
-		);
+		assert!(game
+			.bench(crate::game::Player::One)
+			.iter()
+			.any(|t| t.id == opp_id && t.owner == crate::game::Player::One));
 		assert!(game.deck_slots(crate::game::Player::One).iter().any(|s| {
 			s.tile().is_some_and(|t| t.id == opp_id && t.owner == crate::game::Player::One)
 		}));

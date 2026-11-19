@@ -3,8 +3,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use rand::Rng;
 use rand::seq::SliceRandom;
+use rand::Rng;
 
 use crate::board::{Board, NodeId};
 
@@ -164,7 +164,11 @@ impl RingType {
 	}
 
 	pub fn from_zag(zag: bool) -> Self {
-		if zag { Self::Zag } else { Self::Normal }
+		if zag {
+			Self::Zag
+		} else {
+			Self::Normal
+		}
 	}
 }
 
@@ -267,8 +271,15 @@ pub fn sample_braid(
 	}
 	let n = (*n_rings).clamp(1, MAX_COLOR_RINGS);
 	let max = max_rings.clamp(1, MAX_COLOR_RINGS);
-	let size =
-		if n >= 3 && max >= 3 { if rng.gen_range(0..2u32) == 0 { 3u8 } else { 2u8 } } else { 2u8 };
+	let size = if n >= 3 && max >= 3 {
+		if rng.gen_range(0..2u32) == 0 {
+			3u8
+		} else {
+			2u8
+		}
+	} else {
+		2u8
+	};
 	if n < size {
 		let last = rings[(n - 1) as usize];
 		for i in n..size {
@@ -479,7 +490,11 @@ impl CaptureMark {
 	}
 
 	pub fn from_bit(bit: u8) -> Self {
-		if bit == 0 { Self::Triangle } else { Self::Dot }
+		if bit == 0 {
+			Self::Triangle
+		} else {
+			Self::Dot
+		}
 	}
 
 	pub fn parse(s: &str) -> Result<Self, String> {
@@ -1101,7 +1116,11 @@ impl Tile {
 		}
 		let need = self.braid_color_counts();
 		let have = other.non_zag_colors_multiset();
-		if (0..6).all(|i| have[i] >= need[i]) { Some(size) } else { None }
+		if (0..6).all(|i| have[i] >= need[i]) {
+			Some(size)
+		} else {
+			None
+		}
 	}
 
 	/// True if this tile has a real presence toward `dst`: a normal ring, a
@@ -1202,7 +1221,11 @@ pub fn selected_braid(a: Tile, b: Tile) -> Option<(Tile, u8)> {
 		(Some(n), Some(_)) => {
 			let ka = a.braid_color_counts();
 			let kb = b.braid_color_counts();
-			if ka < kb || (ka == kb && a.id <= b.id) { Some((a, n)) } else { Some((b, n)) }
+			if ka < kb || (ka == kb && a.id <= b.id) {
+				Some((a, n))
+			} else {
+				Some((b, n))
+			}
 		}
 	}
 }
@@ -4128,8 +4151,8 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
-	use rand::SeedableRng;
 	use rand::rngs::StdRng;
+	use rand::SeedableRng;
 
 	fn green(game: &mut Game, owner: Player, weight: u8, dots: u8) -> Tile {
 		game.alloc_tile(owner, TileColor::Green, weight, dots)
@@ -5122,11 +5145,10 @@ mod tests {
 		assert!(!game.would_overwhelm_add(two, spawn), "max mismatch 1 < rings 2");
 		game.set_bench(Player::One, vec![two]);
 		game.set_current(Player::One);
-		assert!(
-			game.legal_adds()
-				.iter()
-				.any(|a| matches!(a, Action::Add { node, .. } if *node == spawn))
-		);
+		assert!(game
+			.legal_adds()
+			.iter()
+			.any(|a| matches!(a, Action::Add { node, .. } if *node == spawn)));
 
 		let mut additive = placement_only_rules();
 		additive.channel_mode = ChannelMode::Additive;
@@ -7100,12 +7122,11 @@ mod tests {
 		let mut off = RuleSet::default();
 		off.zag_numer = 0;
 		let game = Game::new(off, 11);
-		assert!(
-			game.bench(Player::One)
-				.iter()
-				.chain(game.bag(Player::One))
-				.all(|t| t.zag() == [false, false, false])
-		);
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.chain(game.bag(Player::One))
+			.all(|t| t.zag() == [false, false, false]));
 	}
 
 	#[test]
@@ -7113,12 +7134,11 @@ mod tests {
 		let mut off = RuleSet::default();
 		off.braid_numer = 0;
 		let game = Game::new(off, 11);
-		assert!(
-			game.bench(Player::One)
-				.iter()
-				.chain(game.bag(Player::One))
-				.all(|t| t.braid_ring_count() == 0)
-		);
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.chain(game.bag(Player::One))
+			.all(|t| t.braid_ring_count() == 0));
 	}
 
 	#[test]
@@ -7355,11 +7375,10 @@ mod tests {
 		assert_eq!(own, 1);
 		assert_eq!(game.budget_token_count(Player::One), 8);
 		assert_eq!(game.budget(Player::One), 0);
-		assert!(
-			game.budget_tokens(Player::One)
-				.iter()
-				.any(|t| matches!(t, BudgetToken::Captured(_)))
-		);
+		assert!(game
+			.budget_tokens(Player::One)
+			.iter()
+			.any(|t| matches!(t, BudgetToken::Captured(_))));
 	}
 
 	#[test]
@@ -8747,12 +8766,11 @@ mod tests {
 		let mut off = RuleSet::default();
 		off.bead_numer = 0;
 		let game = Game::new(off, 11);
-		assert!(
-			game.bench(Player::One)
-				.iter()
-				.chain(game.bag(Player::One))
-				.all(|t| t.bead_ring_count() == 0)
-		);
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.chain(game.bag(Player::One))
+			.all(|t| t.bead_ring_count() == 0));
 	}
 
 	#[test]
@@ -9360,12 +9378,10 @@ mod tests {
 		let bench_n = game.bench(Player::One).len();
 		let hand_n = game.deck_slots(Player::One).len();
 		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
-		assert!(
-			outcome
-				.removals
-				.iter()
-				.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two)
-		);
+		assert!(outcome
+			.removals
+			.iter()
+			.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two));
 		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Tokens));
 		assert_eq!(game.budget_token_count(Player::One), tokens + outcome.removals.len());
 		assert_eq!(game.bench(Player::One).len(), bench_n);
@@ -9404,11 +9420,10 @@ mod tests {
 		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
 		assert_eq!(game.budget_token_count(Player::One), tokens);
 		assert_eq!(game.bench(Player::One).len(), bench_n + outcome.removals.len());
-		assert!(
-			game.bench(Player::One)
-				.iter()
-				.any(|t| t.owner == Player::One && game.tile_at(spawn).is_none())
-		);
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.any(|t| t.owner == Player::One && game.tile_at(spawn).is_none()));
 	}
 
 	#[test]
@@ -9444,11 +9459,10 @@ mod tests {
 		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::One));
 		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::Two));
 		for rem in &outcome.removals {
-			assert!(
-				game.bench(Player::One)
-					.iter()
-					.any(|t| t.id == rem.tile.id && t.owner == Player::One)
-			);
+			assert!(game
+				.bench(Player::One)
+				.iter()
+				.any(|t| t.id == rem.tile.id && t.owner == Player::One));
 			assert_eq!(live_hand_tile(&game, Player::One, rem.tile.id).owner, Player::One);
 		}
 	}

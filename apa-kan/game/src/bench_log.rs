@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
 	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
-	ChannelMode, DOT_PERCENT_DEFAULT, Emblem, EmblemWeights, EndReason, Game, GameStatus,
-	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
-	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, WinCondition, ZagMismatchCount,
+	ChannelMode, Emblem, EmblemWeights, EndReason, Game, GameStatus, HopWeightCmp,
+	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player,
+	RingType, RuleSet, SamePieceTwice, Tile, TileColor, WinCondition, ZagMismatchCount,
+	DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -1300,8 +1301,8 @@ mod tests {
 
 	use super::*;
 	use crate::ai::{Actor, Searcher};
-	use rand::SeedableRng;
 	use rand::rngs::StdRng;
+	use rand::SeedableRng;
 	use std::time::Duration;
 
 	fn play_to_log(

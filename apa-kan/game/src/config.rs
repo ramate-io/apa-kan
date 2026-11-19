@@ -6,11 +6,11 @@ use std::process;
 use std::time::Duration;
 
 use crate::ai::{Actor, SearchConfig};
-use crate::deck::{DECK_SIZE_DEFAULT, DECK_SIZE_MAX, DeckArchetype, PickStrategy, SetupConfig};
+use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	BAG_SIZE, BeadScoring, BlockerBlocks, BraidFailMismatch, ChannelMode, EmblemWeights,
-	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
-	SamePieceTwice, WinCondition, ZagMismatchCount,
+	BeadScoring, BlockerBlocks, BraidFailMismatch, ChannelMode, EmblemWeights, HopWeightCmp,
+	InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet, SamePieceTwice,
+	WinCondition, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 

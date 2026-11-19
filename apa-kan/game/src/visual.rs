@@ -8,8 +8,8 @@ use std::f64::consts::PI;
 
 use crate::board::{ArcEdge, Board, NodeId};
 use crate::game::{
-	ActionOutcome, BAG_SIZE_DEFAULT, BudgetToken, CaptureDest, CaptureMark, Emblem, Game,
-	GameStatus, Player, RingType, RuleSet, Tile, TileColor, ZagMismatchCount, selected_braid,
+	selected_braid, ActionOutcome, BudgetToken, CaptureDest, CaptureMark, Emblem, Game, GameStatus,
+	Player, RingType, RuleSet, Tile, TileColor, ZagMismatchCount, BAG_SIZE_DEFAULT,
 };
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
@@ -281,7 +281,11 @@ pub fn bead_pinch(half_w: f32) -> f32 {
 pub fn format_budget(game: &Game, player: Player) -> String {
 	let usable = game.budget(player);
 	let surplus = game.budget_surplus(player);
-	if surplus == 0 { usable.to_string() } else { format!("{usable}+{surplus}") }
+	if surplus == 0 {
+		usable.to_string()
+	} else {
+		format!("{usable}+{surplus}")
+	}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -501,7 +505,11 @@ pub fn matched_normal_colors(a: Tile, b: Tile) -> [Option<TileColor>; 2] {
 
 /// This tile's braid-lane threads, or empty when it has no 2-/3-slot braid.
 pub fn side_braid_colors(tile: Tile) -> [Option<TileColor>; 3] {
-	if tile.braid_ring_count() >= 2 { tile.braid_colors() } else { [None; 3] }
+	if tile.braid_ring_count() >= 2 {
+		tile.braid_colors()
+	} else {
+		[None; 3]
+	}
 }
 
 /// Parallel-lane offsets for the fixed order normal, zag, braid, bead.
@@ -694,7 +702,11 @@ pub fn highway_offsets(n: usize, stripe_off: f64) -> [f64; MAX_HITCH_COLORS] {
 }
 
 pub fn highway_strand_width(n: usize, arc_width: f64) -> f64 {
-	if n <= 1 { arc_width } else { arc_width * f64::from(STRIPE_STRAND_WIDTH_SCALE) }
+	if n <= 1 {
+		arc_width
+	} else {
+		arc_width * f64::from(STRIPE_STRAND_WIDTH_SCALE)
+	}
 }
 
 /// Bundle offsets around **one** diamond. Lane 0 is the diamond centerline;
@@ -1819,7 +1831,11 @@ pub fn midpoint_frame(pts: &[[f64; 2]]) -> HitchFrame {
 
 fn unit2(v: [f64; 2], fallback: [f64; 2]) -> [f64; 2] {
 	let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
-	if len > 1e-12 { [v[0] / len, v[1] / len] } else { fallback }
+	if len > 1e-12 {
+		[v[0] / len, v[1] / len]
+	} else {
+		fallback
+	}
 }
 
 /// Vertices of the compact conflict diamond at an arc midpoint.
@@ -2298,8 +2314,24 @@ fn bead_chain_sides(
 	let mut left = Vec::with_capacity(n);
 	let mut right = Vec::with_capacity(n);
 	for i in 0..n {
-		let prev = if i == 0 { if closed { pts[n - 1] } else { pts[0] } } else { pts[i - 1] };
-		let next = if i + 1 >= n { if closed { pts[0] } else { pts[i] } } else { pts[i + 1] };
+		let prev = if i == 0 {
+			if closed {
+				pts[n - 1]
+			} else {
+				pts[0]
+			}
+		} else {
+			pts[i - 1]
+		};
+		let next = if i + 1 >= n {
+			if closed {
+				pts[0]
+			} else {
+				pts[i]
+			}
+		} else {
+			pts[i + 1]
+		};
 		let dx = next[0] - prev[0];
 		let dy = next[1] - prev[1];
 		let len = (dx * dx + dy * dy).sqrt();
@@ -2440,7 +2472,11 @@ pub fn braid_turns_along(pts: &[[f64; 2]], scale: f32) -> f64 {
 /// highway stripes can pack outside the threads.
 pub fn hitch_braid_amp(full_amp: f64, hitch_r: f64) -> f64 {
 	let cap = diamond_across(hitch_r) * 1.2;
-	if cap <= 0.0 { full_amp } else { full_amp.min(cap).max(1.0) }
+	if cap <= 0.0 {
+		full_amp
+	} else {
+		full_amp.min(cap).max(1.0)
+	}
 }
 
 /// Integer twists around a tile rim so a closed weave meets itself.
@@ -2498,7 +2534,11 @@ fn polyline_normal(pts: &[[f64; 2]], i: usize) -> (f64, f64) {
 	let dx = next[0] - prev[0];
 	let dy = next[1] - prev[1];
 	let len = (dx * dx + dy * dy).sqrt();
-	if len <= 1e-12 { (0.0, 1.0) } else { (-dy / len, dx / len) }
+	if len <= 1e-12 {
+		(0.0, 1.0)
+	} else {
+		(-dy / len, dx / len)
+	}
 }
 
 pub fn min_node_distance(board: &Board) -> f64 {
@@ -3046,7 +3086,11 @@ fn ring_nodes(board: &Board, inner_band: bool) -> Vec<NodeId> {
 				return false;
 			}
 			let inner = board.radius_of(id) < 1.1 * r;
-			if inner_band { inner } else { !inner }
+			if inner_band {
+				inner
+			} else {
+				!inner
+			}
 		})
 		.collect();
 	nodes.sort_by(|&a, &b| angle_of(board.position(a)).total_cmp(&angle_of(board.position(b))));
@@ -3170,7 +3214,11 @@ fn empty_neighbor_pair(game: &Game) -> Option<(NodeId, NodeId)> {
 
 fn angle_of(p: [f64; 2]) -> f64 {
 	let a = p[1].atan2(p[0]);
-	if a < 0.0 { a + 2.0 * PI } else { a }
+	if a < 0.0 {
+		a + 2.0 * PI
+	} else {
+		a
+	}
 }
 
 #[cfg(test)]
@@ -4841,12 +4889,10 @@ mod tests {
 		game.place_tile(from, mover);
 		game.set_current(Player::One);
 		let outcome = game.apply(crate::game::Action::Move { from, to: land }).unwrap();
-		assert!(
-			outcome
-				.removals
-				.iter()
-				.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two)
-		);
+		assert!(outcome
+			.removals
+			.iter()
+			.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two));
 		let flash = CaptureFlash::from_outcome(&outcome);
 		assert_eq!(flash.dest, Some(CaptureDest::Bench));
 		assert!(
