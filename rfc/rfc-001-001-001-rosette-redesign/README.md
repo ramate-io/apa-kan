@@ -222,7 +222,7 @@ Default **two-tier** is the control-then-low-value package above. **placement-on
 1. A turn is **ADD** a remaining bench tile (still spawn-only, still spends one spawn token) **or REMOVE** an overwhelmed tile. MOVE is off.
 2. ADD is illegal if the tile would be immediately overwhelmed under the live channel rules (`would_overwhelm_add`). On this stack that is **independent-max** (max match / max mismatch of any single channel per edge; [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md)). Tiles that later become overwhelmed **stay**; there is no simultaneous capture and no chain reaction.
 3. REMOVE uses the existing capture dest / token rules on that one tile (dot → mover's bench, triangle → spawn token). Opponent tiles always earn a token; own-tile harvests follow `self_capture_budget`.
-4. The player to move **loses** (`EndReason::NoLegalPlacement`) when they have **no legal ADD**, even if a REMOVE is still available. That reading is an open question.
+4. The player to move **loses** (`EndReason::NoLegalPlacement`) when they have **no legal ADD**, even if a REMOVE is still available. That reading is an open question. Light H2H on this stack (`placement_only/h2h.txt`) is **60/60 P2** in exactly 8 turns: the eight spawns fill, then P1 cannot ADD and never gets to harvest. Alternative: lose only when ADD **and** REMOVE are both empty.
 
 Search uses the same legal-move generator (`legal_adds` / `legal_removes`) and treats no-legal-placement as a terminal.
 
