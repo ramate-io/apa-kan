@@ -32,3 +32,5 @@ Each RFC directory should contain:
 - [rfc-001-001-004-beads](./rfc-001-001-004-beads/README.md) — fourth ring type: beads as a bomb against non-matching colors; unmatched bead rings +1 each, single match −1 per edge
 - [rfc-001-001-005-capture-modifiers](./rfc-001-001-005-capture-modifiers/README.md) — every tile is a dot or a triangle: captures from that tile go to the mover's bench or to spawn tokens
 - [rfc-001-001-006-emblems](./rfc-001-001-006-emblems/README.md) — one optional emblem slot per tile (Crescent Moon, Two Zag Zs); +1 deck cost; rare generation (200/1/1)
+- [rfc-001-001-007-character-library](./rfc-001-001-007-character-library/README.md) — twenty-five named character medallion PNGs with ids and a Bevy asset manifest; not yet wired into generation
+- [rfc-000-000-00n-generation](./rfc-000-000-00n-generation/README.md) — two-pass tile generation; versioned character assignment (specific map, aesthetic embedding, fallback)

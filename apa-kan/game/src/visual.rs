@@ -8,8 +8,8 @@ use std::f64::consts::PI;
 
 use crate::board::{ArcEdge, Board, NodeId};
 use crate::game::{
-	selected_braid, ActionOutcome, BudgetToken, CaptureDest, Emblem, Game, GameStatus, Player,
-	RingType, RuleSet, Tile, TileColor, ZagMismatchCount, BAG_SIZE_DEFAULT,
+	selected_braid, ActionOutcome, BudgetToken, CaptureDest, CaptureMark, Emblem, Game, GameStatus,
+	Player, RingType, RuleSet, Tile, TileColor, ZagMismatchCount, BAG_SIZE_DEFAULT,
 };
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
@@ -935,16 +935,22 @@ impl TileRingDraw {
 	}
 
 	/// Capture-mark radius sized to the bottom notch for `count` marks (1–3).
+	///
+	/// Capped as a fraction of `tile_radius` so a single mark cannot grow into
+	/// a blob that eats the tile center (close-ups used to hit ~0.23 r).
 	pub fn capture_mark_r(self, tile_radius: f32, count: u8) -> f32 {
 		let notch = tile_ring_notch(count);
 		let rho = self.ring_radius(tile_radius, 0).max(tile_radius * 0.55);
 		let slot = rho * notch / f32::from(count.max(1));
 		let k = match count {
-			0 | 1 => 0.22,
-			2 => 0.18,
-			_ => 0.15,
+			0 | 1 => 0.12,
+			2 => 0.15,
+			_ => 0.13,
 		};
-		(slot * k).max(2.35 * self.scale.max(0.4))
+		let raw = slot * k;
+		let floor = (1.65 * self.scale.max(0.4)).min(tile_radius * 0.07);
+		let cap = tile_radius * 0.11;
+		raw.max(floor).min(cap)
 	}
 
 	/// Polar frame of capture mark `i`: tile center, angle, and radius.
@@ -1022,21 +1028,22 @@ impl TileRingDraw {
 	) -> ([f32; 2], f32, f32) {
 		let mid = down_angle(up);
 		let half = self.emblem_half_extent();
-		let pad = (0.65 * self.scale).max(0.5);
+		let pad = (0.80 * self.scale).max(0.55);
 		let rho = (tile_radius - half - pad).max(tile_radius * 0.42);
 		(tile_center, mid, rho)
 	}
 
-	/// Outer-circle radius of the two-circle moon (~2–3 ring-widths tall).
+	/// Outer-circle radius of the two-circle moon. Kept smaller than a ring-gap
+	/// so the top slot does not eat the center character disc.
 	pub fn crescent_radius(self) -> f32 {
 		let stroke = self.zag_stroke.max(0.55);
-		(self.gap * 1.52).max(stroke * 2.8)
+		(self.gap * 1.08).max(stroke * 2.05)
 	}
 
 	fn emblem_half_extent(self) -> f32 {
 		let stroke = self.zag_stroke.max(0.55);
-		let zag_h = stroke * 3.15;
-		(self.crescent_radius() * 0.92).max(zag_h + stroke * 0.55)
+		let zag_h = stroke * 2.20;
+		(self.crescent_radius() * 0.92).max(zag_h + stroke * 0.45)
 	}
 
 	/// Bowl outline of the crescent (no star/rays). Opening along `up`.
@@ -1081,9 +1088,9 @@ impl TileRingDraw {
 	) -> [Vec<[f32; 2]>; 2] {
 		let (origin, theta, rho) = self.emblem_frame(tile_center, tile_radius, up);
 		let stroke = self.zag_stroke.max(0.55);
-		let h = stroke * 3.15;
-		let w = stroke * 0.78;
-		let sep = w + stroke * 1.12;
+		let h = stroke * 2.20;
+		let w = stroke * 0.70;
+		let sep = w + stroke * 1.00;
 		[
 			zag_zigzag_upright(origin, theta, rho, h, w, -sep),
 			zag_zigzag_upright(origin, theta, rho, h, w, sep),
@@ -1146,7 +1153,7 @@ impl TileRingDraw {
 				strokes: Vec::new(),
 			},
 			Emblem::TwoZagZs => {
-				let width = self.zag_stroke.max(0.55);
+				let width = (self.zag_stroke * 0.82).max(0.45);
 				EmblemGlyph {
 					fills: Vec::new(),
 					strokes: self
@@ -1165,6 +1172,49 @@ impl TileRingDraw {
 				strokes: self.rosette_strokes(tile_center, tile_radius, up),
 			},
 		}
+	}
+
+	/// Inscribed radius for a centered character medallion.
+	///
+	/// Preview-only: fits inside the innermost *drawn* ring (zag/bead/braid
+	/// bulge included) and stays inward of the emblem slot and capture marks.
+	/// Not used by generation.
+	pub fn character_fit_radius(self, tile: Tile, tile_radius: f32) -> f32 {
+		let strokes = tile.ring_strokes();
+		let mut inner_k = 0u8;
+		let mut inner_kind = tile.stroke_type(0);
+		for k in 0..strokes {
+			if tile.stroke_is_braid(k) {
+				continue;
+			}
+			inner_k = k;
+			inner_kind = tile.stroke_type(k);
+		}
+		let rr = self.ring_radius(tile_radius, inner_k);
+		let bulge = match inner_kind {
+			RingType::Zag => self.zag_amp + self.zag_stroke * 0.5,
+			RingType::Bead => self.bead_r,
+			RingType::Braid => self.braid_amp + self.braid_stroke * 0.5,
+			RingType::Normal => self.stroke * 0.5,
+		};
+		let pad = (0.85 * self.scale).max(0.75);
+		let mut fit = rr - bulge - pad;
+		if tile.emblem != Emblem::None {
+			let half = self.emblem_half_extent();
+			let e_pad = (0.55 * self.scale).max(0.4);
+			let emblem_inner = tile_radius - 2.0 * half - e_pad;
+			fit = fit.min(emblem_inner - pad);
+		}
+		let marks = capture_mark_count(tile);
+		let mark_r = self.capture_mark_r(tile_radius, marks);
+		let mark_inward =
+			if matches!(tile.capture, CaptureMark::Triangle) { mark_r * 1.35 } else { mark_r };
+		let rho_track = self.ring_radius(tile_radius, 0).max(tile_radius * 0.55);
+		let mark_rho = (rho_track - mark_r * 0.12)
+			.min(tile_radius - mark_r * 1.05)
+			.max(tile_radius * 0.45);
+		fit = fit.min(mark_rho - mark_inward - pad);
+		fit.max(tile_radius * 0.18)
 	}
 }
 
@@ -4514,9 +4564,10 @@ mod tests {
 				);
 			}
 			let mark_r = draw.capture_mark_r(r, n);
+			assert!(mark_r > 1.4, "marks stay readable at board scale, n={n} r={mark_r}");
 			assert!(
-				mark_r > 2.2,
-				"marks must be clearly bigger than the old 1.45, n={n} r={mark_r}"
+				mark_r <= r * 0.11 + 1e-4,
+				"a single mark cannot balloon into the center, n={n} r={mark_r}"
 			);
 			for i in 0..n {
 				let p = draw.capture_mark_pos(tile, r, i, n, CAPTURE_DOWN_BEVY);
@@ -4620,10 +4671,10 @@ mod tests {
 		assert!(dist_sum / poly.len() as f32 > r * 0.4);
 		assert!(max_hyp < r - 0.2, "crescent stays inside the tile, max={max_hyp} r={r}");
 		assert!(
-			max_y - min_y > draw.gap * 1.2,
-			"bowl fills the notch, height={} gap={}",
+			max_y - min_y > draw.crescent_radius() * 0.85,
+			"bowl fills the notch, height={} r={}",
 			max_y - min_y,
-			draw.gap
+			draw.crescent_radius()
 		);
 		assert!(max_x > 0.0 && min_x < 0.0, "bowl is symmetric about the vertical");
 		assert!(max_y > back_y + (max_y - min_y) * 0.35, "horns point up, above the bowl back");
@@ -4720,6 +4771,44 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn character_fit_radius_stays_inside_the_innermost_ring() {
+		use crate::game::{Emblem, Player, RingType, Tile, TileColor};
+		let r = 22.0;
+		let draw = TileRingDraw::for_radius(r);
+		let three = Tile::with_typed_rings(
+			1,
+			Player::One,
+			&[
+				(TileColor::Green, RingType::Normal),
+				(TileColor::Blue, RingType::Normal),
+				(TileColor::Orange, RingType::Zag),
+			],
+			3,
+			2,
+		);
+		let fit = draw.character_fit_radius(three, r);
+		let inner = draw.ring_radius(r, 2);
+		assert!(fit > 2.0, "preview medallion needs some air, fit={fit}");
+		assert!(
+			fit < inner,
+			"character must sit inside the innermost ring, fit={fit} inner={inner}"
+		);
+		let moon = three.with_emblem(Emblem::CrescentMoon);
+		let moon_fit = draw.character_fit_radius(moon, r);
+		assert!(moon_fit <= fit + 1e-4, "emblem shrinks or keeps the inner-ring bound");
+		let one = Tile::mono(2, Player::Two, TileColor::Teal, 1, 1).with_emblem(Emblem::Blocker);
+		let one_fit = draw.character_fit_radius(one, r);
+		let outer = draw.ring_radius(r, 0);
+		assert!(one_fit < outer, "1-ring emblem tile still keeps art inside the ring");
+		let close_r = 330.0;
+		let close = TileRingDraw::for_radius(close_r);
+		let blob = close.capture_mark_r(close_r, 1);
+		assert!(blob <= close_r * 0.11 + 1e-3, "close-up 1-marks stay capped, r={blob}");
+		assert!(blob > close_r * 0.05, "capped 1-marks remain visible, r={blob}");
+		assert!(draw.crescent_radius() < draw.gap * 1.15, "emblem slot is smaller than a ring gap");
 	}
 
 	#[test]

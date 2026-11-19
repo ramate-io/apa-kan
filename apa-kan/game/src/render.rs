@@ -4,6 +4,7 @@ use std::path::Path;
 
 use image::{Rgba, RgbaImage};
 
+use crate::board::NodeId;
 use crate::game::{BudgetToken, CaptureDest, DeckSlot, Game, Player, Tile};
 use crate::visual::{self, ArcBody, BraidLane, CaptureFlash, ViewLayout};
 
@@ -27,7 +28,7 @@ pub fn write_png_view(
 	caption: &str,
 	width: u32,
 	height: u32,
-	selected: Option<crate::board::NodeId>,
+	selected: Option<NodeId>,
 ) -> Result<(), String> {
 	write_png_view_flash(game, path, caption, width, height, selected, None)
 }
@@ -38,8 +39,23 @@ pub fn write_png_view_flash(
 	caption: &str,
 	width: u32,
 	height: u32,
-	selected: Option<crate::board::NodeId>,
+	selected: Option<NodeId>,
 	flash: Option<&CaptureFlash>,
+) -> Result<(), String> {
+	write_png_view_preview(game, path, caption, width, height, selected, flash, &[])
+}
+
+/// Preview-only board PNG with character medallions in tile centers.
+/// Generation and the live painter do not call this.
+pub fn write_png_view_preview(
+	game: &Game,
+	path: impl AsRef<Path>,
+	caption: &str,
+	width: u32,
+	height: u32,
+	selected: Option<NodeId>,
+	flash: Option<&CaptureFlash>,
+	characters: &[(NodeId, &RgbaImage)],
 ) -> Result<(), String> {
 	let layout = ViewLayout::from_window_with_deck(
 		width as f32,
@@ -50,7 +66,7 @@ pub fn write_png_view_flash(
 	let mut img = RgbaImage::from_pixel(width, height, rgba(bg[0], bg[1], bg[2], 255));
 	draw_arcs(&mut img, game, &layout);
 	draw_nodes(&mut img, game, &layout);
-	draw_tiles(&mut img, game, &layout);
+	draw_tiles_preview(&mut img, game, &layout, characters);
 	draw_marks(&mut img, game, &layout, selected);
 	draw_benches(&mut img, game, &layout, flash);
 	draw_flash(&mut img, &layout, flash);
@@ -447,12 +463,18 @@ fn draw_nodes(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
 	}
 }
 
-fn draw_tiles(img: &mut RgbaImage, game: &Game, layout: &ViewLayout) {
+fn draw_tiles_preview(
+	img: &mut RgbaImage,
+	game: &Game,
+	layout: &ViewLayout,
+	characters: &[(NodeId, &RgbaImage)],
+) {
 	let board = game.board();
 	for id in 0..board.node_count() as u8 {
 		if let Some(tile) = game.tile_at(id) {
 			let p = image_pt(layout, board.position(id));
-			draw_tile(img, tup(p), f64::from(layout.tile_radius), tile);
+			let art = characters.iter().find(|(n, _)| *n == id).map(|(_, a)| *a);
+			draw_tile_preview(img, tup(p), f64::from(layout.tile_radius), tile, art);
 		}
 	}
 }
@@ -572,7 +594,20 @@ fn draw_solid_token(img: &mut RgbaImage, c: (f64, f64), r: f64, player: Player) 
 }
 
 fn draw_tile(img: &mut RgbaImage, c: (f64, f64), r: f64, tile: Tile) {
+	draw_tile_preview(img, c, r, tile, None);
+}
+
+fn draw_tile_preview(
+	img: &mut RgbaImage,
+	c: (f64, f64),
+	r: f64,
+	tile: Tile,
+	character: Option<&RgbaImage>,
+) {
 	fill_circle(img, c, r, rgb_of(visual::owner_fill_rgb(tile.owner)));
+	if let Some(art) = character {
+		blit_character_medallion(img, c, r, tile, art);
+	}
 	let primary = rgb_of(visual::tile_rgb(tile.primary()));
 	let draw = visual::TileRingDraw::for_radius(r as f32);
 	let marks = visual::capture_mark_count(tile);
@@ -784,6 +819,87 @@ fn fill_triangle(
 	}
 }
 
+/// Preview-only: circular-clip `art` into the tile center, scaled to
+/// [`visual::TileRingDraw::character_fit_radius`]. Aspect ratio is preserved
+/// by mapping the source's inscribed circle onto that disc.
+fn blit_character_medallion(
+	img: &mut RgbaImage,
+	c: (f64, f64),
+	tile_r: f64,
+	tile: Tile,
+	art: &RgbaImage,
+) {
+	let draw = visual::TileRingDraw::for_radius(tile_r as f32);
+	let fit = f64::from(draw.character_fit_radius(tile, tile_r as f32));
+	if fit < 2.0 {
+		return;
+	}
+	let sw = f64::from(art.width());
+	let sh = f64::from(art.height());
+	let src_r = sw.min(sh) * 0.5;
+	if src_r < 1.0 {
+		return;
+	}
+	let minx = (c.0 - fit - 1.0).floor() as i32;
+	let maxx = (c.0 + fit + 1.0).ceil() as i32;
+	let miny = (c.1 - fit - 1.0).floor() as i32;
+	let maxy = (c.1 + fit + 1.0).ceil() as i32;
+	for y in miny..=maxy {
+		for x in minx..=maxx {
+			let px = f64::from(x) + 0.5;
+			let py = f64::from(y) + 0.5;
+			let dx = px - c.0;
+			let dy = py - c.1;
+			let dist = dx.hypot(dy);
+			let dest_edge = (fit - dist + 0.55).clamp(0.0, 1.0);
+			if dest_edge <= 0.0 {
+				continue;
+			}
+			let sx = sw * 0.5 + dx * src_r / fit;
+			let sy = sh * 0.5 + dy * src_r / fit;
+			let sdx = sx - sw * 0.5;
+			let sdy = sy - sh * 0.5;
+			let src_edge = (src_r - sdx.hypot(sdy) + 0.55).clamp(0.0, 1.0);
+			if src_edge <= 0.0 {
+				continue;
+			}
+			let sample = sample_bilinear(art, sx, sy);
+			let a = dest_edge * src_edge * f64::from(sample.0[3]) / 255.0;
+			put(img, x, y, sample, a);
+		}
+	}
+}
+
+fn sample_bilinear(img: &RgbaImage, x: f64, y: f64) -> Rgba<u8> {
+	let w = img.width();
+	let h = img.height();
+	if w == 0 || h == 0 {
+		return Rgba([0, 0, 0, 0]);
+	}
+	if w == 1 && h == 1 {
+		return *img.get_pixel(0, 0);
+	}
+	let x = x.clamp(0.0, f64::from(w.saturating_sub(1)));
+	let y = y.clamp(0.0, f64::from(h.saturating_sub(1)));
+	let x0 = x.floor() as u32;
+	let y0 = y.floor() as u32;
+	let x1 = (x0 + 1).min(w - 1);
+	let y1 = (y0 + 1).min(h - 1);
+	let fx = x - f64::from(x0);
+	let fy = y - f64::from(y0);
+	let p00 = img.get_pixel(x0, y0).0;
+	let p10 = img.get_pixel(x1, y0).0;
+	let p01 = img.get_pixel(x0, y1).0;
+	let p11 = img.get_pixel(x1, y1).0;
+	let mut out = [0u8; 4];
+	for i in 0..4 {
+		let v0 = f64::from(p00[i]) * (1.0 - fx) + f64::from(p10[i]) * fx;
+		let v1 = f64::from(p01[i]) * (1.0 - fx) + f64::from(p11[i]) * fx;
+		out[i] = (v0 * (1.0 - fy) + v1 * fy).round().clamp(0.0, 255.0) as u8;
+	}
+	Rgba(out)
+}
+
 fn fill_circle(img: &mut RgbaImage, c: (f64, f64), r: f64, color: Rgba<u8>) {
 	let r2 = r + 0.5;
 	let minx = (c.0 - r2 - 1.0).floor() as i32;
@@ -867,18 +983,21 @@ fn glyph(c: char) -> [u8; 7] {
 		'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
 		'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
 		'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+		'J' => [0b01111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
 		'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
 		'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
 		'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
 		'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
 		'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
 		'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+		'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
 		'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
 		'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
 		'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
 		'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
 		'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
 		'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
+		'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
 		'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
 		'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
 		'0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
@@ -991,9 +1110,100 @@ mod tests {
 		let mut game = Game::empty(RuleSet::default());
 		let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots");
 		std::fs::create_dir_all(&dir).unwrap();
+		let art_dir = std::path::Path::new("/opt/cursor/artifacts");
+		let _ = std::fs::create_dir_all(art_dir);
 		for (tile, name) in emblem_closeup_tiles(&mut game) {
 			write_tile_closeup(tile, dir.join(name), 880, 330.0);
+			if art_dir.is_dir() {
+				let _ = std::fs::copy(dir.join(name), art_dir.join(name));
+			}
 		}
+	}
+
+	#[test]
+	fn write_character_tile_previews() {
+		use crate::characters::CharacterLibrary;
+		use std::path::PathBuf;
+
+		let lib = CharacterLibrary::load().unwrap();
+		assert_eq!(lib.len(), 25);
+		let mut game = Game::empty(RuleSet::default());
+		let specs = character_preview_specs(&mut game);
+		assert_eq!(specs.len(), 25);
+
+		let shot_dir =
+			std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots/characters");
+		std::fs::create_dir_all(&shot_dir).unwrap();
+		let art_dir = PathBuf::from("/opt/cursor/artifacts");
+		let _ = std::fs::create_dir_all(&art_dir);
+
+		let mut arts: Vec<RgbaImage> = Vec::with_capacity(specs.len());
+		for spec in &specs {
+			let ch = lib.get(spec.id).unwrap_or_else(|| panic!("missing character {}", spec.id));
+			arts.push(load_preview_art(&lib.asset_path(ch)));
+		}
+
+		for (i, spec) in specs.iter().enumerate() {
+			let name = format!("character_{:02}_{}.png", i + 1, spec.id.replace('-', "_"));
+			write_tile_closeup_with_character(
+				spec.tile,
+				&arts[i],
+				shot_dir.join(&name),
+				880,
+				330.0,
+			);
+			if art_dir.is_dir() {
+				let _ = std::fs::copy(shot_dir.join(&name), art_dir.join(&name));
+			}
+		}
+
+		let sheet = write_character_contact_sheet(&specs, &arts);
+		sheet.save(shot_dir.join("character_contact_sheet.png")).unwrap();
+		if art_dir.is_dir() {
+			sheet.save(art_dir.join("character_contact_sheet.png")).unwrap();
+		}
+
+		let source = write_source_character_sheet(&specs, &arts);
+		if art_dir.is_dir() {
+			source.save(art_dir.join("character_library_contact_sheet.png")).unwrap();
+		}
+
+		let (neighbors, overlays) = character_neighbor_board(&specs, &arts);
+		write_character_board_crop(
+			&neighbors,
+			&overlays,
+			shot_dir.join("character_board_neighbors.png"),
+			"preview: two neighboring tiles with character medallions",
+			36.0,
+		);
+		if art_dir.is_dir() {
+			let _ = std::fs::copy(
+				shot_dir.join("character_board_neighbors.png"),
+				art_dir.join("character_board_neighbors.png"),
+			);
+		}
+
+		let (cluster, cluster_overlays) = character_cluster_board(&specs, &arts);
+		write_png_view_preview(
+			&cluster,
+			shot_dir.join("character_board_cluster.png"),
+			"preview: character medallions in tile centers (not generation)",
+			1280,
+			800,
+			None,
+			None,
+			&cluster_overlays,
+		)
+		.unwrap();
+		if art_dir.is_dir() {
+			let _ = std::fs::copy(
+				shot_dir.join("character_board_cluster.png"),
+				art_dir.join("character_board_cluster.png"),
+			);
+		}
+
+		assert!(shot_dir.join("character_contact_sheet.png").is_file());
+		assert!(shot_dir.join("character_board_neighbors.png").is_file());
 	}
 
 	#[test]
@@ -1976,6 +2186,361 @@ mod tests {
 			800,
 		)
 		.unwrap();
+	}
+
+	struct CharacterPreview {
+		id: &'static str,
+		label: String,
+		tile: crate::game::Tile,
+	}
+
+	fn character_display_name(id: &str) -> String {
+		id.split('-')
+			.map(|word| {
+				let mut chars = word.chars();
+				match chars.next() {
+					Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+					None => String::new(),
+				}
+			})
+			.collect::<Vec<_>>()
+			.join(" ")
+	}
+
+	fn character_preview_specs(game: &mut Game) -> Vec<CharacterPreview> {
+		use crate::game::{Player, RingType, TileColor};
+		let mut t = |owner, rings: &[(TileColor, RingType)], dots, capture, emblem| {
+			game.alloc_typed_rings(owner, rings, rings.len() as u8, dots)
+				.with_capture(capture)
+				.with_emblem(emblem)
+		};
+		let templates: [(Player, &[(TileColor, RingType)], u8, CaptureMark, Emblem); 14] = [
+			(
+				Player::One,
+				&[
+					(TileColor::Green, RingType::Normal),
+					(TileColor::Blue, RingType::Normal),
+					(TileColor::Orange, RingType::Normal),
+				],
+				2,
+				CaptureMark::Dot,
+				Emblem::None,
+			),
+			(
+				Player::Two,
+				&[(TileColor::Green, RingType::Normal)],
+				1,
+				CaptureMark::Triangle,
+				Emblem::CrescentMoon,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Orange, RingType::Zag),
+					(TileColor::Blue, RingType::Zag),
+					(TileColor::Green, RingType::Normal),
+				],
+				3,
+				CaptureMark::Dot,
+				Emblem::TwoZagZs,
+			),
+			(
+				Player::Two,
+				&[(TileColor::Teal, RingType::Normal), (TileColor::Orange, RingType::Normal)],
+				2,
+				CaptureMark::Triangle,
+				Emblem::None,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Blue, RingType::Normal),
+					(TileColor::Green, RingType::Normal),
+					(TileColor::Orange, RingType::Normal),
+				],
+				1,
+				CaptureMark::Dot,
+				Emblem::Blocker,
+			),
+			(
+				Player::Two,
+				&[
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Braid),
+					(TileColor::Orange, RingType::Normal),
+				],
+				2,
+				CaptureMark::Triangle,
+				Emblem::Rosette,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Orange, RingType::Bead),
+					(TileColor::Blue, RingType::Bead),
+					(TileColor::Green, RingType::Normal),
+				],
+				3,
+				CaptureMark::Dot,
+				Emblem::None,
+			),
+			(
+				Player::Two,
+				&[(TileColor::Teal, RingType::Normal)],
+				1,
+				CaptureMark::Triangle,
+				Emblem::CrescentMoon,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Maroon, RingType::Normal),
+					(TileColor::Teal, RingType::Normal),
+					(TileColor::Green, RingType::Normal),
+				],
+				2,
+				CaptureMark::Dot,
+				Emblem::None,
+			),
+			(
+				Player::Two,
+				&[(TileColor::LavenderPink, RingType::Zag), (TileColor::Orange, RingType::Zag)],
+				2,
+				CaptureMark::Triangle,
+				Emblem::TwoZagZs,
+			),
+			(
+				Player::One,
+				&[
+					(TileColor::Green, RingType::Braid),
+					(TileColor::Blue, RingType::Braid),
+					(TileColor::Orange, RingType::Braid),
+				],
+				1,
+				CaptureMark::Dot,
+				Emblem::Rosette,
+			),
+			(
+				Player::Two,
+				&[(TileColor::Orange, RingType::Normal)],
+				3,
+				CaptureMark::Triangle,
+				Emblem::Blocker,
+			),
+			(
+				Player::One,
+				&[(TileColor::LavenderPink, RingType::Normal), (TileColor::Teal, RingType::Normal)],
+				1,
+				CaptureMark::Dot,
+				Emblem::None,
+			),
+			(
+				Player::Two,
+				&[
+					(TileColor::Green, RingType::Bead),
+					(TileColor::Blue, RingType::Normal),
+					(TileColor::Orange, RingType::Normal),
+				],
+				2,
+				CaptureMark::Triangle,
+				Emblem::None,
+			),
+		];
+		const IDS: &[&str] = &[
+			"cadredl",
+			"captain",
+			"cosam",
+			"harteld",
+			"hartish",
+			"lanyan",
+			"magrenedl",
+			"melets",
+			"merenmarch",
+			"nocunfall",
+			"nocunist",
+			"ocunbun",
+			"sam",
+			"savist",
+			"skulkenflock",
+			"springfall",
+			"squib",
+			"tellbrok",
+			"tiblone",
+			"tissen",
+			"toppenpol",
+			"waking-rose",
+			"warsam",
+			"westerlit",
+			"zaster",
+		];
+		IDS.iter()
+			.enumerate()
+			.map(|(i, id)| {
+				let (owner, rings, dots, capture, emblem) = templates[i % templates.len()];
+				CharacterPreview {
+					id,
+					label: character_display_name(id),
+					tile: t(owner, rings, dots, capture, emblem),
+				}
+			})
+			.collect()
+	}
+
+	fn load_preview_art(path: &std::path::Path) -> RgbaImage {
+		let img = image::open(path).unwrap().to_rgba8();
+		let max_dim = 768u32;
+		let dim = img.width().max(img.height());
+		if dim <= max_dim {
+			return img;
+		}
+		let scale = max_dim as f32 / dim as f32;
+		let w = (img.width() as f32 * scale).round().max(1.0) as u32;
+		let h = (img.height() as f32 * scale).round().max(1.0) as u32;
+		image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle)
+	}
+
+	fn write_tile_closeup_with_character(
+		tile: crate::game::Tile,
+		art: &RgbaImage,
+		path: impl AsRef<std::path::Path>,
+		size: u32,
+		radius: f64,
+	) {
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img = image::RgbaImage::from_pixel(size, size, rgba(bg[0], bg[1], bg[2], 255));
+		let c = (f64::from(size) * 0.5, f64::from(size) * 0.5);
+		draw_tile_preview(&mut img, c, radius, tile, Some(art));
+		img.save(path.as_ref()).unwrap();
+	}
+
+	fn write_source_character_sheet(specs: &[CharacterPreview], arts: &[RgbaImage]) -> RgbaImage {
+		let cols = 5u32;
+		let rows = 5u32;
+		let cell = 280u32;
+		let label_h = 28u32;
+		let pad = 16u32;
+		let w = pad + cols * (cell + pad);
+		let h = pad + rows * (cell + label_h + pad);
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img = image::RgbaImage::from_pixel(w, h, rgba(bg[0], bg[1], bg[2], 255));
+		let label = rgba(230, 230, 220, 255);
+		for (i, spec) in specs.iter().enumerate() {
+			let r = (i as u32) / cols;
+			let c = (i as u32) % cols;
+			let x = pad + c * (cell + pad);
+			let y = pad + r * (cell + label_h + pad);
+			let art = &arts[i];
+			let fit = cell - 16;
+			let scale = fit as f32 / art.width().max(art.height()) as f32;
+			let dw = (art.width() as f32 * scale).round().max(1.0) as u32;
+			let dh = (art.height() as f32 * scale).round().max(1.0) as u32;
+			let resized =
+				image::imageops::resize(art, dw, dh, image::imageops::FilterType::Triangle);
+			let ox = x + (cell - dw) / 2;
+			let oy = y + (cell - dh) / 2;
+			image::imageops::overlay(&mut img, &resized, i64::from(ox), i64::from(oy));
+			draw_text(&mut img, x + 8, y + cell + 6, &spec.label, label);
+		}
+		img
+	}
+
+	fn write_character_contact_sheet(specs: &[CharacterPreview], arts: &[RgbaImage]) -> RgbaImage {
+		let cols = 5u32;
+		let rows = 5u32;
+		let cell = 340u32;
+		let label_h = 28u32;
+		let pad = 16u32;
+		let tile_r = 132.0;
+		let w = pad + cols * (cell + pad);
+		let h = pad + rows * (cell + label_h + pad);
+		let bg = visual::rgb8(visual::BG_RGB);
+		let mut img = image::RgbaImage::from_pixel(w, h, rgba(bg[0], bg[1], bg[2], 255));
+		let label = rgba(230, 230, 220, 255);
+		for (i, spec) in specs.iter().enumerate() {
+			let r = (i as u32) / cols;
+			let c = (i as u32) % cols;
+			let x = pad + c * (cell + pad);
+			let y = pad + r * (cell + label_h + pad);
+			let cx = f64::from(x) + f64::from(cell) * 0.5;
+			let cy = f64::from(y) + f64::from(cell) * 0.5;
+			draw_tile_preview(&mut img, (cx, cy), tile_r, spec.tile, Some(&arts[i]));
+			draw_text(&mut img, x + 8, y + cell + 6, &spec.label, label);
+		}
+		img
+	}
+
+	fn empty_inner_pair(game: &Game) -> (NodeId, NodeId) {
+		let board = game.board();
+		let center = board.center();
+		for id in 0..board.node_count() as NodeId {
+			if game.tile_at(id).is_some() || board.is_spawn(id) || id == center {
+				continue;
+			}
+			for &nb in board.neighbors(id) {
+				if game.tile_at(nb).is_none() && !board.is_spawn(nb) && nb != center {
+					return (id, nb);
+				}
+			}
+		}
+		panic!("expected an empty inner-ring neighbor pair");
+	}
+
+	fn character_neighbor_board<'a>(
+		specs: &[CharacterPreview],
+		arts: &'a [RgbaImage],
+	) -> (Game, Vec<(NodeId, &'a RgbaImage)>) {
+		let mut game = Game::empty(RuleSet::default());
+		let (a, b) = empty_inner_pair(&game);
+		// Tissen (old lattice) beside Tiblone (updated bird).
+		game.place_tile(a, specs[19].tile);
+		game.place_tile(b, specs[18].tile);
+		(game, vec![(a, &arts[19]), (b, &arts[18])])
+	}
+
+	fn character_cluster_board<'a>(
+		specs: &[CharacterPreview],
+		arts: &'a [RgbaImage],
+	) -> (Game, Vec<(NodeId, &'a RgbaImage)>) {
+		let mut game = Game::empty(RuleSet::default());
+		let board = game.board().clone();
+		let center = board.center();
+		game.place_tile(center, specs[6].tile);
+		let mut overlays = vec![(center, &arts[6])];
+		let picks = [1usize, 14, 15, 18, 21, 22];
+		let mut pi = 0;
+		for id in 0..board.node_count() as NodeId {
+			if id == center || board.is_spawn(id) || game.tile_at(id).is_some() {
+				continue;
+			}
+			if pi >= picks.len() {
+				break;
+			}
+			let spec_i = picks[pi];
+			game.place_tile(id, specs[spec_i].tile);
+			overlays.push((id, &arts[spec_i]));
+			pi += 1;
+		}
+		(game, overlays)
+	}
+
+	fn write_character_board_crop(
+		game: &Game,
+		characters: &[(NodeId, &RgbaImage)],
+		path: impl AsRef<std::path::Path>,
+		caption: &str,
+		pad: f32,
+	) {
+		let w = 1280u32;
+		let h = 800u32;
+		let tmp = std::env::temp_dir().join("apa-kan-character-crop-src.png");
+		write_png_view_preview(game, &tmp, caption, w, h, None, None, characters).unwrap();
+		let img = image::open(&tmp).unwrap().to_rgba8();
+		let layout = crate::visual::ViewLayout::from_window(w as f32, h as f32);
+		let (x, y, cw, ch) = occupied_crop(game, &layout, pad, w, h);
+		image::imageops::crop_imm(&img, x, y, cw, ch)
+			.to_image()
+			.save(path.as_ref())
+			.unwrap();
 	}
 
 	fn write_tile_closeup(
