@@ -1324,6 +1324,7 @@ mod tests {
 		rules.control_win = true;
 		rules.endgame_rule = EndgameRule::ControlCascade;
 		rules.control_hold_turns = 1;
+		rules.swap_mode = crate::game::SwapMode::Off;
 		let mut game = Game::empty(rules);
 		let center = game.board().center();
 		let inner = game.board().inner_ring().to_vec();

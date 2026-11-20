@@ -385,13 +385,7 @@ where
 			rules.capture_mode = CaptureMode::parse(&require_value(arg, it.next())?)?;
 		}
 		"--singles-swap" | "--swap-mode" => {
-			rules.swap_mode = SwapMode::parse(&require_value(arg, it.next())?)?;
-		}
-		"--swap-no-immediate-back" => {
-			rules.swap_no_immediate_back = parse_bool(arg, &require_value(arg, it.next())?)?;
-		}
-		"--swap-no-just-moved" => {
-			rules.swap_no_just_moved = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.swap_mode = SwapMode::parse_cli(&require_value(arg, it.next())?)?;
 		}
 		"--dot-chance" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
@@ -500,10 +494,7 @@ pub fn usage() -> &'static str {
 	   --independent-channels <on|off>            Alias: on = independent-max, off = additive shared scoring\n\
 	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
 	   --capture-mode <local-claim|cascade>       Local ADD/MOVE/SWAP captures + Claim (default: local-claim; cascade = PR #70)\n\
-	   --singles-swap <off|adjacent-any|adjacent-own|any|own>\n\
-	                                              Single-ring tiles swap as a move (default: off; alias --swap-mode)\n\
-	   --swap-no-immediate-back <on|off>          Ban echoing either player's last swap pair (default: off)\n\
-	   --swap-no-just-moved <on|off>              Ban swapping a tile you just moved (default: off)\n\
+	   --singles-swap <on|off>                    Single-ring tiles swap with an adjacent tile (default: on; alias --swap-mode)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
 	                                              Emblem generation weights (default: 200,1,1,1,1)\n\
@@ -886,23 +877,17 @@ mod tests {
 	#[test]
 	fn parses_singles_swap() {
 		let def = GameConfig::parse([] as [&str; 0]).unwrap();
-		assert_eq!(def.rules.swap_mode, crate::game::SwapMode::Off);
-		assert!(!def.rules.swap_no_immediate_back);
-		assert!(!def.rules.swap_no_just_moved);
+		assert_eq!(def.rules.swap_mode, crate::game::SwapMode::On);
+		let off = GameConfig::parse(["--singles-swap", "off"]).unwrap();
+		assert_eq!(off.rules.swap_mode, crate::game::SwapMode::Off);
+		let on = GameConfig::parse(["--swap-mode", "on"]).unwrap();
+		assert_eq!(on.rules.swap_mode, crate::game::SwapMode::On);
 		let adj = GameConfig::parse(["--singles-swap", "adjacent-any"]).unwrap();
-		assert_eq!(adj.rules.swap_mode, crate::game::SwapMode::AdjacentAny);
-		let own = GameConfig::parse(["--swap-mode", "adjacent-own"]).unwrap();
-		assert_eq!(own.rules.swap_mode, crate::game::SwapMode::AdjacentOwn);
-		let any = GameConfig::parse(["--singles-swap", "any"]).unwrap();
-		assert_eq!(any.rules.swap_mode, crate::game::SwapMode::Any);
-		let unrestr_own = GameConfig::parse(["--singles-swap", "own"]).unwrap();
-		assert_eq!(unrestr_own.rules.swap_mode, crate::game::SwapMode::Own);
-		let back = GameConfig::parse(["--swap-no-immediate-back", "on"]).unwrap();
-		assert!(back.rules.swap_no_immediate_back);
-		let moved = GameConfig::parse(["--swap-no-just-moved", "on"]).unwrap();
-		assert!(moved.rules.swap_no_just_moved);
-		let err = GameConfig::parse(["--singles-swap", "explode"]).unwrap_err();
+		assert_eq!(adj.rules.swap_mode, crate::game::SwapMode::On);
+		let err = GameConfig::parse(["--singles-swap", "any"]).unwrap_err();
 		assert!(err.contains("singles-swap"));
+		let gone = GameConfig::parse(["--swap-no-immediate-back", "on"]).unwrap_err();
+		assert!(gone.contains("unknown argument"));
 	}
 
 	#[test]

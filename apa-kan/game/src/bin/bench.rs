@@ -113,7 +113,6 @@ fn usage() -> &'static str {
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --ring-count-weights, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
 	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --singles-swap,\n\
-	   --swap-no-immediate-back, --swap-no-just-moved, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -643,7 +642,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} singles_swap={} swap_no_immediate_back={} swap_no_just_moved={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} singles_swap={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -675,8 +674,6 @@ fn run(cfg: BenchConfig) {
 		rules.channel_mode.name(),
 		rules.capture_mode.name(),
 		rules.swap_mode.name(),
-		on_off(rules.swap_no_immediate_back),
-		on_off(rules.swap_no_just_moved),
 		rules.dot_percent,
 		rules.emblem_weights.label(),
 		rules.blocker_blocks.name(),

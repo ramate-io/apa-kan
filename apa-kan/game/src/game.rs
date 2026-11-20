@@ -1973,63 +1973,55 @@ impl CaptureMode {
 	}
 }
 
-/// When a single-ring tile may swap positions with another tile as a full
-/// action. Default [`SwapMode::Off`] (current behavior). CLI:
-/// `--singles-swap` / `--swap-mode`.
-///
-/// Liam's two benchmark variants after "singles can swap position with an
-/// adjacent piece" are interpreted as [`SwapMode::AdjacentAny`] ("any tile")
-/// and [`SwapMode::AdjacentOwn`] ("any of your tiles"). Unrestricted-range
-/// [`SwapMode::Any`] / [`SwapMode::Own`] are also implemented so the two
-/// readings can be compared.
+/// When a single-ring tile may swap positions with an adjacent occupied
+/// tile as a full action. Live default is [`SwapMode::On`]: own or
+/// opponent partner, plus a one-move no-echo guardrail (neither player
+/// may swap the same unordered tile pair back on the immediately
+/// following action). Vacant nodes, including an empty center, are not
+/// legal partners. CLI `--singles-swap on|off`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum SwapMode {
 	#[default]
+	On,
 	Off,
-	/// Own single with any adjacent occupied tile (own or opponent).
-	AdjacentAny,
-	/// Own single with any adjacent occupied tile of your own.
-	AdjacentOwn,
-	/// Own single with any occupied tile, no adjacency requirement.
-	Any,
-	/// Own single with any occupied tile of your own, no adjacency.
-	Own,
 }
 
 impl SwapMode {
+	/// CLI: `on` / `off` (and `adjacent-any` as an alias for `on`).
 	pub fn parse(s: &str) -> Result<Self, String> {
+		Self::parse_cli(s)
+	}
+
+	pub fn parse_cli(s: &str) -> Result<Self, String> {
 		match s.to_ascii_lowercase().as_str() {
-			"off" | "none" | "no" => Ok(Self::Off),
-			"adjacent-any" | "adjacent_any" | "adj-any" | "adj_any" => Ok(Self::AdjacentAny),
-			"adjacent-own" | "adjacent_own" | "adj-own" | "adj_own" => Ok(Self::AdjacentOwn),
-			"any" | "unrestricted-any" | "unrestricted_any" => Ok(Self::Any),
-			"own" | "unrestricted-own" | "unrestricted_own" => Ok(Self::Own),
-			other => Err(format!(
-				"unknown singles-swap '{other}' (expected off|adjacent-any|adjacent-own|any|own)"
-			)),
+			"off" | "none" | "no" | "false" => Ok(Self::Off),
+			"on" | "yes" | "true" | "adjacent-any" | "adjacent_any" | "adj-any" | "adj_any" => {
+				Ok(Self::On)
+			}
+			other => Err(format!("unknown singles-swap '{other}' (expected on|off)")),
+		}
+	}
+
+	/// JSONL: also accepts PR #80 comparison-mode names, folded to [`Self::On`].
+	pub fn parse_log(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"adjacent-own" | "adjacent_own" | "adj-own" | "adj_own" | "any" | "own"
+			| "unrestricted-any" | "unrestricted_any" | "unrestricted-own" | "unrestricted_own" => {
+				Ok(Self::On)
+			}
+			other => Self::parse_cli(other),
 		}
 	}
 
 	pub fn name(self) -> &'static str {
 		match self {
+			Self::On => "on",
 			Self::Off => "off",
-			Self::AdjacentAny => "adjacent-any",
-			Self::AdjacentOwn => "adjacent-own",
-			Self::Any => "any",
-			Self::Own => "own",
 		}
 	}
 
 	pub fn is_on(self) -> bool {
-		!matches!(self, Self::Off)
-	}
-
-	pub fn requires_adjacent(self) -> bool {
-		matches!(self, Self::AdjacentAny | Self::AdjacentOwn)
-	}
-
-	pub fn own_only(self) -> bool {
-		matches!(self, Self::AdjacentOwn | Self::Own)
+		matches!(self, Self::On)
 	}
 }
 
@@ -2528,18 +2520,10 @@ pub struct RuleSet {
 	/// overwhelmed tiles stay until healed or [`Action::Claim`]ed.
 	/// `--capture-mode cascade` restores PR #70's full-board simultaneous sweep.
 	pub capture_mode: CaptureMode,
-	/// Single-ring tiles swapping positions as a move. Default
-	/// [`SwapMode::Off`]. CLI `--singles-swap` / `--swap-mode`.
+	/// Single-ring tiles swapping with an adjacent occupied tile. Default
+	/// [`SwapMode::On`]. CLI `--singles-swap on|off`. When on, echoing
+	/// either player's last SWAP pair is illegal for one action.
 	pub swap_mode: SwapMode,
-	/// If true, neither player may immediately swap the same two tiles
-	/// back (the pair of either player's last SWAP, or a SWAP already
-	/// played this turn). Default false. CLI `--swap-no-immediate-back`.
-	pub swap_no_immediate_back: bool,
-	/// If true, a player may not SWAP a tile they just MOVEd or SWAPped
-	/// (their `last_moved` / `moved_this_turn`). Opponent tiles are never
-	/// blocked, so a saboteur can still yank a piece that just sat on the
-	/// center. Default false. CLI `--swap-no-just-moved`.
-	pub swap_no_just_moved: bool,
 }
 
 impl Default for RuleSet {
@@ -2588,9 +2572,7 @@ impl Default for RuleSet {
 			bead_scoring: BeadScoring::SharedChannel,
 			channel_mode: ChannelMode::IndependentMax,
 			capture_mode: CaptureMode::LocalClaim,
-			swap_mode: SwapMode::Off,
-			swap_no_immediate_back: false,
-			swap_no_just_moved: false,
+			swap_mode: SwapMode::On,
 		}
 	}
 }
@@ -2701,8 +2683,8 @@ pub struct Game {
 	last_moved: [Option<u32>; 2],
 	/// Tile id moved so far this turn (cleared when the turn ends).
 	moved_this_turn: Option<u32>,
-	/// Unordered tile-id pair last SWAPped by each player, for
-	/// [`RuleSet::swap_no_immediate_back`].
+	/// Unordered tile-id pair last SWAPped by each player. Used to ban
+	/// echoing the same pair on the immediately following action.
 	last_swap: [Option<(u32, u32)>; 2],
 	/// Unordered tile-id pair SWAPped so far this turn.
 	swapped_this_turn: Option<(u32, u32)>,
@@ -3248,6 +3230,7 @@ impl Game {
 		rules.control_n = 5;
 		rules.control_hold_turns = hold_turns.max(1);
 		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.swap_mode = SwapMode::Off;
 		let mut game = Self::empty(rules);
 		let center = game.board.center();
 		let inner = game.board.inner_ring().to_vec();
@@ -3313,6 +3296,7 @@ impl Game {
 		rules.control_hold_turns = 1;
 		rules.endgame_rule = EndgameRule::ControlCascade;
 		rules.cascade_turn_gain = true;
+		rules.swap_mode = SwapMode::Off;
 		let mut game = Self::empty(rules);
 		let center = game.board.center();
 		let inner = game.board.inner_ring().to_vec();
@@ -3388,6 +3372,7 @@ impl Game {
 		rules.control_hold_turns = 1;
 		rules.endgame_rule = EndgameRule::ControlCascade;
 		rules.cascade_turn_gain = true;
+		rules.swap_mode = SwapMode::Off;
 		let mut game = Self::empty(rules);
 		let inners = game.board.inner_ring().to_vec();
 		assert_eq!(inners.len(), 8);
@@ -4287,40 +4272,20 @@ impl Game {
 	}
 
 	fn swap_partner_allowed(&self, from: NodeId, to: NodeId, init: Tile, partner: Tile) -> bool {
-		let mode = self.rules.swap_mode;
-		if !mode.is_on() {
+		if !self.rules.swap_mode.is_on() {
 			return false;
 		}
-		if mode.own_only() && partner.owner != self.current {
+		if !self.board.neighbors(from).contains(&to) {
 			return false;
 		}
-		if mode.requires_adjacent() && !self.board.neighbors(from).contains(&to) {
-			return false;
-		}
-		if self.rules.swap_no_immediate_back {
-			let key = swap_pair_key(init.id, partner.id);
-			if self.swapped_this_turn == Some(key)
-				|| self.last_swap[0] == Some(key)
-				|| self.last_swap[1] == Some(key)
-			{
-				return false;
-			}
-		}
-		if self.rules.swap_no_just_moved && self.own_tile_just_moved(init.id, partner) {
+		let key = swap_pair_key(init.id, partner.id);
+		if self.swapped_this_turn == Some(key)
+			|| self.last_swap[0] == Some(key)
+			|| self.last_swap[1] == Some(key)
+		{
 			return false;
 		}
 		true
-	}
-
-	fn own_tile_just_moved(&self, init_id: u32, partner: Tile) -> bool {
-		if self.tile_just_moved_by_current(init_id) {
-			return true;
-		}
-		partner.owner == self.current && self.tile_just_moved_by_current(partner.id)
-	}
-
-	fn tile_just_moved_by_current(&self, id: u32) -> bool {
-		self.moved_this_turn == Some(id) || self.last_moved[self.current.index()] == Some(id)
 	}
 
 	/// True if swapping `from` with `to` would remove at least one opponent
@@ -5522,6 +5487,7 @@ mod tests {
 		assert_eq!(rules.capture_mode, CaptureMode::LocalClaim);
 		assert_eq!(rules.bead_scoring, BeadScoring::SharedChannel);
 		assert_eq!(rules.channel_mode, ChannelMode::IndependentMax);
+		assert_eq!(rules.swap_mode, SwapMode::On);
 		assert_eq!(rules.ring_count_weights, RingCountWeights::default());
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
 		assert_eq!(rules.no_same_piece_twice, SamePieceTwice::Off);
@@ -6184,6 +6150,7 @@ mod tests {
 		let mut rules = RuleSet::default();
 		rules.no_moves_loses = false;
 		rules.control_win = false;
+		rules.swap_mode = SwapMode::Off;
 		let mut game = Game::empty(rules);
 		fill_board_all_green(&mut game);
 		assert!(!game.has_add_or_move());
@@ -6197,6 +6164,7 @@ mod tests {
 		let mut rules = RuleSet::default();
 		rules.no_moves_loses = false;
 		rules.control_win = false;
+		rules.swap_mode = SwapMode::Off;
 		rules.turn_limit = 2;
 		let mut game = Game::empty(rules);
 		fill_board_all_green(&mut game);
@@ -6259,6 +6227,7 @@ mod tests {
 	fn locked_down_player_loses_instead_of_passing() {
 		let mut rules = RuleSet::default();
 		rules.control_win = false;
+		rules.swap_mode = SwapMode::Off;
 		let mut game = Game::empty(rules);
 		assert!(game.rules().no_moves_loses);
 		fill_board_all_green(&mut game);
@@ -6277,6 +6246,7 @@ mod tests {
 		let mut rules = RuleSet::default();
 		rules.no_moves_loses = true;
 		rules.control_win = false;
+		rules.swap_mode = SwapMode::Off;
 		let mut game = Game::empty(rules);
 		let spawns = game.board().spawns().to_vec();
 		// Fill every node except spawn 0 so P1 can ADD and then P2 has nowhere
@@ -11701,10 +11671,15 @@ mod tests {
 		assert!(game.tile_at(far).is_none());
 	}
 
-	fn swap_rules(mode: SwapMode) -> RuleSet {
+	fn swap_on() -> RuleSet {
 		let mut rules = RuleSet::default();
-		rules.swap_mode = mode;
 		rules.no_moves_loses = false;
+		rules
+	}
+
+	fn swap_off() -> RuleSet {
+		let mut rules = swap_on();
+		rules.swap_mode = SwapMode::Off;
 		rules
 	}
 
@@ -11716,7 +11691,7 @@ mod tests {
 
 	#[test]
 	fn swap_off_generates_no_swaps() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(swap_off());
 		let (inner, center) = adjacent_pair(&game);
 		put(&mut game, inner, Player::One, TileColor::Green, 1, 1);
 		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
@@ -11729,8 +11704,8 @@ mod tests {
 	}
 
 	#[test]
-	fn adjacent_any_swaps_with_own_or_opponent() {
-		let mut game = Game::empty(swap_rules(SwapMode::AdjacentAny));
+	fn default_swaps_with_adjacent_own_or_opponent() {
+		let mut game = Game::empty(swap_on());
 		let (inner, center) = adjacent_pair(&game);
 		let outer = *game
 			.board()
@@ -11749,43 +11724,34 @@ mod tests {
 	}
 
 	#[test]
-	fn adjacent_own_rejects_opponent() {
-		let mut game = Game::empty(swap_rules(SwapMode::AdjacentOwn));
+	fn swap_cannot_target_a_vacant_center() {
+		let mut game = Game::empty(swap_on());
 		let (inner, center) = adjacent_pair(&game);
 		put(&mut game, inner, Player::One, TileColor::Green, 1, 1);
-		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
 		game.set_current(Player::One);
-		assert!(!game.legal_swaps().contains(&Action::Swap { from: inner, to: center }));
+		assert!(game.tile_at(center).is_none());
+		assert!(!game.legal_swap_partners(inner).contains(&center));
 		assert!(game.apply(Action::Swap { from: inner, to: center }).is_err());
 	}
 
 	#[test]
-	fn any_allows_non_adjacent_and_own_does_not_take_opponent() {
-		let mut any_game = Game::empty(swap_rules(SwapMode::Any));
-		let center = any_game.board().center();
-		let spawn = any_game.board().spawns()[0];
+	fn swap_rejects_a_non_adjacent_partner() {
+		let mut game = Game::empty(swap_on());
+		let center = game.board().center();
+		let spawn = game.board().spawns()[0];
 		assert!(
-			!any_game.board().neighbors(spawn).contains(&center),
+			!game.board().neighbors(spawn).contains(&center),
 			"spawn is not adjacent to center"
 		);
-		put(&mut any_game, spawn, Player::One, TileColor::Green, 1, 1);
-		put(&mut any_game, center, Player::Two, TileColor::Orange, 3, 1);
-		any_game.set_current(Player::One);
-		assert!(any_game.legal_swaps().contains(&Action::Swap { from: spawn, to: center }));
-
-		let mut own_game = Game::empty(swap_rules(SwapMode::Own));
-		put(&mut own_game, spawn, Player::One, TileColor::Green, 1, 1);
-		put(&mut own_game, center, Player::Two, TileColor::Orange, 3, 1);
-		own_game.set_current(Player::One);
-		assert!(!own_game.legal_swaps().contains(&Action::Swap { from: spawn, to: center }));
-		let inner = own_game.board().inner_ring()[0];
-		put(&mut own_game, inner, Player::One, TileColor::Blue, 2, 1);
-		assert!(own_game.legal_swaps().contains(&Action::Swap { from: spawn, to: inner }));
+		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
+		put(&mut game, center, Player::Two, TileColor::Orange, 3, 1);
+		game.set_current(Player::One);
+		assert!(!game.legal_swaps().contains(&Action::Swap { from: spawn, to: center }));
 	}
 
 	#[test]
 	fn only_a_single_ring_tile_may_initiate_a_swap() {
-		let mut game = Game::empty(swap_rules(SwapMode::AdjacentAny));
+		let mut game = Game::empty(swap_on());
 		let (inner, center) = adjacent_pair(&game);
 		put_rings(&mut game, inner, Player::One, &[TileColor::Green, TileColor::Blue], 1);
 		put(&mut game, center, Player::Two, TileColor::Orange, 1, 1);
@@ -11796,7 +11762,7 @@ mod tests {
 
 	#[test]
 	fn swap_exchanges_positions_without_spending_tokens_and_can_take_center() {
-		let mut game = Game::empty(swap_rules(SwapMode::AdjacentAny));
+		let mut game = Game::empty(swap_on());
 		let (inner, center) = adjacent_pair(&game);
 		put(&mut game, inner, Player::One, TileColor::Green, 1, 1);
 		put(&mut game, center, Player::Two, TileColor::Green, 2, 1);
@@ -11817,7 +11783,7 @@ mod tests {
 
 	#[test]
 	fn swap_local_claim_checks_both_landing_neighborhoods() {
-		let mut rules = swap_rules(SwapMode::AdjacentAny);
+		let mut rules = swap_on();
 		rules.capture_mode = CaptureMode::LocalClaim;
 		let mut game = Game::empty(rules);
 		let (from, to) = adjacent_pair(&game);
@@ -11843,7 +11809,7 @@ mod tests {
 
 	#[test]
 	fn swap_uses_initiator_capture_mark() {
-		let mut game = Game::empty(swap_rules(SwapMode::AdjacentAny));
+		let mut game = Game::empty(swap_on());
 		let (from, to) = adjacent_pair(&game);
 		let saboteur =
 			take(&mut game, Player::One, TileColor::Green, 1, 1).with_capture(CaptureMark::Dot);
@@ -11864,8 +11830,7 @@ mod tests {
 
 	#[test]
 	fn swap_no_immediate_back_blocks_the_echo() {
-		let mut rules = swap_rules(SwapMode::AdjacentAny);
-		rules.swap_no_immediate_back = true;
+		let mut rules = swap_on();
 		rules.actions_per_turn = 2;
 		let mut game = Game::empty(rules);
 		let (from, to) = adjacent_pair(&game);
@@ -11884,8 +11849,7 @@ mod tests {
 
 	#[test]
 	fn swap_no_immediate_back_blocks_the_opponent_echo() {
-		let mut rules = swap_rules(SwapMode::AdjacentAny);
-		rules.swap_no_immediate_back = true;
+		let rules = swap_on();
 		let mut game = Game::empty(rules);
 		let (from, to) = adjacent_pair(&game);
 		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
@@ -11904,27 +11868,8 @@ mod tests {
 	}
 
 	#[test]
-	fn swap_no_just_moved_blocks_own_recent_tile() {
-		let mut rules = swap_rules(SwapMode::AdjacentAny);
-		rules.swap_no_just_moved = true;
-		rules.actions_per_turn = 2;
-		let mut game = Game::empty(rules);
-		let (from, to) = adjacent_pair(&game);
-		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
-		put(&mut game, to, Player::Two, TileColor::Green, 2, 1);
-		game.set_current(Player::One);
-		game.apply(Action::Swap { from, to }).unwrap();
-		assert_eq!(game.current_player(), Player::One);
-		assert!(
-			game.legal_swap_partners(to).is_empty(),
-			"just-swapped single must not SWAP again: {:?}",
-			game.legal_swap_partners(to)
-		);
-	}
-
-	#[test]
 	fn swap_replay_round_trips_through_action_log() {
-		let mut game = Game::empty(swap_rules(SwapMode::AdjacentAny));
+		let mut game = Game::empty(swap_on());
 		let (from, to) = adjacent_pair(&game);
 		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
 		put(&mut game, to, Player::Two, TileColor::Orange, 2, 1);

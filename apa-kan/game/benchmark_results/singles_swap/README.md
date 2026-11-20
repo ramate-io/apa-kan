@@ -1,12 +1,23 @@
 # Singles-swap move (stacked on PR #79 config B)
 
-Stacked on `cursor/ring-dist-channels-search-97b5` (PR #79). Live default
-stays `SwapMode::Off`. This package measures a new full action: a
-**single-ring tile** swaps positions with another occupied tile.
+**Locked in:** adjacent-any (single-ring tile swaps with any adjacent
+occupied tile, own or opponent) plus the one-move no-echo guardrail.
+That is now the live default (`--singles-swap on`). `--singles-swap off`
+restores the old no-swap rules. Comparison modes (`adjacent-own`, `any`,
+`own`) and `--swap-no-just-moved` / `--swap-no-immediate-back` were
+removed; no-echo is baked in whenever swaps are on.
+
+The `h2h_*` logs below are a historical record of the comparison suite.
+Do not overwrite them. The locked-in confirmation run is
+[`h2h_b_locked_counterplay`](h2h_b_locked_counterplay.txt).
+
+Stacked on `cursor/ring-dist-channels-search-97b5` (PR #79). This package
+measured a new full action: a **single-ring tile** swaps positions with
+another occupied tile.
 
 Do not overwrite committed `h2h_*` logs; quote numbers from those files.
 
-## Liam's variants
+## Liam's variants (historical)
 
 Liam asked for a saboteur role for singles after PR #79's survey: on
 IndependentMax the first center-taker is a coin flip, but ~40% of first
@@ -14,16 +25,14 @@ center pieces never leave. He phrased the two benchmark variants as
 "singles can swap with any tile" and "singles can swap with any of your
 tiles" right after "singles can swap position with an adjacent piece".
 
-**Interpretation (recorded as an open design question):**
+The comparison suite below used these CLI names. **Only adjacent-any
+with no-swap-back was kept**; the live flag is `--singles-swap on|off`.
 
-| Phrase | Mode | CLI |
+| Phrase | Historical mode | Historical CLI |
 |---|---|---|
-| adjacent piece / "any tile" | [`SwapMode::AdjacentAny`] | `--singles-swap adjacent-any` |
-| "any of your tiles" | [`SwapMode::AdjacentOwn`] | `--singles-swap adjacent-own` |
-| unrestricted (comparison) | `Any` / `Own` | `--singles-swap any` / `own` |
-
-`adjacent-any` is the primary variant. `any` / `own` drop the adjacency
-requirement so the two readings can be compared.
+| adjacent piece / "any tile" | adjacent-any (now `On`) | `--singles-swap adjacent-any` |
+| "any of your tiles" | adjacent-own (removed) | `--singles-swap adjacent-own` |
+| unrestricted (comparison) | any / own (removed) | `--singles-swap any` / `own` |
 
 ## Rule choices
 
@@ -50,11 +59,10 @@ Saveable on `RuleSet` like the other rules. JSONL missing keys replay as
   center (+2500/+1200). Reverse-swap penalty does **not** fire across
   players at the root (each `Searcher` tracks its own last move), which is
   why opponent echo shows up in the logs.
-- **Guardrails, default off:**
-  - `--swap-no-immediate-back`: neither player may SWAP the same unordered
-    tile-id pair as either side's last SWAP.
-  - `--swap-no-just-moved`: you may not SWAP a tile you just MOVEd/SWAPped.
-    Opponent just-moved pieces remain legal saboteur targets.
+- **No-echo (baked in when swaps are on):** neither player may SWAP the
+  same unordered tile-id pair on the immediately following move. The
+  cooldown lasts one move. `--swap-no-immediate-back` / `--swap-no-just-moved`
+  were comparison flags and are gone.
 
 Logs: `SWAP a <-> b`, JSONL `kind=SWAP` with `partner` / `partner_owner`.
 UI: click own single, then a highlighted partner (magenta). Branching
@@ -174,8 +182,8 @@ turns.
 echoes (0 consecutive, 0 within-two-turns) without moving never-left
 (still 25%). Swap volume does not drop (4.48 → 5.55): bots pick a
 different partner. One 63-swap / 38-center-swap game remains (mcts vs
-minimax braid vs braid game 3, 200 turns). Guardrail is useful against
-the ping-pong; it is not a spam cap. Left default off.
+minimax braid vs braid game 3, 200 turns). That no-echo rule is now
+baked in whenever swaps are on.
 
 **adjacent-own is own-piece rotation, not saboteur.** Center SWAP partner
 is always own. braid vs braid minimax vs mcts game 4: 45 swaps / 44
@@ -190,20 +198,18 @@ teleporting. `own` unrestricted has a 75-swap game (mcts vs minimax bead
 vs braid game 9) and first-taker side wins **62%** (the holder rotates
 itself to safety).
 
-## Open design questions
+## Open design questions (resolved)
 
-- Liam's "any tile" / "any of your tiles" after "adjacent piece" are
-  implemented as **adjacent-any** / **adjacent-own**. Unrestricted
-  `any`/`own` exist for comparison; they should not be the live default.
+Locked in: adjacent-any + one-move no-echo, on by default.
+`--singles-swap off` is the only remaining toggle (old no-swap rules).
+
 - SWAP cannot take a vacant center. First takes remain MOVE.
-- Should `--swap-no-immediate-back` default on? It kills the ping-pong
-  (33 consecutive echoes → 0) without costing the 40%→25% never-left cut.
-  Left off here so the primary log is the raw rule.
-- `--swap-no-just-moved` was not benched; the abuse was pair-echo, not
+- No-echo kills the ping-pong (33 consecutive echoes → 0) without costing
+  the 40%→25% never-left cut.
+- `--swap-no-just-moved` was not kept; the abuse was pair-echo, not
   "I moved then swapped the same piece."
 - `adjacent-own` does not give singles a saboteur role against an
-  opponent holder. If that was the intended reading of "any of your
-  tiles," the survey says it is the wrong lever.
+  opponent holder.
 - Unrestricted `any` matches main's 16% never-left only by spamming SWAP.
 - CLAIM-on-center is still dead (0 in 700 new games here, 0 in PR #79).
 - Search reverse-swap penalty is per-`Searcher`, so opponent echo is a

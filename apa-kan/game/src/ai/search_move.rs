@@ -470,9 +470,7 @@ mod tests {
 
 	#[test]
 	fn cheap_order_prefers_swapping_an_opponent_off_center() {
-		let mut rules = RuleSet::default();
-		rules.swap_mode = crate::game::SwapMode::AdjacentAny;
-		let mut game = Game::empty(rules);
+		let mut game = Game::empty(RuleSet::default());
 		let center = game.board().center();
 		let inner = game.board().inner_ring()[0];
 		let outer = *game

@@ -399,13 +399,16 @@ pub struct RulesLog {
 		skip_serializing_if = "skip_default_blocker_blocks"
 	)]
 	pub blocker_blocks: String,
-	/// `off` (live default) or a singles-swap mode. Absent on older logs;
-	/// replay uses off.
+	/// `on` (live default: adjacent swap with no-echo) or `off`. Absent on
+	/// older logs; replay uses off. Historical comparison-mode names fold
+	/// to on.
 	#[serde(default = "default_swap_off", skip_serializing_if = "skip_swap_off")]
 	pub swap_mode: String,
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	/// Historical. Live swaps always ban echoing the last pair.
+	#[serde(default, skip_serializing)]
 	pub swap_no_immediate_back: bool,
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	/// Historical flag; ignored.
+	#[serde(default, skip_serializing)]
 	pub swap_no_just_moved: bool,
 }
 
@@ -482,8 +485,8 @@ impl RulesLog {
 			emblem_weights: r.emblem_weights.label(),
 			blocker_blocks: r.blocker_blocks.name().into(),
 			swap_mode: r.swap_mode.name().into(),
-			swap_no_immediate_back: r.swap_no_immediate_back,
-			swap_no_just_moved: r.swap_no_just_moved,
+			swap_no_immediate_back: false,
+			swap_no_just_moved: false,
 		}
 	}
 
@@ -537,9 +540,7 @@ impl RulesLog {
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
 				.unwrap_or_else(|_| EmblemWeights::default()),
 			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
-			swap_mode: SwapMode::parse(&self.swap_mode).unwrap_or(SwapMode::Off),
-			swap_no_immediate_back: self.swap_no_immediate_back,
-			swap_no_just_moved: self.swap_no_just_moved,
+			swap_mode: SwapMode::parse_log(&self.swap_mode).unwrap_or(SwapMode::Off),
 		})
 	}
 }
@@ -2299,13 +2300,8 @@ mod tests {
 	#[test]
 	fn committed_singles_swap_shallow_replays() {
 		for rel in [
-			"benchmark_results/singles_swap/h2h_b_adj_any_counterplay.jsonl.gz",
-			"benchmark_results/singles_swap/h2h_b_adj_own_counterplay.jsonl.gz",
-			"benchmark_results/singles_swap/h2h_b_any_counterplay.jsonl.gz",
-			"benchmark_results/singles_swap/h2h_b_own_counterplay.jsonl.gz",
 			"benchmark_results/singles_swap/h2h_b_adj_any_counterplay_noback.jsonl.gz",
-			"benchmark_results/singles_swap/h2h_b_adj_any_enhanced.jsonl.gz",
-			"benchmark_results/singles_swap/h2h_b_adj_own_enhanced.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_locked_counterplay.jsonl.gz",
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 100);
 		}
