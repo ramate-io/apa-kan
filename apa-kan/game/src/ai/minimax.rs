@@ -487,9 +487,14 @@ fn search_child(
 		}
 	}
 
-	let (search_alpha, search_beta) =
-		if ctx.config.pvs && !in_pv { (-alpha - 1, -alpha) } else { (-beta, -alpha) };
-	let mut score = -negamax(child, depth, search_alpha, search_beta, ply, ctx);
+	// Extra turns keep `child.current_player() == mover`. Negamax scores
+	// are from the side to move, so those children must keep the parent's
+	// window instead of `(-beta, -alpha)`.
+	let same_side = child.current_player() == mover;
+	let pvs_null = ctx.config.pvs && !in_pv;
+	let (search_alpha, search_beta) = child_window(same_side, alpha, beta, pvs_null);
+	let mut score =
+		child_score(same_side, negamax(child, depth, search_alpha, search_beta, ply, ctx));
 	if ctx.abort {
 		return score;
 	}
@@ -497,10 +502,34 @@ fn search_child(
 	let reduced = depth < child_depth;
 	let needs_full =
 		(reduced && score > alpha) || (ctx.config.pvs && !in_pv && score > alpha && score < beta);
-	if needs_full && (reduced || search_alpha != -beta || search_beta != -alpha) {
-		score = -negamax(child, child_depth, -beta, -alpha, ply, ctx);
+	let full_a = if same_side { alpha } else { -beta };
+	let full_b = if same_side { beta } else { -alpha };
+	if needs_full && (reduced || search_alpha != full_a || search_beta != full_b) {
+		score = child_score(same_side, negamax(child, child_depth, full_a, full_b, ply, ctx));
 	}
 	score
+}
+
+fn child_window(same_side: bool, alpha: i32, beta: i32, pvs_null: bool) -> (i32, i32) {
+	if same_side {
+		if pvs_null {
+			(alpha, alpha.saturating_add(1))
+		} else {
+			(alpha, beta)
+		}
+	} else if pvs_null {
+		(-alpha - 1, -alpha)
+	} else {
+		(-beta, -alpha)
+	}
+}
+
+fn child_score(same_side: bool, child: i32) -> i32 {
+	if same_side {
+		child
+	} else {
+		-child
+	}
 }
 
 fn quiesce(
@@ -555,6 +584,8 @@ fn quiesce(
 		ctx.path_occ.push(zobrist::occupancy_hash(&child));
 		let score = if let Some(term) = terminal_score(&child, me) {
 			term
+		} else if child.current_player() == me {
+			quiesce(&mut child, alpha, beta, qply + 1, ply + 1, ctx)
 		} else {
 			-quiesce(&mut child, -beta, -alpha, qply + 1, ply + 1, ctx)
 		};
@@ -797,5 +828,46 @@ mod tests {
 		cfg.quiescence = false;
 		let game = Game::new(RuleSet::default(), 2);
 		assert_same_value(&game, 2, cfg);
+	}
+
+	#[test]
+	fn extra_turn_value_is_not_sign_flipped() {
+		use crate::game::Game;
+
+		let (game, extra, from, land) = Game::cascade_turn_gain_forced_extra_win();
+		assert_eq!(game.current_player(), Player::One);
+		let score = value_at_depth(&game, 2, &[], SearchConfig::plain()).expect("depth 2");
+		assert!(
+			score > WIN / 2,
+			"ADD then extra-turn MOVE should be a win for the mover, got {score} (add {extra}, move {from}->{land})"
+		);
+		let tt_ord =
+			SearchConfig { move_ordering: true, transposition: true, ..SearchConfig::plain() };
+		let with_pvs = SearchConfig { pvs: true, ..tt_ord };
+		let with_q = SearchConfig { quiescence: true, q_depth: 2, ..tt_ord };
+		assert_same_value(&game, 2, tt_ord);
+		assert_same_value(&game, 2, with_pvs);
+		assert_same_value(&game, 2, with_q);
+		assert_same_value(&game, 2, SearchConfig { lmr: true, pvs: true, ..tt_ord });
+	}
+
+	#[test]
+	fn extra_turn_banked_value_is_not_sign_flipped() {
+		use crate::game::{Action, Game};
+
+		let (mut game, extra) = Game::cascade_turn_gain_drop_position(3, 5);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(game.current_player(), Player::Two);
+		assert_eq!(game.extra_turns(Player::Two), 1);
+		let score = value_at_depth(&game, 2, &[], SearchConfig::plain()).expect("depth 2");
+		let flipped = value_at_depth(&game, 2, &[], SearchConfig::plain()).expect("depth 2 again");
+		assert_eq!(score, flipped, "same-side extra turn must be stable");
+		let tt_ord = SearchConfig {
+			move_ordering: true,
+			transposition: true,
+			pvs: true,
+			..SearchConfig::plain()
+		};
+		assert_same_value(&game, 2, tt_ord);
 	}
 }

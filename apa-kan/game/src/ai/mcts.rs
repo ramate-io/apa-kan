@@ -1005,6 +1005,9 @@ fn backprop(
 	config: SearchConfig,
 ) {
 	for (i, &idx) in path.iter().enumerate() {
+		// Sign by the player who moved into `idx` (`to_move` of the parent),
+		// not ply parity: cascade extra turns keep consecutive nodes on the
+		// same side, and both must receive the same sign.
 		let actor = if i == 0 { tree.nodes[idx].to_move } else { tree.nodes[path[i - 1]].to_move };
 		let signed = if actor == root_player { value } else { -value };
 		{
@@ -1371,6 +1374,45 @@ mod tests {
 			GameStatus::Won { winner: Player::One, reason: EndReason::Control },
 			"MCTS should take the cascade control win, got {:?} after {action:?}",
 			game.status()
+		);
+	}
+
+	#[test]
+	fn mcts_takes_cascade_turn_gain_extra_turn_win() {
+		let (mut game, extra, from, _land) = Game::cascade_turn_gain_forced_extra_win();
+		let mut rng = StdRng::seed_from_u64(1);
+		let mut searcher = Searcher::new();
+		let action = searcher.choose_with(
+			&game,
+			crate::ai::Actor::Mcts,
+			&mut rng,
+			SearchLimit::work(1200, 240),
+		);
+		assert_eq!(
+			action,
+			Action::Add { bench_index: 0, node: extra },
+			"MCTS should ADD to drop and keep the extra turn"
+		);
+		assert!(game.apply(action).is_ok());
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.current_player(), Player::One);
+		assert!(game.extra_turn_active());
+		let action = searcher.choose_with(
+			&game,
+			crate::ai::Actor::Mcts,
+			&mut rng,
+			SearchLimit::work(1200, 240),
+		);
+		match action {
+			Action::Move { from: src, .. } => {
+				assert_eq!(src, from, "extra-turn MOVE should be the piece just ADDed");
+			}
+			other => panic!("expected MOVE from {from}, got {other:?}"),
+		}
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
 		);
 	}
 

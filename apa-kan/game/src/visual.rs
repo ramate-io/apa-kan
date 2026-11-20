@@ -2687,6 +2687,15 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 					));
 				}
 			}
+			if game.extra_turn_active() {
+				extra.push_str(&format!("{HUD_SEP}+turn"));
+			}
+			for player in [Player::One, Player::Two] {
+				let n = game.extra_turns(player);
+				if n > 0 {
+					extra.push_str(&format!("{HUD_SEP}bank {}+{n}", player.label()));
+				}
+			}
 			let hold = extra;
 			format!(
 				"Turn {}{HUD_SEP}{} ({}) to play{HUD_SEP}P1 light {}/{} bud {}{HUD_SEP}P2 dark {}/{} bud {}{hold}",
@@ -4516,6 +4525,26 @@ mod tests {
 		assert_eq!(game.control_need(), 4, "HUD target must not rise with recovered material");
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("ctl P1 4/4 0/1 P2 0/4 0/1"), "{turn}");
+	}
+
+	#[test]
+	fn hud_shows_active_and_banked_extra_turns() {
+		let (mut game, dest) = crate::game::Game::cascade_turn_gain_mover_add_drop();
+		let turn = format_turn_line(&game, "human");
+		assert!(!turn.contains("+turn"), "{turn}");
+		assert!(!turn.contains("bank"), "{turn}");
+		game.apply(crate::game::Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(game.extra_turn_active());
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("+turn"), "active extra turn: {turn}");
+		assert!(turn.len() < 160, "turn line should still fit: {turn}");
+
+		let (mut opp, extra) = crate::game::Game::cascade_turn_gain_drop_position(3, 5);
+		opp.apply(crate::game::Action::Claim { node: extra }).unwrap();
+		assert_eq!(opp.extra_turns(crate::game::Player::Two), 1);
+		let turn = format_turn_line(&opp, "human");
+		assert!(turn.contains("bank P2+1"), "banked extra turn: {turn}");
+		assert!(!turn.contains("+turn"), "{turn}");
 	}
 
 	#[test]

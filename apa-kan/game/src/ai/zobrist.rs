@@ -1,6 +1,7 @@
 //! Zobrist keys for visible positions: occupancy, kind, owner, benches, capture
 //! budget, side, last-moved / moved-this-turn tile ids, hold counters
-//! (center, petal, control), and the one-way control-cascade ratchet.
+//! (center, petal, control), the one-way control-cascade ratchet, and
+//! banked / active cascade extra-turn state.
 
 use std::sync::OnceLock;
 
@@ -34,6 +35,8 @@ pub struct Zobrist {
 	petal_majority: [[u64; 16]; 2],
 	control_hold: [[u64; 16]; 2],
 	control_ratchet: [u64; 16],
+	extra_turns: [[u64; 16]; 2],
+	extra_turn_active: u64,
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
 	budget: [[u64; 64]; 2],
@@ -59,6 +62,8 @@ impl Zobrist {
 			petal_majority: [[0; 16]; 2],
 			control_hold: [[0; 16]; 2],
 			control_ratchet: [0; 16],
+			extra_turns: [[0; 16]; 2],
+			extra_turn_active: next(),
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
 			budget: [[0; 64]; 2],
@@ -104,6 +109,7 @@ impl Zobrist {
 				z.center_hold[player][n] = next();
 				z.petal_majority[player][n] = next();
 				z.control_hold[player][n] = next();
+				z.extra_turns[player][n] = next();
 			}
 			for n in 0..64 {
 				z.budget[player][n] = next();
@@ -197,6 +203,7 @@ pub fn hash(game: &Game) -> u64 {
 		h ^= z.center_hold[player.index()][game.center_hold(player).min(15) as usize];
 		h ^= z.petal_majority[player.index()][game.petal_majority(player).min(15) as usize];
 		h ^= z.control_hold[player.index()][game.control_hold(player).min(15) as usize];
+		h ^= z.extra_turns[player.index()][game.extra_turns(player).min(15) as usize];
 		// Physical token count, not usable budget: surplus can become usable
 		// when an unplaced deck tile remains, so two empty-deck stacks of
 		// different lengths must not collide.
@@ -207,6 +214,9 @@ pub fn hash(game: &Game) -> u64 {
 		Some(id) => h ^= z.moved_this_turn_some ^ mix_id(id),
 	}
 	h ^= z.control_ratchet[game.control_ratchet().min(15) as usize];
+	if game.extra_turn_active() {
+		h ^= z.extra_turn_active;
+	}
 	h
 }
 
@@ -393,5 +403,27 @@ mod tests {
 		assert_eq!(low.max_material(), high.max_material());
 		assert_ne!(hash(&low), hash(&high), "TT key must include the ratcheted control target");
 		assert_eq!(occupancy_hash(&low), occupancy_hash(&high));
+	}
+
+	#[test]
+	fn hash_distinguishes_banked_extra_turns() {
+		use crate::game::{Game, Player};
+
+		let none = Game::empty(RuleSet::default());
+		let mut banked = Game::empty(RuleSet::default());
+		banked.set_extra_turns(Player::Two, 1);
+		assert_eq!(none.extra_turns(Player::Two), 0);
+		assert_eq!(banked.extra_turns(Player::Two), 1);
+		assert_eq!(none.current_player(), banked.current_player());
+		assert_ne!(
+			hash(&none),
+			hash(&banked),
+			"TT key must include banked cascade extra-turn state"
+		);
+		assert_eq!(occupancy_hash(&none), occupancy_hash(&banked));
+		let mut active = Game::empty(RuleSet::default());
+		active.set_extra_turn_active(true);
+		assert_ne!(hash(&none), hash(&active), "TT key must include an active extra turn");
+		assert_ne!(hash(&banked), hash(&active));
 	}
 }
