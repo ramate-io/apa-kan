@@ -876,6 +876,10 @@ fn is_reverse(mv: SearchMove, last: Option<SearchMove>) -> bool {
 			SearchMove::Move { from, to },
 			Some(SearchMove::Move { from: prev_from, to: prev_to }),
 		) => from == prev_to && to == prev_from,
+		(
+			SearchMove::Swap { from, to },
+			Some(SearchMove::Swap { from: prev_from, to: prev_to }),
+		) => (from == prev_from && to == prev_to) || (from == prev_to && to == prev_from),
 		_ => false,
 	}
 }
@@ -1320,6 +1324,7 @@ mod tests {
 		rules.control_win = true;
 		rules.endgame_rule = EndgameRule::ControlCascade;
 		rules.control_hold_turns = 1;
+		rules.swap_mode = crate::game::SwapMode::Off;
 		let mut game = Game::empty(rules);
 		let center = game.board().center();
 		let inner = game.board().inner_ring().to_vec();
