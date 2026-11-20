@@ -1,4 +1,15 @@
-# Ring-count 7:5:4, ~10% braid rings, independent channels, counterplay search
+# Ring distribution, channels, same-deck 27, and ColorPass.drift
+
+Round 1 (the original `h2h_a_*` / `h2h_b_*` logs) is the 7:5:4 braid:bead
+package. Do not overwrite those files. Round 2 is the same-deck 27 follow-up:
+beads in the normal channel, ChannelMode scoring-only, braid ~10% of **tiles**,
+4:3:2 / 4:3:1, and RFC ColorPass.drift. Reproduce round 2 with
+[`run_h2h_same_deck.sh`](run_h2h_same_deck.sh) and
+[`run_h2h_color_drift.sh`](run_h2h_color_drift.sh).
+
+---
+
+# Round 1 — 7:5:4, ~10% braid rings, independent channels, counterplay search
 
 Live generation on `main` used a sequential 7:1 keep-last vs draw-any gate
 (`RING_SAME_WEIGHT=7`, `RING_ANY_WEIGHT=1`). That made singles ~83% of mixed
@@ -205,3 +216,229 @@ counterplay levels those two terms.
 - CLAIM-on-center is still dead. Local-claim dest-neighbor pops cover
   the adjacent case; leftover overwhelmed center is the remaining hole
   and search still does not take that extra ply.
+
+---
+
+# Round 2 — same-deck 27, beads-in-normal, braid ~10% of tiles, ColorPass.drift
+
+Liam follow-up on PR #79. Same harness as round 1 except: `--same-deck on`
+(both players begin with the **identical 27-tile collection**), mixed:mixed
+only, `--games 50` × 2 pairings = 100 games, counterplay search, `--seed 1`,
+`--budget nodes:33000,iters:650`, `--jobs 4`, `--no-default-features`, zags
+on, `--zag-mismatch sum`, control-cascade, local-claim. Reproduce with
+[`run_h2h_same_deck.sh`](run_h2h_same_deck.sh). ColorPass.drift diagonal
+benches: [`run_h2h_color_drift.sh`](run_h2h_color_drift.sh). Survey:
+[`survey_center.py`](survey_center.py) (prints `same_deck_27 identical=…`).
+
+Do not overwrite round-1 `h2h_a_*` / `h2h_b_*` logs.
+
+## Same-deck 27
+
+`--same-deck on` is mixed:mixed + `identical_bags` + `deck_size=27` +
+`deck_noise=0`. The 7+4 pick can still differ; the 27-tile **collection**
+does not. Every round-2 JSONL is `same_deck_27 identical=100/100` (754
+baseline and all 4:3:2 / 4:3:1 / drift logs). Opening benches match
+(`opening_strength_equal=100/100` on 4:3:2 IndependentMax).
+
+## Beads in the normal channel
+
+Beads are not an extra scoring/render component. They fold into the
+normal channel:
+
+- IndependentMax: numeric max is associative, so scores are unchanged
+  when bead is folded into normal before the max.
+- Additive: `SharedChannel` = `max(normal, bead) + zag + braid`.
+- Paint/HUD: bead discs stay on the **normal lane** when a Normal match
+  is kept (`ArcStyle::lane_offsets` copies the normal offset onto the
+  bead slot). The screenshot bug was zag winning a mismatch tie and
+  dropping the bead lane.
+
+## ChannelMode is scoring-only
+
+Generation always IndependentMax clustering (per-slot 5:3 heavy coin +
+5:3:1 light). `--channel-mode additive` / `--independent-channels off`
+only changes how match/mismatch channels combine (sum vs max). No
+Additive braid/bead 2–3 stuffing. Round-1 config A’s extra doubles/triples
+were that stuffing; round-2 Additive uses the same tile mix as IndependentMax.
+
+## Braid ~10% of tiles (not rings)
+
+Default heavy coin is **5:3** light:braid (`p = 3/8 = 0.375`), not the
+round-1 2:1. Target is ~10% of **tiles** with a consecutive-heavy braid
+group, via the existing heavy-selection (not a separate 10% roll).
+
+| Mix | n1 / n2 / n3 | braid tile / ring | decks with a braid |
+|---|---|---|---|
+| 4:3:2 | 44.4 / 32.8 / 22.7% | **9.59%** / 11.5% | 94.0% |
+| 4:3:1 | 49.6 / 37.7 / 12.7% | 7.96% / 10.1% | 90.0% |
+| 7:5:4 | 44.0 / 30.6 / 25.4% | **10.04%** / 11.8% | 94.6% |
+
+4:3:2 hits the tile-rate band; 4:3:1 undershoots because there are fewer
+2–3-ring tiles to braid. 4:3:1 is the triple cut Liam asked for (12.7%
+vs 22.7% / 25.4%).
+
+## ColorPass.drift (existing, currently zeroed)
+
+No new generation mechanism. RFC 000 `ColorPass.drift` is a `[[i32;6];6]`
+hysteresis matrix: after drawing color *i*, add `drift[i][j]` to weight
+*j*. Live default is all zeros. `--color-drift N` sets the **diagonal**
+to *N* (the RFC keep-last example is `+40`).
+
+Default 0 keeps independent `sample_color` draws and rejects duplicate
+colors on a tile, so deals match the pre-drift generator. Nonzero allows
+repeats and applies the matrix. Collection generation keeps the same
+running weights across the 27 tiles (same matrix, not a second setting).
+
+**Parameter:** RFC `ColorPass.drift` diagonal via `--color-drift`.
+
+**Values tested:** `0` (current / default), `40` (RFC moderate), `160` (strong).
+
+Multicolor on mixed 27-tile collections, 4:3:2 (400 decks in-unit, plus
+`# ring_process_deck_colors` on the H2H logs for 40 / 160):
+
+| Diagonal | 2+ color tile share | mean distinct colors / tile | mean distinct colors / 27-tile deck |
+|---|---|---|---|
+| 0 | 0.557 | 1.79 | 5.03 |
+| 40 | 0.390 | 1.44 | 3.85 |
+| 160 | 0.284 | 1.31 | 3.00 |
+
+At 0 every 2–3-ring tile is multicolor, so the share equals P(n≥2). 7:5:4
+at 0 is 0.560 tiles / 5.00 colors per deck; 4:3:1 at 0 is 0.499 / 4.88.
+
+## Same-deck H2H (quoted)
+
+| Log | Mix | Channels | P1 W-D-L | Mean turns | lock / ctrl / LV / TL | opp/self cap | center opp cap | claims |
+|---|---|---|---|---|---|---|---|---|
+| [`h2h_same_432_imax`](h2h_same_432_imax.txt) | 4:3:2 | imax | **63-0-37** | 35.76 | 0 / 100 / 0 / 0 | 1.89 / 1.40 | 0.18 | 0.01 |
+| [`h2h_same_432_add`](h2h_same_432_add.txt) | 4:3:2 | additive | 50-3-47 | **59.33** | 2 / 94 / 1 / 3 | 4.03 / 4.03 | 0.48 | 0.02 |
+| [`h2h_same_431_imax`](h2h_same_431_imax.txt) | 4:3:1 | imax | 53-0-47 | 38.52 | 1 / 99 / 0 / 0 | 2.39 / 2.17 | 0.28 | 0.01 |
+| [`h2h_same_431_add`](h2h_same_431_add.txt) | 4:3:1 | additive | 59-0-41 | 42.25 | **9** / 91 / 0 / 0 | 4.08 / 4.03 | **0.68** | 0.01 |
+| [`h2h_same_754_imax`](h2h_same_754_imax.txt) | 7:5:4 | imax | 52-1-47 | 34.82 | 0 / 99 / 0 / 1 | 1.69 / 1.30 | 0.21 | 0.00 |
+
+Control-cascade target5 / 4 / 3 / 2 (immediate vs hold):
+
+| Log | t5 | t4 | t3 | t2 | immediate | hold |
+|---|---|---|---|---|---|---|
+| 432 imax | 99 | 1 | 0 | 0 | 1 | 99 |
+| 432 add | 70 | 16 | 6 | 2 | 14 | 80 |
+| 431 imax | 88 | 4 | 7 | 0 | 2 | 97 |
+| 431 add | 64 | 13 | 8 | 6 | 18 | 73 |
+| 754 imax | 95 | 1 | 2 | 1 | 1 | 98 |
+
+On same-deck mixed:mixed, **Additive is the contested mode** (the opposite
+of round 1’s braid:bead Additive sit-and-win). IndependentMax 4:3:2 and
+7:5:4 are ~20-turn control-5 holds. Cutting triples (7:5:4 → 4:3:2 →
+4:3:1) trims IndependentMax never-left 66% → 58% → 52% and raises center
+opp caps 0.21 → 0.18 → 0.28. 4:3:1 IndependentMax is the most even imax;
+4:3:2 Additive is the most even overall W-D-L; 4:3:1 Additive has the
+most recapture and the only center CLAIM, but 9 lockouts and a 59% P1.
+
+Drift benches used **4:3:2** (braid-tile target + the higher-multicolor
+mix). IndependentMax and Additive both run at diagonal 0 / 40 / 160.
+
+## Center-holder survey (same-deck)
+
+| Log | First take | Still / never left | First-taker side wins | Still ⇒ that side wins | Vacates | Center opp caps |
+|---|---|---|---|---|---|---|
+| 432 imax | 100/100 @ t5.4 | 59% / **58%** | 61% | 47/59 = 80% | 43 | 18 |
+| 432 add | 100 @ t6.5 | 49% / **45%** | 54% | 35/49 = 71% | 72 | 48 |
+| 431 imax | 100 @ t5.4 | 54% / **52%** | 56% | 44/54 = 82% | 47 | 28 |
+| 431 add | 99 @ t6.8 | 46% / **45%** | 52% | 32/45 = 71% | 51 | **68** |
+| 754 imax | 100 @ t4.8 | 68% / **66%** | 55% | 45/68 = 66% | 36 | 21 |
+
+### ColorPass.drift on 4:3:2 IndependentMax
+
+| Diagonal | multi tiles | P1 W-D-L | Mean turns | Still / never left | First-taker wins | Still ⇒ win | Center opp cap |
+|---|---|---|---|---|---|---|---|
+| 0 | 55.6% | 63-0-37 | 35.76 | 59% / 58% | 61% | 80% | 0.18 |
+| 40 | 39.0% | 56-0-44 | 37.64 | 61% / 60% | 63% | **88%** | 0.23 |
+| 160 | 28.4% | 60-0-40 | 33.77 | 64% / **63%** | 54% | 66% | 0.24 |
+
+Lowering multicolor via the existing drift diagonal does **not** buy
+IndependentMax counterplay. Never-left rises 58% → 60% → 63%. Center
+recapture barely moves (0.18 → 0.23 → 0.24). At 160 the first-taker’s
+side wins less often (54%) because a sitting piece is more often outscored
+on the 9-node control set (still⇒win 66%), not because the occupant is
+popped.
+
+### ColorPass.drift on 4:3:2 Additive
+
+| Diagonal | multi tiles | P1 W-D-L | Mean turns | Still / never left | First-taker wins | Still ⇒ win | Center opp cap |
+|---|---|---|---|---|---|---|---|
+| 0 | 55.6% | 50-3-47 | **59.33** | 49% / **45%** | 54% | 71% | **0.48** |
+| 40 | 39.0% | 60-0-40 | 42.86 | 61% / **59%** | 60% | 72% | 0.43 |
+| 160 | 28.4% | 53-1-46 | 46.88 | 57% / **55%** | 59% | 81% | 0.42 |
+
+Logs: [`h2h_same_432_add_drift40`](h2h_same_432_add_drift40.txt),
+[`h2h_same_432_add_drift160`](h2h_same_432_add_drift160.txt)
+(IndependentMax: [`drift40`](h2h_same_432_imax_drift40.txt),
+[`drift160`](h2h_same_432_imax_drift160.txt)).
+
+High-multicolor Additive (diagonal 0) is the **most** contested of the
+six 4:3:2 drift cells: longest games, lowest never-left, most recapture,
+even W-D-L. Turning drift up makes Additive look more like IndependentMax
+sit-and-hold. Low-multicolor decks did **not** produce more counterplay
+than high-multicolor ones at this budget.
+
+## Qualitative
+
+**Same 27, still sit-and-hold (4:3:2 IndependentMax).**
+`h2h_same_432_imax` mcts vs minimax game 7: P1 MOVE onto center at t3,
+zero vacates/captures/claims, control at t29. 58 of 100 games never
+leave. Opening benches are identical; the 7+4 pick still gives P1 the
+first MOVE.
+
+**Additive same-deck actually fights (4:3:2).**
+`h2h_same_432_add` mcts vs minimax game 40: 15 center occupants, 12
+vacates, 3 recaptures, 200-turn draw. Mean turns 59, never-left 45%,
+center opp caps 0.48. Three turn-limit games. This is the reverse of
+round-1 Additive braid:bead.
+
+**4:3:1 Additive recapture, including a center CLAIM.**
+`h2h_same_431_add` mcts vs minimax game 24: P2 takes center t6, six
+occupants, four vacates, one recapture, **CLAIM on the center**, P2
+wins control at t148. Only center CLAIM in the round-2 matrix. Nine
+lockouts in this config (the 4:3:1 Additive tax).
+
+**7:5:4 same-deck IndependentMax is the stickiest.**
+`h2h_same_754_imax` mcts vs minimax game 1: P2 MOVE t4, still there at
+t20 control. 66% never-left, first take at t4.8.
+
+**ColorPass.drift 40, IndependentMax: P1 less dominant, occupant still sits.**
+`h2h_same_432_imax_drift40` P1 56-0-44 (was 63-0-37) but never-left 60%.
+minimax vs mcts game 35: eight occupants, a center CLAIM, 111 turns —
+the rare contest. Typical game is still a t4–t6 MOVE that stays.
+
+**ColorPass.drift 160 IndependentMax: fewer colors, more sit, occasional long shuffle.**
+`h2h_same_432_imax_drift160` mcts vs minimax game 9: 10 occupants, 8
+vacates, 137 turns, P1 wins after P2’s first take is displaced. Mean
+never-left is still 63%. Deck mean distinct colors is 3.00.
+
+**ColorPass.drift 40 Additive: the even Additive game gets P1-heavier and stickier.**
+`h2h_same_432_add_drift40` P1 60-0-40 (was 50-3-47), never-left 59% (was
+45%), mean turns 43 (was 59). mcts vs minimax game 5: P2 MOVE t4, still
+there at t20.
+
+**ColorPass.drift 160 Additive: still stickier than diagonal 0, with rare melees.**
+`h2h_same_432_add_drift160` never-left 55%, center opp cap 0.42. minimax
+vs mcts game 2: 19 occupants, 11 vacates, 5 recaptures, P2 wins control
+at t143 — the exception, not the mean.
+
+## Open design questions (round 2)
+
+- Heavy coin is **5:3**, not 2:1 and not `k/7`. `--braid-chance 2..6`
+  still uses `k/7`.
+- 4:3:2 hits ~10% braid **tiles**; 4:3:1 does not (8.0%). Triples at
+  4:3:1 are 12.7% vs 22.7% at 4:3:2. If both targets matter, the mix
+  is still open.
+- Same-deck mixed:mixed **flips** the round-1 Additive vs IndependentMax
+  story. Additive is the counterplay mode here; IndependentMax sits.
+- RFC ColorPass.drift diagonal 40 / 160 cuts 2+ color tiles 56% → 39%
+  → 28% and colors/deck 5.0 → 3.8 → 3.0. It does **not** cut never-left
+  on either channel mode; Additive counterplay is **highest** at
+  diagonal 0. Multicolor is not the sit-and-win lever at this budget —
+  if anything, fewer colors made Additive stickier.
+- CLAIM-on-center appeared once (4:3:1 Additive game 24, and once at
+  drift 40 IndependentMax). Still not a plan the bots pursue.
+- Default drift stays 0 so deals are unchanged. Nonzero is a bench
+  knob (`--color-drift`), not a live default flip.
