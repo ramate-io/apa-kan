@@ -2041,6 +2041,14 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_material_value_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/material_value/h2h_shallow.jsonl.gz",
+			100,
+		);
+	}
+
+	#[test]
 	fn default_games_log_path_is_jsonl_gz_sibling() {
 		let p =
 			std::path::Path::new("apa-kan/game/benchmark_results/low_value_pairs_deck11_on.txt");

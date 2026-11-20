@@ -1,0 +1,16 @@
+# h2h_shallow.txt material-value  games=100
+elimination             wins=0  draws=0  total=0
+locked_out              wins=8  draws=0  total=8
+center_hold             wins=0  draws=0  total=0
+petal_majority          wins=0  draws=0  total=0
+control                 wins=20  draws=0  total=20
+insufficient_tiles      wins=0  draws=0  total=0
+low_value               wins=0  draws=0  total=0
+material_value          wins=67  draws=2  total=69
+turn_limit              wins=0  draws=3  total=3
+double_pass             wins=0  draws=0  total=0
+# material_value_tiers
+total_material          wins=49
+board_tiles             wins=14
+low_value               wins=4
+draw                    count=2
