@@ -1303,6 +1303,78 @@ mod tests {
 	}
 
 	#[test]
+	fn mcts_takes_cascade_control_win_at_target_four() {
+		use crate::game::EndgameRule;
+
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = true;
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.control_hold_turns = 1;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(2) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		let land = inner[2];
+		let from = game
+			.board()
+			.neighbors(land)
+			.iter()
+			.copied()
+			.find(|&n| game.board().is_spawn(n) && game.tile_at(n).is_none())
+			.expect("empty inner has a spawn neighbor");
+		let mover = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(from, mover);
+		game.set_budget_tokens(Player::One, Vec::new());
+		let mut hot = std::collections::HashSet::new();
+		for (node, tile) in game.tiles() {
+			if tile.owner == Player::One {
+				hot.insert(node);
+				hot.extend(game.board().neighbors(node).iter().copied());
+			}
+		}
+		hot.insert(land);
+		hot.extend(game.board().neighbors(land).iter().copied());
+		let p2_homes: Vec<_> = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.filter(|s| !hot.contains(s) && game.tile_at(*s).is_none())
+			.take(2)
+			.collect();
+		assert!(p2_homes.len() >= 2, "need two distant spawns for P2, got {p2_homes:?}");
+		for &s in &p2_homes {
+			let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+			game.place_tile(s, opp);
+		}
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.control_need(), 4);
+		assert!(game.is_alive(Player::Two));
+		game.set_current(Player::One);
+		let mut rng = StdRng::seed_from_u64(1);
+		let mut searcher = Searcher::new();
+		let action = searcher.choose_with(
+			&game,
+			crate::ai::Actor::Mcts,
+			&mut rng,
+			SearchLimit::work(800, 160),
+		);
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control },
+			"MCTS should take the cascade control win, got {:?} after {action:?}",
+			game.status()
+		);
+	}
+
+	#[test]
 	fn solver_picks_immediate_center_hold_win() {
 		let (game, from, center) = hold_win_position();
 		let mut cfg = SearchConfig::enhanced();

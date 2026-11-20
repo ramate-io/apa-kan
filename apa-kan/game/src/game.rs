@@ -1428,16 +1428,22 @@ pub enum EndReason {
 	CenterHold,
 	/// Held a majority of inner-ring (petal) nodes for N consecutive own turns.
 	PetalMajority,
-	/// Occupied at least `control_n` of the 9-node control set (center + inner
-	/// ring) for `control_hold_turns` consecutive own turns.
+	/// Occupied at least the live control target of the 9-node control set
+	/// (center + inner ring) for `control_hold_turns` consecutive own turns.
+	/// Under [`EndgameRule::ControlCascade`] the target is
+	/// `max_mat.min(control_n)` while `max_mat >= 2`; under
+	/// [`EndgameRule::LowValue`] it is the fixed `control_n` (default 5).
 	Control,
 	/// Could no longer occupy 5 control-set nodes (`insufficient_tiles_loss`).
 	InsufficientTiles,
-	/// Both players have `board tiles + usable budget` strictly below
-	/// [`LOW_VALUE_BOARD_LT`] (usable = min(tokens, unplaced deck tiles)).
 	/// Sorted lowest-tile pairs decide (primary, then zag/braid-weighted
 	/// tiebreak). A missing piece is maximum value, so more surviving tiles
 	/// win; a draw only if the counts match and every pair ties on both passes.
+	///
+	/// Under [`EndgameRule::LowValue`] this fires when both players have
+	/// `board tiles + usable budget` strictly below [`LOW_VALUE_BOARD_LT`].
+	/// Under [`EndgameRule::ControlCascade`] it is the final tie-breaker once
+	/// `max_mat <= 1` (both sides have at most one total material).
 	LowValue,
 }
 
@@ -2042,6 +2048,58 @@ impl InsufficientTilesLoss {
 	}
 }
 
+/// How the two-tier endgame (control, then low-value) scales with remaining
+/// material. CLI: `--endgame-rule`.
+///
+/// [`Self::ControlCascade`] (this branch's default) dynamically lowers the
+/// 9-node control target through checkpoints 5 → 4 → 3 → 2 from
+/// `max_mat = max(p1, p2)` of `board_tiles + usable_spawn_tokens`, then
+/// fires low-value at `max_mat <= 1`. [`Self::LowValue`] restores the
+/// baseline fixed-5 control target plus low-value when both sides are
+/// strictly below 5.
+///
+/// Open design (defaults chosen here):
+/// - **Live vs ratchet:** the target is live `max_mat.min(control_n)` and
+///   can move back up if claims/captures restore material. A monotonic
+///   ratchet is an alternative.
+/// - **Turn-boundary timing:** a drop in `max_mat` that puts a player at
+///   `control_count >= new_target` is evaluated in the existing control-hold
+///   check at end of turn (`control_hold_turns`, default 1). With t=1 they
+///   win on that same turn boundary.
+/// - **Usable vs raw tokens:** material uses [`Game::budget`]
+///   (`min(spawn_tokens, unplaced_bench)`), matching the low-value budget.
+///   Counting raw `spawn_tokens` (including surplus on an empty bench) is
+///   an open question.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum EndgameRule {
+	#[default]
+	ControlCascade,
+	LowValue,
+}
+
+impl EndgameRule {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"control-cascade" | "control_cascade" | "cascade" => Ok(Self::ControlCascade),
+			"low-value" | "low_value" | "lowvalue" | "baseline" => Ok(Self::LowValue),
+			other => {
+				Err(format!("unknown endgame-rule '{other}' (expected control-cascade|low-value)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::ControlCascade => "control-cascade",
+			Self::LowValue => "low-value",
+		}
+	}
+
+	pub fn is_control_cascade(self) -> bool {
+		matches!(self, Self::ControlCascade)
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GameStatus {
 	InProgress,
@@ -2164,6 +2222,9 @@ pub struct RuleSet {
 	pub control_n: u8,
 	/// Consecutive own turns holding `control_n` control-set nodes. Default 1.
 	pub control_hold_turns: u8,
+	/// Control-then-low-value scaling. Default [`EndgameRule::ControlCascade`].
+	/// `--endgame-rule low-value` restores fixed-`control_n` plus both-below-5.
+	pub endgame_rule: EndgameRule,
 	/// Lose when board + remaining deck cannot reach 5 tiles (see
 	/// [`InsufficientTilesLoss`]). Default off.
 	pub insufficient_tiles_loss: InsufficientTilesLoss,
@@ -2237,6 +2298,7 @@ impl Default for RuleSet {
 			control_win: true,
 			control_n: 5,
 			control_hold_turns: 1,
+			endgame_rule: EndgameRule::ControlCascade,
 			insufficient_tiles_loss: InsufficientTilesLoss::Off,
 			path_constraint: PathConstraint::NoEdgeRevisit,
 			counted_pass_through: true,
@@ -2673,11 +2735,54 @@ impl Game {
 		n
 	}
 
-	/// Occupancy needed to start a control hold (`control_n`, capped at the
-	/// 9-node set).
-	pub fn control_need(&self) -> u8 {
+	/// Size of the control set (center + inner ring) and the configured cap
+	/// (`control_n`). Independent of the live cascade target.
+	pub fn control_cap(&self) -> u8 {
 		let set = 1u8 + self.board.inner_ring().len() as u8;
 		self.rules.control_n.max(1).min(set)
+	}
+
+	/// Occupancy needed to start a control hold. Under
+	/// [`EndgameRule::LowValue`] this is [`Self::control_cap`]. Under
+	/// [`EndgameRule::ControlCascade`] it is the live checkpoint
+	/// `max_mat.min(control_n)` while `max_mat >= 2`, and the cap (control
+	/// inactive) once `max_mat <= 1`.
+	pub fn control_need(&self) -> u8 {
+		let cap = self.control_cap();
+		match self.cascade_control_target() {
+			Some(target) => target.min(cap),
+			None => cap,
+		}
+	}
+
+	/// Live cascade checkpoint (`2..=control_n`) when
+	/// [`EndgameRule::ControlCascade`] is on and `max_mat >= 2`. `None` when
+	/// the cascade is off, or when `max_mat <= 1` (low-value is the
+	/// tie-breaker and control cannot fire).
+	pub fn cascade_control_target(&self) -> Option<u8> {
+		if !self.rules.endgame_rule.is_control_cascade() {
+			return None;
+		}
+		let max_mat = self.max_material();
+		if max_mat <= 1 {
+			return None;
+		}
+		let cap = u32::from(self.control_cap()).max(2);
+		let target = (max_mat as u32).min(cap).max(2);
+		Some(target as u8)
+	}
+
+	/// Board tiles + usable spawn budget (`min(tokens, unplaced bench)`).
+	/// Surplus tokens on an empty remaining deck do not count. Same as
+	/// [`Self::possible_board_tiles`].
+	pub fn total_material(&self, player: Player) -> usize {
+		self.possible_board_tiles(player)
+	}
+
+	/// `max(p1, p2)` of [`Self::total_material`]. The cascade control target
+	/// is `max_mat.min(control_n)` while this is at least 2.
+	pub fn max_material(&self) -> usize {
+		self.total_material(Player::One).max(self.total_material(Player::Two))
 	}
 
 	/// Board tiles + remaining (unplaced) deck tiles.
@@ -2836,11 +2941,21 @@ impl Game {
 		self.board_count(player) + self.budget(player)
 	}
 
-	/// True when both players have [`Self::possible_board_tiles`] strictly
-	/// below [`LOW_VALUE_BOARD_LT`]. Does not require usable budget to be 0.
+	/// True when the low-value pair check should resolve the game.
+	///
+	/// [`EndgameRule::LowValue`]: both players have [`Self::possible_board_tiles`]
+	/// strictly below [`LOW_VALUE_BOARD_LT`].
+	/// [`EndgameRule::ControlCascade`]: `max_mat <= 1` (both sides have at
+	/// most one total material). Does not require usable budget to be 0.
 	pub fn low_value_applies(&self) -> bool {
-		let cap = usize::from(LOW_VALUE_BOARD_LT);
-		self.possible_board_tiles(Player::One) < cap && self.possible_board_tiles(Player::Two) < cap
+		match self.rules.endgame_rule {
+			EndgameRule::ControlCascade => self.max_material() <= 1,
+			EndgameRule::LowValue => {
+				let cap = usize::from(LOW_VALUE_BOARD_LT);
+				self.possible_board_tiles(Player::One) < cap
+					&& self.possible_board_tiles(Player::Two) < cap
+			}
+		}
 	}
 
 	/// Give each side enough remaining pieces that low-value does not already
@@ -3342,7 +3457,7 @@ impl Game {
 	}
 
 	fn is_insufficient(&self, player: Player) -> bool {
-		let need = usize::from(self.control_need());
+		let need = usize::from(self.control_cap());
 		if self.reachable_tiles(player) >= need {
 			return false;
 		}
@@ -3743,6 +3858,11 @@ impl Game {
 			self.control_hold = [0, 0];
 			return;
 		}
+		if self.rules.endgame_rule.is_control_cascade() && self.cascade_control_target().is_none() {
+			// max_mat <= 1: control is inactive; low-value is the tie-breaker.
+			self.control_hold = [0, 0];
+			return;
+		}
 		let need = self.control_need();
 		if self.control_count(who) >= need {
 			self.control_hold[who.index()] = self.control_hold[who.index()].saturating_add(1);
@@ -3787,12 +3907,12 @@ impl Game {
 		self.check_insufficient_tiles();
 	}
 
-	/// Both players have `board + usable budget` strictly below [`LOW_VALUE_BOARD_LT`].
-	/// Usable budget need not be 0: a side with 1 on the board and 3 unplaced
-	/// tiles (usable 3) is already below 5. Surplus tokens on an empty
-	/// remaining deck do not count toward possible pieces. Compared after
-	/// lockout: a player who cannot act still loses by lockout even if they
-	/// hold the lowest piece.
+	/// Resolve low-value when [`Self::low_value_applies`]. Under the baseline
+	/// [`EndgameRule::LowValue`] that is both sides below [`LOW_VALUE_BOARD_LT`];
+	/// under [`EndgameRule::ControlCascade`] it is `max_mat <= 1`. Surplus
+	/// tokens on an empty remaining deck do not count toward possible pieces.
+	/// Compared after lockout: a player who cannot act still loses by lockout
+	/// even if they hold the lowest piece.
 	fn check_low_value(&mut self) {
 		if self.status.is_over() {
 			return;
@@ -3811,6 +3931,16 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn evaluate_low_value_for_test(&mut self) {
 		self.check_low_value();
+	}
+
+	#[cfg(test)]
+	pub(crate) fn evaluate_control_for_test(&mut self, who: Player) {
+		self.update_control(who);
+	}
+
+	#[cfg(test)]
+	pub(crate) fn evaluate_turn_end_for_test(&mut self, who: Player) {
+		self.finish_turn(who);
 	}
 
 	/// Sorted `(primary, tiebreak)` keys of `player`'s on-board pieces,
@@ -4131,12 +4261,38 @@ mod tests {
 	/// Center + 4 inner-ring tiles, all the same color so the center is not
 	/// overwhelmed by four mismatch neighbors.
 	fn occupy_control_five(game: &mut Game, player: Player) {
+		occupy_control_n(game, player, 5);
+	}
+
+	/// `n` control-set nodes (center first, then inner ring), same-color so
+	/// the center is not overwhelmed by mismatch neighbors.
+	fn occupy_control_n(game: &mut Game, player: Player, n: usize) {
+		assert!((1..=9).contains(&n), "control occupancy {n} out of 1..=9");
 		let center = game.board().center();
 		let inner = game.board().inner_ring().to_vec();
 		put(game, center, player, TileColor::Green, 3, 1);
-		for &node in inner.iter().take(4) {
+		for &node in inner.iter().take(n.saturating_sub(1)) {
 			put(game, node, player, TileColor::Green, 3, 1);
 		}
+	}
+
+	/// Pin `player`'s total material (`board + usable budget`) to `total` by
+	/// setting bench length and token count to `total - board`.
+	fn pin_material(game: &mut Game, player: Player, total: usize) {
+		let board = game.board_count(player);
+		assert!(board <= total, "{player:?} board {board} exceeds material {total}");
+		let need = total - board;
+		let mut bench = game.bench(player).to_vec();
+		while bench.len() < need {
+			let i = bench.len();
+			bench.push(take(game, player, TileColor::Blue, 1, 1 + (i % 3) as u8));
+		}
+		if bench.len() > need {
+			bench.truncate(need);
+		}
+		game.set_bench(player, bench);
+		game.set_budget_tokens(player, vec![BudgetToken::Blank; need]);
+		assert_eq!(game.total_material(player), total);
 	}
 
 	#[test]
@@ -4253,6 +4409,7 @@ mod tests {
 		assert!(rules.control_win);
 		assert_eq!(rules.control_n, 5);
 		assert_eq!(rules.control_hold_turns, 1);
+		assert_eq!(rules.endgame_rule, EndgameRule::ControlCascade);
 		assert_eq!(rules.starting_bench_size, 7);
 		assert_eq!(rules.bag_size, BAG_SIZE_DEFAULT as u8);
 		assert_eq!(rules.deck_size, BAG_SIZE as u8);
@@ -5424,6 +5581,152 @@ mod tests {
 		assert_eq!(
 			game.status(),
 			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	fn cascade_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 1;
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules
+	}
+
+	#[test]
+	fn control_cascade_lowers_target_through_five_four_three_two() {
+		for target in [5u8, 4, 3, 2] {
+			let mut game = Game::empty(cascade_rules());
+			occupy_control_n(&mut game, Player::One, target as usize);
+			pin_material(&mut game, Player::One, target as usize);
+			pin_material(&mut game, Player::Two, 0);
+			assert_eq!(game.max_material(), target as usize, "target {target}");
+			assert_eq!(game.cascade_control_target(), Some(target), "target {target}");
+			assert_eq!(game.control_need(), target, "target {target}");
+			assert_eq!(game.control_count(Player::One), target, "target {target}");
+			game.evaluate_turn_end_for_test(Player::One);
+			assert_eq!(
+				game.status(),
+				GameStatus::Won { winner: Player::One, reason: EndReason::Control },
+				"holding {target} of 9 should win when max_mat={target}"
+			);
+		}
+	}
+
+	#[test]
+	fn control_cascade_is_leader_only_at_asymmetric_checkpoint() {
+		let mut game = Game::empty(cascade_rules());
+		occupy_control_n(&mut game, Player::One, 4);
+		let inner = game.board().inner_ring().to_vec();
+		// P1 took center + inner[0..3]; P2 takes three leftover inners.
+		for &node in inner.iter().skip(3).take(3) {
+			put(&mut game, node, Player::Two, TileColor::Orange, 3, 1);
+		}
+		pin_material(&mut game, Player::One, 4);
+		pin_material(&mut game, Player::Two, 3);
+		assert_eq!(game.max_material(), 4);
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_count(Player::One), 4);
+		assert_eq!(game.control_count(Player::Two), 3);
+		game.evaluate_control_for_test(Player::Two);
+		assert_eq!(game.status(), GameStatus::InProgress, "P2 holds 3 < live target 4");
+		game.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	#[test]
+	fn control_cascade_target_is_live_after_material_changes() {
+		let mut game = Game::empty(cascade_rules());
+		occupy_control_n(&mut game, Player::One, 4);
+		pin_material(&mut game, Player::One, 4);
+		pin_material(&mut game, Player::Two, 4);
+		assert_eq!(game.control_need(), 4);
+		game.evaluate_control_for_test(Player::One);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+
+		let mut restored = Game::empty(cascade_rules());
+		occupy_control_n(&mut restored, Player::One, 4);
+		pin_material(&mut restored, Player::One, 4);
+		pin_material(&mut restored, Player::Two, 4);
+		// A claim/capture that restores material raises the live target again.
+		pin_material(&mut restored, Player::Two, 5);
+		assert_eq!(restored.max_material(), 5);
+		assert_eq!(restored.control_need(), 5);
+		assert_eq!(restored.control_count(Player::One), 4);
+		restored.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			restored.status(),
+			GameStatus::InProgress,
+			"holding 4 is not enough once max_mat returns to 5"
+		);
+
+		// A later capture that drops max_mat back to 4 wins at the same
+		// turn-boundary check (`control_hold_turns` = 1).
+		pin_material(&mut restored, Player::Two, 3);
+		assert_eq!(restored.max_material(), 4);
+		assert_eq!(restored.control_need(), 4);
+		restored.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			restored.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	#[test]
+	fn control_cascade_defers_low_value_until_max_mat_is_one() {
+		let mut still_control = Game::empty(cascade_rules());
+		let s0 = still_control.board().spawns()[0];
+		let s4 = still_control.board().spawns()[4];
+		put(&mut still_control, s0, Player::One, TileColor::Green, 1, 1);
+		put(&mut still_control, s4, Player::Two, TileColor::Orange, 1, 2);
+		pin_material(&mut still_control, Player::One, 2);
+		pin_material(&mut still_control, Player::Two, 1);
+		assert_eq!(still_control.max_material(), 2);
+		assert_eq!(still_control.cascade_control_target(), Some(2));
+		assert!(!still_control.low_value_applies());
+		still_control.evaluate_low_value_for_test();
+		assert_eq!(still_control.status(), GameStatus::InProgress);
+
+		let mut lv = Game::empty(cascade_rules());
+		let s0 = lv.board().spawns()[0];
+		let s4 = lv.board().spawns()[4];
+		put(&mut lv, s0, Player::One, TileColor::Green, 1, 1);
+		put(&mut lv, s4, Player::Two, TileColor::Orange, 1, 2);
+		pin_material(&mut lv, Player::One, 1);
+		pin_material(&mut lv, Player::Two, 1);
+		assert_eq!(lv.max_material(), 1);
+		assert_eq!(lv.cascade_control_target(), None);
+		assert!(lv.low_value_applies());
+		lv.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			lv.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+
+		let mut baseline = Game::empty({
+			let mut rules = cascade_rules();
+			rules.endgame_rule = EndgameRule::LowValue;
+			rules
+		});
+		let s0 = baseline.board().spawns()[0];
+		let s4 = baseline.board().spawns()[4];
+		put(&mut baseline, s0, Player::One, TileColor::Green, 1, 1);
+		put(&mut baseline, s4, Player::Two, TileColor::Orange, 1, 2);
+		pin_material(&mut baseline, Player::One, 2);
+		pin_material(&mut baseline, Player::Two, 2);
+		assert!(baseline.low_value_applies());
+		baseline.evaluate_low_value_for_test();
+		assert_eq!(
+			baseline.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
 		);
 	}
 
@@ -7063,6 +7366,7 @@ mod tests {
 		rules.control_win = false;
 		rules.center_hold_win = false;
 		rules.petal_majority_win = false;
+		rules.endgame_rule = EndgameRule::LowValue;
 		rules
 	}
 

@@ -595,6 +595,76 @@ mod tests {
 	}
 
 	#[test]
+	fn minimax_takes_cascade_control_win_at_target_four() {
+		use crate::game::{EndReason, EndgameRule, GameStatus, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = true;
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.control_hold_turns = 1;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(2) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		let land = inner[2];
+		let from = game
+			.board()
+			.neighbors(land)
+			.iter()
+			.copied()
+			.find(|&n| game.board().is_spawn(n) && game.tile_at(n).is_none())
+			.expect("empty inner has a spawn neighbor");
+		let mover = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(from, mover);
+		game.set_budget_tokens(Player::One, Vec::new());
+		// Keep P2 alive and away from P1's landing so the winning MOVE is
+		// Control, not Elimination / LockedOut.
+		let mut hot = std::collections::HashSet::new();
+		for (node, tile) in game.tiles() {
+			if tile.owner == Player::One {
+				hot.insert(node);
+				hot.extend(game.board().neighbors(node).iter().copied());
+			}
+		}
+		hot.insert(land);
+		hot.extend(game.board().neighbors(land).iter().copied());
+		let p2_homes: Vec<_> = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.filter(|s| !hot.contains(s) && game.tile_at(*s).is_none())
+			.take(2)
+			.collect();
+		assert!(p2_homes.len() >= 2, "need two distant spawns for P2, got {p2_homes:?}");
+		for &s in &p2_homes {
+			let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+			game.place_tile(s, opp);
+		}
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.max_material(), 4);
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_count(Player::One), 3);
+		assert!(game.is_alive(Player::Two));
+		game.set_current(Player::One);
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control },
+			"minimax should take the cascade control win, got {:?} after {action:?} (winning dest {from}->{land})",
+			game.status()
+		);
+	}
+
+	#[test]
 	fn minimax_completes_control_hold_instead_of_vacating() {
 		use crate::game::{EndReason, GameStatus, Player, TileColor};
 

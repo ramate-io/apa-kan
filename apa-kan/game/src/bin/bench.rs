@@ -109,7 +109,7 @@ fn usage() -> &'static str {
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
 	   --hop-weight-cmp, --counted-pass-through, --graph-hops, --pass-through-ring-cmp,\n\
 	   --petal-majority-win, --petal-majority-n,\n\
-	   --control-win, --control-n, --control-hold-turns,\n\
+	   --control-win, --control-n, --control-hold-turns, --endgame-rule,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
 	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --dot-chance,\n\
@@ -505,6 +505,10 @@ struct SeatStats {
 	center_hold: u32,
 	petal_majority: u32,
 	control: u32,
+	control_t5: u32,
+	control_t4: u32,
+	control_t3: u32,
+	control_t2: u32,
 	insuff: u32,
 	low_value: u32,
 	low_value_wins: u32,
@@ -624,7 +628,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -638,6 +642,7 @@ fn run(cfg: BenchConfig) {
 		on_off(rules.control_win),
 		rules.control_n,
 		rules.control_hold_turns,
+		rules.endgame_rule.name(),
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
 		rules.bag_size,
@@ -805,6 +810,10 @@ fn run(cfg: BenchConfig) {
 	let mut end_hold = 0u32;
 	let mut end_petal = 0u32;
 	let mut end_control = 0u32;
+	let mut end_control_t5 = 0u32;
+	let mut end_control_t4 = 0u32;
+	let mut end_control_t3 = 0u32;
+	let mut end_control_t2 = 0u32;
 	let mut end_insuff = 0u32;
 	let mut end_low_value = 0u32;
 	let mut end_low_value_wins = 0u32;
@@ -853,6 +862,10 @@ fn run(cfg: BenchConfig) {
 		end_hold += stats.center_hold;
 		end_petal += stats.petal_majority;
 		end_control += stats.control;
+		end_control_t5 += stats.control_t5;
+		end_control_t4 += stats.control_t4;
+		end_control_t3 += stats.control_t3;
+		end_control_t2 += stats.control_t2;
 		end_insuff += stats.insuff;
 		end_low_value += stats.low_value;
 		end_low_value_wins += stats.low_value_wins;
@@ -908,10 +921,16 @@ fn run(cfg: BenchConfig) {
 		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
 	));
 	lines.push(format!(
+		"# control_cascade  target5={end_control_t5} target4={end_control_t4} target3={end_control_t3} target2={end_control_t2}  low_value_max_mat_le1={end_low_value}"
+	));
+	lines.push(format!(
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
 	));
 	println!(
 		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
+	);
+	println!(
+		"# control_cascade  target5={end_control_t5} target4={end_control_t4} target3={end_control_t3} target2={end_control_t2}  low_value_max_mat_le1={end_low_value}"
 	);
 	println!(
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
@@ -1440,6 +1459,7 @@ fn summarize_pairing(
 			}
 		}
 		tally_low_value(&mut stats, result.low_value);
+		tally_control_target(&mut stats, result.control_target, result.status);
 	}
 	let n = games.max(1);
 	let avg = f64::from(stats.turns) / f64::from(n);
@@ -1496,6 +1516,19 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 		EndReason::Control => stats.control += 1,
 		EndReason::InsufficientTiles => stats.insuff += 1,
 		EndReason::LowValue => stats.low_value += 1,
+	}
+}
+
+fn tally_control_target(stats: &mut SeatStats, target: Option<u8>, status: GameStatus) {
+	let GameStatus::Won { reason: EndReason::Control, .. } = status else {
+		return;
+	};
+	match target {
+		Some(5) => stats.control_t5 += 1,
+		Some(4) => stats.control_t4 += 1,
+		Some(3) => stats.control_t3 += 1,
+		Some(2) => stats.control_t2 += 1,
+		_ => {}
 	}
 }
 
@@ -1774,6 +1807,7 @@ impl GameRecord {
 struct PlayResult {
 	status: GameStatus,
 	low_value: Option<LowValueResolution>,
+	control_target: Option<u8>,
 	turns: u32,
 	max_repeat: u32,
 	max_occ_repeat: u32,
@@ -2121,6 +2155,10 @@ fn play_game(
 	PlayResult {
 		status: game.status(),
 		low_value,
+		control_target: match game.status() {
+			GameStatus::Won { reason: EndReason::Control, .. } => Some(game.control_need()),
+			_ => game.cascade_control_target(),
+		},
 		turns: game.turn_count(),
 		max_repeat,
 		max_occ_repeat: max_occ,
@@ -2529,6 +2567,7 @@ mod tests {
 				line.contains(" vs ") && line.contains(" P1 ")
 					|| line.starts_with("# seat_totals")
 					|| line.starts_with("# end_reasons")
+					|| line.starts_with("# control_cascade")
 					|| line.starts_with("# low_value_pairs")
 					|| line.starts_with("# captures")
 					|| line.starts_with("# center_captures")
