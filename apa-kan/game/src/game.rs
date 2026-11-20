@@ -1428,11 +1428,12 @@ pub enum EndReason {
 	CenterHold,
 	/// Held a majority of inner-ring (petal) nodes for N consecutive own turns.
 	PetalMajority,
-	/// Occupied at least the live control target of the 9-node control set
-	/// (center + inner ring) for `control_hold_turns` consecutive own turns.
-	/// Under [`EndgameRule::ControlCascade`] the target is
-	/// `max_mat.min(control_n)` while `max_mat >= 2`; under
-	/// [`EndgameRule::LowValue`] it is the fixed `control_n` (default 5).
+	/// Occupied at least the control target of the 9-node control set
+	/// (center + inner ring). Under [`EndgameRule::LowValue`] that is the
+	/// fixed `control_n` (default 5) held for `control_hold_turns` own turns.
+	/// Under [`EndgameRule::ControlCascade`] it is the one-way ratcheted
+	/// checkpoint (5→4→3→2): either an immediate unique-holder win when the
+	/// ratchet drops, or the usual `control_hold_turns` hold.
 	Control,
 	/// Could no longer occupy 5 control-set nodes (`insufficient_tiles_loss`).
 	InsufficientTiles,
@@ -2093,25 +2094,19 @@ impl InsufficientTilesLoss {
 /// How the two-tier endgame (control, then low-value) scales with remaining
 /// material. CLI: `--endgame-rule`.
 ///
-/// [`Self::ControlCascade`] (this branch's default) dynamically lowers the
-/// 9-node control target through checkpoints 5 → 4 → 3 → 2 from
+/// [`Self::ControlCascade`] (this branch's default) lowers the 9-node
+/// control target through a **one-way ratchet** 5 → 4 → 3 → 2 from
 /// `max_mat = max(p1, p2)` of `board_tiles + usable_spawn_tokens`, then
-/// fires low-value at `max_mat <= 1`. [`Self::LowValue`] restores the
-/// baseline fixed-5 control target plus low-value when both sides are
-/// strictly below 5.
+/// fires low-value at `max_mat <= 1`. Recaptures that restore material
+/// never raise the target. A drop onto a checkpoint held by exactly one
+/// player is an immediate [`EndReason::Control`] (no `control_hold_turns`).
+/// If both already hold the new checkpoint, play continues under the
+/// turn-boundary hold. [`Self::LowValue`] restores the baseline fixed-5
+/// control target plus low-value when both sides are strictly below 5.
 ///
-/// Open design (defaults chosen here):
-/// - **Live vs ratchet:** the target is live `max_mat.min(control_n)` and
-///   can move back up if claims/captures restore material. A monotonic
-///   ratchet is an alternative.
-/// - **Turn-boundary timing:** a drop in `max_mat` that puts a player at
-///   `control_count >= new_target` is evaluated in the existing control-hold
-///   check at end of turn (`control_hold_turns`, default 1). With t=1 they
-///   win on that same turn boundary.
-/// - **Usable vs raw tokens:** material uses [`Game::budget`]
-///   (`min(spawn_tokens, unplaced_bench)`), matching the low-value budget.
-///   Counting raw `spawn_tokens` (including surplus on an empty bench) is
-///   an open question.
+/// Material uses [`Game::budget`] (`min(spawn_tokens, unplaced_bench)`),
+/// matching the low-value budget. Surplus tokens on an empty bench do
+/// not count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum EndgameRule {
 	#[default]
@@ -2140,6 +2135,10 @@ impl EndgameRule {
 	pub fn is_control_cascade(self) -> bool {
 		matches!(self, Self::ControlCascade)
 	}
+}
+
+fn initial_control_ratchet(rules: &RuleSet) -> u8 {
+	rules.control_n.max(1).min(9)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2463,8 +2462,14 @@ pub struct Game {
 	center_hold: [u8; 2],
 	/// Consecutive own turns holding a majority of inner-ring (petal) nodes.
 	petal_majority: [u8; 2],
-	/// Consecutive own turns occupying at least `control_n` control-set nodes.
+	/// Consecutive own turns occupying at least the current control target.
 	control_hold: [u8; 2],
+	/// One-way cascade checkpoint, initialized to `control_n`. Only lowered
+	/// via [`Self::sync_control_ratchet`] while `max_mat >= 2`.
+	control_ratchet: u8,
+	/// Set when the last [`EndReason::Control`] was an immediate drop win
+	/// rather than a `control_hold_turns` hold.
+	control_win_immediate: bool,
 	/// Spawn-token stack. Tokens are earned and spent here; usable ADD
 	/// permission is [`Self::budget`] = min(stack length, remaining deck).
 	budget_tokens: [Vec<BudgetToken>; 2],
@@ -2572,6 +2577,8 @@ impl Game {
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
 			control_hold: [0, 0],
+			control_ratchet: initial_control_ratchet(&rules),
+			control_win_immediate: false,
 			budget_tokens: [
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
@@ -2624,6 +2631,8 @@ impl Game {
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
 			control_hold: [0, 0],
+			control_ratchet: initial_control_ratchet(&rules),
+			control_win_immediate: false,
 			budget_tokens: [
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
@@ -2678,6 +2687,8 @@ impl Game {
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
 			control_hold: [0, 0],
+			control_ratchet: initial_control_ratchet(&rules),
+			control_win_immediate: false,
 			budget_tokens: [
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
@@ -2798,7 +2809,7 @@ impl Game {
 	}
 
 	/// Size of the control set (center + inner ring) and the configured cap
-	/// (`control_n`). Independent of the live cascade target.
+	/// (`control_n`). Independent of the ratcheted cascade checkpoint.
 	pub fn control_cap(&self) -> u8 {
 		let set = 1u8 + self.board.inner_ring().len() as u8;
 		self.rules.control_n.max(1).min(set)
@@ -2806,9 +2817,8 @@ impl Game {
 
 	/// Occupancy needed to start a control hold. Under
 	/// [`EndgameRule::LowValue`] this is [`Self::control_cap`]. Under
-	/// [`EndgameRule::ControlCascade`] it is the live checkpoint
-	/// `max_mat.min(control_n)` while `max_mat >= 2`, and the cap (control
-	/// inactive) once `max_mat <= 1`.
+	/// [`EndgameRule::ControlCascade`] it is the one-way ratchet while
+	/// `max_mat >= 2`, and the cap (control inactive) once `max_mat <= 1`.
 	pub fn control_need(&self) -> u8 {
 		let cap = self.control_cap();
 		match self.cascade_control_target() {
@@ -2817,21 +2827,31 @@ impl Game {
 		}
 	}
 
-	/// Live cascade checkpoint (`2..=control_n`) when
+	/// Stored one-way cascade checkpoint (`control_n` down through 2).
+	/// Independent of whether control is currently active (`max_mat >= 2`).
+	pub fn control_ratchet(&self) -> u8 {
+		self.control_ratchet
+	}
+
+	/// True when the current [`EndReason::Control`] win (if any) was awarded
+	/// immediately on a unique-holder ratchet drop.
+	pub fn control_win_immediate(&self) -> bool {
+		self.control_win_immediate
+	}
+
+	/// Ratcheted cascade checkpoint (`2..=control_n`) when
 	/// [`EndgameRule::ControlCascade`] is on and `max_mat >= 2`. `None` when
 	/// the cascade is off, or when `max_mat <= 1` (low-value is the
-	/// tie-breaker and control cannot fire).
+	/// tie-breaker and control cannot fire). Never rises after it has
+	/// lowered.
 	pub fn cascade_control_target(&self) -> Option<u8> {
 		if !self.rules.endgame_rule.is_control_cascade() {
 			return None;
 		}
-		let max_mat = self.max_material();
-		if max_mat <= 1 {
+		if self.max_material() <= 1 {
 			return None;
 		}
-		let cap = u32::from(self.control_cap()).max(2);
-		let target = (max_mat as u32).min(cap).max(2);
-		Some(target as u8)
+		Some(self.control_ratchet.min(self.control_cap()).max(2))
 	}
 
 	/// Board tiles + usable spawn budget (`min(tokens, unplaced bench)`).
@@ -2841,8 +2861,8 @@ impl Game {
 		self.possible_board_tiles(player)
 	}
 
-	/// `max(p1, p2)` of [`Self::total_material`]. The cascade control target
-	/// is `max_mat.min(control_n)` while this is at least 2.
+	/// `max(p1, p2)` of [`Self::total_material`]. The cascade ratchet lowers
+	/// via `target.min(max_mat)` while this is at least 2.
 	pub fn max_material(&self) -> usize {
 		self.total_material(Player::One).max(self.total_material(Player::Two))
 	}
@@ -2855,6 +2875,72 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn set_control_hold(&mut self, player: Player, n: u8) {
 		self.control_hold[player.index()] = n;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_control_ratchet(&mut self, target: u8) {
+		self.control_ratchet = target.max(1).min(self.control_cap().max(2));
+	}
+
+	/// P1 occupies 4 of 9, P2 has one claimable leftover so `max_mat` stays 5
+	/// and the ratchet is still 5. Claiming the leftover drops 5→4.
+	#[cfg(test)]
+	pub(crate) fn cascade_unique_holder_drop_position(hold_turns: u8) -> (Self, NodeId) {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = hold_turns.max(1);
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		let mut game = Self::empty(rules);
+		let center = game.board.center();
+		let inner = game.board.inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(3) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		let control: std::collections::HashSet<_> =
+			std::iter::once(center).chain(inner.iter().copied()).collect();
+		let extra =
+			game.board
+				.spawns()
+				.iter()
+				.copied()
+				.find(|&s| {
+					!control.contains(&s)
+						&& game.tile_at(s).is_none()
+						&& game.board.neighbors(s).iter().any(|&n| {
+							game.tile_at(n).map(|t| t.owner == Player::One).unwrap_or(false)
+						})
+				})
+				.expect("a spawn neighbors a P1 control tile");
+		let victim = game.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
+		game.place_tile(extra, victim);
+		assert!(game.is_overwhelmed(extra), "P2 extra at {extra} should be claimable");
+		game.pin_total_material(Player::Two, 5);
+		game.pin_total_material(Player::One, 4);
+		assert_eq!(game.control_ratchet(), 5);
+		assert_eq!(game.control_count(Player::One), 4);
+		assert!(game.control_count(Player::Two) < 4);
+		game.set_current(Player::One);
+		(game, extra)
+	}
+
+	#[cfg(test)]
+	fn pin_total_material(&mut self, player: Player, total: usize) {
+		let board = self.board_count(player);
+		assert!(board <= total, "{player:?} board {board} exceeds material {total}");
+		let need = total - board;
+		let mut bench = Vec::with_capacity(need);
+		for i in 0..need {
+			bench.push(self.alloc_tile(player, TileColor::Blue, 1, 1 + (i % 3) as u8));
+		}
+		self.set_bench(player, bench);
+		self.set_budget_tokens(player, vec![BudgetToken::Blank; need]);
+		assert_eq!(self.total_material(player), total);
 	}
 
 	/// Tile moved on `player`'s previous completed turn, if any.
@@ -2916,6 +3002,7 @@ impl Game {
 
 	pub fn set_budget_tokens(&mut self, player: Player, tokens: Vec<BudgetToken>) {
 		self.budget_tokens[player.index()] = tokens;
+		self.sync_control_ratchet();
 	}
 
 	/// Unplaced bench tiles: remaining opening-deal tiles in deal order,
@@ -3112,6 +3199,7 @@ impl Game {
 			}
 		}
 		self.benches[player.index()] = tiles;
+		self.sync_control_ratchet();
 	}
 
 	pub fn set_bag(&mut self, player: Player, tiles: Vec<Tile>) {
@@ -3910,6 +3998,9 @@ impl Game {
 		let log_line = format_log(player, action, &removals, draws, self.board.as_ref());
 
 		self.check_elimination();
+		if !self.status.is_over() {
+			self.check_immediate_control_drop();
+		}
 		if self.status == GameStatus::InProgress
 			&& !self.rules.no_moves_loses
 			&& self.consecutive_passes >= 2
@@ -4007,6 +4098,7 @@ impl Game {
 			self.control_hold = [0, 0];
 			return;
 		}
+		self.sync_control_ratchet();
 		if self.rules.endgame_rule.is_control_cascade() && self.cascade_control_target().is_none() {
 			// max_mat <= 1: control is inactive; low-value is the tie-breaker.
 			self.control_hold = [0, 0];
@@ -4016,7 +4108,7 @@ impl Game {
 		if self.control_count(who) >= need {
 			self.control_hold[who.index()] = self.control_hold[who.index()].saturating_add(1);
 			if self.control_hold[who.index()] >= self.rules.control_hold_turns.max(1) {
-				self.status = GameStatus::Won { winner: who, reason: EndReason::Control };
+				self.award_control(who, false);
 			}
 		} else {
 			self.control_hold[who.index()] = 0;
@@ -4025,6 +4117,50 @@ impl Game {
 		if self.control_count(opp) < need {
 			self.control_hold[opp.index()] = 0;
 		}
+	}
+
+	/// Lower `control_ratchet` to `min(stored, max_mat, cap)` while
+	/// `max_mat >= 2`. Returns true when the stored checkpoint dropped.
+	fn sync_control_ratchet(&mut self) -> bool {
+		if !self.rules.endgame_rule.is_control_cascade() {
+			return false;
+		}
+		let max_mat = self.max_material();
+		if max_mat <= 1 {
+			return false;
+		}
+		let cap = self.control_cap();
+		let floor = 2u8.min(cap);
+		let new = self.control_ratchet.min(max_mat as u8).min(cap).max(floor);
+		let dropped = new < self.control_ratchet;
+		self.control_ratchet = new;
+		dropped
+	}
+
+	/// If the ratchet just dropped and exactly one player already holds the
+	/// new checkpoint, they win immediately (no `control_hold_turns`).
+	fn check_immediate_control_drop(&mut self) {
+		if self.status.is_over() || !self.rules.control_win {
+			return;
+		}
+		if !self.sync_control_ratchet() {
+			return;
+		}
+		let Some(need) = self.cascade_control_target() else {
+			return;
+		};
+		let p1 = self.control_count(Player::One) >= need;
+		let p2 = self.control_count(Player::Two) >= need;
+		match (p1, p2) {
+			(true, false) => self.award_control(Player::One, true),
+			(false, true) => self.award_control(Player::Two, true),
+			_ => {}
+		}
+	}
+
+	fn award_control(&mut self, winner: Player, immediate: bool) {
+		self.control_win_immediate = immediate;
+		self.status = GameStatus::Won { winner, reason: EndReason::Control };
 	}
 
 	/// Both players are checked at the turn boundary. If both are insufficient
@@ -5795,7 +5931,7 @@ mod tests {
 		assert_eq!(game.control_count(Player::One), 4);
 		assert_eq!(game.control_count(Player::Two), 3);
 		game.evaluate_control_for_test(Player::Two);
-		assert_eq!(game.status(), GameStatus::InProgress, "P2 holds 3 < live target 4");
+		assert_eq!(game.status(), GameStatus::InProgress, "P2 holds 3 < ratchet target 4");
 		game.evaluate_turn_end_for_test(Player::One);
 		assert_eq!(
 			game.status(),
@@ -5804,44 +5940,24 @@ mod tests {
 	}
 
 	#[test]
-	fn control_cascade_target_is_live_after_material_changes() {
+	fn control_cascade_ratchet_does_not_rise_when_material_recovers() {
 		let mut game = Game::empty(cascade_rules());
 		occupy_control_n(&mut game, Player::One, 4);
 		pin_material(&mut game, Player::One, 4);
 		pin_material(&mut game, Player::Two, 4);
+		assert_eq!(game.control_ratchet(), 4);
 		assert_eq!(game.control_need(), 4);
-		game.evaluate_control_for_test(Player::One);
+		pin_material(&mut game, Player::Two, 5);
+		assert_eq!(game.max_material(), 5);
+		assert_eq!(game.control_ratchet(), 4, "recapture must not raise the checkpoint");
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_count(Player::One), 4);
+		game.evaluate_turn_end_for_test(Player::One);
 		assert_eq!(
 			game.status(),
 			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
 		);
-
-		let mut restored = Game::empty(cascade_rules());
-		occupy_control_n(&mut restored, Player::One, 4);
-		pin_material(&mut restored, Player::One, 4);
-		pin_material(&mut restored, Player::Two, 4);
-		// A claim/capture that restores material raises the live target again.
-		pin_material(&mut restored, Player::Two, 5);
-		assert_eq!(restored.max_material(), 5);
-		assert_eq!(restored.control_need(), 5);
-		assert_eq!(restored.control_count(Player::One), 4);
-		restored.evaluate_turn_end_for_test(Player::One);
-		assert_eq!(
-			restored.status(),
-			GameStatus::InProgress,
-			"holding 4 is not enough once max_mat returns to 5"
-		);
-
-		// A later capture that drops max_mat back to 4 wins at the same
-		// turn-boundary check (`control_hold_turns` = 1).
-		pin_material(&mut restored, Player::Two, 3);
-		assert_eq!(restored.max_material(), 4);
-		assert_eq!(restored.control_need(), 4);
-		restored.evaluate_turn_end_for_test(Player::One);
-		assert_eq!(
-			restored.status(),
-			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
-		);
+		assert!(!game.control_win_immediate(), "this was a turn-boundary hold");
 	}
 
 	#[test]
@@ -5895,17 +6011,18 @@ mod tests {
 	}
 
 	#[test]
-	fn control_cascade_claim_of_leftover_lowers_live_target() {
+	fn control_cascade_claim_of_leftover_lowers_ratchet_and_does_not_rise() {
 		let mut game = Game::empty(cascade_rules());
 		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
 		let (dest, _mid, far, _, _) = local_claim_leftover_fixture(&mut game);
 		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
 		assert!(game.tile_at(far).is_some(), "leftover occupies the board");
 		assert_eq!(game.tile_at(far).unwrap().owner, Player::Two);
-		pin_material(&mut game, Player::One, 4);
 		pin_material(&mut game, Player::Two, 5);
+		pin_material(&mut game, Player::One, 4);
 		assert_eq!(game.max_material(), 5);
 		assert_eq!(game.control_need(), 5);
+		assert_eq!(game.control_ratchet(), 5);
 		game.set_current(Player::One);
 		game.apply(Action::Claim { node: far }).unwrap();
 		assert!(game.tile_at(far).is_none());
@@ -5917,7 +6034,85 @@ mod tests {
 		);
 		assert_eq!(game.max_material(), 4);
 		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_ratchet(), 4);
 		assert_eq!(game.cascade_control_target(), Some(4));
+		pin_material(&mut game, Player::Two, 5);
+		assert_eq!(game.max_material(), 5);
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.control_need(), 4);
+	}
+
+	/// Spawn adjacent to a P1 control tile, occupied by a weak P2 piece that
+	/// `put` leaves overwhelmed (local-claim does not sweep on `put`).
+	fn overwhelmed_p2_spawn(game: &Game) -> NodeId {
+		let control: std::collections::HashSet<_> = std::iter::once(game.board().center())
+			.chain(game.board().inner_ring().iter().copied())
+			.collect();
+		for &spawn in game.board().spawns() {
+			if control.contains(&spawn) || game.tile_at(spawn).is_some() {
+				continue;
+			}
+			if game
+				.board()
+				.neighbors(spawn)
+				.iter()
+				.any(|&n| game.tile_at(n).map(|t| t.owner == Player::One).unwrap_or(false))
+			{
+				return spawn;
+			}
+		}
+		panic!("a spawn neighbors a P1 control tile");
+	}
+
+	fn place_overwhelmed_p2_extra(game: &mut Game) -> NodeId {
+		let spawn = overwhelmed_p2_spawn(game);
+		put(game, spawn, Player::Two, TileColor::Blue, 1, 1);
+		assert!(game.is_overwhelmed(spawn), "P2 extra at {spawn} should be claimable");
+		spawn
+	}
+
+	#[test]
+	fn control_cascade_immediate_win_on_drop_when_one_player_holds() {
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		assert_eq!(game.control_need(), 5);
+		let cloned = game.clone();
+		assert_eq!(cloned.control_ratchet(), game.control_ratchet());
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(game.control_win_immediate(), "unique holder wins without control_hold_turns");
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.control_hold(Player::One), 0);
+		assert_eq!(cloned.control_ratchet(), 5, "clone must keep the pre-drop ratchet");
+	}
+
+	#[test]
+	fn control_cascade_no_immediate_win_when_both_hold_on_drop() {
+		let mut rules = cascade_rules();
+		rules.control_hold_turns = 3;
+		let mut game = Game::empty(rules);
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		occupy_control_n(&mut game, Player::One, 4);
+		let inner = game.board().inner_ring().to_vec();
+		for &node in inner.iter().skip(3).take(4) {
+			put(&mut game, node, Player::Two, TileColor::Orange, 3, 1);
+		}
+		assert_eq!(game.control_count(Player::Two), 4);
+		let extra = place_overwhelmed_p2_extra(&mut game);
+		pin_material(&mut game, Player::Two, 5);
+		pin_material(&mut game, Player::One, 4);
+		assert_eq!(game.control_ratchet(), 5);
+		game.set_current(Player::One);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress, "both hold: no immediate win");
+		assert!(!game.control_win_immediate());
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_hold(Player::One), 1, "actor still ticks the turn-boundary hold");
+		assert_eq!(game.control_hold(Player::Two), 0);
 	}
 
 	#[test]

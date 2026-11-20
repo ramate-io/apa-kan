@@ -692,6 +692,25 @@ mod tests {
 	}
 
 	#[test]
+	fn minimax_takes_immediate_cascade_drop_win() {
+		use crate::game::{EndReason, GameStatus, Player};
+
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(game.control_need(), 5);
+		assert_eq!(game.control_ratchet(), 5);
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		assert_eq!(action, crate::game::Action::Claim { node: extra });
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(game.control_win_immediate());
+		assert_eq!(game.control_ratchet(), 4);
+	}
+
+	#[test]
 	fn minimax_completes_control_hold_instead_of_vacating() {
 		use crate::game::{EndReason, GameStatus, Player, TileColor};
 

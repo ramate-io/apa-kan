@@ -170,7 +170,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Click an overwhelmed tile to CLAIM it (always a spawn token). Win: 5 of 9 cascading 4-3-2 with max board+usable, then lowest pieces if both <=1.";
+	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Click an overwhelmed tile to CLAIM it (always a spawn token). Win: 5 of 9 ratcheting 4-3-2 with max board+usable (never rises), then lowest pieces if both <=1.";
 
 pub const SETUP_HELP_TEXT: &str =
 	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6). Normal uncapped.";
@@ -4489,7 +4489,9 @@ mod tests {
 	}
 
 	#[test]
-	fn hud_shows_the_live_cascade_control_target() {
+	fn hud_shows_the_ratcheted_cascade_control_target() {
+		use crate::game::BudgetToken;
+
 		let mut game = Game::empty(RuleSet::default());
 		let center = game.board().center();
 		let inner = game.board().inner_ring().to_vec();
@@ -4507,6 +4509,13 @@ mod tests {
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("ctl P1 4/4 0/1 P2 0/4 0/1"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
+		let extra = game.alloc_tile(Player::Two, TileColor::Orange, 1, 1);
+		game.set_bench(Player::Two, vec![extra]);
+		game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank]);
+		assert_eq!(game.max_material(), 4.max(1));
+		assert_eq!(game.control_need(), 4, "HUD target must not rise with recovered material");
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("ctl P1 4/4 0/1 P2 0/4 0/1"), "{turn}");
 	}
 
 	#[test]

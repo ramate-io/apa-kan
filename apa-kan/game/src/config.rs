@@ -462,7 +462,7 @@ pub fn usage() -> &'static str {
 	   --control-win <on|off>                     Center+inner-ring control win (default: on)\n\
 	   --control-n <1..9>                         Control-set occupancy cap (default: 5)\n\
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
-	   --endgame-rule <control-cascade|low-value>  Cascade 5→2 with max material, then low-value at ≤1 (default: control-cascade)\n\
+	   --endgame-rule <control-cascade|low-value>  One-way ratchet 5→2 with max material, then low-value at ≤1 (default: control-cascade)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\

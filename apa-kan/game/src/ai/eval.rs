@@ -427,7 +427,7 @@ fn race_score(game: &Game, me: Player, opp: Player) -> i32 {
 				let my_mat = game.total_material(me) as i32;
 				let opp_mat = game.total_material(opp) as i32;
 				// Lower checkpoints are closer to a win; weight occupancy
-				// against the live threshold, not the opening 5.
+				// against the ratcheted threshold, not the opening 5.
 				if target < i32::from(game.control_cap()) {
 					s += 120 * my_ctl.min(target) - 140 * opp_ctl.min(target);
 				}
@@ -752,7 +752,24 @@ mod tests {
 	}
 
 	#[test]
-	fn cascade_eval_prefers_meeting_the_live_target() {
+	fn cascade_immediate_drop_win_is_a_search_terminal() {
+		use crate::game::{Action, EndReason, GameStatus, Player};
+
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(terminal_score(&game, Player::One), None);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(game.control_win_immediate());
+		let s = terminal_score(&game, Player::One).unwrap();
+		assert!(s > WIN / 2);
+		assert_eq!(terminal_score(&game, Player::Two), Some(-s));
+	}
+
+	#[test]
+	fn cascade_eval_prefers_meeting_the_ratcheted_target() {
 		use crate::game::{BudgetToken, EndgameRule, Player, TileColor};
 
 		let mut rules = RuleSet::default();

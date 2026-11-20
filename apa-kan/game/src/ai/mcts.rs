@@ -1375,6 +1375,29 @@ mod tests {
 	}
 
 	#[test]
+	fn mcts_takes_immediate_cascade_drop_win() {
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(game.control_need(), 5);
+		assert_eq!(game.control_ratchet(), 5);
+		let mut rng = StdRng::seed_from_u64(1);
+		let mut searcher = Searcher::new();
+		let action = searcher.choose_with(
+			&game,
+			crate::ai::Actor::Mcts,
+			&mut rng,
+			SearchLimit::work(800, 160),
+		);
+		assert_eq!(action, Action::Claim { node: extra });
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(game.control_win_immediate());
+		assert_eq!(game.control_ratchet(), 4);
+	}
+
+	#[test]
 	fn solver_picks_immediate_center_hold_win() {
 		let (game, from, center) = hold_win_position();
 		let mut cfg = SearchConfig::enhanced();

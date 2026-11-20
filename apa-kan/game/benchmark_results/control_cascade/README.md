@@ -1,9 +1,13 @@
 # Control-cascade endgame (shallow H2H)
 
-Stacked on local-claim + independent-max. Default `--endgame-rule
-control-cascade`: live control target `max_mat.min(5)` of the 9-node set
-while `max_mat >= 2`, then low-value at `max_mat <= 1`. Do not overwrite;
-quote numbers from the committed `*.txt` log in this directory.
+Stacked on local-claim + independent-max. The committed `h2h_shallow.*`
+below is the previous **live-target** log (`max_mat.min(5)`). Current
+`--endgame-rule control-cascade` is a **one-way ratchet** 5→4→3→2
+(`target.min(max_mat)` while `max_mat >= 2`; recaptures never raise it)
+plus an immediate unique-holder win when the ratchet drops, then
+low-value at `max_mat <= 1`. Do not overwrite; quote numbers from the
+committed `*.txt` log in this directory. The next shallow H2H will
+replace this package.
 
 Compared to PR #70 [`independent_max/h2h_shallow.txt`](../independent_max/h2h_shallow.txt)
 (fixed 5 of 9, then both-below-5 low-value). Same search budget, matchups,

@@ -509,6 +509,8 @@ struct SeatStats {
 	control_t4: u32,
 	control_t3: u32,
 	control_t2: u32,
+	control_immediate: u32,
+	control_hold_win: u32,
 	insuff: u32,
 	low_value: u32,
 	low_value_wins: u32,
@@ -819,6 +821,8 @@ fn run(cfg: BenchConfig) {
 	let mut end_control_t4 = 0u32;
 	let mut end_control_t3 = 0u32;
 	let mut end_control_t2 = 0u32;
+	let mut end_control_immediate = 0u32;
+	let mut end_control_hold_win = 0u32;
 	let mut end_insuff = 0u32;
 	let mut end_low_value = 0u32;
 	let mut end_low_value_wins = 0u32;
@@ -875,6 +879,8 @@ fn run(cfg: BenchConfig) {
 		end_control_t4 += stats.control_t4;
 		end_control_t3 += stats.control_t3;
 		end_control_t2 += stats.control_t2;
+		end_control_immediate += stats.control_immediate;
+		end_control_hold_win += stats.control_hold_win;
 		end_insuff += stats.insuff;
 		end_low_value += stats.low_value;
 		end_low_value_wins += stats.low_value_wins;
@@ -934,7 +940,7 @@ fn run(cfg: BenchConfig) {
 		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
 	));
 	lines.push(format!(
-		"# control_cascade  target5={end_control_t5} target4={end_control_t4} target3={end_control_t3} target2={end_control_t2}  low_value_max_mat_le1={end_low_value}"
+		"# control_cascade  target5={end_control_t5} target4={end_control_t4} target3={end_control_t3} target2={end_control_t2}  immediate={end_control_immediate} hold={end_control_hold_win}  low_value_max_mat_le1={end_low_value}"
 	));
 	lines.push(format!(
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
@@ -943,7 +949,7 @@ fn run(cfg: BenchConfig) {
 		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
 	);
 	println!(
-		"# control_cascade  target5={end_control_t5} target4={end_control_t4} target3={end_control_t3} target2={end_control_t2}  low_value_max_mat_le1={end_low_value}"
+		"# control_cascade  target5={end_control_t5} target4={end_control_t4} target3={end_control_t3} target2={end_control_t2}  immediate={end_control_immediate} hold={end_control_hold_win}  low_value_max_mat_le1={end_low_value}"
 	);
 	println!(
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
@@ -1486,6 +1492,13 @@ fn summarize_pairing(
 		}
 		tally_low_value(&mut stats, result.low_value);
 		tally_control_target(&mut stats, result.control_target, result.status);
+		if matches!(result.status, GameStatus::Won { reason: EndReason::Control, .. }) {
+			if result.control_immediate {
+				stats.control_immediate += 1;
+			} else {
+				stats.control_hold_win += 1;
+			}
+		}
 	}
 	let n = games.max(1);
 	let avg = f64::from(stats.turns) / f64::from(n);
@@ -1834,6 +1847,7 @@ struct PlayResult {
 	status: GameStatus,
 	low_value: Option<LowValueResolution>,
 	control_target: Option<u8>,
+	control_immediate: bool,
 	turns: u32,
 	max_repeat: u32,
 	max_occ_repeat: u32,
@@ -2217,6 +2231,7 @@ fn play_game(
 			GameStatus::Won { reason: EndReason::Control, .. } => Some(game.control_need()),
 			_ => game.cascade_control_target(),
 		},
+		control_immediate: game.control_win_immediate(),
 		turns: game.turn_count(),
 		max_repeat,
 		max_occ_repeat: max_occ,
