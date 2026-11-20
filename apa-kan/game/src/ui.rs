@@ -1,4 +1,4 @@
-//! Bevy 0.19 desktop UI: both public decks, ADD/MOVE targeting, last-action log.
+//! Bevy 0.19 desktop UI: both public decks, ADD/MOVE/SWAP targeting, last-action log.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -708,6 +708,10 @@ fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
 					apply_action(play, Action::Move { from, to: node });
 					return;
 				}
+				if play.game.legal_swap_partners(from).contains(&node) {
+					apply_action(play, Action::Swap { from, to: node });
+					return;
+				}
 			}
 			_ => {}
 		}
@@ -954,6 +958,12 @@ fn refresh_view(
 		Selection::Piece(n) => play.game.legal_destinations(n),
 		_ => Vec::new(),
 	};
+	// Pink rings on legal SWAP partners only. Under NormalOnly that is
+	// empty unless the selected tile is a 1-ring normal.
+	let swap_partners: Vec<NodeId> = match play.selection {
+		Selection::Piece(n) => play.game.legal_swap_partners(n),
+		_ => Vec::new(),
+	};
 
 	for arc in board.arcs() {
 		spawn_arc(
@@ -991,6 +1001,18 @@ fn refresh_view(
 				layout.tile_radius + 4.0,
 				layout.tile_radius + 7.0,
 				rgb(visual::DEST_RGB),
+				visual::Z_HIGHLIGHT,
+			);
+		}
+		if swap_partners.contains(&id) {
+			spawn_ring(
+				&mut commands,
+				&mut meshes,
+				&mut materials,
+				p,
+				layout.tile_radius + 4.0,
+				layout.tile_radius + 7.0,
+				rgb(visual::SWAP_RGB),
 				visual::Z_HIGHLIGHT,
 			);
 		}
@@ -1041,6 +1063,13 @@ fn refresh_view(
 					world_v(layout, board.position(id))
 						+ Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
 					"CLAIM",
+				);
+			} else if swap_partners.contains(&id) {
+				spawn_label(
+					&mut commands,
+					world_v(layout, board.position(id))
+						+ Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
+					"SWAP",
 				);
 			}
 		} else if board.is_spawn(id) && matches!(play.selection, Selection::Bench(_)) {

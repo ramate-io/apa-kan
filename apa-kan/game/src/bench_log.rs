@@ -8,8 +8,8 @@ use crate::game::{
 	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
 	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game,
 	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
-	PathConstraint, Player, RingCountWeights, RingType, RuleSet, SamePieceTwice, Tile, TileColor,
-	TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	PathConstraint, Player, RingCountWeights, RingType, RuleSet, SamePieceTwice, SwapMode, Tile,
+	TileColor, TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -337,7 +337,8 @@ pub struct RulesLog {
 	pub max_rings: u8,
 	pub zag_numer: u8,
 	/// `singles,doubles,triples` generation weights. Absent on older logs;
-	/// replay uses the live 7:5:4 default (tiles themselves are stored).
+	/// replay uses historical 7:5:4 (tiles themselves are stored). Live
+	/// [`RuleSet`] default is 4:3:1.
 	#[serde(
 		default = "default_ring_count_weights",
 		skip_serializing_if = "skip_default_ring_count_weights"
@@ -403,17 +404,21 @@ pub struct RulesLog {
 	/// Absent on older logs; replay uses independent, which matches those captures.
 	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
 	pub bead_scoring: String,
-	/// `current` (live default) or a `--braid-scoring` variant. Absent on older
-	/// logs; replay uses current.
+	/// Live RuleSet default is `braid-only-exact`. Absent on older logs;
+	/// replay uses `current` (coverage) so pre-exact captures still match.
 	#[serde(default = "default_current_braid", skip_serializing_if = "skip_current_braid")]
 	pub braid_scoring: String,
+	/// Lone-heavy 1-slot braids (`--single-braids`). Absent/false on older logs.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub allow_single_braids: bool,
 	/// Unique node-pair scoring (`--link-once`). Absent/false on older logs
 	/// that scored each generating-circle petal. When `score_incident_arcs`
 	/// is `Some(false)`, replay also treats this as on.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub score_unique_neighbors: bool,
-	/// `independent-max` (live default) or `additive` (RFC 001-001-002).
-	/// Absent on older logs; replay uses additive, which matches those captures.
+	/// Live RuleSet default is `additive`. Absent on older logs; replay uses
+	/// additive, which matches those captures. Independent-max logs write
+	/// the field (skip only serializes additive).
 	#[serde(
 		default = "default_additive_channel_mode",
 		skip_serializing_if = "skip_additive_channel_mode"
@@ -441,6 +446,16 @@ pub struct RulesLog {
 		skip_serializing_if = "skip_default_blocker_blocks"
 	)]
 	pub blocker_blocks: String,
+	/// Live RuleSet default is `normal-only`. Absent on older logs; replay
+	/// uses off. Historical comparison-mode names fold to on.
+	#[serde(default = "default_swap_off", skip_serializing_if = "skip_swap_off")]
+	pub swap_mode: String,
+	/// Historical. Live swaps always ban echoing the last pair.
+	#[serde(default, skip_serializing)]
+	pub swap_no_immediate_back: bool,
+	/// Historical flag; ignored.
+	#[serde(default, skip_serializing)]
+	pub swap_no_just_moved: bool,
 }
 
 fn default_low_value_endgame() -> String {
@@ -457,6 +472,14 @@ fn default_blocker_blocks() -> String {
 
 fn skip_default_blocker_blocks(v: &String) -> bool {
 	*v == BlockerBlocks::default().name()
+}
+
+fn default_swap_off() -> String {
+	SwapMode::Off.name().to_string()
+}
+
+fn skip_swap_off(v: &String) -> bool {
+	*v == SwapMode::Off.name()
 }
 
 impl RulesLog {
@@ -505,11 +528,15 @@ impl RulesLog {
 			zag_match_non_zag: Some(true),
 			bead_scoring: r.bead_scoring.name().into(),
 			braid_scoring: r.braid_scoring.name().into(),
+			allow_single_braids: r.allow_single_braids,
 			score_unique_neighbors: r.score_unique_neighbors,
 			channel_mode: r.channel_mode.name().into(),
 			capture_mode: r.capture_mode.name().into(),
 			emblem_weights: r.emblem_weights.label(),
 			blocker_blocks: r.blocker_blocks.name().into(),
+			swap_mode: r.swap_mode.name().into(),
+			swap_no_immediate_back: false,
+			swap_no_just_moved: false,
 		}
 	}
 
@@ -560,6 +587,7 @@ impl RulesLog {
 			},
 			braid_scoring: BraidScoring::parse(&self.braid_scoring)
 				.unwrap_or(BraidScoring::Current),
+			allow_single_braids: self.allow_single_braids,
 			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
 			score_unique_neighbors: self.score_unique_neighbors
 				|| self.score_incident_arcs == Some(false),
@@ -568,6 +596,7 @@ impl RulesLog {
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
 				.unwrap_or_else(|_| EmblemWeights::default()),
 			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
+			swap_mode: SwapMode::parse_log(&self.swap_mode).unwrap_or(SwapMode::Off),
 		})
 	}
 }
@@ -688,6 +717,11 @@ pub struct ActionLog {
 	pub captures: Vec<CaptureEventLog>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub piece: Option<PieceRef>,
+	/// Partner tile on a SWAP (the occupant of `to` before the exchange).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub partner: Option<PieceRef>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub partner_owner: Option<u8>,
 	pub tokens: usize,
 	pub budget: usize,
 	#[serde(default, skip_serializing_if = "skip_zero_usize")]
@@ -771,6 +805,7 @@ impl ActionLog {
 			}
 			Action::Move { from, to } => ("MOVE".to_string(), Some(from), Some(to), None),
 			Action::Claim { node } => ("CLAIM".to_string(), None, Some(node), None),
+			Action::Swap { from, to } => ("SWAP".to_string(), Some(from), Some(to), None),
 			Action::Pass => ("PASS".to_string(), None, None, None),
 		};
 		let capture = outcome.removals.iter().filter(|r| r.tile.owner != player).count() as u8;
@@ -801,6 +836,8 @@ impl ActionLog {
 			capture_dest,
 			captures,
 			piece: piece.map(PieceRef::from_tile),
+			partner: None,
+			partner_owner: None,
 			tokens: game_after.budget_token_count(player),
 			budget: game_after.budget(player),
 			surplus: game_after.budget_surplus(player),
@@ -828,6 +865,12 @@ impl ActionLog {
 
 	pub fn with_overwhelm_delta(mut self, healed: u8) -> Self {
 		self.healed = healed;
+		self
+	}
+
+	pub fn with_partner(mut self, tile: Tile) -> Self {
+		self.partner_owner = Some(player_num(tile.owner));
+		self.partner = Some(PieceRef::from_tile(tile));
 		self
 	}
 
@@ -861,6 +904,11 @@ impl ActionLog {
 				let node = self.to.ok_or("CLAIM missing to")?;
 				Ok(Action::Claim { node })
 			}
+			"SWAP" => {
+				let from = self.from.ok_or("SWAP missing from")?;
+				let to = self.to.ok_or("SWAP missing to")?;
+				Ok(Action::Swap { from, to })
+			}
 			"PASS" => Ok(Action::Pass),
 			other => Err(format!("unknown action kind '{other}'")),
 		}
@@ -872,6 +920,7 @@ impl ActionLog {
 			"ADD" => tags.push("ADD"),
 			"MOVE" => tags.push("MOVE"),
 			"CLAIM" => tags.push("CLAIM"),
+			"SWAP" => tags.push("SWAP"),
 			"PASS" => tags.push("PASS"),
 			_ => {}
 		}
@@ -1242,7 +1291,22 @@ impl GameLog {
 		outcome: &ActionOutcome,
 		game_after: &Game,
 	) {
-		self.actions.push(ActionLog::record(action, piece, outcome, game_after));
+		self.push_action_partner(action, piece, None, outcome, game_after);
+	}
+
+	pub fn push_action_partner(
+		&mut self,
+		action: Action,
+		piece: Option<Tile>,
+		partner: Option<Tile>,
+		outcome: &ActionOutcome,
+		game_after: &Game,
+	) {
+		let mut rec = ActionLog::record(action, piece, outcome, game_after);
+		if let Some(p) = partner {
+			rec = rec.with_partner(p);
+		}
+		self.actions.push(rec);
 	}
 
 	pub fn push_action_with_search(
@@ -1253,8 +1317,23 @@ impl GameLog {
 		game_after: &Game,
 		stats: crate::ai::SearchStats,
 	) {
-		self.actions
-			.push(ActionLog::record(action, piece, outcome, game_after).with_search(stats));
+		self.push_action_with_search_partner(action, piece, None, outcome, game_after, stats);
+	}
+
+	pub fn push_action_with_search_partner(
+		&mut self,
+		action: Action,
+		piece: Option<Tile>,
+		partner: Option<Tile>,
+		outcome: &ActionOutcome,
+		game_after: &Game,
+		stats: crate::ai::SearchStats,
+	) {
+		let mut rec = ActionLog::record(action, piece, outcome, game_after).with_search(stats);
+		if let Some(p) = partner {
+			rec = rec.with_partner(p);
+		}
+		self.actions.push(rec);
 	}
 
 	pub fn finish(&mut self, live: &Game, low_value: Option<LowValueResolution>) {
@@ -1505,7 +1584,16 @@ pub fn piece_for_action(game: &Game, action: Action) -> Option<Tile> {
 		}
 		Action::Move { from, .. } => game.tile_at(from),
 		Action::Claim { node } => game.tile_at(node),
+		Action::Swap { from, .. } => game.tile_at(from),
 		Action::Pass => None,
+	}
+}
+
+/// Partner tile looked up *before* `apply` (occupant of SWAP `to`).
+pub fn partner_for_action(game: &Game, action: Action) -> Option<Tile> {
+	match action {
+		Action::Swap { to, .. } => game.tile_at(to),
+		_ => None,
 	}
 }
 
@@ -1559,13 +1647,17 @@ mod tests {
 			};
 			let action = searcher.choose(&game, actor, &mut rng, think);
 			let piece = piece_for_action(&game, action);
+			let partner = partner_for_action(&game, action);
 			match game.apply(action) {
-				Ok(outcome) => log.push_action(action, piece, &outcome, &game),
+				Ok(outcome) => {
+					log.push_action_partner(action, piece, partner, &outcome, &game);
+				}
 				Err(_) => {
 					let fallback = game.legal_actions().into_iter().next().unwrap_or(Action::Pass);
 					let piece = piece_for_action(&game, fallback);
+					let partner = partner_for_action(&game, fallback);
 					if let Ok(outcome) = game.apply(fallback) {
-						log.push_action(fallback, piece, &outcome, &game);
+						log.push_action_partner(fallback, piece, partner, &outcome, &game);
 					}
 					break;
 				}
@@ -1636,7 +1728,7 @@ mod tests {
 		assert!(!log.actions.is_empty());
 		for act in &log.actions {
 			assert!(
-				matches!(act.kind.as_str(), "ADD" | "MOVE" | "PASS"),
+				matches!(act.kind.as_str(), "ADD" | "MOVE" | "CLAIM" | "SWAP" | "PASS"),
 				"unexpected kind {}",
 				act.kind
 			);
@@ -1646,7 +1738,7 @@ mod tests {
 					assert!(act.to.is_some());
 					assert!(act.piece.is_some());
 				}
-				"MOVE" => {
+				"MOVE" | "SWAP" => {
 					assert!(act.from.is_some());
 					assert!(act.to.is_some());
 					assert!(act.piece.is_some());
@@ -1655,6 +1747,14 @@ mod tests {
 						piece.n_rings,
 						piece.normal_rings + piece.zag_rings + piece.braid_rings + piece.bead_rings
 					);
+					if act.kind == "SWAP" {
+						assert_eq!(piece.n_rings, 1);
+						assert!(act.partner.is_some());
+						assert!(act.partner_owner.is_some());
+					}
+				}
+				"CLAIM" => {
+					assert!(act.to.is_some());
 				}
 				"PASS" => {
 					assert!(act.from.is_none());
@@ -1776,21 +1876,40 @@ mod tests {
 		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
 		assert_eq!(log.bead_scoring, "shared");
 		assert_eq!(log.braid_scoring, "braid-only-match");
+		assert!(log.allow_single_braids);
 		assert!(log.score_unique_neighbors);
 		assert_eq!(log.score_incident_arcs, Some(false));
 	}
 
 	#[test]
 	fn missing_braid_scoring_replays_as_current() {
-		let log = RulesLog::from_rules(RuleSet::default());
+		let mut r = RuleSet::default();
+		r.braid_scoring = BraidScoring::Current;
+		r.allow_single_braids = false;
+		let log = RulesLog::from_rules(r);
 		let json = serde_json::to_string(&log).unwrap();
 		assert!(!json.contains("braid_scoring"), "{json}");
 		assert!(!json.contains("score_unique_neighbors"), "{json}");
+		assert!(!json.contains("allow_single_braids"), "{json}");
 		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
 		assert_eq!(parsed.braid_scoring, "current");
 		assert!(!parsed.score_unique_neighbors);
+		assert!(!parsed.allow_single_braids);
 		assert_eq!(parsed.to_rules().unwrap().braid_scoring, BraidScoring::Current);
 		assert!(!parsed.to_rules().unwrap().score_unique_neighbors);
+	}
+
+	#[test]
+	fn live_defaults_write_exact_single_braids_and_normal_only_swap() {
+		let log = RulesLog::from_rules(RuleSet::default());
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(json.contains("braid-only-exact"), "{json}");
+		assert!(json.contains("allow_single_braids"), "{json}");
+		assert!(json.contains("normal-only"), "{json}");
+		assert!(json.contains("4,3,1"), "{json}");
+		assert!(json.contains("\"160\""), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.to_rules().unwrap(), RuleSet::default());
 	}
 
 	#[test]
@@ -2265,6 +2384,45 @@ mod tests {
 			"benchmark_results/ring_dist_channels/h2h_b_imax_enhanced.jsonl.gz",
 			"benchmark_results/ring_dist_channels/h2h_a_additive_counterplay.jsonl.gz",
 			"benchmark_results/ring_dist_channels/h2h_b_imax_counterplay.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
+	fn committed_singles_swap_shallow_replays() {
+		for rel in [
+			"benchmark_results/singles_swap/h2h_b_adj_any_counterplay_noback.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_locked_counterplay.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
+	fn committed_single_braid_exact_swap_shallow_replays() {
+		for rel in [
+			"benchmark_results/single_braid_exact_swap/h2h_full_link_once.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_full_double.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_full_double_noswap.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_full_double_nobraid.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_defaults.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
+	fn committed_center_link_once_shallow_replays() {
+		for rel in [
+			"benchmark_results/center_link_once/h2h_431_add_bom.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_431_add.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_431_imax.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_431_imax_bom.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_add.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_add_bom.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_imax.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_imax_bom.jsonl.gz",
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 100);
 		}

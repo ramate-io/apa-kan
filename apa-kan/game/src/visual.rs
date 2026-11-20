@@ -170,10 +170,10 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Click an overwhelmed tile to CLAIM it (always a spawn token). Win: 5 of 9 ratcheting 4-3-2 with max board+usable (never rises), then lowest pieces if both <=1.";
+	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Click a 1-ring normal then an adjacent tile to SWAP (same pair cannot swap back next; no empty center). Click an overwhelmed tile to CLAIM it (always a spawn token). Only exact braids score (1-slot +1); other matches still paint, score 0. Win: 5 of 9 ratcheting 4-3-2 with max board+usable (never rises), then lowest pieces if both <=1.";
 
 pub const SETUP_HELP_TEXT: &str =
-	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6). Normal uncapped.";
+	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6, a 1-slot braid uses 1). Normal uncapped.";
 
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];
@@ -184,6 +184,8 @@ pub const NODE_RGB: [f32; 3] = [0.75, 0.75, 0.75];
 pub const CENTER_RGB: [f32; 3] = [0.85, 0.85, 0.85];
 pub const HIGHLIGHT_RGB: [f32; 3] = [0.95, 0.85, 0.25];
 pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
+/// Occupied SWAP partner highlight. Distinct from MOVE-dest cyan.
+pub const SWAP_RGB: [f32; 3] = [0.95, 0.45, 0.75];
 /// Amber outline on a tile that just landed (token stack or bench) after
 /// a capture. Distinct from selection gold.
 pub const CAPTURE_GLOW_RGB: [f32; 3] = [1.00, 0.72, 0.28];
@@ -879,7 +881,7 @@ fn two_ended_with(
 		a.normal_ring_count() > 0 || b.normal_ring_count() > 0
 	};
 	let bead_fires = a.bead_ring_count() > 0 || b.bead_ring_count() > 0;
-	let braid_min = 2u8;
+	let braid_min = braid.min_slots();
 	let body = if !normal_fires {
 		if zag_mid[0].is_some()
 			|| a.braid_ring_count() >= braid_min
@@ -982,7 +984,7 @@ fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
 	one_ended_with(tile, on_from, true, BraidScoring::Current)
 }
 
-fn one_ended_with(tile: Tile, on_from: bool, fold_beads: bool, _braid: BraidScoring) -> ArcPaint {
+fn one_ended_with(tile: Tile, on_from: bool, fold_beads: bool, braid: BraidScoring) -> ArcPaint {
 	let zags = tile_zag_strokes(tile);
 	let mut normals: Vec<TileColor> = Vec::new();
 	for k in 0..tile.ring_strokes() {
@@ -997,7 +999,7 @@ fn one_ended_with(tile: Tile, on_from: bool, fold_beads: bool, _braid: BraidScor
 		}
 	}
 	let beads = tile_bead_strokes(tile);
-	let braid_min = 2u8;
+	let braid_min = braid.min_slots();
 	let body = match normals.as_slice() {
 		[] if zags[0].is_none() && tile.braid_ring_count() < braid_min && beads[0].is_none() => {
 			ArcBody::Neutral
@@ -3630,7 +3632,7 @@ mod tests {
 
 	#[test]
 	fn independent_max_hud_paints_only_the_two_winning_channels() {
-		let rules = RuleSet::default();
+		let rules = RuleSet::independent_max();
 		assert!(rules.channel_mode.is_independent_max());
 		let zag =
 			Tile::with_typed_rings(1, Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
@@ -3735,8 +3737,37 @@ mod tests {
 	}
 
 	#[test]
-	fn independent_max_keeps_beads_on_a_green_match_next_to_a_zag() {
+	fn default_braid_only_exact_still_paints_non_braid_matches() {
 		let rules = RuleSet::default();
+		assert_eq!(rules.braid_scoring, crate::game::BraidScoring::BraidOnlyExact);
+		let a = Tile::with_rings(1, Player::One, &[TileColor::Orange], 1, 1);
+		let b = Tile::with_rings(2, Player::Two, &[TileColor::Orange], 1, 1);
+		let paint = arc_paint_for_rules(Some(a), Some(b), &rules);
+		assert!(
+			paint.has_normal_lane(),
+			"braid-only-exact still displays a normal match; it just scores 0"
+		);
+		assert!(matches!(paint.body, ArcBody::Solid { color: TileColor::Orange, thick: true }));
+	}
+
+	#[test]
+	fn braid_only_exact_paints_a_one_slot_braid() {
+		let rules = RuleSet::default();
+		assert_eq!(rules.braid_scoring, crate::game::BraidScoring::BraidOnlyExact);
+		let a =
+			Tile::with_typed_rings(1, Player::One, &[(TileColor::Orange, RingType::Braid)], 1, 1);
+		let b = Tile::with_rings(2, Player::Two, &[TileColor::Orange], 1, 1);
+		let paint = arc_paint_for_rules(Some(a), Some(b), &rules);
+		assert!(
+			matches!(paint.braid, Some(BraidLane::Weave { .. })),
+			"1-slot exact braid paints a weave: {:?}",
+			paint.braid
+		);
+	}
+
+	#[test]
+	fn independent_max_keeps_beads_on_a_green_match_next_to_a_zag() {
+		let rules = RuleSet::independent_max();
 		let a = Tile::with_typed_rings(
 			1,
 			Player::One,
@@ -4641,7 +4672,11 @@ mod tests {
 		assert!(is_hud_safe(SETUP_HELP_TEXT), "{SETUP_HELP_TEXT}");
 		assert!(HELP_TEXT.contains("5 of 9"));
 		assert!(HELP_TEXT.contains("board+usable"), "{HELP_TEXT}");
+		assert!(HELP_TEXT.contains("1-ring normal"), "{HELP_TEXT}");
+		assert!(HELP_TEXT.contains("exact braids"), "{HELP_TEXT}");
+		assert!(HELP_TEXT.contains("score 0"), "{HELP_TEXT}");
 		assert!(SETUP_HELP_TEXT.contains("3-braid uses 3 of 6"), "{SETUP_HELP_TEXT}");
+		assert!(SETUP_HELP_TEXT.contains("1-slot braid uses 1"), "{SETUP_HELP_TEXT}");
 		let braid = Tile::with_typed_rings(
 			1,
 			Player::One,

@@ -10,7 +10,7 @@ use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, D
 use crate::game::{
 	color_drift_diagonal, BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, CaptureMode,
 	ChannelMode, EmblemWeights, EndgameRule, HopWeightCmp, InsufficientTilesLoss,
-	PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet, SamePieceTwice,
+	PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet, SamePieceTwice, SwapMode,
 	ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
@@ -414,6 +414,9 @@ where
 		"--capture-mode" => {
 			rules.capture_mode = CaptureMode::parse(&require_value(arg, it.next())?)?;
 		}
+		"--singles-swap" | "--swap-mode" => {
+			rules.swap_mode = SwapMode::parse_cli(&require_value(arg, it.next())?)?;
+		}
 		"--dot-chance" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n > 100 {
@@ -439,6 +442,9 @@ where
 		}
 		"--braid-scoring" => {
 			rules.braid_scoring = BraidScoring::parse(&require_value(arg, it.next())?)?;
+		}
+		"--single-braids" => {
+			rules.allow_single_braids = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
 		"--score-unique-neighbors" | "--link-once" => {
 			rules.score_unique_neighbors = parse_bool(arg, &require_value(arg, it.next())?)?;
@@ -496,7 +502,7 @@ pub fn usage() -> &'static str {
 	   --from-start                               With --screenshot, capture the opening deal\n\
 	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
 	   --list-scenarios                           Print builtin deck scenarios\n\
-	   --no-moves-loses <on|off>                  No ADD/MOVE/CLAIM loses (default: on)\n\
+	   --no-moves-loses <on|off>                  No ADD/MOVE/SWAP/CLAIM loses (default: on)\n\
 	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
 	   --no-same-piece-twice <off|always|when-deck-empty>\n\
@@ -524,15 +530,18 @@ pub fn usage() -> &'static str {
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --bead-chance <0..7>                       Bead light-election weight (default: 1; 0 disables)\n\
-	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (default independent = beads separate)\n\
-	   --braid-scoring <current|braid-only-match> Braid match total (default: current; braid-only-match scores only braid matches, still paints others)\n\
-	   --score-unique-neighbors <on|off>          Count each unique node pair once (default: off; alias --link-once)\n\
+	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (default independent = beads separate; shared = max fold)\n\
+	   --braid-scoring <current|braid-only-match|braid-only-exact>\n\
+	                                              Braid match total (default: braid-only-exact = only exact braid matches score, 1-slot +1, other matches still paint; current = coverage; braid-only-match = legacy coverage-only)\n\
+	   --single-braids <on|off>                   Lone heavies (incl. 1-ring) become 1-slot braids (default: on; same heavy coin, no extra roll)\n\
+	   --score-unique-neighbors <on|off>          Legacy unique-neighbor scoring (default: off; alias --link-once). Live scoring is per-arc double-count\n\
 	   --link-once <on|off>                       Alias for --score-unique-neighbors\n\
-	   --channel-mode <independent-max|additive>  Edge combine only (default: independent-max). Generation is always clustering\n\
+	   --channel-mode <independent-max|additive>  Edge combine only (default: additive). Generation is always clustering\n\
 	   --independent-channels <on|off>            Alias: on = independent-max, off = additive scoring\n\
-	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
-	   --color-drift <n>                          RFC ColorPass.drift diagonal (default 0, currently zeroed)\n\
-	   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim; cascade = PR #70)\n\
+	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 4,3,1)\n\
+	   --color-drift <n>                          RFC ColorPass.drift diagonal (default 160; 0 restores uniqueness)\n\
+	   --capture-mode <local-claim|cascade>       Local ADD/MOVE/SWAP captures + Claim (default: local-claim; cascade = PR #70)\n\
+	   --singles-swap <on|off|normal-only>        Adjacent singles-swap (default: normal-only = 1-ring normals only; on = any 1-ring; off disables; alias --swap-mode)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
 	                                              Emblem generation weights (default: 200,1,1,1,1)\n\
@@ -744,14 +753,18 @@ mod tests {
 		assert!(cfg.rules.self_capture_budget);
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
-		assert_eq!(cfg.rules.ring_count_weights, crate::game::RingCountWeights::default());
-		assert_eq!(cfg.rules.color_drift, crate::game::color_drift_zero());
+		assert_eq!(cfg.rules.ring_count_weights, crate::game::LIVE_RING_COUNT_WEIGHTS);
+		assert_eq!(
+			cfg.rules.color_drift,
+			crate::game::color_drift_diagonal(crate::game::COLOR_DRIFT_DEFAULT)
+		);
 		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.bead_numer, 1);
 		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::Independent);
-		assert_eq!(cfg.rules.braid_scoring, crate::game::BraidScoring::Current);
+		assert_eq!(cfg.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyExact);
+		assert!(cfg.rules.allow_single_braids);
 		assert!(!cfg.rules.score_unique_neighbors);
-		assert_eq!(cfg.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		assert_eq!(cfg.rules.channel_mode, crate::game::ChannelMode::Additive);
 		assert_eq!(cfg.rules.capture_mode, crate::game::CaptureMode::LocalClaim);
 		assert_eq!(cfg.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.setup.p2_deck, crate::deck::DeckArchetype::Mixed);
@@ -762,6 +775,7 @@ mod tests {
 		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		assert_eq!(cfg.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
 		assert_eq!(cfg.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::One);
+		assert_eq!(cfg.rules.swap_mode, crate::game::SwapMode::NormalOnly);
 	}
 
 	#[test]
@@ -779,14 +793,21 @@ mod tests {
 	#[test]
 	fn parses_braid_scoring_and_link_once() {
 		let def = GameConfig::parse([] as [&str; 0]).unwrap();
-		assert_eq!(def.rules.braid_scoring, crate::game::BraidScoring::Current);
+		assert_eq!(def.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyExact);
 		assert!(!def.rules.score_unique_neighbors);
+		assert!(def.rules.allow_single_braids);
 		let only = GameConfig::parse(["--braid-scoring", "braid-only-match"]).unwrap();
 		assert_eq!(only.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyMatch);
-		let err = GameConfig::parse(["--braid-scoring", "exact"]).unwrap_err();
-		assert!(err.contains("braid-scoring"));
+		let exact = GameConfig::parse(["--braid-scoring", "braid-only-exact"]).unwrap();
+		assert_eq!(exact.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyExact);
+		let current = GameConfig::parse(["--braid-scoring", "current"]).unwrap();
+		assert_eq!(current.rules.braid_scoring, crate::game::BraidScoring::Current);
+		let gone = GameConfig::parse(["--braid-exact", "on"]).unwrap_err();
+		assert!(gone.contains("unknown argument") || gone.contains("--braid-exact"), "{gone}");
 		let err = GameConfig::parse(["--braid-scoring", "product"]).unwrap_err();
 		assert!(err.contains("braid-scoring"));
+		let singles = GameConfig::parse(["--single-braids", "off"]).unwrap();
+		assert!(!singles.rules.allow_single_braids);
 		let once = GameConfig::parse(["--link-once", "on"]).unwrap();
 		assert!(once.rules.score_unique_neighbors);
 		let unique = GameConfig::parse(["--score-unique-neighbors", "on"]).unwrap();
@@ -897,7 +918,7 @@ mod tests {
 	#[test]
 	fn parses_channel_mode() {
 		let def = GameConfig::parse([] as [&str; 0]).unwrap();
-		assert_eq!(def.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		assert_eq!(def.rules.channel_mode, crate::game::ChannelMode::Additive);
 		let max = GameConfig::parse(["--channel-mode", "independent-max"]).unwrap();
 		assert_eq!(max.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
 		let add = GameConfig::parse(["--channel-mode", "additive"]).unwrap();
@@ -929,7 +950,7 @@ mod tests {
 	#[test]
 	fn parses_ring_count_weights() {
 		let def = GameConfig::parse([] as [&str; 0]).unwrap();
-		assert_eq!(def.rules.ring_count_weights, crate::game::RingCountWeights::default());
+		assert_eq!(def.rules.ring_count_weights, crate::game::LIVE_RING_COUNT_WEIGHTS);
 		let custom = GameConfig::parse(["--ring-count-weights", "1,2,3"]).unwrap();
 		assert_eq!(custom.rules.ring_count_weights.singles, 1);
 		assert_eq!(custom.rules.ring_count_weights.doubles, 2);
@@ -941,7 +962,10 @@ mod tests {
 	#[test]
 	fn parses_color_drift_as_rfc_diagonal() {
 		let def = GameConfig::parse([] as [&str; 0]).unwrap();
-		assert_eq!(def.rules.color_drift, crate::game::color_drift_zero());
+		assert_eq!(
+			def.rules.color_drift,
+			crate::game::color_drift_diagonal(crate::game::COLOR_DRIFT_DEFAULT)
+		);
 		let forty = GameConfig::parse(["--color-drift", "40"]).unwrap();
 		assert_eq!(forty.rules.color_drift, crate::game::color_drift_diagonal(40));
 		assert_eq!(crate::game::color_drift_diagonal_value(forty.rules.color_drift), Some(40));
@@ -959,6 +983,24 @@ mod tests {
 		assert_eq!(cascade.rules.capture_mode, crate::game::CaptureMode::Cascade);
 		let err = GameConfig::parse(["--capture-mode", "explode"]).unwrap_err();
 		assert!(err.contains("capture-mode"));
+	}
+
+	#[test]
+	fn parses_singles_swap() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.swap_mode, crate::game::SwapMode::NormalOnly);
+		let off = GameConfig::parse(["--singles-swap", "off"]).unwrap();
+		assert_eq!(off.rules.swap_mode, crate::game::SwapMode::Off);
+		let on = GameConfig::parse(["--swap-mode", "on"]).unwrap();
+		assert_eq!(on.rules.swap_mode, crate::game::SwapMode::On);
+		let adj = GameConfig::parse(["--singles-swap", "adjacent-any"]).unwrap();
+		assert_eq!(adj.rules.swap_mode, crate::game::SwapMode::On);
+		let normal = GameConfig::parse(["--singles-swap", "normal-only"]).unwrap();
+		assert_eq!(normal.rules.swap_mode, crate::game::SwapMode::NormalOnly);
+		let err = GameConfig::parse(["--singles-swap", "any"]).unwrap_err();
+		assert!(err.contains("singles-swap"));
+		let gone = GameConfig::parse(["--swap-no-immediate-back", "on"]).unwrap_err();
+		assert!(gone.contains("unknown argument"));
 	}
 
 	#[test]

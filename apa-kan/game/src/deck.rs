@@ -5,8 +5,8 @@ use rand::{Rng, SeedableRng};
 
 use crate::ai::{evaluate, SearchLimit};
 use crate::game::{
-	base_color_weights, sample_tile_from_rules, sample_tile_from_rules_with_colors, EmblemWeights,
-	Game, Player, RingType, RuleSet, Tile, BAG_SIZE, MAX_COLOR_RINGS,
+	base_color_weights, sample_tile_from_rules, sample_tile_from_rules_with_colors, BraidScoring,
+	EmblemWeights, Game, Player, RingType, RuleSet, Tile, BAG_SIZE, MAX_COLOR_RINGS,
 };
 
 /// Maximum collection size (historical 27 unique 3-color kinds).
@@ -155,6 +155,9 @@ impl DeckArchetype {
 			Self::BraidHeavy => {
 				rules.braid_numer = ARCHETYPE_BRAID_NUMER;
 				rules.bead_numer = 0;
+				// Stuffed heavy coin is for 2–3 slot groups. 1-ring fall-through
+				// keeps a legal 11-tile bench under the 6-braid-ring cap.
+				rules.allow_single_braids = false;
 			}
 			Self::BeadHeavy => {
 				rules.bead_numer = ARCHETYPE_BEAD_NUMER;
@@ -685,7 +688,7 @@ fn tile_score(tile: Tile) -> i32 {
 	s
 }
 
-fn set_score(tiles: &[Tile], opponent: &[Tile]) -> i32 {
+fn set_score(tiles: &[Tile], opponent: &[Tile], braid_scoring: BraidScoring) -> i32 {
 	let mut s: i32 = tiles.iter().map(|t| tile_score(*t)).sum();
 	let mut colors = [false; 6];
 	let mut dots = [false; 4];
@@ -730,7 +733,8 @@ fn set_score(tiles: &[Tile], opponent: &[Tile]) -> i32 {
 				if mine.shares_normal(opp) {
 					s += 6;
 				}
-				if mine.braid_fulfilled_by(opp).is_some() || opp.braid_fulfilled_by(mine).is_some()
+				if mine.braid_fulfilled_by_with(opp, braid_scoring).is_some()
+					|| opp.braid_fulfilled_by_with(mine, braid_scoring).is_some()
 				{
 					s += 14;
 				}
@@ -906,6 +910,7 @@ fn best_enumerated(
 	opponent: &[Tile],
 	need_extend: usize,
 	max_combos: u64,
+	braid_scoring: BraidScoring,
 ) -> Option<Vec<usize>> {
 	let n = pool.len();
 	if enumerate_limit(n, k) > max_combos {
@@ -930,7 +935,7 @@ fn best_enumerated(
 				return true;
 			}
 		}
-		let score = set_score(&trial, opponent);
+		let score = set_score(&trial, opponent, braid_scoring);
 		let cand = idx.to_vec();
 		match &best {
 			None => best = Some((score, cand)),
@@ -952,6 +957,7 @@ fn hill_climb(
 	opponent: &[Tile],
 	need_extend: usize,
 	nodes: u64,
+	braid_scoring: BraidScoring,
 ) -> Vec<usize> {
 	let n = pool.len();
 	let mut best = start;
@@ -959,7 +965,7 @@ fn hill_climb(
 	let score_of = |idx: &[usize]| {
 		let mut trial = prefix.to_vec();
 		trial.extend(combo_tiles(pool, idx));
-		set_score(&trial, opponent)
+		set_score(&trial, opponent, braid_scoring)
 	};
 	let legal = |idx: &[usize]| {
 		let mut trial = prefix.to_vec();
@@ -1020,13 +1026,16 @@ fn pick_indices(
 	need_extend: usize,
 	strategy: PickStrategy,
 	limit: SearchLimit,
+	braid_scoring: BraidScoring,
 ) -> Vec<usize> {
 	if k == 0 || pool.is_empty() {
 		return Vec::new();
 	}
 	let k = k.min(pool.len());
 	let nodes = work_nodes(limit);
-	if let Some(idx) = best_enumerated(pool, k, prefix, opponent, need_extend, nodes.max(8_000)) {
+	if let Some(idx) =
+		best_enumerated(pool, k, prefix, opponent, need_extend, nodes.max(8_000), braid_scoring)
+	{
 		return idx;
 	}
 	let greedy = greedy_indices(pool, k, prefix, need_extend)
@@ -1035,7 +1044,7 @@ fn pick_indices(
 	if strategy == PickStrategy::Greedy {
 		return greedy;
 	}
-	hill_climb(pool, greedy, k, prefix, opponent, need_extend, nodes)
+	hill_climb(pool, greedy, k, prefix, opponent, need_extend, nodes, braid_scoring)
 }
 
 fn rollout_bonus(
@@ -1098,14 +1107,16 @@ pub fn pick_from_pool(
 	limit: SearchLimit,
 	seed: u64,
 ) -> Vec<Tile> {
-	let mut idx = pick_indices(pool, k, prefix, opponent, need_extend, strategy, limit);
+	let braid_scoring = rules.braid_scoring;
+	let mut idx =
+		pick_indices(pool, k, prefix, opponent, need_extend, strategy, limit, braid_scoring);
 	if strategy == PickStrategy::Search && k > 0 && !idx.is_empty() {
 		let iters = work_iters(limit);
 		let mut best = idx.clone();
 		let mut best_s = {
 			let mut trial = prefix.to_vec();
 			trial.extend(combo_tiles(pool, &best));
-			set_score(&trial, opponent)
+			set_score(&trial, opponent, braid_scoring)
 				+ rollout_bonus(&trial, opponent, player, *rules, seed, iters)
 		};
 		let n = pool.len();
@@ -1129,7 +1140,7 @@ pub fn pick_from_pool(
 				if !respects_type_cap(&trial) {
 					continue;
 				}
-				let sc = set_score(&trial, opponent)
+				let sc = set_score(&trial, opponent, braid_scoring)
 					+ rollout_bonus(&trial, opponent, player, *rules, seed ^ cand as u64, iters);
 				if sc > best_s || (sc == best_s && trial_idx < best) {
 					best = trial_idx;
@@ -1377,8 +1388,14 @@ mod tests {
 			.collect();
 		let all_tri: Vec<Tile> =
 			(0..11).map(|i| normal_tile(i + 41, TileColor::ALL[i as usize % 6])).collect();
-		assert!(set_score(&mixed, &[]) > set_score(&all_dot, &[]));
-		assert!(set_score(&mixed, &[]) > set_score(&all_tri, &[]));
+		assert!(
+			set_score(&mixed, &[], BraidScoring::Current)
+				> set_score(&all_dot, &[], BraidScoring::Current)
+		);
+		assert!(
+			set_score(&mixed, &[], BraidScoring::Current)
+				> set_score(&all_tri, &[], BraidScoring::Current)
+		);
 	}
 
 	#[test]
