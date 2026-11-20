@@ -2297,6 +2297,21 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_singles_swap_shallow_replays() {
+		for rel in [
+			"benchmark_results/singles_swap/h2h_b_adj_any_counterplay.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_adj_own_counterplay.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_any_counterplay.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_own_counterplay.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_adj_any_counterplay_noback.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_adj_any_enhanced.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_adj_own_enhanced.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
 	fn default_games_log_path_is_jsonl_gz_sibling() {
 		let p =
 			std::path::Path::new("apa-kan/game/benchmark_results/low_value_pairs_deck11_on.txt");
