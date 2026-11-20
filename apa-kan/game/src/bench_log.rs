@@ -2146,8 +2146,7 @@ mod tests {
 
 	#[test]
 	fn committed_control_cascade_shallow_replays() {
-		// Pre-ratchet live-target log. Full replay waits for the follow-up
-		// shallow H2H on the one-way ratchet.
+		// Pre-ratchet live-target log: decode only (ends would diverge).
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
 			.join("benchmark_results/control_cascade/h2h_shallow.jsonl.gz");
 		if !path.exists() {
@@ -2156,6 +2155,14 @@ mod tests {
 		let bytes = std::fs::read(&path).unwrap();
 		let logs = decode_jsonl_gz(&bytes).expect("decode gzip jsonl");
 		assert_eq!(logs.len(), 100);
+	}
+
+	#[test]
+	fn committed_control_cascade_ratchet_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/control_cascade/h2h_shallow_ratchet.jsonl.gz",
+			100,
+		);
 	}
 
 	#[test]
