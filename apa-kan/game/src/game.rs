@@ -65,6 +65,49 @@ pub const COLOR_WEIGHTS: [(TileColor, u32); 6] = [
 	(TileColor::Maroon, 1),
 ];
 pub const COLOR_WEIGHT_TOTAL: u32 = 262;
+/// RFC 000 ColorPass.drift: after drawing color *i*, add `color_drift[i][j]`
+/// to color *j*'s running weight. Live default is all zeros (independent
+/// draws). `--color-drift N` sets the diagonal to *N* (the RFC “keep last
+/// color” hysteresis).
+pub type ColorDrift = [[i32; 6]; 6];
+
+pub fn color_drift_zero() -> ColorDrift {
+	[[0; 6]; 6]
+}
+
+/// Uniform diagonal, as in the RFC keep-last example (`+40`).
+pub fn color_drift_diagonal(n: i32) -> ColorDrift {
+	let mut m = color_drift_zero();
+	for i in 0..6 {
+		m[i][i] = n;
+	}
+	m
+}
+
+pub fn color_drift_is_zero(drift: ColorDrift) -> bool {
+	drift == color_drift_zero()
+}
+
+pub fn color_drift_diagonal_value(drift: ColorDrift) -> Option<i32> {
+	let n = drift[0][0];
+	for i in 0..6 {
+		for j in 0..6 {
+			let want = if i == j { n } else { 0 };
+			if drift[i][j] != want {
+				return None;
+			}
+		}
+	}
+	Some(n)
+}
+
+pub fn base_color_weights() -> [i32; 6] {
+	let mut w = [0i32; 6];
+	for &(c, wt) in &COLOR_WEIGHTS {
+		w[c as usize] = wt as i32;
+	}
+	w
+}
 /// Historical sequential gate: ring 2/3 kept the last color with weight 7
 /// or drew any color with weight 1 (a redraw was not a new ring). That made
 /// singles ~87%+ of tiles. Live count is now [`RingCountWeights`].
@@ -326,6 +369,32 @@ pub fn sample_color(rng: &mut impl Rng) -> TileColor {
 	TileColor::Maroon
 }
 
+/// Draw one color from running [`ColorPass`](rfc/rfc-000-000-00n-generation) weights.
+pub fn sample_color_weighted(rng: &mut impl Rng, weights: &[i32; 6]) -> TileColor {
+	let total: i64 = weights.iter().map(|&w| i64::from(w.max(0))).sum();
+	let total = u64::try_from(total.max(1)).unwrap_or(1);
+	let mut roll = rng.gen_range(0..total) as i64;
+	for (i, &w) in weights.iter().enumerate() {
+		let w = i64::from(w.max(0));
+		if roll < w {
+			return TileColor::ALL[i];
+		}
+		roll -= w;
+	}
+	TileColor::Maroon
+}
+
+/// RFC ColorPass: after drawing `color`, add `drift[color]` to the running weights.
+pub fn apply_color_drift(weights: &mut [i32; 6], color: TileColor, drift: ColorDrift) {
+	if color_drift_is_zero(drift) {
+		return;
+	}
+	let row = drift[color as usize];
+	for (j, d) in row.iter().enumerate() {
+		weights[j] = weights[j].saturating_add(*d);
+	}
+}
+
 /// Independent 1/`ZAG_DENOM` zag rolls. `zag_numer == 0` skips the RNG so a
 /// `--zags off` bag matches the #17 (no-zag) deal for the same seed.
 pub fn sample_zag_flags(rng: &mut impl Rng, n_rings: u8, zag_numer: u8) -> [bool; 3] {
@@ -572,17 +641,48 @@ pub fn sample_rings_with(
 	max_rings: u8,
 	weights: RingCountWeights,
 ) -> ([TileColor; 3], u8) {
+	let mut color_w = base_color_weights();
+	sample_rings_colored(rng, max_rings, weights, color_drift_zero(), &mut color_w)
+}
+
+/// Color sampling under RFC ColorPass.drift.
+///
+/// Drift all zeros: independent draws, reject duplicate colors on the tile
+/// (live default). Nonzero drift: allow repeats and add `drift[i]` to the
+/// running weights after drawing color *i*. `color_w` is the running chart;
+/// collection generation keeps it across tiles so a deck can lean toward
+/// fewer colors with the **same** drift matrix (not a second setting).
+pub fn sample_rings_colored(
+	rng: &mut impl Rng,
+	max_rings: u8,
+	weights: RingCountWeights,
+	drift: ColorDrift,
+	color_w: &mut [i32; 6],
+) -> ([TileColor; 3], u8) {
 	let want = sample_ring_count(rng, max_rings, weights);
-	let r1 = sample_color(rng);
+	if color_drift_is_zero(drift) {
+		let r1 = sample_color(rng);
+		let mut rings = [r1, r1, r1];
+		let mut n = 1u8;
+		let mut guard = 0u32;
+		while n < want && guard < 64 {
+			guard += 1;
+			let c = sample_color(rng);
+			if rings[..n as usize].contains(&c) {
+				continue;
+			}
+			rings[n as usize] = c;
+			n += 1;
+		}
+		return (rings, n);
+	}
+	let r1 = sample_color_weighted(rng, color_w);
+	apply_color_drift(color_w, r1, drift);
 	let mut rings = [r1, r1, r1];
 	let mut n = 1u8;
-	let mut guard = 0u32;
-	while n < want && guard < 64 {
-		guard += 1;
-		let c = sample_color(rng);
-		if rings[..n as usize].contains(&c) {
-			continue;
-		}
+	while n < want {
+		let c = sample_color_weighted(rng, color_w);
+		apply_color_drift(color_w, c, drift);
 		rings[n as usize] = c;
 		n += 1;
 	}
@@ -1099,6 +1199,15 @@ impl Tile {
 		m.max(1)
 	}
 
+	/// Distinct colors among live ring slots (duplicates from ColorPass.drift count once).
+	pub fn distinct_color_count(self) -> u8 {
+		let mut m = 0u8;
+		for k in 0..self.n_rings.min(MAX_COLOR_RINGS) {
+			m |= self.rings[k as usize].bit();
+		}
+		m.count_ones() as u8
+	}
+
 	pub fn normal_mask(self) -> u8 {
 		let mut m = 0u8;
 		for (i, &c) in self.ring_colors().iter().enumerate() {
@@ -1209,9 +1318,10 @@ impl Tile {
 	/// Beads are part of the normal channel: a bead-ring color matches the
 	/// same way a normal-ring color does.
 	pub fn folded_normal_color_in(self, other: Tile) -> bool {
-		self.ring_colors().iter().enumerate().any(|(i, &c)| {
-			self.ring_type[i].is_folded_normal() && other.has_non_zag_color(c)
-		})
+		self.ring_colors()
+			.iter()
+			.enumerate()
+			.any(|(i, &c)| self.ring_type[i].is_folded_normal() && other.has_non_zag_color(c))
 	}
 
 	pub fn folded_normal_channel_matches(self, other: Tile) -> bool {
@@ -2496,6 +2606,10 @@ pub struct RuleSet {
 	/// `--channel-mode additive` sums folded-normal + zag + braid. Does not
 	/// change tile generation.
 	pub channel_mode: ChannelMode,
+	/// RFC 000 ColorPass.drift. After drawing color *i*, add `color_drift[i][j]`
+	/// to color *j*'s running weight. Default all zeros. `--color-drift N`
+	/// sets the diagonal to *N*.
+	pub color_drift: ColorDrift,
 	/// How overwhelmed tiles leave the board. Default
 	/// [`CaptureMode::LocalClaim`]: ADD/MOVE capture only the placed/moved
 	/// tile and its destination neighbors; leftover overwhelmed tiles stay
@@ -2549,6 +2663,7 @@ impl Default for RuleSet {
 			braid_fail_mismatch: BraidFailMismatch::One,
 			bead_scoring: BeadScoring::SharedChannel,
 			channel_mode: ChannelMode::IndependentMax,
+			color_drift: color_drift_zero(),
 			capture_mode: CaptureMode::LocalClaim,
 		}
 	}
@@ -4971,16 +5086,36 @@ pub fn sample_tile_from_rules(
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
-	sample_tile_with(
-		owner,
+	let mut color_w = base_color_weights();
+	sample_tile_from_rules_with_colors(owner, rules, next_id, rng, &mut color_w)
+}
+
+/// Like [`sample_tile_from_rules`], keeping ColorPass running weights so a
+/// collection can apply the same drift across tiles.
+pub fn sample_tile_from_rules_with_colors(
+	owner: Player,
+	rules: &RuleSet,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+	color_w: &mut [i32; 6],
+) -> Tile {
+	let _ = rules.channel_mode;
+	let (rings, n_rings) = sample_rings_colored(
+		rng,
 		rules.max_rings,
+		rules.ring_count_weights,
+		rules.color_drift,
+		color_w,
+	);
+	finish_sampled_tile(
+		owner,
+		rings,
+		n_rings,
 		rules.zag_numer,
 		rules.braid_numer,
 		rules.bead_numer,
 		rules.dot_percent,
 		rules.emblem_weights,
-		rules.channel_mode,
-		rules.ring_count_weights,
 		next_id,
 		rng,
 	)
@@ -5001,6 +5136,32 @@ pub fn sample_tile_with(
 ) -> Tile {
 	let _ = channel_mode; // scoring-only; generation always IndependentMax clustering
 	let (rings, n_rings) = sample_rings_with(rng, max_rings, ring_count_weights);
+	finish_sampled_tile(
+		owner,
+		rings,
+		n_rings,
+		zag_numer,
+		braid_numer,
+		bead_numer,
+		dot_percent,
+		emblem_weights,
+		next_id,
+		rng,
+	)
+}
+
+fn finish_sampled_tile(
+	owner: Player,
+	rings: [TileColor; 3],
+	n_rings: u8,
+	zag_numer: u8,
+	braid_numer: u8,
+	bead_numer: u8,
+	dot_percent: u8,
+	emblem_weights: EmblemWeights,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+) -> Tile {
 	let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
 	let mut ring_type = cluster_consecutive_heavies(heavy, n_rings);
 	sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
@@ -7511,6 +7672,177 @@ mod tests {
 		for _ in 0..2_000 {
 			let (_, k) = sample_rings(&mut rng, 1);
 			assert_eq!(k, 1);
+		}
+	}
+
+	#[test]
+	fn color_drift_zero_keeps_distinct_ring_colors() {
+		let mut rng = StdRng::seed_from_u64(3);
+		let mut color_w = base_color_weights();
+		let mut two = 0u32;
+		for _ in 0..4_000 {
+			let (rings, k) = sample_rings_colored(
+				&mut rng,
+				3,
+				RingCountWeights::default(),
+				color_drift_zero(),
+				&mut color_w,
+			);
+			if k == 2 {
+				two += 1;
+				assert_ne!(
+					rings[0], rings[1],
+					"default ColorPass.drift 0 rejects duplicate colors"
+				);
+			}
+		}
+		assert!(two > 0);
+	}
+
+	#[test]
+	fn color_drift_diagonal_repeats_an_already_chosen_color() {
+		let mut rng = StdRng::seed_from_u64(5);
+		let drift = color_drift_diagonal(200);
+		let n = 8_000u32;
+		let mut two = 0u32;
+		let mut mono = 0u32;
+		for _ in 0..n {
+			let mut color_w = base_color_weights();
+			let (rings, k) =
+				sample_rings_colored(&mut rng, 3, RingCountWeights::default(), drift, &mut color_w);
+			if k >= 2 {
+				two += 1;
+				let distinct = {
+					let mut m = 0u8;
+					for i in 0..k as usize {
+						m |= rings[i].bit();
+					}
+					m.count_ones()
+				};
+				if distinct == 1 {
+					mono += 1;
+				}
+			}
+		}
+		assert!(two > 0);
+		let rate = f64::from(mono) / f64::from(two);
+		assert!(
+			rate > 0.35,
+			"diagonal +200 should often repeat the first color (mono rate={rate:.3})"
+		);
+	}
+
+	#[test]
+	fn color_drift_across_a_collection_leans_toward_fewer_colors() {
+		use crate::deck::{generate_archetype_collection, DeckArchetype};
+		let mut zero_rules = RuleSet::default();
+		zero_rules.color_drift = color_drift_zero();
+		let mut strong_rules = RuleSet::default();
+		strong_rules.color_drift = color_drift_diagonal(160);
+		let mut mean_zero = 0.0;
+		let mut mean_strong = 0.0;
+		let decks = 80u32;
+		for seed in 0..decks {
+			let mut rng = StdRng::seed_from_u64(u64::from(seed) + 11);
+			let mut next = 1u32;
+			let z = generate_archetype_collection(
+				Player::One,
+				27,
+				&zero_rules,
+				DeckArchetype::Mixed,
+				&mut next,
+				&mut rng,
+			);
+			let mut rng = StdRng::seed_from_u64(u64::from(seed) + 11);
+			next = 1;
+			let s = generate_archetype_collection(
+				Player::One,
+				27,
+				&strong_rules,
+				DeckArchetype::Mixed,
+				&mut next,
+				&mut rng,
+			);
+			let distinct = |tiles: &[Tile]| {
+				let mut m = 0u8;
+				for t in tiles {
+					for k in 0..t.n_rings.min(3) {
+						m |= t.rings[k as usize].bit();
+					}
+				}
+				f64::from(m.count_ones())
+			};
+			mean_zero += distinct(&z);
+			mean_strong += distinct(&s);
+		}
+		mean_zero /= f64::from(decks);
+		mean_strong /= f64::from(decks);
+		assert!(
+			mean_strong + 0.4 < mean_zero,
+			"strong ColorPass.drift should shrink distinct colors per 27-tile deck (zero={mean_zero:.2} strong={mean_strong:.2})"
+		);
+	}
+
+	/// RFC ColorPass.drift diagonal 0 / 40 / 160 on 4:3:2. Default 0 is
+	/// uniqueness (every 2–3-ring tile is multicolor). Nonzero diagonal is
+	/// the RFC keep-last hysteresis — not a second mechanism.
+	#[test]
+	fn color_drift_diagonal_0_40_160_reduces_multicolor() {
+		use crate::deck::{generate_archetype_collection, DeckArchetype};
+		let weights = RingCountWeights { singles: 4, doubles: 3, triples: 2 };
+		let decks_n = 400u32;
+		let mut prev_multi = f64::INFINITY;
+		let mut prev_deck = f64::INFINITY;
+		for n in [0i32, 40, 160] {
+			let mut rules = RuleSet::default();
+			rules.ring_count_weights = weights;
+			rules.color_drift = color_drift_diagonal(n);
+			let mut multi = 0u32;
+			let mut distinct_sum = 0u32;
+			let mut deck_sum = 0u32;
+			for seed in 0..decks_n {
+				let mut rng = StdRng::seed_from_u64(u64::from(seed) + 100);
+				let mut next = 1u32;
+				let deck = generate_archetype_collection(
+					Player::One,
+					27,
+					&rules,
+					DeckArchetype::Mixed,
+					&mut next,
+					&mut rng,
+				);
+				let mut m = 0u8;
+				for t in &deck {
+					let dc = t.distinct_color_count();
+					distinct_sum += u32::from(dc);
+					if dc >= 2 {
+						multi += 1;
+					}
+					for k in 0..t.n_rings.min(3) {
+						m |= t.rings[k as usize].bit();
+					}
+				}
+				deck_sum += u32::from(m.count_ones());
+			}
+			let tiles_n = decks_n * 27;
+			let multi_rate = f64::from(multi) / f64::from(tiles_n);
+			let mean_tile = f64::from(distinct_sum) / f64::from(tiles_n);
+			let mean_deck = f64::from(deck_sum) / f64::from(decks_n);
+			assert!(
+				multi_rate < prev_multi - 0.02,
+				"ColorPass.drift diagonal {n} should cut 2+ color tile share (prev={prev_multi:.3} now={multi_rate:.3})"
+			);
+			assert!(
+				mean_deck < prev_deck - 0.05,
+				"ColorPass.drift diagonal {n} should cut distinct colors per 27-tile deck (prev={prev_deck:.2} now={mean_deck:.2})"
+			);
+			prev_multi = multi_rate;
+			prev_deck = mean_deck;
+			if std::env::var_os("MEASURE_DRIFT").is_some() {
+				eprintln!(
+					"color_drift={n} multi_rate={multi_rate:.4} mean_distinct_per_tile={mean_tile:.3} mean_distinct_per_deck={mean_deck:.3}"
+				);
+			}
 		}
 	}
 
@@ -10203,14 +10535,8 @@ mod tests {
 		let r754 = braid_tile_rate(RingCountWeights::default(), 23, n);
 		let r432 = braid_tile_rate(w432, 29, n);
 		let r431 = braid_tile_rate(w431, 31, n);
-		assert!(
-			(0.08..0.13).contains(&r754),
-			"7:5:4 braid tile rate={r754:.4} (target ~0.10)"
-		);
-		assert!(
-			(0.08..0.13).contains(&r432),
-			"4:3:2 braid tile rate={r432:.4} (target ~0.10)"
-		);
+		assert!((0.08..0.13).contains(&r754), "7:5:4 braid tile rate={r754:.4} (target ~0.10)");
+		assert!((0.08..0.13).contains(&r432), "4:3:2 braid tile rate={r432:.4} (target ~0.10)");
 		assert!(
 			(0.06..0.12).contains(&r431),
 			"4:3:1 braid tile rate={r431:.4} (fewer triples, a bit under 10%)"

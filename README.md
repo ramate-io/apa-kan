@@ -73,6 +73,7 @@ Usage: apa-kan [OPTIONS]
 	   --p2-deck <mixed|braid|bead|crescent|zs|emblem>  P2 collection archetype
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)
   --channel-mode <independent-max|additive>  Edge combine only (default: independent-max)
+  --color-drift <n>                          RFC ColorPass.drift diagonal (default 0)
   --same-deck <on|off>                       Identical 27-tile start for both players (default: on)
   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim)
   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)

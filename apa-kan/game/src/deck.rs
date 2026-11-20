@@ -5,8 +5,8 @@ use rand::{Rng, SeedableRng};
 
 use crate::ai::{evaluate, SearchLimit};
 use crate::game::{
-	sample_tile_from_rules, EmblemWeights, Game, Player, RingType, RuleSet, Tile, BAG_SIZE,
-	MAX_COLOR_RINGS,
+	base_color_weights, sample_tile_from_rules, sample_tile_from_rules_with_colors, EmblemWeights,
+	Game, Player, RingType, RuleSet, Tile, BAG_SIZE, MAX_COLOR_RINGS,
 };
 
 /// Maximum collection size (historical 27 unique 3-color kinds).
@@ -529,8 +529,15 @@ pub fn generate_archetype_collection(
 	let mut best_score = -1i32;
 	for _ in 0..128 {
 		let mut deck = Vec::with_capacity(size);
+		let mut color_w = base_color_weights();
 		for _ in 0..size {
-			deck.push(sample_tile_from_rules(owner, &rules, next_id, rng));
+			deck.push(sample_tile_from_rules_with_colors(
+				owner,
+				&rules,
+				next_id,
+				rng,
+				&mut color_w,
+			));
 		}
 		if !has_legal_subset(&deck, want) {
 			continue;
@@ -556,8 +563,9 @@ fn repair_collection(
 	want: usize,
 ) -> Vec<Tile> {
 	let mut deck = Vec::with_capacity(size);
+	let mut color_w = base_color_weights();
 	for _ in 0..size {
-		deck.push(sample_tile_from_rules(owner, rules, next_id, rng));
+		deck.push(sample_tile_from_rules_with_colors(owner, rules, next_id, rng, &mut color_w));
 	}
 	let mut guard = 0u32;
 	while !has_legal_subset(&deck, want) && guard < 64 {

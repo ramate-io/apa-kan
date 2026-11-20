@@ -14,8 +14,9 @@ use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT};
 use apa_kan::game::{
-	sample_tile_from_rules, Action, EndReason, Game, GameStatus, LowValueResolution, Player,
-	RuleSet, Tile, TileColor,
+	base_color_weights, color_drift_diagonal_value, sample_tile_from_rules,
+	sample_tile_from_rules_with_colors, Action, EndReason, Game, GameStatus, LowValueResolution,
+	Player, RuleSet, Tile, TileColor,
 };
 use apa_kan::scenario::{self, DeckStrength, Scenario};
 use rand::rngs::StdRng;
@@ -114,7 +115,7 @@ fn usage() -> &'static str {
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns, --endgame-rule, --cascade-turn-gain,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
-	   --max-rings, --ring-count-weights, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
+	   --max-rings, --ring-count-weights, --color-drift, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
 	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
@@ -2426,9 +2427,16 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut blocker = 0u32;
 	let mut rosette = 0u32;
 	let mut rings = 0u32;
+	let mut multi_tiles = 0u32;
+	let mut distinct_sum = 0u32;
 	for _ in 0..n {
 		let t = sample_tile_from_rules(Player::One, &rules, &mut next_id, &mut rng);
 		tally_tiles(std::iter::once(&t), &mut ring_n, &mut color_n);
+		let dc = u32::from(t.distinct_color_count());
+		distinct_sum += dc;
+		if dc >= 2 {
+			multi_tiles += 1;
+		}
 		let k = t.n_rings.clamp(1, 3) as usize;
 		zag_rings += u32::from(t.zag_ring_count());
 		let b = t.braid_ring_count();
@@ -2492,19 +2500,45 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 		bits.push(format!("{name}={}", color_n[i]));
 	}
 	lines.push(format!("# ring_process_colors  {}", bits.join(" ")));
+	let drift_n = color_drift_diagonal_value(rules.color_drift).unwrap_or(0);
+	lines.push(format!(
+		"# ring_process_multicolor  tiles={n} multi={multi_tiles} multi_rate={:.4} mean_distinct_per_tile={:.3} color_drift={drift_n}",
+		f64::from(multi_tiles) / f64::from(n),
+		f64::from(distinct_sum) / f64::from(n)
+	));
 	let decks = 2_000u32;
 	let deck_size = usize::from(rules.deck_size.max(1));
 	let mut deck_braid_tiles = 0u32;
 	let mut decks_with_braid = 0u32;
+	let mut deck_distinct_sum = 0u32;
+	let mut deck_tile_multi = 0u32;
+	let mut deck_tile_distinct = 0u32;
 	for _ in 0..decks {
 		let mut has_braid = false;
+		let mut color_w = base_color_weights();
+		let mut deck_mask = 0u8;
 		for _ in 0..deck_size {
-			let t = sample_tile_from_rules(Player::One, &rules, &mut next_id, &mut rng);
+			let t = sample_tile_from_rules_with_colors(
+				Player::One,
+				&rules,
+				&mut next_id,
+				&mut rng,
+				&mut color_w,
+			);
 			if t.braid_ring_count() >= 2 {
 				deck_braid_tiles += 1;
 				has_braid = true;
 			}
+			let dc = t.distinct_color_count();
+			deck_tile_distinct += u32::from(dc);
+			if dc >= 2 {
+				deck_tile_multi += 1;
+			}
+			for k in 0..t.n_rings.min(3) {
+				deck_mask |= t.rings[k as usize].bit();
+			}
 		}
+		deck_distinct_sum += u32::from(deck_mask.count_ones());
 		if has_braid {
 			decks_with_braid += 1;
 		}
@@ -2514,6 +2548,12 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 		"# ring_process_decks  decks={decks} size={deck_size} braid_tiles={deck_braid_tiles} tile_rate={:.4} decks_with_braid={decks_with_braid} deck_rate={:.4}",
 		f64::from(deck_braid_tiles) / f64::from(deck_tiles),
 		f64::from(decks_with_braid) / f64::from(decks)
+	));
+	lines.push(format!(
+		"# ring_process_deck_colors  decks={decks} size={deck_size} multi_tiles={deck_tile_multi} multi_rate={:.4} mean_distinct_per_tile={:.3} mean_distinct_per_deck={:.3} color_drift={drift_n}",
+		f64::from(deck_tile_multi) / f64::from(deck_tiles),
+		f64::from(deck_tile_distinct) / f64::from(deck_tiles),
+		f64::from(deck_distinct_sum) / f64::from(decks)
 	));
 }
 

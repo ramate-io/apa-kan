@@ -196,7 +196,7 @@ impl ColorPass {
 | LavenderPink / Teal | 9 | 9/264 ≈ 3.4% each |
 | Maroon | 3 | 3/264 ≈ 1.1% |
 
-Base drift is all zeros. A maroon-collector might set `drift[Maroon][Maroon] = +40`; a “keep last color” event might add a large diagonal after each draw.
+Base drift is all zeros. Live `RuleSet::color_drift` is this matrix (CLI `--color-drift N` sets the diagonal to *N*). A maroon-collector might set `drift[Maroon][Maroon] = +40`; a “keep last color” event might add a large diagonal after each draw. Collection generation keeps the running weights across the 27 tiles so the same hysteresis can lean a deck toward fewer colors.
 
 ### Marking pass
 

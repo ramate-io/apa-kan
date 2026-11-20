@@ -8,9 +8,9 @@ use std::time::Duration;
 use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode, EmblemWeights,
-	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint,
-	RingCountWeights, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
+	color_drift_diagonal, BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode,
+	EmblemWeights, EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp,
+	PathConstraint, RingCountWeights, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -230,6 +230,10 @@ fn parse_u64(flag: &str, value: &str) -> Result<u64, String> {
 	value.parse::<u64>().map_err(|_| format!("invalid {flag} '{value}'"))
 }
 
+fn parse_i64(flag: &str, value: &str) -> Result<i64, String> {
+	value.parse::<i64>().map_err(|_| format!("invalid {flag} '{value}'"))
+}
+
 fn parse_bool(flag: &str, value: &str) -> Result<bool, String> {
 	match value.to_ascii_lowercase().as_str() {
 		"on" | "true" | "1" | "yes" => Ok(true),
@@ -393,6 +397,16 @@ where
 		"--ring-count-weights" => {
 			rules.ring_count_weights = RingCountWeights::parse(&require_value(arg, it.next())?)?;
 		}
+		"--color-drift" => {
+			let n = parse_i64(arg, &require_value(arg, it.next())?)?;
+			if !(-10_000..=10_000).contains(&n) {
+				return Err(
+					"invalid --color-drift (expected -10000..10000, RFC ColorPass.drift diagonal)"
+						.into(),
+				);
+			}
+			rules.color_drift = color_drift_diagonal(n as i32);
+		}
 		"--identical-bags" => {
 			rules.identical_bags = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
@@ -507,6 +521,7 @@ pub fn usage() -> &'static str {
 	   --channel-mode <independent-max|additive>  Edge combine only (default: independent-max). Generation is always clustering\n\
 	   --independent-channels <on|off>            Alias: on = independent-max, off = additive scoring\n\
 	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
+	   --color-drift <n>                          RFC ColorPass.drift diagonal (default 0, currently zeroed)\n\
 	   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim; cascade = PR #70)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
@@ -720,6 +735,7 @@ mod tests {
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.ring_count_weights, crate::game::RingCountWeights::default());
+		assert_eq!(cfg.rules.color_drift, crate::game::color_drift_zero());
 		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.bead_numer, 1);
 		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
@@ -887,6 +903,17 @@ mod tests {
 		assert_eq!(custom.rules.ring_count_weights.triples, 3);
 		let err = GameConfig::parse(["--ring-count-weights", "0,0,0"]).unwrap_err();
 		assert!(err.contains("ring-count-weights"));
+	}
+
+	#[test]
+	fn parses_color_drift_as_rfc_diagonal() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.color_drift, crate::game::color_drift_zero());
+		let forty = GameConfig::parse(["--color-drift", "40"]).unwrap();
+		assert_eq!(forty.rules.color_drift, crate::game::color_drift_diagonal(40));
+		assert_eq!(crate::game::color_drift_diagonal_value(forty.rules.color_drift), Some(40));
+		let err = GameConfig::parse(["--color-drift", "nope"]).unwrap_err();
+		assert!(err.contains("color-drift"));
 	}
 
 	#[test]
