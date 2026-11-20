@@ -57,7 +57,7 @@ def walk_center(game: dict) -> dict:
         pid = piece.get("id")
         turn = act.get("turn")
 
-        if kind in ("ADD", "MOVE") and to is not None and to != CENTER:
+        if kind in ("ADD", "MOVE", "SWAP") and to is not None and to != CENTER:
             if occupant_owner is not None and occupant_owner != player:
                 pending_adj[player] = turn
 
@@ -71,9 +71,15 @@ def walk_center(game: dict) -> dict:
                 else:
                     center_caps += 1
 
+        partner = act.get("partner") or {}
+        partner_id = partner.get("id")
+        partner_owner = act.get("partner_owner")
+
         left_center = kind == "MOVE" and frm == CENTER
         entered_center = kind in ("ADD", "MOVE") and to == CENTER
         claimed_center = kind == "CLAIM" and to == CENTER
+        swap_off_center = kind == "SWAP" and frm == CENTER
+        swap_onto_center = kind == "SWAP" and to == CENTER
 
         if left_center:
             vacates += 1
@@ -84,9 +90,24 @@ def walk_center(game: dict) -> dict:
         for cap in act.get("captures") or []:
             if cap.get("node") == CENTER:
                 captured_occupant = True
-        if captured_occupant and not entered_center:
+        if captured_occupant and not entered_center and not swap_onto_center:
             occupant_owner = None
             occupant_id = None
+
+        if swap_off_center or swap_onto_center:
+            vacates += 1
+            if swap_onto_center:
+                occupant_owner = player
+                occupant_id = pid
+            else:
+                occupant_owner = partner_owner
+                occupant_id = partner_id
+            holders += 1
+            if first_owner is None and occupant_owner is not None:
+                first_owner = occupant_owner
+                first_id = occupant_id
+                first_turn = turn
+                first_kind = kind
 
         if entered_center or (claimed_center and kind == "CLAIM"):
             if claimed_center and not entered_center:
@@ -133,6 +154,13 @@ def walk_center(game: dict) -> dict:
         "center_claims": center_claims,
         "adjacent_setups": adjacent_setups,
         "claims_total": sum(1 for a in game.get("actions") or [] if a.get("kind") == "CLAIM"),
+        "swaps": sum(1 for a in game.get("actions") or [] if a.get("kind") == "SWAP"),
+        "center_swaps": sum(
+            1
+            for a in game.get("actions") or []
+            if a.get("kind") == "SWAP"
+            and (a.get("from") == CENTER or a.get("to") == CENTER)
+        ),
         "p1_search": game.get("p1_search", ""),
         "p2_search": game.get("p2_search", ""),
     }
@@ -155,6 +183,8 @@ def summarize(path: Path) -> None:
     center_claims = sum(r["center_claims"] for r in rows)
     center_caps = sum(r["center_caps"] for r in rows)
     vacates = sum(r["vacates"] for r in rows)
+    swaps = sum(r["swaps"] for r in rows)
+    center_swaps = sum(r["center_swaps"] for r in rows)
     holders = sum(r["holders"] for r in rows)
     adj = sum(r["adjacent_setups"] for r in rows)
     mean_turns = sum(r["turns"] or 0 for r in rows) / n if n else 0
@@ -190,6 +220,8 @@ def summarize(path: Path) -> None:
     print(
         f"center_occupants_over_game {holders}  vacates {vacates}  "
         f"center_opp_caps {center_caps}  center_claims {center_claims}  all_claims {claims}  "
+        f"swaps {swaps} ({swaps/n if n else 0:.2f}/g)  center_swaps {center_swaps} "
+        f"({center_swaps/n if n else 0:.2f}/g)  "
         f"adj_setups_before_first_take {adj}"
     )
 
@@ -200,7 +232,8 @@ def summarize(path: Path) -> None:
                 f"  game={r['game']} {r['pairing']} {r['matchup']} turns={r['turns']} "
                 f"end={r['reason']} W={r['winner']} first=P{r['first_owner']}@t{r['first_turn']} "
                 f"{r['first_kind']} still={r['still_first']} holders={r['holders']} "
-                f"vacates={r['vacates']} c_caps={r['center_caps']} claims={r['claims_total']}"
+                f"vacates={r['vacates']} c_caps={r['center_caps']} claims={r['claims_total']} "
+                f"swaps={r['swaps']} c_swaps={r['center_swaps']}"
             )
 
     show("still_on_center_and_win", still_and_win)
@@ -208,6 +241,8 @@ def summarize(path: Path) -> None:
     show("displaced_and_other_side_won", [r for r in displaced if not r["first_side_won"]])
     show("center_claims", [r for r in rows if r["center_claims"] > 0])
     show("many_holders", sorted(rows, key=lambda r: -(r["holders"] or 0)))
+    show("many_swaps", sorted(rows, key=lambda r: -(r["swaps"] or 0)))
+    show("center_swaps", [r for r in rows if r["center_swaps"] > 0])
 
 
 def main() -> None:

@@ -163,6 +163,7 @@ pub struct HistoryTable {
 	moves: Vec<i32>,
 	adds: Vec<i32>,
 	claims: Vec<i32>,
+	swaps: Vec<i32>,
 }
 
 impl HistoryTable {
@@ -171,6 +172,7 @@ impl HistoryTable {
 			moves: vec![0; 32 * 32],
 			adds: vec![0; crate::game::KIND_COUNT * 2 * 32],
 			claims: vec![0; 32],
+			swaps: vec![0; 32 * 32],
 		}
 	}
 
@@ -185,6 +187,7 @@ impl HistoryTable {
 			SearchMove::Move { from, to } => self.moves[from as usize * 32 + to as usize],
 			SearchMove::Add { kind, node } => self.adds[Self::add_ix(kind, node)],
 			SearchMove::Claim { node } => self.claims[node as usize],
+			SearchMove::Swap { from, to } => self.swaps[from as usize * 32 + to as usize],
 			SearchMove::Pass => 0,
 		}
 	}
@@ -202,6 +205,10 @@ impl HistoryTable {
 			}
 			SearchMove::Claim { node } => {
 				let slot = &mut self.claims[node as usize];
+				*slot = (*slot + inc).min(20_000);
+			}
+			SearchMove::Swap { from, to } => {
+				let slot = &mut self.swaps[from as usize * 32 + to as usize];
 				*slot = (*slot + inc).min(20_000);
 			}
 			SearchMove::Pass => {}
@@ -308,6 +315,7 @@ impl Searcher {
 		let action = if game.legal_actions().contains(&action) { action } else { legal[0] };
 		self.minimax.last_move = match action {
 			Action::Move { from, to } => Some(SearchMove::Move { from, to }),
+			Action::Swap { from, to } => Some(SearchMove::Swap { from, to }),
 			_ => None,
 		};
 		action

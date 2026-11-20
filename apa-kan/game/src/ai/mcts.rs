@@ -876,6 +876,10 @@ fn is_reverse(mv: SearchMove, last: Option<SearchMove>) -> bool {
 			SearchMove::Move { from, to },
 			Some(SearchMove::Move { from: prev_from, to: prev_to }),
 		) => from == prev_to && to == prev_from,
+		(
+			SearchMove::Swap { from, to },
+			Some(SearchMove::Swap { from: prev_from, to: prev_to }),
+		) => (from == prev_from && to == prev_to) || (from == prev_to && to == prev_from),
 		_ => false,
 	}
 }

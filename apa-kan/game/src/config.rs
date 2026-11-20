@@ -10,7 +10,7 @@ use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, D
 use crate::game::{
 	BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode, EmblemWeights,
 	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint,
-	RingCountWeights, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
+	RingCountWeights, RuleSet, SamePieceTwice, SwapMode, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -384,6 +384,15 @@ where
 		"--capture-mode" => {
 			rules.capture_mode = CaptureMode::parse(&require_value(arg, it.next())?)?;
 		}
+		"--singles-swap" | "--swap-mode" => {
+			rules.swap_mode = SwapMode::parse(&require_value(arg, it.next())?)?;
+		}
+		"--swap-no-immediate-back" => {
+			rules.swap_no_immediate_back = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--swap-no-just-moved" => {
+			rules.swap_no_just_moved = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--dot-chance" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n > 100 {
@@ -458,7 +467,7 @@ pub fn usage() -> &'static str {
 	   --from-start                               With --screenshot, capture the opening deal\n\
 	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
 	   --list-scenarios                           Print builtin deck scenarios\n\
-	   --no-moves-loses <on|off>                  No ADD/MOVE/CLAIM loses (default: on)\n\
+	   --no-moves-loses <on|off>                  No ADD/MOVE/SWAP/CLAIM loses (default: on)\n\
 	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
 	   --no-same-piece-twice <off|always|when-deck-empty>\n\
@@ -490,7 +499,11 @@ pub fn usage() -> &'static str {
 	   --channel-mode <independent-max|additive>  Edge combine + generation (default: independent-max)\n\
 	   --independent-channels <on|off>            Alias: on = independent-max, off = additive shared scoring\n\
 	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
-	   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim; cascade = PR #70)\n\
+	   --capture-mode <local-claim|cascade>       Local ADD/MOVE/SWAP captures + Claim (default: local-claim; cascade = PR #70)\n\
+	   --singles-swap <off|adjacent-any|adjacent-own|any|own>\n\
+	                                              Single-ring tiles swap as a move (default: off; alias --swap-mode)\n\
+	   --swap-no-immediate-back <on|off>          Ban swapping the same pair back next (default: off)\n\
+	   --swap-no-just-moved <on|off>              Ban swapping a tile you just moved (default: off)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
 	                                              Emblem generation weights (default: 200,1,1,1,1)\n\
@@ -868,6 +881,28 @@ mod tests {
 		assert_eq!(cascade.rules.capture_mode, crate::game::CaptureMode::Cascade);
 		let err = GameConfig::parse(["--capture-mode", "explode"]).unwrap_err();
 		assert!(err.contains("capture-mode"));
+	}
+
+	#[test]
+	fn parses_singles_swap() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.swap_mode, crate::game::SwapMode::Off);
+		assert!(!def.rules.swap_no_immediate_back);
+		assert!(!def.rules.swap_no_just_moved);
+		let adj = GameConfig::parse(["--singles-swap", "adjacent-any"]).unwrap();
+		assert_eq!(adj.rules.swap_mode, crate::game::SwapMode::AdjacentAny);
+		let own = GameConfig::parse(["--swap-mode", "adjacent-own"]).unwrap();
+		assert_eq!(own.rules.swap_mode, crate::game::SwapMode::AdjacentOwn);
+		let any = GameConfig::parse(["--singles-swap", "any"]).unwrap();
+		assert_eq!(any.rules.swap_mode, crate::game::SwapMode::Any);
+		let unrestr_own = GameConfig::parse(["--singles-swap", "own"]).unwrap();
+		assert_eq!(unrestr_own.rules.swap_mode, crate::game::SwapMode::Own);
+		let back = GameConfig::parse(["--swap-no-immediate-back", "on"]).unwrap();
+		assert!(back.rules.swap_no_immediate_back);
+		let moved = GameConfig::parse(["--swap-no-just-moved", "on"]).unwrap();
+		assert!(moved.rules.swap_no_just_moved);
+		let err = GameConfig::parse(["--singles-swap", "explode"]).unwrap_err();
+		assert!(err.contains("singles-swap"));
 	}
 
 	#[test]

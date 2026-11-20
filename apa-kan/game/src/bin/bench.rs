@@ -112,7 +112,8 @@ fn usage() -> &'static str {
 	   --control-win, --control-n, --control-hold-turns, --endgame-rule, --cascade-turn-gain,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --ring-count-weights, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --dot-chance,\n\
+	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --singles-swap,\n\
+	   --swap-no-immediate-back, --swap-no-just-moved, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -552,6 +553,8 @@ struct SeatStats {
 	claims: u32,
 	claim_own: u32,
 	claim_opp: u32,
+	swaps: u32,
+	center_swaps: u32,
 	healed: u32,
 	crescent_saves: u32,
 	zs_bonuses: u32,
@@ -640,7 +643,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} singles_swap={} swap_no_immediate_back={} swap_no_just_moved={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -671,6 +674,9 @@ fn run(cfg: BenchConfig) {
 		rules.bead_scoring.name(),
 		rules.channel_mode.name(),
 		rules.capture_mode.name(),
+		rules.swap_mode.name(),
+		on_off(rules.swap_no_immediate_back),
+		on_off(rules.swap_no_just_moved),
 		rules.dot_percent,
 		rules.emblem_weights.label(),
 		rules.blocker_blocks.name(),
@@ -861,6 +867,8 @@ fn run(cfg: BenchConfig) {
 	let mut claims = 0u32;
 	let mut claim_own = 0u32;
 	let mut claim_opp = 0u32;
+	let mut swaps = 0u32;
+	let mut center_swaps = 0u32;
 	let mut healed = 0u32;
 	let mut crescent_saves = 0u32;
 	let mut zs_bonuses = 0u32;
@@ -925,6 +933,8 @@ fn run(cfg: BenchConfig) {
 		claims += stats.claims;
 		claim_own += stats.claim_own;
 		claim_opp += stats.claim_opp;
+		swaps += stats.swaps;
+		center_swaps += stats.center_swaps;
 		healed += stats.healed;
 		crescent_saves += stats.crescent_saves;
 		zs_bonuses += stats.zs_bonuses;
@@ -1001,6 +1011,12 @@ fn run(cfg: BenchConfig) {
 	let avg_healed = if games_n == 0 { 0.0 } else { f64::from(healed) / f64::from(games_n) };
 	lines.push(format!(
 		"# claims  total={claims} avg_per_game={avg_claims:.2}  own={claim_own} opponent={claim_opp}  healed={healed} healed_avg_per_game={avg_healed:.2}"
+	));
+	let avg_swaps = if games_n == 0 { 0.0 } else { f64::from(swaps) / f64::from(games_n) };
+	let avg_center_swaps =
+		if games_n == 0 { 0.0 } else { f64::from(center_swaps) / f64::from(games_n) };
+	lines.push(format!(
+		"# swaps  total={swaps} avg_per_game={avg_swaps:.2}  center={center_swaps} avg_center_per_game={avg_center_swaps:.2}"
 	));
 	let avg_gain =
 		if games_n == 0 { 0.0 } else { f64::from(turn_gain_awarded) / f64::from(games_n) };
@@ -1169,6 +1185,9 @@ fn run(cfg: BenchConfig) {
 	);
 	println!(
 		"# claims  total={claims} avg_per_game={avg_claims:.2}  own={claim_own} opponent={claim_opp}  healed={healed} healed_avg_per_game={avg_healed:.2}"
+	);
+	println!(
+		"# swaps  total={swaps} avg_per_game={avg_swaps:.2}  center={center_swaps} avg_center_per_game={avg_center_swaps:.2}"
 	);
 	println!(
 		"# emblems  crescent_saves={crescent_saves} avg_per_game={avg_moon:.2}  zs_bonuses={zs_bonuses} avg_per_game={avg_zs:.2}"
@@ -1498,6 +1517,8 @@ fn summarize_pairing(
 		stats.claims += result.claims;
 		stats.claim_own += result.claim_own;
 		stats.claim_opp += result.claim_opp;
+		stats.swaps += result.swaps;
+		stats.center_swaps += result.center_swaps;
 		stats.healed += result.healed;
 		stats.crescent_saves += result.crescent_saves;
 		stats.zs_bonuses += result.zs_bonuses;
@@ -1919,6 +1940,8 @@ struct PlayResult {
 	claims: u32,
 	claim_own: u32,
 	claim_opp: u32,
+	swaps: u32,
+	center_swaps: u32,
 	healed: u32,
 	crescent_saves: u32,
 	zs_bonuses: u32,
@@ -2038,6 +2061,8 @@ fn play_game(
 	let mut claims = 0u32;
 	let mut claim_own = 0u32;
 	let mut claim_opp = 0u32;
+	let mut swaps = 0u32;
+	let mut center_swaps = 0u32;
 	let mut healed = 0u32;
 	let mut crescent_saves = 0u32;
 	let mut zs_bonuses = 0u32;
@@ -2099,6 +2124,7 @@ fn play_game(
 		};
 		let action = searcher.choose_with(&game, actor, &mut rng, limit);
 		let piece = bench_log::piece_for_action(&game, action);
+		let partner = bench_log::partner_for_action(&game, action);
 		let st = searcher.stats();
 		if actor == Actor::Minimax {
 			depth_sum += f64::from(st.depth);
@@ -2129,6 +2155,12 @@ fn play_game(
 			Action::Move { from, .. } => {
 				if let Some(t) = game.tile_at(from) {
 					move_rings[t.n_rings.clamp(1, 3) as usize] += 1;
+				}
+			}
+			Action::Swap { from, to } => {
+				swaps += 1;
+				if from == center || to == center {
+					center_swaps += 1;
 				}
 			}
 			Action::Claim { .. } | Action::Pass => {}
@@ -2200,7 +2232,9 @@ fn play_game(
 					));
 				}
 				if let Some(log) = game_log.as_mut() {
-					log.push_action_with_search(action, piece, &outcome, &game, st);
+					log.push_action_with_search_partner(
+						action, piece, partner, &outcome, &game, st,
+					);
 					if let Some(last) = log.actions.last_mut() {
 						last.healed = healed_now as u8;
 					}
@@ -2209,9 +2243,10 @@ fn play_game(
 			Err(_) => {
 				if let Some(fallback) = game.legal_actions().into_iter().next() {
 					let piece = bench_log::piece_for_action(&game, fallback);
+					let partner = bench_log::partner_for_action(&game, fallback);
 					if let Ok(outcome) = game.apply(fallback) {
 						if let Some(log) = game_log.as_mut() {
-							log.push_action(fallback, piece, &outcome, &game);
+							log.push_action_partner(fallback, piece, partner, &outcome, &game);
 						}
 					}
 				} else {
@@ -2309,6 +2344,8 @@ fn play_game(
 		claims,
 		claim_own,
 		claim_opp,
+		swaps,
+		center_swaps,
 		healed,
 		crescent_saves,
 		zs_bonuses,
@@ -2699,6 +2736,7 @@ mod tests {
 					|| line.starts_with("# capture_dest")
 					|| line.starts_with("# bead_captures")
 					|| line.starts_with("# claims")
+					|| line.starts_with("# swaps")
 					|| line.starts_with("# emblems")
 					|| line.starts_with("# search_depth")
 					|| line.starts_with("# root_spread")
