@@ -8,9 +8,10 @@ use std::time::Duration;
 use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	color_drift_diagonal, BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode,
-	EmblemWeights, EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp,
-	PathConstraint, RingCountWeights, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
+	color_drift_diagonal, BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, CaptureMode,
+	ChannelMode, EmblemWeights, EndgameRule, HopWeightCmp, InsufficientTilesLoss,
+	PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet, SamePieceTwice,
+	ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -436,6 +437,12 @@ where
 		"--braid-fail-mismatch" => {
 			rules.braid_fail_mismatch = BraidFailMismatch::parse(&require_value(arg, it.next())?)?;
 		}
+		"--braid-scoring" => {
+			rules.braid_scoring = BraidScoring::parse(&require_value(arg, it.next())?)?;
+		}
+		"--score-unique-neighbors" | "--link-once" => {
+			rules.score_unique_neighbors = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
 		}
@@ -517,7 +524,11 @@ pub fn usage() -> &'static str {
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --bead-chance <0..7>                       Bead light-election weight (default: 1; 0 disables)\n\
-	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine; shared = beads part of normal\n\
+	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (default independent = beads separate)\n\
+	   --braid-scoring <current|braid-only-match|exact|double-edged>\n\
+	                                              Braid match rule (default: current)\n\
+	   --score-unique-neighbors <on|off>          Count each unique node pair once (default: off; alias --link-once)\n\
+	   --link-once <on|off>                       Alias for --score-unique-neighbors\n\
 	   --channel-mode <independent-max|additive>  Edge combine only (default: independent-max). Generation is always clustering\n\
 	   --independent-channels <on|off>            Alias: on = independent-max, off = additive scoring\n\
 	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
@@ -738,7 +749,9 @@ mod tests {
 		assert_eq!(cfg.rules.color_drift, crate::game::color_drift_zero());
 		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.bead_numer, 1);
-		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
+		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::Independent);
+		assert_eq!(cfg.rules.braid_scoring, crate::game::BraidScoring::Current);
+		assert!(!cfg.rules.score_unique_neighbors);
 		assert_eq!(cfg.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
 		assert_eq!(cfg.rules.capture_mode, crate::game::CaptureMode::LocalClaim);
 		assert_eq!(cfg.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
@@ -762,6 +775,27 @@ mod tests {
 		assert!(err.contains("zag-mismatch"));
 		let err = GameConfig::parse(["--zag-mismatch", "directional"]).unwrap_err();
 		assert!(err.contains("zag-mismatch"));
+	}
+
+	#[test]
+	fn parses_braid_scoring_and_link_once() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.braid_scoring, crate::game::BraidScoring::Current);
+		assert!(!def.rules.score_unique_neighbors);
+		let only = GameConfig::parse(["--braid-scoring", "braid-only-match"]).unwrap();
+		assert_eq!(only.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyMatch);
+		let exact = GameConfig::parse(["--braid-scoring", "exact"]).unwrap();
+		assert_eq!(exact.rules.braid_scoring, crate::game::BraidScoring::Exact);
+		let dbl = GameConfig::parse(["--braid-scoring", "double-edged"]).unwrap();
+		assert_eq!(dbl.rules.braid_scoring, crate::game::BraidScoring::DoubleEdged);
+		let err = GameConfig::parse(["--braid-scoring", "product"]).unwrap_err();
+		assert!(err.contains("braid-scoring"));
+		let once = GameConfig::parse(["--link-once", "on"]).unwrap();
+		assert!(once.rules.score_unique_neighbors);
+		let unique = GameConfig::parse(["--score-unique-neighbors", "on"]).unwrap();
+		assert!(unique.rules.score_unique_neighbors);
+		let off = GameConfig::parse(["--link-once", "off"]).unwrap();
+		assert!(!off.rules.score_unique_neighbors);
 	}
 
 	#[test]
@@ -854,6 +888,8 @@ mod tests {
 		assert_eq!(shared.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
 		let ind = GameConfig::parse(["--bead-scoring", "independent"]).unwrap();
 		assert_eq!(ind.rules.bead_scoring, crate::game::BeadScoring::Independent);
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.bead_scoring, crate::game::BeadScoring::Independent);
 		let err = GameConfig::parse(["--bead-scoring", "average"]).unwrap_err();
 		assert!(err.contains("bead-scoring"));
 		let decks = GameConfig::parse(["--p1-deck", "braid", "--p2-deck", "bead"]).unwrap();

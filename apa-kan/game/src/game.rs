@@ -217,7 +217,9 @@ impl RingType {
 		matches!(self, Self::Bead)
 	}
 
-	/// Beads score and paint as part of the normal channel.
+	/// Beads paint as part of the normal channel under IndependentMax (and
+	/// Additive `--bead-scoring shared`). Additive Independent keeps beads on
+	/// their own lane.
 	pub fn is_folded_normal(self) -> bool {
 		self.is_normal() || self.is_bead()
 	}
@@ -1395,15 +1397,27 @@ impl Tile {
 	/// [`Self::non_zag_colors_multiset`] covers every color in the braid.
 	/// Zag rings never count. Each non-zag ring counts as 1. Size is the
 	/// braid's slot count (2 or 3). An orange+orange braid needs two orange
-	/// non-zag rings on the neighbor.
+	/// non-zag rings on the neighbor. See [`Self::braid_fulfilled_by_for`]
+	/// for [`BraidScoring::Exact`].
 	pub fn braid_fulfilled_by(self, other: Tile) -> Option<u8> {
+		self.braid_fulfilled_by_for(other, BraidScoring::Current)
+	}
+
+	/// Braid fulfillment under [`BraidScoring`].
+	///
+	/// Current / braid-only-match / double-edged: coverage (`have >= need`)
+	/// and size ≥ 2. Exact: the neighbor's non-zag color multiset **equals**
+	/// the braid's color multiset, and a 1-slot braid can match for +1.
+	pub fn braid_fulfilled_by_for(self, other: Tile, scoring: BraidScoring) -> Option<u8> {
 		let size = self.braid_ring_count();
-		if size < 2 {
+		let min_size = if scoring.allows_single_braid() { 1 } else { 2 };
+		if size < min_size {
 			return None;
 		}
 		let need = self.braid_color_counts();
 		let have = other.non_zag_colors_multiset();
-		if (0..6).all(|i| have[i] >= need[i]) {
+		let ok = if scoring.is_exact() { have == need } else { (0..6).all(|i| have[i] >= need[i]) };
+		if ok {
 			Some(size)
 		} else {
 			None
@@ -1497,8 +1511,13 @@ impl Tile {
 /// Largest fulfilled braid on the edge `a`–`b`. Equal sizes pick the
 /// lexicographically smaller braid color-count vector, then the lower tile id.
 pub fn selected_braid(a: Tile, b: Tile) -> Option<(Tile, u8)> {
-	let fa = a.braid_fulfilled_by(b);
-	let fb = b.braid_fulfilled_by(a);
+	selected_braid_with(a, b, BraidScoring::Current)
+}
+
+/// [`selected_braid`] under a [`BraidScoring`] fulfillment rule.
+pub fn selected_braid_with(a: Tile, b: Tile, scoring: BraidScoring) -> Option<(Tile, u8)> {
+	let fa = a.braid_fulfilled_by_for(b, scoring);
+	let fb = b.braid_fulfilled_by_for(a, scoring);
 	match (fa, fb) {
 		(None, None) => None,
 		(Some(n), None) => Some((a, n)),
@@ -1990,22 +2009,97 @@ impl BraidFailMismatch {
 	}
 }
 
-/// How the normal and bead channels combine on an edge.
+/// How the braid channel matches and how match totals treat other channels.
+///
+/// CLI: `--braid-scoring`. Default [`Self::Current`] is live scoring
+/// (coverage match, size ≥ 2, failed-braid mismatch from
+/// [`BraidFailMismatch`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum BraidScoring {
+	/// Live default: a 2–3 slot braid matches on multiset coverage
+	/// (`have >= need`); match weight is the braid's slot count. Other
+	/// channels still contribute their match. Failed braids use
+	/// [`RuleSet::braid_fail_mismatch`].
+	#[default]
+	Current,
+	/// Only braid-channel matches add to the edge **match** total. A normal
+	/// or bead match still occupies the channel (it does not become a
+	/// hitch / mismatch) but contributes 0 to match. Mismatch channels are
+	/// unchanged. Braid fulfillment is the current coverage rule.
+	BraidOnlyMatch,
+	/// A braid matches only when the neighbor's non-zag color **counts**
+	/// equal the braid's color counts (not coverage). A 1-slot braid can
+	/// match for +1. Failed braids still use [`BraidFailMismatch`].
+	Exact,
+	/// Unmatched braids mismatch with their full slot-count weight. Both
+	/// tiles' braid slot counts add when neither braid is fulfilled
+	/// (`BraidFailMismatch::Sum`). Fulfillment is the current coverage rule.
+	DoubleEdged,
+}
+
+impl BraidScoring {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().replace('_', "-").as_str() {
+			"current" | "default" | "coverage" | "live" => Ok(Self::Current),
+			"braid-only-match" | "braid-only" | "only-match" | "match-only" => {
+				Ok(Self::BraidOnlyMatch)
+			}
+			"exact" | "exact-match" | "equals" => Ok(Self::Exact),
+			"double-edged" | "double-edge" | "weight" | "full-weight" => Ok(Self::DoubleEdged),
+			other => Err(format!(
+				"unknown braid-scoring '{other}' (expected current|braid-only-match|exact|double-edged)"
+			)),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Current => "current",
+			Self::BraidOnlyMatch => "braid-only-match",
+			Self::Exact => "exact",
+			Self::DoubleEdged => "double-edged",
+		}
+	}
+
+	pub fn is_exact(self) -> bool {
+		matches!(self, Self::Exact)
+	}
+
+	pub fn allows_single_braid(self) -> bool {
+		self.is_exact()
+	}
+
+	pub fn only_braid_match(self) -> bool {
+		matches!(self, Self::BraidOnlyMatch)
+	}
+
+	/// Failed-braid cost override. `None` keeps [`RuleSet::braid_fail_mismatch`].
+	pub fn fail_mismatch(self) -> Option<BraidFailMismatch> {
+		match self {
+			Self::DoubleEdged => Some(BraidFailMismatch::Sum),
+			_ => None,
+		}
+	}
+}
+
+/// How the normal and bead channels combine on an Additive edge.
 ///
 /// Channel *components* ([`EdgeChannels::bead_match`], etc.) are always the
 /// independent per-type scores. This flag only changes how they are **summed**
-/// into the edge total used for overwhelm.
+/// into the Additive edge total. IndependentMax maxes the four components
+/// and is unchanged by this flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum BeadScoring {
-	/// Rule A (`--bead-scoring independent`): normal and bead add. Unmatched
-	/// beads +1 each; a matched bead is −1 at most once, like normals.
-	Independent,
-	/// Rule B (default): beads and normals share one channel. The normal/bead
-	/// contribution is `max(normal, bead)` per match and per mismatch instead
-	/// of their sum, so beads act like countable normals and cannot double up
-	/// with a normal hitch. Matching is still at most 1. Zag and braid add
-	/// unchanged.
+	/// Rule A (default): normal and bead add. Unmatched beads +1 each; a
+	/// matched bead is −1 at most once, like normals. Beads-plus-normals on
+	/// the same Additive edge is a 2-match event. CLI:
+	/// `--bead-scoring independent`.
 	#[default]
+	Independent,
+	/// Rule B (`--bead-scoring shared`): beads and normals share one Additive
+	/// channel. The normal/bead contribution is `max(normal, bead)` per match
+	/// and per mismatch instead of their sum. IndependentMax scores are the
+	/// same either way (max is associative).
 	SharedChannel,
 }
 
@@ -2037,14 +2131,15 @@ impl BeadScoring {
 pub enum ChannelMode {
 	/// Independent channels; the edge takes the **maximum** match and the
 	/// **maximum** mismatch of any single channel. Beads fold into the
-	/// normal channel for HUD kind and paint (`max(normal, bead)` is the
-	/// folded-normal component). CLI: `--channel-mode independent-max`
-	/// / `--independent-channels on` (this branch's default).
+	/// normal channel for HUD kind and paint. CLI: `--channel-mode
+	/// independent-max` / `--independent-channels on` (this branch's default).
 	#[default]
 	IndependentMax,
-	/// RFC 001-001-002 additive stacking: `--bead-scoring` combines normal
-	/// and bead (default shared = beads part of normal), then zag and braid
-	/// **sum**. Generation is the same clustering as IndependentMax.
+	/// RFC 001-001-002 additive stacking: each channel (normal, bead, zag,
+	/// braid) contributes its weight. Default [`BeadScoring::Independent`]
+	/// sums them, so a normal match and a bead match on the same edge is 2.
+	/// `--bead-scoring shared` restores `max(normal, bead)` folding.
+	/// Generation is the same clustering as IndependentMax.
 	/// CLI: `--channel-mode additive`.
 	Additive,
 }
@@ -2189,8 +2284,18 @@ impl EdgeChannels {
 	}
 
 	/// Match total under [`ChannelMode`]: max of any channel, or additive
-	/// stacking with [`BeadScoring`].
-	pub fn match_weight_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> i32 {
+	/// stacking with [`BeadScoring`]. [`BraidScoring::BraidOnlyMatch`] keeps
+	/// only [`Self::braid_match`] as the match total (other channels still
+	/// occupy: a normal match is not a hitch).
+	pub fn match_weight_for_mode(
+		self,
+		mode: ChannelMode,
+		scoring: BeadScoring,
+		braid: BraidScoring,
+	) -> i32 {
+		if braid.only_braid_match() {
+			return self.braid_match;
+		}
 		match mode {
 			ChannelMode::IndependentMax => {
 				self.normal_match.max(self.bead_match).max(self.braid_match)
@@ -2199,7 +2304,12 @@ impl EdgeChannels {
 		}
 	}
 
-	pub fn mismatch_weight_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> i32 {
+	pub fn mismatch_weight_for_mode(
+		self,
+		mode: ChannelMode,
+		scoring: BeadScoring,
+		_braid: BraidScoring,
+	) -> i32 {
 		match mode {
 			ChannelMode::IndependentMax => self
 				.normal_mismatch
@@ -2210,20 +2320,34 @@ impl EdgeChannels {
 		}
 	}
 
-	pub fn effective_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> i32 {
-		self.mismatch_weight_for_mode(mode, scoring) - self.match_weight_for_mode(mode, scoring)
+	pub fn effective_for_mode(
+		self,
+		mode: ChannelMode,
+		scoring: BeadScoring,
+		braid: BraidScoring,
+	) -> i32 {
+		self.mismatch_weight_for_mode(mode, scoring, braid)
+			- self.match_weight_for_mode(mode, scoring, braid)
 	}
 
-	pub fn score_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> (i32, i32) {
-		(self.match_weight_for_mode(mode, scoring), self.mismatch_weight_for_mode(mode, scoring))
+	pub fn score_for_mode(
+		self,
+		mode: ChannelMode,
+		scoring: BeadScoring,
+		braid: BraidScoring,
+	) -> (i32, i32) {
+		(
+			self.match_weight_for_mode(mode, scoring, braid),
+			self.mismatch_weight_for_mode(mode, scoring, braid),
+		)
 	}
 
 	pub fn score_for_rules(self, rules: &RuleSet) -> (i32, i32) {
-		self.score_for_mode(rules.channel_mode, rules.bead_scoring)
+		self.score_for_mode(rules.channel_mode, rules.bead_scoring, rules.braid_scoring)
 	}
 
 	pub fn effective_for_rules(self, rules: &RuleSet) -> i32 {
-		self.effective_for_mode(rules.channel_mode, rules.bead_scoring)
+		self.effective_for_mode(rules.channel_mode, rules.bead_scoring, rules.braid_scoring)
 	}
 
 	/// Per-type channels on the directed edge `tile` → `other` under `rules`
@@ -2245,11 +2369,13 @@ impl EdgeChannels {
 		if tile.emblem.is_two_zag_zs() && ch.zag_mismatch > 0 {
 			ch.zag_mismatch += 1;
 		}
-		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
-			if let Some((_, n)) = selected_braid(tile, other) {
+		let braid_min = if rules.braid_scoring.allows_single_braid() { 1 } else { 2 };
+		if tile.braid_ring_count() >= braid_min || other.braid_ring_count() >= braid_min {
+			if let Some((_, n)) = selected_braid_with(tile, other, rules.braid_scoring) {
 				ch.braid_match = i32::from(n);
 			} else {
-				ch.braid_mismatch = rules.braid_fail_mismatch.cost(tile, other);
+				let fail = rules.braid_scoring.fail_mismatch().unwrap_or(rules.braid_fail_mismatch);
+				ch.braid_mismatch = fail.cost(tile, other);
 			}
 		}
 		if tile.bead_ring_count() > 0 || other.bead_ring_count() > 0 {
@@ -2594,18 +2720,29 @@ pub struct RuleSet {
 	/// Failed-braid channel mismatch. Accepted default
 	/// [`BraidFailMismatch::One`]: exactly +1 for the edge.
 	/// [`BraidFailMismatch::Weight`] / [`BraidFailMismatch::Sum`] are
-	/// research variants (issue #39).
+	/// research variants (issue #39). Overridden by
+	/// [`BraidScoring::DoubleEdged`].
 	pub braid_fail_mismatch: BraidFailMismatch,
+	/// Braid match rule. Default [`BraidScoring::Current`]. CLI:
+	/// `--braid-scoring`.
+	pub braid_scoring: BraidScoring,
 	/// How normal and bead channels combine under [`ChannelMode::Additive`].
-	/// Default [`BeadScoring::SharedChannel`] (rule B): beads are part of
-	/// the normal channel (`max` instead of sum). [`BeadScoring::Independent`]
-	/// is rule A (`--bead-scoring independent`, four-way sum). IndependentMax
-	/// still takes max of the four components (associative with the fold).
+	/// Default [`BeadScoring::Independent`] (rule A): beads are a separate
+	/// channel and sum with normals. [`BeadScoring::SharedChannel`] is rule B
+	/// (`--bead-scoring shared`, `max` instead of sum). IndependentMax still
+	/// takes max of the four components (associative with the fold).
 	pub bead_scoring: BeadScoring,
 	/// How channel totals combine. Default [`ChannelMode::IndependentMax`].
-	/// `--channel-mode additive` sums folded-normal + zag + braid. Does not
-	/// change tile generation.
+	/// `--channel-mode additive` sums normal + bead + zag + braid (unless
+	/// `--bead-scoring shared` folds normal/bead). Does not change tile
+	/// generation.
 	pub channel_mode: ChannelMode,
+	/// If true, each unique node pair contributes once to match/mismatch
+	/// scoring. The two generating-circle petals between the center and an
+	/// inner-ring node collapse to one scoring edge. Default false (each
+	/// petal is a scoring edge). CLI: `--score-unique-neighbors` /
+	/// `--link-once`.
+	pub score_unique_neighbors: bool,
 	/// RFC 000 ColorPass.drift. After drawing color *i*, add `color_drift[i][j]`
 	/// to color *j*'s running weight. Default all zeros. `--color-drift N`
 	/// sets the diagonal to *N*.
@@ -2661,8 +2798,10 @@ impl Default for RuleSet {
 			pass_through_ring_cmp: PassThroughRingCmp::Ge,
 			zag_mismatch: ZagMismatchCount::Sum,
 			braid_fail_mismatch: BraidFailMismatch::One,
-			bead_scoring: BeadScoring::SharedChannel,
+			braid_scoring: BraidScoring::Current,
+			bead_scoring: BeadScoring::Independent,
 			channel_mode: ChannelMode::IndependentMax,
+			score_unique_neighbors: false,
 			color_drift: color_drift_zero(),
 			capture_mode: CaptureMode::LocalClaim,
 		}
@@ -2674,13 +2813,20 @@ impl RuleSet {
 		Self::default()
 	}
 
-	/// RFC 001-001-002 additive stacking with shared-channel beads.
-	/// Generation stays IndependentMax clustering; only aggregation sums.
+	/// RFC 001-001-002 additive stacking. Beads are a separate channel and
+	/// sum with normals (default [`BeadScoring::Independent`]). Generation
+	/// stays IndependentMax clustering; only aggregation sums.
 	/// Used by `--channel-mode additive`.
 	pub fn additive() -> Self {
 		let mut rules = Self::default();
 		rules.channel_mode = ChannelMode::Additive;
 		rules
+	}
+
+	/// HUD / IndependentMax paint folds beads onto the normal lane.
+	/// Additive Independent keeps a separate bead lane.
+	pub fn folds_beads_into_normal(self) -> bool {
+		self.channel_mode.is_independent_max() || self.bead_scoring == BeadScoring::SharedChannel
 	}
 }
 
@@ -3880,9 +4026,10 @@ impl Game {
 	/// normal is a hitch plus a zag hit. Aggregation into edge totals is
 	/// [`RuleSet::channel_mode`]: [`ChannelMode::IndependentMax`] (default)
 	/// takes max match and max mismatch of any one channel;
-	/// [`ChannelMode::Additive`] stacks with [`BeadScoring`]. Beads are part
-	/// of the normal channel for HUD/paint; components stay separate so the
-	/// unmatched-bead bomb (`bead_mismatch`) still feeds `max(normal, bead)`.
+	/// [`ChannelMode::Additive`] sums every channel (default
+	/// [`BeadScoring::Independent`]). `--bead-scoring shared` folds Additive
+	/// normal/bead with `max`. IndependentMax HUD still paints beads on the
+	/// normal lane.
 	///
 	/// - **Normal:** match 1 if some normal-ring color of either tile is in
 	///   the other tile's [`Tile::non_zag_colors_multiset`]; otherwise
@@ -3891,14 +4038,14 @@ impl Game {
 	/// - **Zag:** [`RuleSet::zag_mismatch`] hitting-zag count against the
 	///   full [`Tile::colors_multiset`]. Never a match.
 	/// - **Braid:** the single largest fulfilled braid (match = its slot
-	///   count), covering from the neighbor's non-zag colors. If none is
-	///   fulfilled, one mismatch of [`RuleSet::braid_fail_mismatch`]
-	///   (default 1).
+	///   count) under [`RuleSet::braid_scoring`]. If none is fulfilled,
+	///   [`RuleSet::braid_fail_mismatch`] (or full weight when
+	///   [`BraidScoring::DoubleEdged`]).
 	/// - **Bead:** +1 mismatch per unmatched bead ring on either tile (count
 	///   the rings, not color-pairs). If any bead is matched — same presence
 	///   test as the normal channel, `other.has_non_zag_color(bead_color)` —
 	///   a single match of 1 (one −1 at most per edge). Mixed edges can
-	///   score both. Painted on the normal lane.
+	///   score both. Additive Independent paints beads on their own lane.
 	pub fn edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
 		EdgeChannels::between(tile, other, &self.rules)
 	}
@@ -3913,17 +4060,17 @@ impl Game {
 		self.edge_channels(tile, other).score_for_rules(&self.rules)
 	}
 
-	/// Sum of per-edge `mismatch − match` against every incident
-	/// generating-circle arc. Inner↔center has two petals, so that neighbor
-	/// is scored twice; both tiles take the same undirected channel total on
-	/// each petal (not +1 per side of one collapsed pair).
+	/// Sum of per-edge `mismatch − match` against every scoring neighbor of
+	/// `node`. Default walks generating-circle arcs, so inner↔center is two
+	/// petals. [`RuleSet::score_unique_neighbors`] walks unique node pairs
+	/// instead (center↔inner once).
 	pub fn tile_effective_weight(&self, node: NodeId) -> Option<i32> {
 		let tile = self.tile_at(node)?;
 		Some(self.effective_for_tile(node, tile))
 	}
 
 	/// Unique occupied neighbors of `node` (inner↔center is one neighbor
-	/// even though scoring walks two petals). Used by Crescent Moon.
+	/// even though per-arc scoring walks two petals). Used by Crescent Moon.
 	pub fn occupied_adjacency_count(&self, node: NodeId) -> u8 {
 		let mut seen = [false; 32];
 		let mut n = 0u8;
@@ -3940,9 +4087,22 @@ impl Game {
 		n
 	}
 
+	/// Neighbor endpoints used for match/mismatch scoring.
+	///
+	/// Per-arc (default): [`Board::incident_others`] so each generating-circle
+	/// petal counts. Unique-neighbor: [`Board::neighbors`] so an edge between
+	/// two nodes contributes once.
+	fn scoring_neighbors(&self, node: NodeId) -> Vec<NodeId> {
+		if self.rules.score_unique_neighbors {
+			self.board.neighbors(node).to_vec()
+		} else {
+			self.board.incident_others(node).collect()
+		}
+	}
+
 	fn effective_for_tile(&self, node: NodeId, tile: Tile) -> i32 {
 		let mut effective = 0i32;
-		for nb in self.board.incident_others(node) {
+		for nb in self.scoring_neighbors(node) {
 			if let Some(other) = self.tile_at(nb) {
 				effective += self.edge_channels(tile, other).effective_for_rules(&self.rules);
 			}
@@ -3950,14 +4110,14 @@ impl Game {
 		effective
 	}
 
-	/// Two Zag Zs +1 count for `tile` at `node`: incident edges whose
+	/// Two Zag Zs +1 count for `tile` at `node`: incident scoring edges whose
 	/// pre-bonus zag mismatch is already > 0.
 	pub fn zs_bonus_count(&self, node: NodeId, tile: Tile) -> u8 {
 		if !tile.emblem.is_two_zag_zs() {
 			return 0;
 		}
 		let mut n = 0u8;
-		for nb in self.board.incident_others(node) {
+		for nb in self.scoring_neighbors(node) {
 			let Some(other) = self.tile_at(nb) else {
 				continue;
 			};
@@ -3988,23 +4148,49 @@ impl Game {
 	}
 
 	/// Occupied-edge braid stats: `(edges with a braid, satisfied of those)`.
-	/// Each generating-circle arc is counted once (center↔inner is two).
+	/// Per-arc scoring counts center↔inner twice; unique-neighbor scoring
+	/// counts that pair once.
 	pub fn braid_edge_counts(&self) -> (u32, u32) {
 		let mut with_braid = 0u32;
 		let mut satisfied = 0u32;
-		for arc in self.board.arcs() {
-			let Some(a) = self.tile_at(arc.from) else {
-				continue;
-			};
-			let Some(b) = self.tile_at(arc.to) else {
-				continue;
-			};
-			if a.braid_ring_count() < 2 && b.braid_ring_count() < 2 {
-				continue;
+		let min_size = if self.rules.braid_scoring.allows_single_braid() { 1 } else { 2 };
+		if self.rules.score_unique_neighbors {
+			let n = self.board.node_count() as NodeId;
+			for a_id in 0..n {
+				for &b_id in self.board.neighbors(a_id) {
+					if b_id <= a_id {
+						continue;
+					}
+					let Some(a) = self.tile_at(a_id) else {
+						continue;
+					};
+					let Some(b) = self.tile_at(b_id) else {
+						continue;
+					};
+					if a.braid_ring_count() < min_size && b.braid_ring_count() < min_size {
+						continue;
+					}
+					with_braid += 1;
+					if selected_braid_with(a, b, self.rules.braid_scoring).is_some() {
+						satisfied += 1;
+					}
+				}
 			}
-			with_braid += 1;
-			if selected_braid(a, b).is_some() {
-				satisfied += 1;
+		} else {
+			for arc in self.board.arcs() {
+				let Some(a) = self.tile_at(arc.from) else {
+					continue;
+				};
+				let Some(b) = self.tile_at(arc.to) else {
+					continue;
+				};
+				if a.braid_ring_count() < min_size && b.braid_ring_count() < min_size {
+					continue;
+				}
+				with_braid += 1;
+				if selected_braid_with(a, b, self.rules.braid_scoring).is_some() {
+					satisfied += 1;
+				}
 			}
 		}
 		(with_braid, satisfied)
@@ -4014,7 +4200,7 @@ impl Game {
 		let tile = self.tile_at(node)?;
 		let mut matches = i32::from(tile.weight);
 		let mut mismatches = 0i32;
-		for nb in self.board.incident_others(node) {
+		for nb in self.scoring_neighbors(node) {
 			if let Some(other) = self.tile_at(nb) {
 				let (m, x) = self.edge_score(tile, other);
 				matches += m;
@@ -4062,7 +4248,7 @@ impl Game {
 		let mut with = 0i32;
 		let mut without = 0i32;
 		let mut single_bead_neighbor = false;
-		for nb in self.board.incident_others(node) {
+		for nb in self.scoring_neighbors(node) {
 			let Some(other) = self.tile_at(nb) else {
 				continue;
 			};
@@ -5432,7 +5618,9 @@ mod tests {
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
 		assert_eq!(rules.braid_fail_mismatch, BraidFailMismatch::One);
 		assert_eq!(rules.capture_mode, CaptureMode::LocalClaim);
-		assert_eq!(rules.bead_scoring, BeadScoring::SharedChannel);
+		assert_eq!(rules.bead_scoring, BeadScoring::Independent);
+		assert_eq!(rules.braid_scoring, BraidScoring::Current);
+		assert!(!rules.score_unique_neighbors);
 		assert_eq!(rules.channel_mode, ChannelMode::IndependentMax);
 		assert_eq!(rules.ring_count_weights, RingCountWeights::default());
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
@@ -9801,9 +9989,7 @@ mod tests {
 	}
 
 	fn empty_independent() -> Game {
-		let mut rules = RuleSet::additive();
-		rules.bead_scoring = BeadScoring::Independent;
-		Game::empty(rules)
+		Game::empty(RuleSet::additive())
 	}
 
 	#[test]
@@ -10012,7 +10198,9 @@ mod tests {
 	}
 
 	fn shared_game() -> Game {
-		Game::empty(RuleSet::additive())
+		let mut rules = RuleSet::additive();
+		rules.bead_scoring = BeadScoring::SharedChannel;
+		Game::empty(rules)
 	}
 
 	#[test]
@@ -10136,6 +10324,223 @@ mod tests {
 		);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Blue, TileColor::Green], 1, 1);
 		assert_eq!(game.edge_score(a, b), (0, 2), "max(normal hitch 1, unmatched bead 1) + zag 1");
+	}
+
+	#[test]
+	fn additive_independent_restores_beads_plus_normals() {
+		let mut game = Game::empty(RuleSet::additive());
+		assert_eq!(game.rules().bead_scoring, BeadScoring::Independent);
+		let three = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(three, hit);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(ch.bead_match, 1);
+		assert_eq!(
+			game.edge_score(three, hit),
+			(2, 0),
+			"Additive Independent: normal match + bead match is a 2-match event"
+		);
+		assert_eq!(
+			ch.score_for(BeadScoring::SharedChannel),
+			(1, 0),
+			"shared fold is still available as a research flag"
+		);
+	}
+
+	#[test]
+	fn independent_max_scores_ignore_bead_scoring_fold() {
+		let mut shared = RuleSet::default();
+		shared.bead_scoring = BeadScoring::SharedChannel;
+		let mut game_ind = Game::empty(RuleSet::default());
+		let mut game_shared = Game::empty(shared);
+		let mixed = game_ind.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal), (TileColor::Blue, RingType::Bead)],
+			1,
+			1,
+		);
+		let hit = game_ind.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let mixed_s = game_shared.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal), (TileColor::Blue, RingType::Bead)],
+			1,
+			1,
+		);
+		let hit_s = game_shared.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		assert_eq!(game_ind.edge_score(mixed, hit), game_shared.edge_score(mixed_s, hit_s));
+		assert_eq!(game_ind.edge_score(mixed, hit), (1, 1));
+	}
+
+	#[test]
+	fn only_center_inner_pairs_have_two_arcs() {
+		let board = Board::rosette_8();
+		let center = board.center();
+		let inner: std::collections::HashSet<_> = board.inner_ring().iter().copied().collect();
+		let n = board.node_count() as NodeId;
+		let mut doubled = Vec::new();
+		for a in 0..n {
+			for b in (a + 1)..n {
+				let k = board.connecting_arc_indices(a, b).count();
+				assert!(k <= 2, "node pair {a}–{b} has {k} arcs");
+				if k == 2 {
+					doubled.push((a, b));
+					assert!(
+						(a == center && inner.contains(&b)) || (b == center && inner.contains(&a)),
+						"double-arc pair {a}–{b} is not center↔inner"
+					);
+				}
+			}
+		}
+		assert_eq!(doubled.len(), 8, "exactly the eight center↔inner petals are doubled");
+	}
+
+	#[test]
+	fn unique_neighbor_scoring_counts_center_inner_once() {
+		let mut rules = RuleSet::additive();
+		rules.score_unique_neighbors = true;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		assert_eq!(game.board().connecting_arc_indices(center, inner).count(), 2);
+		let a = orange_green_braid(&mut game, Player::One);
+		let b = blue_teal_braid(&mut game, Player::Two);
+		assert_eq!(game.edge_score(a, b), (0, 1));
+		game.place_tile(center, a);
+		game.place_tile(inner, b);
+		assert_eq!(
+			game.tile_effective_weight(center),
+			Some(1),
+			"unique neighbors: failed braid +1 once, not per petal"
+		);
+		assert_eq!(game.tile_effective_weight(inner), Some(1));
+		assert_eq!(game.tile_score(center), Some((2, 1)));
+		assert_eq!(game.tile_score(inner), Some((2, 1)));
+		assert!(!game.is_overwhelmed(center), "2-ring survives effective 1");
+		assert!(!game.is_overwhelmed(inner));
+	}
+
+	#[test]
+	fn unique_neighbor_normal_match_is_minus_one() {
+		let mut rules = RuleSet::additive();
+		rules.score_unique_neighbors = true;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		let a = game.alloc_rings(Player::One, &[TileColor::Orange], 1, 1);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		game.place_tile(center, a);
+		game.place_tile(inner, b);
+		assert_eq!(game.tile_effective_weight(center), Some(-1));
+		assert_eq!(game.tile_effective_weight(inner), Some(-1));
+		assert_eq!(game.tile_score(center), Some((1 + 1, 0)));
+	}
+
+	#[test]
+	fn braid_only_match_occupies_without_scoring_normal_match() {
+		let mut rules = RuleSet::additive();
+		rules.braid_scoring = BraidScoring::BraidOnlyMatch;
+		let mut game = Game::empty(rules);
+		let mixed = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Orange, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		let cover = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
+		let ch = game.edge_channels(mixed, cover);
+		assert_eq!(ch.braid_match, 2);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(ch.normal_mismatch, 0, "normal match still occupies: not a hitch");
+		assert_eq!(
+			game.edge_score(mixed, cover),
+			(2, 0),
+			"only the braid match (+2) counts; leftover normal match is occupancy"
+		);
+		let hitch = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(
+			game.edge_score(mixed, hitch),
+			(0, 2),
+			"failed braid +1 and leftover normal hitch +1 still mismatch"
+		);
+	}
+
+	#[test]
+	fn exact_braid_rejects_coverage_and_allows_singles() {
+		let mut rules = RuleSet::additive();
+		rules.braid_scoring = BraidScoring::Exact;
+		let mut game = Game::empty(rules);
+		let two = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+			1,
+			1,
+		);
+		let two_braid = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+			1,
+			1,
+		);
+		let three_normal = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Orange, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		assert_eq!(
+			game.edge_score(two, two_braid),
+			(2, 0),
+			"exact: 2-orange braid vs a neighbor whose non-zag counts are exactly 2 orange"
+		);
+		let ch = game.edge_channels(two, three_normal);
+		assert_eq!(ch.braid_match, 0, "3 orange is not equal to 2 (coverage would match)");
+		assert_eq!(ch.braid_mismatch, 1);
+		assert_eq!(ch.normal_match, 1, "leftover orange normal still occupies/matches");
+		assert_eq!(game.edge_score(two, three_normal), (1, 1));
+		let single =
+			game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Braid)], 1, 1);
+		let other_single =
+			game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Braid)], 1, 1);
+		assert_eq!(
+			game.edge_score(single, other_single),
+			(1, 0),
+			"exact reintroduces a 1-slot braid as +1"
+		);
+		assert!(
+			single.braid_fulfilled_by(other_single).is_none(),
+			"current scoring still ignores 1-braids"
+		);
+	}
+
+	#[test]
+	fn double_edged_failed_braid_mismatches_at_full_weight() {
+		let mut rules = RuleSet::additive();
+		rules.braid_scoring = BraidScoring::DoubleEdged;
+		let mut game = Game::empty(rules);
+		let two = orange_green_braid(&mut game, Player::One);
+		let miss = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		let ch = game.edge_channels(two, miss);
+		assert_eq!(ch.braid_mismatch, 2, "2-braid fail is +2, not the live +1");
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(game.edge_score(two, miss), (0, 3));
+		let other_two = blue_teal_braid(&mut game, Player::Two);
+		assert_eq!(
+			game.edge_channels(two, other_two).braid_mismatch,
+			4,
+			"both unmatched 2-braids contribute their weights"
+		);
 	}
 
 	fn empty_independent_max() -> Game {

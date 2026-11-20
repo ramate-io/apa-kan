@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
 	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
-	BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark, CaptureMode,
-	ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
-	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
-	Player, RingCountWeights, RingType, RuleSet, SamePieceTwice, Tile, TileColor, TurnGainKind,
-	ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
+	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game,
+	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
+	PathConstraint, Player, RingCountWeights, RingType, RuleSet, SamePieceTwice, Tile, TileColor,
+	TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -52,6 +52,14 @@ fn default_independent() -> String {
 
 fn skip_independent(v: &String) -> bool {
 	v == BeadScoring::Independent.name()
+}
+
+fn default_current_braid() -> String {
+	BraidScoring::Current.name().to_string()
+}
+
+fn skip_current_braid(v: &String) -> bool {
+	v == BraidScoring::Current.name()
 }
 
 fn default_additive_channel_mode() -> String {
@@ -391,10 +399,19 @@ pub struct RulesLog {
 	/// those is skipped because capture outcomes differ.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub zag_match_non_zag: Option<bool>,
-	/// `shared` (rule B, live default for additive) or `independent` (rule A).
+	/// `independent` (rule A, live Additive default) or `shared` (rule B fold).
 	/// Absent on older logs; replay uses independent, which matches those captures.
 	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
 	pub bead_scoring: String,
+	/// `current` (live default) or a `--braid-scoring` variant. Absent on older
+	/// logs; replay uses current.
+	#[serde(default = "default_current_braid", skip_serializing_if = "skip_current_braid")]
+	pub braid_scoring: String,
+	/// Unique node-pair scoring (`--link-once`). Absent/false on older logs
+	/// that scored each generating-circle petal. When `score_incident_arcs`
+	/// is `Some(false)`, replay also treats this as on.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub score_unique_neighbors: bool,
 	/// `independent-max` (live default) or `additive` (RFC 001-001-002).
 	/// Absent on older logs; replay uses additive, which matches those captures.
 	#[serde(
@@ -484,9 +501,11 @@ impl RulesLog {
 			pass_through_ring_cmp: r.pass_through_ring_cmp.name().into(),
 			zag_mismatch: r.zag_mismatch.name().into(),
 			braid_fail_mismatch: Some(r.braid_fail_mismatch.name().into()),
-			score_incident_arcs: Some(true),
+			score_incident_arcs: Some(!r.score_unique_neighbors),
 			zag_match_non_zag: Some(true),
 			bead_scoring: r.bead_scoring.name().into(),
+			braid_scoring: r.braid_scoring.name().into(),
+			score_unique_neighbors: r.score_unique_neighbors,
 			channel_mode: r.channel_mode.name().into(),
 			capture_mode: r.capture_mode.name().into(),
 			emblem_weights: r.emblem_weights.label(),
@@ -539,7 +558,11 @@ impl RulesLog {
 				Some(s) => BraidFailMismatch::parse(s)?,
 				None => BraidFailMismatch::One,
 			},
+			braid_scoring: BraidScoring::parse(&self.braid_scoring)
+				.unwrap_or(BraidScoring::Current),
 			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
+			score_unique_neighbors: self.score_unique_neighbors
+				|| self.score_incident_arcs == Some(false),
 			channel_mode: ChannelMode::parse(&self.channel_mode)?,
 			capture_mode: CaptureMode::parse(&self.capture_mode)?,
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
@@ -1746,10 +1769,28 @@ mod tests {
 		r.turn_limit = 50;
 		r.braid_fail_mismatch = BraidFailMismatch::Sum;
 		r.bead_scoring = BeadScoring::SharedChannel;
+		r.braid_scoring = BraidScoring::Exact;
+		r.score_unique_neighbors = true;
 		let log = RulesLog::from_rules(r);
 		assert_eq!(log.to_rules().unwrap(), r);
 		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
 		assert_eq!(log.bead_scoring, "shared");
+		assert_eq!(log.braid_scoring, "exact");
+		assert!(log.score_unique_neighbors);
+		assert_eq!(log.score_incident_arcs, Some(false));
+	}
+
+	#[test]
+	fn missing_braid_scoring_replays_as_current() {
+		let log = RulesLog::from_rules(RuleSet::default());
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("braid_scoring"), "{json}");
+		assert!(!json.contains("score_unique_neighbors"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.braid_scoring, "current");
+		assert!(!parsed.score_unique_neighbors);
+		assert_eq!(parsed.to_rules().unwrap().braid_scoring, BraidScoring::Current);
+		assert!(!parsed.to_rules().unwrap().score_unique_neighbors);
 	}
 
 	#[test]
@@ -2004,8 +2045,7 @@ mod tests {
 		assert_eq!(logs.len(), expected, "{rel} expected {expected} games");
 		let derived_weight = logs.iter().all(opening_weight_equals_rings);
 		let independent_channels = logs.iter().all(|log| log.rules.braid_fail_mismatch.is_some());
-		let incident_arc_scoring =
-			logs.iter().all(|log| log.rules.score_incident_arcs == Some(true));
+		let incident_arc_scoring = logs.iter().all(|log| log.rules.score_incident_arcs.is_some());
 		let zag_match_non_zag = logs.iter().all(|log| log.rules.zag_match_non_zag == Some(true));
 		for (i, log) in logs.iter().enumerate() {
 			assert_eq!(log.v, SCHEMA_VERSION);
