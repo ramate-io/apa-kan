@@ -879,7 +879,7 @@ fn two_ended_with(
 		a.normal_ring_count() > 0 || b.normal_ring_count() > 0
 	};
 	let bead_fires = a.bead_ring_count() > 0 || b.bead_ring_count() > 0;
-	let braid_min = if braid.allows_single_braid() { 1 } else { 2 };
+	let braid_min = 2u8;
 	let body = if !normal_fires {
 		if zag_mid[0].is_some()
 			|| a.braid_ring_count() >= braid_min
@@ -923,7 +923,7 @@ fn two_ended_with(
 		ArcPaint::no_bead_mid()
 	};
 	let bead_match = if bead_fires { first_matched_bead_color(a, b) } else { None };
-	let mut paint = ArcPaint {
+	let paint = ArcPaint {
 		body,
 		zags_from: ArcPaint::no_zags(),
 		zags_to: ArcPaint::no_zags(),
@@ -935,13 +935,6 @@ fn two_ended_with(
 		bead_match,
 		beads_folded: fold_beads,
 	};
-	if braid.only_braid_match() {
-		paint.body = match paint.body {
-			ArcBody::Solid { .. } | ArcBody::Stripes { .. } => ArcBody::Hidden,
-			other => other,
-		};
-		paint.bead_match = None;
-	}
 	paint
 }
 
@@ -989,7 +982,7 @@ fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
 	one_ended_with(tile, on_from, true, BraidScoring::Current)
 }
 
-fn one_ended_with(tile: Tile, on_from: bool, fold_beads: bool, braid: BraidScoring) -> ArcPaint {
+fn one_ended_with(tile: Tile, on_from: bool, fold_beads: bool, _braid: BraidScoring) -> ArcPaint {
 	let zags = tile_zag_strokes(tile);
 	let mut normals: Vec<TileColor> = Vec::new();
 	for k in 0..tile.ring_strokes() {
@@ -1004,7 +997,7 @@ fn one_ended_with(tile: Tile, on_from: bool, fold_beads: bool, braid: BraidScori
 		}
 	}
 	let beads = tile_bead_strokes(tile);
-	let braid_min = if braid.allows_single_braid() { 1 } else { 2 };
+	let braid_min = 2u8;
 	let body = match normals.as_slice() {
 		[] if zags[0].is_none() && tile.braid_ring_count() < braid_min && beads[0].is_none() => {
 			ArcBody::Neutral
@@ -3719,6 +3712,26 @@ mod tests {
 		assert!(matched.has_normal_lane(), "orange normal still matches the bead's non-zag orange");
 		let matched_offs = matched.lane_offsets(pitch);
 		assert_ne!(matched_offs[0], matched_offs[3], "matched bead discs stay off the normal lane");
+	}
+
+	#[test]
+	fn braid_only_match_still_paints_non_braid_matches() {
+		let mut rules = RuleSet::additive();
+		rules.braid_scoring = crate::game::BraidScoring::BraidOnlyMatch;
+		let a = Tile::with_rings(1, Player::One, &[TileColor::Orange], 1, 1);
+		let b = Tile::with_rings(2, Player::Two, &[TileColor::Orange], 1, 1);
+		let paint = arc_paint_for_rules(Some(a), Some(b), &rules);
+		assert!(
+			paint.has_normal_lane(),
+			"braid-only-match still displays a normal match; it just scores 0"
+		);
+		assert!(matches!(paint.body, ArcBody::Solid { color: TileColor::Orange, thick: true }));
+		let bead =
+			Tile::with_typed_rings(3, Player::One, &[(TileColor::Orange, RingType::Bead)], 1, 1);
+		let hit = Tile::with_rings(4, Player::Two, &[TileColor::Orange], 1, 1);
+		let matched = arc_paint_for_rules(Some(bead), Some(hit), &rules);
+		assert_eq!(matched.bead_match, Some(TileColor::Orange));
+		assert!(matched.has_normal_lane());
 	}
 
 	#[test]

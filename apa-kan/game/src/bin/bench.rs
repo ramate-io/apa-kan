@@ -2942,8 +2942,9 @@ mod tests {
 		assert_eq!(cfg.rules.bead_scoring, apa_kan::game::BeadScoring::SharedChannel);
 		let link = parse(vec!["--link-once".to_string(), "on".to_string()]).unwrap();
 		assert!(link.rules.score_unique_neighbors);
-		let braid = parse(vec!["--braid-scoring".to_string(), "exact".to_string()]).unwrap();
-		assert_eq!(braid.rules.braid_scoring, apa_kan::game::BraidScoring::Exact);
+		let braid =
+			parse(vec!["--braid-scoring".to_string(), "braid-only-match".to_string()]).unwrap();
+		assert_eq!(braid.rules.braid_scoring, apa_kan::game::BraidScoring::BraidOnlyMatch);
 		assert_eq!(cfg.rules.channel_mode, apa_kan::game::ChannelMode::IndependentMax);
 		let emblems = parse(vec![
 			"--deck-matchups".to_string(),

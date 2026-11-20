@@ -525,8 +525,7 @@ pub fn usage() -> &'static str {
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --bead-chance <0..7>                       Bead light-election weight (default: 1; 0 disables)\n\
 	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (default independent = beads separate)\n\
-	   --braid-scoring <current|braid-only-match|exact|double-edged>\n\
-	                                              Braid match rule (default: current)\n\
+	   --braid-scoring <current|braid-only-match> Braid match total (default: current; braid-only-match scores only braid matches, still paints others)\n\
 	   --score-unique-neighbors <on|off>          Count each unique node pair once (default: off; alias --link-once)\n\
 	   --link-once <on|off>                       Alias for --score-unique-neighbors\n\
 	   --channel-mode <independent-max|additive>  Edge combine only (default: independent-max). Generation is always clustering\n\
@@ -784,10 +783,8 @@ mod tests {
 		assert!(!def.rules.score_unique_neighbors);
 		let only = GameConfig::parse(["--braid-scoring", "braid-only-match"]).unwrap();
 		assert_eq!(only.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyMatch);
-		let exact = GameConfig::parse(["--braid-scoring", "exact"]).unwrap();
-		assert_eq!(exact.rules.braid_scoring, crate::game::BraidScoring::Exact);
-		let dbl = GameConfig::parse(["--braid-scoring", "double-edged"]).unwrap();
-		assert_eq!(dbl.rules.braid_scoring, crate::game::BraidScoring::DoubleEdged);
+		let err = GameConfig::parse(["--braid-scoring", "exact"]).unwrap_err();
+		assert!(err.contains("braid-scoring"));
 		let err = GameConfig::parse(["--braid-scoring", "product"]).unwrap_err();
 		assert!(err.contains("braid-scoring"));
 		let once = GameConfig::parse(["--link-once", "on"]).unwrap();

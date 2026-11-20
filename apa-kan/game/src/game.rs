@@ -1397,27 +1397,15 @@ impl Tile {
 	/// [`Self::non_zag_colors_multiset`] covers every color in the braid.
 	/// Zag rings never count. Each non-zag ring counts as 1. Size is the
 	/// braid's slot count (2 or 3). An orange+orange braid needs two orange
-	/// non-zag rings on the neighbor. See [`Self::braid_fulfilled_by_for`]
-	/// for [`BraidScoring::Exact`].
+	/// non-zag rings on the neighbor.
 	pub fn braid_fulfilled_by(self, other: Tile) -> Option<u8> {
-		self.braid_fulfilled_by_for(other, BraidScoring::Current)
-	}
-
-	/// Braid fulfillment under [`BraidScoring`].
-	///
-	/// Current / braid-only-match / double-edged: coverage (`have >= need`)
-	/// and size ≥ 2. Exact: the neighbor's non-zag color multiset **equals**
-	/// the braid's color multiset, and a 1-slot braid can match for +1.
-	pub fn braid_fulfilled_by_for(self, other: Tile, scoring: BraidScoring) -> Option<u8> {
 		let size = self.braid_ring_count();
-		let min_size = if scoring.allows_single_braid() { 1 } else { 2 };
-		if size < min_size {
+		if size < 2 {
 			return None;
 		}
 		let need = self.braid_color_counts();
 		let have = other.non_zag_colors_multiset();
-		let ok = if scoring.is_exact() { have == need } else { (0..6).all(|i| have[i] >= need[i]) };
-		if ok {
+		if (0..6).all(|i| have[i] >= need[i]) {
 			Some(size)
 		} else {
 			None
@@ -1511,13 +1499,8 @@ impl Tile {
 /// Largest fulfilled braid on the edge `a`–`b`. Equal sizes pick the
 /// lexicographically smaller braid color-count vector, then the lower tile id.
 pub fn selected_braid(a: Tile, b: Tile) -> Option<(Tile, u8)> {
-	selected_braid_with(a, b, BraidScoring::Current)
-}
-
-/// [`selected_braid`] under a [`BraidScoring`] fulfillment rule.
-pub fn selected_braid_with(a: Tile, b: Tile, scoring: BraidScoring) -> Option<(Tile, u8)> {
-	let fa = a.braid_fulfilled_by_for(b, scoring);
-	let fb = b.braid_fulfilled_by_for(a, scoring);
+	let fa = a.braid_fulfilled_by(b);
+	let fb = b.braid_fulfilled_by(a);
 	match (fa, fb) {
 		(None, None) => None,
 		(Some(n), None) => Some((a, n)),
@@ -1534,6 +1517,12 @@ pub fn selected_braid_with(a: Tile, b: Tile, scoring: BraidScoring) -> Option<(T
 			}
 		}
 	}
+}
+
+/// [`selected_braid`]. Fulfillment does not vary with [`BraidScoring`]; the
+/// flag only changes how match totals treat non-braid channels.
+pub fn selected_braid_with(a: Tile, b: Tile, _scoring: BraidScoring) -> Option<(Tile, u8)> {
+	selected_braid(a, b)
 }
 
 /// Tunable weights for [`Tile::piece_value`]. Low-value resolution uses
@@ -2023,18 +2012,11 @@ pub enum BraidScoring {
 	#[default]
 	Current,
 	/// Only braid-channel matches add to the edge **match** total. A normal
-	/// or bead match still occupies the channel (it does not become a
-	/// hitch / mismatch) but contributes 0 to match. Mismatch channels are
-	/// unchanged. Braid fulfillment is the current coverage rule.
+	/// or bead match is still **displayed** as a match in the HUD and still
+	/// occupies the channel (it does not become a hitch / mismatch) but
+	/// contributes 0 to the match score. Mismatches are unchanged. Braid
+	/// fulfillment is the current coverage rule.
 	BraidOnlyMatch,
-	/// A braid matches only when the neighbor's non-zag color **counts**
-	/// equal the braid's color counts (not coverage). A 1-slot braid can
-	/// match for +1. Failed braids still use [`BraidFailMismatch`].
-	Exact,
-	/// Unmatched braids mismatch with their full slot-count weight. Both
-	/// tiles' braid slot counts add when neither braid is fulfilled
-	/// (`BraidFailMismatch::Sum`). Fulfillment is the current coverage rule.
-	DoubleEdged,
 }
 
 impl BraidScoring {
@@ -2044,10 +2026,8 @@ impl BraidScoring {
 			"braid-only-match" | "braid-only" | "only-match" | "match-only" => {
 				Ok(Self::BraidOnlyMatch)
 			}
-			"exact" | "exact-match" | "equals" => Ok(Self::Exact),
-			"double-edged" | "double-edge" | "weight" | "full-weight" => Ok(Self::DoubleEdged),
 			other => Err(format!(
-				"unknown braid-scoring '{other}' (expected current|braid-only-match|exact|double-edged)"
+				"unknown braid-scoring '{other}' (expected current|braid-only-match)"
 			)),
 		}
 	}
@@ -2056,29 +2036,11 @@ impl BraidScoring {
 		match self {
 			Self::Current => "current",
 			Self::BraidOnlyMatch => "braid-only-match",
-			Self::Exact => "exact",
-			Self::DoubleEdged => "double-edged",
 		}
-	}
-
-	pub fn is_exact(self) -> bool {
-		matches!(self, Self::Exact)
-	}
-
-	pub fn allows_single_braid(self) -> bool {
-		self.is_exact()
 	}
 
 	pub fn only_braid_match(self) -> bool {
 		matches!(self, Self::BraidOnlyMatch)
-	}
-
-	/// Failed-braid cost override. `None` keeps [`RuleSet::braid_fail_mismatch`].
-	pub fn fail_mismatch(self) -> Option<BraidFailMismatch> {
-		match self {
-			Self::DoubleEdged => Some(BraidFailMismatch::Sum),
-			_ => None,
-		}
 	}
 }
 
@@ -2369,13 +2331,11 @@ impl EdgeChannels {
 		if tile.emblem.is_two_zag_zs() && ch.zag_mismatch > 0 {
 			ch.zag_mismatch += 1;
 		}
-		let braid_min = if rules.braid_scoring.allows_single_braid() { 1 } else { 2 };
-		if tile.braid_ring_count() >= braid_min || other.braid_ring_count() >= braid_min {
-			if let Some((_, n)) = selected_braid_with(tile, other, rules.braid_scoring) {
+		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
+			if let Some((_, n)) = selected_braid(tile, other) {
 				ch.braid_match = i32::from(n);
 			} else {
-				let fail = rules.braid_scoring.fail_mismatch().unwrap_or(rules.braid_fail_mismatch);
-				ch.braid_mismatch = fail.cost(tile, other);
+				ch.braid_mismatch = rules.braid_fail_mismatch.cost(tile, other);
 			}
 		}
 		if tile.bead_ring_count() > 0 || other.bead_ring_count() > 0 {
@@ -2720,8 +2680,7 @@ pub struct RuleSet {
 	/// Failed-braid channel mismatch. Accepted default
 	/// [`BraidFailMismatch::One`]: exactly +1 for the edge.
 	/// [`BraidFailMismatch::Weight`] / [`BraidFailMismatch::Sum`] are
-	/// research variants (issue #39). Overridden by
-	/// [`BraidScoring::DoubleEdged`].
+	/// research variants (issue #39).
 	pub braid_fail_mismatch: BraidFailMismatch,
 	/// Braid match rule. Default [`BraidScoring::Current`]. CLI:
 	/// `--braid-scoring`.
@@ -4038,9 +3997,9 @@ impl Game {
 	/// - **Zag:** [`RuleSet::zag_mismatch`] hitting-zag count against the
 	///   full [`Tile::colors_multiset`]. Never a match.
 	/// - **Braid:** the single largest fulfilled braid (match = its slot
-	///   count) under [`RuleSet::braid_scoring`]. If none is fulfilled,
-	///   [`RuleSet::braid_fail_mismatch`] (or full weight when
-	///   [`BraidScoring::DoubleEdged`]).
+	///   count). If none is fulfilled, [`RuleSet::braid_fail_mismatch`].
+	///   [`BraidScoring::BraidOnlyMatch`] keeps only this match in the edge
+	///   match total; other matching channels still occupy and still paint.
 	/// - **Bead:** +1 mismatch per unmatched bead ring on either tile (count
 	///   the rings, not color-pairs). If any bead is matched — same presence
 	///   test as the normal channel, `other.has_non_zag_color(bead_color)` —
@@ -4153,7 +4112,7 @@ impl Game {
 	pub fn braid_edge_counts(&self) -> (u32, u32) {
 		let mut with_braid = 0u32;
 		let mut satisfied = 0u32;
-		let min_size = if self.rules.braid_scoring.allows_single_braid() { 1 } else { 2 };
+		let min_size = 2u8;
 		if self.rules.score_unique_neighbors {
 			let n = self.board.node_count() as NodeId;
 			for a_id in 0..n {
@@ -4171,7 +4130,7 @@ impl Game {
 						continue;
 					}
 					with_braid += 1;
-					if selected_braid_with(a, b, self.rules.braid_scoring).is_some() {
+					if selected_braid(a, b).is_some() {
 						satisfied += 1;
 					}
 				}
@@ -4188,7 +4147,7 @@ impl Game {
 					continue;
 				}
 				with_braid += 1;
-				if selected_braid_with(a, b, self.rules.braid_scoring).is_some() {
+				if selected_braid(a, b).is_some() {
 					satisfied += 1;
 				}
 			}
@@ -10473,74 +10432,22 @@ mod tests {
 	}
 
 	#[test]
-	fn exact_braid_rejects_coverage_and_allows_singles() {
-		let mut rules = RuleSet::additive();
-		rules.braid_scoring = BraidScoring::Exact;
+	fn braid_only_match_zeros_non_braid_match_on_independent_max() {
+		let mut rules = RuleSet::default();
+		rules.braid_scoring = BraidScoring::BraidOnlyMatch;
 		let mut game = Game::empty(rules);
-		let two = game.alloc_typed_rings(
-			Player::One,
-			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
-			1,
-			1,
-		);
-		let two_braid = game.alloc_typed_rings(
-			Player::Two,
-			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
-			1,
-			1,
-		);
-		let three_normal = game.alloc_typed_rings(
-			Player::Two,
-			&[
-				(TileColor::Orange, RingType::Normal),
-				(TileColor::Orange, RingType::Normal),
-				(TileColor::Orange, RingType::Normal),
-			],
-			1,
-			1,
-		);
+		let a = game.alloc_rings(Player::One, &[TileColor::Orange], 1, 1);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(ch.braid_match, 0);
 		assert_eq!(
-			game.edge_score(two, two_braid),
-			(2, 0),
-			"exact: 2-orange braid vs a neighbor whose non-zag counts are exactly 2 orange"
+			game.edge_score(a, b),
+			(0, 0),
+			"normal match still occupies (not a hitch) but scores 0"
 		);
-		let ch = game.edge_channels(two, three_normal);
-		assert_eq!(ch.braid_match, 0, "3 orange is not equal to 2 (coverage would match)");
-		assert_eq!(ch.braid_mismatch, 1);
-		assert_eq!(ch.normal_match, 1, "leftover orange normal still occupies/matches");
-		assert_eq!(game.edge_score(two, three_normal), (1, 1));
-		let single =
-			game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Braid)], 1, 1);
-		let other_single =
-			game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Braid)], 1, 1);
-		assert_eq!(
-			game.edge_score(single, other_single),
-			(1, 0),
-			"exact reintroduces a 1-slot braid as +1"
-		);
-		assert!(
-			single.braid_fulfilled_by(other_single).is_none(),
-			"current scoring still ignores 1-braids"
-		);
-	}
-
-	#[test]
-	fn double_edged_failed_braid_mismatches_at_full_weight() {
-		let mut rules = RuleSet::additive();
-		rules.braid_scoring = BraidScoring::DoubleEdged;
-		let mut game = Game::empty(rules);
-		let two = orange_green_braid(&mut game, Player::One);
 		let miss = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
-		let ch = game.edge_channels(two, miss);
-		assert_eq!(ch.braid_mismatch, 2, "2-braid fail is +2, not the live +1");
-		assert_eq!(ch.normal_mismatch, 1);
-		assert_eq!(game.edge_score(two, miss), (0, 3));
-		let other_two = blue_teal_braid(&mut game, Player::Two);
-		assert_eq!(
-			game.edge_channels(two, other_two).braid_mismatch,
-			4,
-			"both unmatched 2-braids contribute their weights"
-		);
+		assert_eq!(game.edge_score(a, miss), (0, 1), "mismatches are unchanged");
 	}
 
 	fn empty_independent_max() -> Game {

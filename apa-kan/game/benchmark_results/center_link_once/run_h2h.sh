@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Same-deck 27 shallow H2H: link-once ON, ColorPass.drift 160.
-# Matrix: {4:3:1, 7:5:4} × {independent-max, additive}, current braid scoring.
-# Braid variants: braid-only-match / exact / double-edged on additive.
+# Two matrices, each (4:3:1, 7:5:4) × {independent-max, additive}:
+#   (a) current braid scoring
+#   (b) braid-only-match
 #
 # Usage:
-#   run_h2h.sh matrix
-#   run_h2h.sh braid [431_add|754_add|all]
+#   run_h2h.sh matrix          # current scoring, 4 cells
+#   run_h2h.sh braid           # braid-only-match, 4 cells
+#   run_h2h.sh all             # both matrices
 #   run_h2h.sh 431_imax|431_add|754_imax|754_add
-#   run_h2h.sh 431_add_bom|431_add_exact|431_add_de|754_add_bom|754_add_exact|754_add_de
+#   run_h2h.sh 431_imax_bom|431_add_bom|754_imax_bom|754_add_bom
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../../../.." && pwd)"
 cd "$repo"
@@ -56,12 +58,10 @@ case "$cfg" in
   431_add) run_one h2h_431_add off 4,3,1 ;;
   754_imax) run_one h2h_754_imax on 7,5,4 ;;
   754_add) run_one h2h_754_add off 7,5,4 ;;
+  431_imax_bom) run_one h2h_431_imax_bom on 4,3,1 --braid-scoring braid-only-match ;;
   431_add_bom) run_one h2h_431_add_bom off 4,3,1 --braid-scoring braid-only-match ;;
-  431_add_exact) run_one h2h_431_add_exact off 4,3,1 --braid-scoring exact ;;
-  431_add_de) run_one h2h_431_add_de off 4,3,1 --braid-scoring double-edged ;;
+  754_imax_bom) run_one h2h_754_imax_bom on 7,5,4 --braid-scoring braid-only-match ;;
   754_add_bom) run_one h2h_754_add_bom off 7,5,4 --braid-scoring braid-only-match ;;
-  754_add_exact) run_one h2h_754_add_exact off 7,5,4 --braid-scoring exact ;;
-  754_add_de) run_one h2h_754_add_de off 7,5,4 --braid-scoring double-edged ;;
   matrix)
     run_one h2h_431_imax on 4,3,1
     run_one h2h_431_add off 4,3,1
@@ -69,34 +69,23 @@ case "$cfg" in
     run_one h2h_754_add off 7,5,4
     ;;
   braid)
-    cell="${2:-all}"
-    case "$cell" in
-      431_add)
-        run_one h2h_431_add_bom off 4,3,1 --braid-scoring braid-only-match
-        run_one h2h_431_add_exact off 4,3,1 --braid-scoring exact
-        run_one h2h_431_add_de off 4,3,1 --braid-scoring double-edged
-        ;;
-      754_add)
-        run_one h2h_754_add_bom off 7,5,4 --braid-scoring braid-only-match
-        run_one h2h_754_add_exact off 7,5,4 --braid-scoring exact
-        run_one h2h_754_add_de off 7,5,4 --braid-scoring double-edged
-        ;;
-      all)
-        run_one h2h_431_add_bom off 4,3,1 --braid-scoring braid-only-match
-        run_one h2h_431_add_exact off 4,3,1 --braid-scoring exact
-        run_one h2h_431_add_de off 4,3,1 --braid-scoring double-edged
-        run_one h2h_754_add_bom off 7,5,4 --braid-scoring braid-only-match
-        run_one h2h_754_add_exact off 7,5,4 --braid-scoring exact
-        run_one h2h_754_add_de off 7,5,4 --braid-scoring double-edged
-        ;;
-      *)
-        echo "usage: $0 braid [431_add|754_add|all]" >&2
-        exit 2
-        ;;
-    esac
+    run_one h2h_431_imax_bom on 4,3,1 --braid-scoring braid-only-match
+    run_one h2h_431_add_bom off 4,3,1 --braid-scoring braid-only-match
+    run_one h2h_754_imax_bom on 7,5,4 --braid-scoring braid-only-match
+    run_one h2h_754_add_bom off 7,5,4 --braid-scoring braid-only-match
+    ;;
+  all)
+    run_one h2h_431_imax on 4,3,1
+    run_one h2h_431_add off 4,3,1
+    run_one h2h_754_imax on 7,5,4
+    run_one h2h_754_add off 7,5,4
+    run_one h2h_431_imax_bom on 4,3,1 --braid-scoring braid-only-match
+    run_one h2h_431_add_bom off 4,3,1 --braid-scoring braid-only-match
+    run_one h2h_754_imax_bom on 7,5,4 --braid-scoring braid-only-match
+    run_one h2h_754_add_bom off 7,5,4 --braid-scoring braid-only-match
     ;;
   *)
-    echo "usage: $0 [matrix|braid|431_imax|431_add|754_imax|754_add|431_add_bom|...]" >&2
+    echo "usage: $0 [all|matrix|braid|431_imax|431_add|754_imax|754_add|431_imax_bom|431_add_bom|754_imax_bom|754_add_bom]" >&2
     exit 2
     ;;
 esac

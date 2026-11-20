@@ -1769,13 +1769,13 @@ mod tests {
 		r.turn_limit = 50;
 		r.braid_fail_mismatch = BraidFailMismatch::Sum;
 		r.bead_scoring = BeadScoring::SharedChannel;
-		r.braid_scoring = BraidScoring::Exact;
+		r.braid_scoring = BraidScoring::BraidOnlyMatch;
 		r.score_unique_neighbors = true;
 		let log = RulesLog::from_rules(r);
 		assert_eq!(log.to_rules().unwrap(), r);
 		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
 		assert_eq!(log.bead_scoring, "shared");
-		assert_eq!(log.braid_scoring, "exact");
+		assert_eq!(log.braid_scoring, "braid-only-match");
 		assert!(log.score_unique_neighbors);
 		assert_eq!(log.score_incident_arcs, Some(false));
 	}
