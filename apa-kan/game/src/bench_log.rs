@@ -7,8 +7,8 @@ use crate::game::{
 	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
 	CaptureMode, ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
 	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
-	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, TurnGainKind, ZagMismatchCount,
-	DOT_PERCENT_DEFAULT,
+	Player, RingCountWeights, RingType, RuleSet, SamePieceTwice, Tile, TileColor, TurnGainKind,
+	ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -67,6 +67,14 @@ fn default_cascade_capture_mode() -> String {
 
 fn skip_cascade_capture_mode(v: &String) -> bool {
 	v == CaptureMode::Cascade.name()
+}
+
+fn default_ring_count_weights() -> String {
+	RingCountWeights::default().label()
+}
+
+fn skip_default_ring_count_weights(v: &String) -> bool {
+	*v == RingCountWeights::default().label()
 }
 
 fn default_mixed() -> String {
@@ -298,6 +306,13 @@ pub struct RulesLog {
 	pub bag_one_of_each_kind: bool,
 	pub max_rings: u8,
 	pub zag_numer: u8,
+	/// `singles,doubles,triples` generation weights. Absent on older logs;
+	/// replay uses the live 7:5:4 default (tiles themselves are stored).
+	#[serde(
+		default = "default_ring_count_weights",
+		skip_serializing_if = "skip_default_ring_count_weights"
+	)]
+	pub ring_count_weights: String,
 	#[serde(default)]
 	pub braid_numer: u8,
 	/// Absent/0 on logs from before beads; replay then uses 0 (beads off).
@@ -413,6 +428,7 @@ impl RulesLog {
 			bag_one_of_each_kind: r.bag_one_of_each_kind,
 			max_rings: r.max_rings,
 			zag_numer: r.zag_numer,
+			ring_count_weights: r.ring_count_weights.label(),
 			braid_numer: r.braid_numer,
 			bead_numer: r.bead_numer,
 			dot_percent: r.dot_percent,
@@ -462,6 +478,8 @@ impl RulesLog {
 			bag_one_of_each_kind: self.bag_one_of_each_kind,
 			max_rings: self.max_rings,
 			zag_numer: self.zag_numer,
+			ring_count_weights: RingCountWeights::parse(&self.ring_count_weights)
+				.unwrap_or_default(),
 			braid_numer: self.braid_numer,
 			bead_numer: self.bead_numer,
 			dot_percent: self.dot_percent,

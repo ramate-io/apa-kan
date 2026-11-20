@@ -71,8 +71,8 @@ fn usage() -> &'static str {
 	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
 	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
 	                        Each search stays single-threaded unless --search-threads > 1.\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts>\n\
-	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay>\n\
+	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest)\n\
 	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced defaults)\n\
 	   --list-search-profiles    Print named presets and their labels\n\
 	   --search <k=v,...>   Overlay any knob (ordering, tt, lmr, pvs, q-depth, pw, puct, priors,\n\
@@ -111,8 +111,8 @@ fn usage() -> &'static str {
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns, --endgame-rule, --cascade-turn-gain,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
-	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --capture-mode, --dot-chance,\n\
+	   --max-rings, --ring-count-weights, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
+	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -640,7 +640,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -664,6 +664,7 @@ fn run(cfg: BenchConfig) {
 		cfg.setup.deck_noise,
 		on_off(rules.self_capture_budget),
 		rules.max_rings,
+		rules.ring_count_weights.label(),
 		rules.zag_numer,
 		rules.braid_numer,
 		rules.bead_numer,
@@ -2811,6 +2812,9 @@ mod tests {
 		let cfg = parse(vec!["--search-profile".to_string(), "deep_mcts".to_string()]).unwrap();
 		assert_eq!(cfg.search, SearchConfig::deep_mcts());
 		assert_eq!(cfg.search.profile_name(), "deep_mcts");
+		let cfg = parse(vec!["--search-profile".to_string(), "counterplay".to_string()]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::counterplay());
+		assert_eq!(cfg.search.profile_name(), "counterplay");
 	}
 
 	#[test]

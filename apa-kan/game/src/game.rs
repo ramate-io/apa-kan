@@ -65,10 +65,20 @@ pub const COLOR_WEIGHTS: [(TileColor, u32); 6] = [
 	(TileColor::Maroon, 1),
 ];
 pub const COLOR_WEIGHT_TOTAL: u32 = 262;
-/// Ring 2/3: weight 7 keep the last existing color, weight 1 draw any color.
+/// Historical sequential gate: ring 2/3 kept the last color with weight 7
+/// or drew any color with weight 1 (a redraw was not a new ring). That made
+/// singles ~87%+ of tiles. Live count is now [`RingCountWeights`].
 pub const RING_SAME_WEIGHT: u32 = 7;
 pub const RING_ANY_WEIGHT: u32 = 1;
 pub const RING_EXIST_TOTAL: u32 = RING_SAME_WEIGHT + RING_ANY_WEIGHT;
+/// Singles : doubles : triples generation weights (7 : 5 : 4).
+pub const RING_COUNT_1_WEIGHT: u16 = 7;
+pub const RING_COUNT_2_WEIGHT: u16 = 5;
+pub const RING_COUNT_3_WEIGHT: u16 = 4;
+/// IndependentMax per-slot [light, heavy] when `braid_numer` is the default 1.
+/// Tuned so braid rings land near 10% of generated rings at 7:5:4 counts.
+pub const HEAVY_LIGHT_WEIGHT: u32 = 2;
+pub const HEAVY_BRAID_WEIGHT: u32 = 1;
 /// Each ring is independently a zag with probability `zag_numer / ZAG_DENOM`.
 pub const ZAG_DENOM: u8 = 7;
 pub const ZAG_NUMER_DEFAULT: u8 = 1;
@@ -224,6 +234,80 @@ impl TileColor {
 	}
 }
 
+/// Weighted draw of 1 / 2 / 3 live rings. CLI `--ring-count-weights`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RingCountWeights {
+	pub singles: u16,
+	pub doubles: u16,
+	pub triples: u16,
+}
+
+impl Default for RingCountWeights {
+	fn default() -> Self {
+		Self {
+			singles: RING_COUNT_1_WEIGHT,
+			doubles: RING_COUNT_2_WEIGHT,
+			triples: RING_COUNT_3_WEIGHT,
+		}
+	}
+}
+
+impl RingCountWeights {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		let mut parts = s.split(',');
+		let singles = parse_ring_count_part(parts.next(), "singles")?;
+		let doubles = parse_ring_count_part(parts.next(), "doubles")?;
+		let triples = parse_ring_count_part(parts.next(), "triples")?;
+		if parts.next().is_some() {
+			return Err("invalid --ring-count-weights (expected singles,doubles,triples)".into());
+		}
+		let w = Self { singles, doubles, triples };
+		if w.total() == 0 {
+			return Err("invalid --ring-count-weights (at least one weight must be > 0)".into());
+		}
+		Ok(w)
+	}
+
+	pub fn total(self) -> u32 {
+		u32::from(self.singles) + u32::from(self.doubles) + u32::from(self.triples)
+	}
+
+	pub fn label(self) -> String {
+		format!("{},{},{}", self.singles, self.doubles, self.triples)
+	}
+
+	pub fn is_default(self) -> bool {
+		self == Self::default()
+	}
+}
+
+fn parse_ring_count_part(part: Option<&str>, name: &str) -> Result<u16, String> {
+	let raw = part.ok_or_else(|| format!("invalid --ring-count-weights (missing {name})"))?;
+	raw.trim()
+		.parse::<u16>()
+		.map_err(|_| format!("invalid --ring-count-weights {name} '{raw}'"))
+}
+
+/// Draw `n_rings` ∈ {1,2,3} from [`RingCountWeights`], clamped by `max_rings`.
+pub fn sample_ring_count(rng: &mut impl Rng, max_rings: u8, weights: RingCountWeights) -> u8 {
+	let max = max_rings.clamp(1, MAX_COLOR_RINGS);
+	if max == 1 {
+		return 1;
+	}
+	let w1 = u32::from(weights.singles);
+	let w2 = if max >= 2 { u32::from(weights.doubles) } else { 0 };
+	let w3 = if max >= 3 { u32::from(weights.triples) } else { 0 };
+	let total = (w1 + w2 + w3).max(1);
+	let roll = rng.gen_range(0..total);
+	if roll < w1 {
+		1
+	} else if roll < w1 + w2 {
+		2.min(max)
+	} else {
+		3.min(max)
+	}
+}
+
 /// Draw one color from the 81/81/81/9/9/1 tree.
 pub fn sample_color(rng: &mut impl Rng) -> TileColor {
 	let mut roll = rng.gen_range(0..COLOR_WEIGHT_TOTAL);
@@ -293,16 +377,44 @@ pub fn sample_braid(
 	types
 }
 
-/// Per-slot heavy coin (`braid_numer / 7`) for [`ChannelMode::IndependentMax`].
+/// IndependentMax per-slot [light, heavy] weights.
+///
+/// Default `braid_numer == 1` uses [`HEAVY_LIGHT_WEIGHT`] : [`HEAVY_BRAID_WEIGHT`]
+/// (2 : 1, one-in-three) so consecutive-heavy braids land near 10% of rings
+/// at 7:5:4 ring counts. `0` disables; `7` is always-heavy (collectors);
+/// any other numerator keeps the `k/7` coin.
+pub fn heavy_election_weights(braid_numer: u8) -> [u32; 2] {
+	if braid_numer == 0 {
+		[1, 0]
+	} else if braid_numer == BRAID_NUMER_DEFAULT {
+		[HEAVY_LIGHT_WEIGHT, HEAVY_BRAID_WEIGHT]
+	} else if braid_numer >= BRAID_DENOM {
+		[0, 1]
+	} else {
+		[u32::from(BRAID_DENOM - braid_numer), u32::from(braid_numer)]
+	}
+}
+
+/// Per-slot heavy coin for [`ChannelMode::IndependentMax`].
 /// `braid_numer == 0` skips the RNG so `--braids off` matches the no-braid deal.
 pub fn sample_heavy_slots(rng: &mut impl Rng, n_rings: u8, braid_numer: u8) -> [bool; 3] {
 	let mut heavy = [false; 3];
 	if braid_numer == 0 {
 		return heavy;
 	}
-	let numer = u32::from(braid_numer.min(BRAID_DENOM));
+	let [light_w, heavy_w] = heavy_election_weights(braid_numer);
+	let total = light_w + heavy_w;
+	if total == 0 || heavy_w == 0 {
+		return heavy;
+	}
+	if light_w == 0 {
+		for flag in heavy.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+			*flag = true;
+		}
+		return heavy;
+	}
 	for flag in heavy.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
-		*flag = rng.gen_range(0..u32::from(BRAID_DENOM)) < numer;
+		*flag = rng.gen_range(0..total) < heavy_w;
 	}
 	heavy
 }
@@ -442,29 +554,31 @@ pub fn sample_bead_types(
 	}
 }
 
-/// 1–3 distinct ring colors. Ring 1 is always drawn. Rings 2 and 3
-/// keep the last existing color with weight 7, or draw any color with weight 1
-/// (a redraw of an already-present color is not a new ring). Each ring is
-/// then independently marked zag or normal.
+/// 1–3 distinct ring colors. Count is drawn from [`RingCountWeights`]
+/// (default 7 : 5 : 4), then that many distinct colors are sampled from the
+/// six-color tree. Each ring is then independently typed (zag / braid / bead).
 pub fn sample_rings(rng: &mut impl Rng, max_rings: u8) -> ([TileColor; 3], u8) {
-	let max_rings = max_rings.clamp(1, MAX_COLOR_RINGS);
+	sample_rings_with(rng, max_rings, RingCountWeights::default())
+}
+
+pub fn sample_rings_with(
+	rng: &mut impl Rng,
+	max_rings: u8,
+	weights: RingCountWeights,
+) -> ([TileColor; 3], u8) {
+	let want = sample_ring_count(rng, max_rings, weights);
 	let r1 = sample_color(rng);
 	let mut rings = [r1, r1, r1];
 	let mut n = 1u8;
-	if max_rings >= 2 && rng.gen_range(0..RING_EXIST_TOTAL) < RING_ANY_WEIGHT {
+	let mut guard = 0u32;
+	while n < want && guard < 64 {
+		guard += 1;
 		let c = sample_color(rng);
-		if c != r1 {
-			rings[1] = c;
-			n = 2;
+		if rings[..n as usize].contains(&c) {
+			continue;
 		}
-	}
-	if max_rings >= 3 && rng.gen_range(0..RING_EXIST_TOTAL) < RING_ANY_WEIGHT {
-		let last = rings[(n - 1) as usize];
-		let c = sample_color(rng);
-		if c != last && !rings[..n as usize].contains(&c) {
-			rings[n as usize] = c;
-			n += 1;
-		}
+		rings[n as usize] = c;
+		n += 1;
 	}
 	(rings, n)
 }
@@ -1778,9 +1892,10 @@ impl BeadScoring {
 pub enum ChannelMode {
 	/// Independent channels; the edge takes the **maximum** match and the
 	/// **maximum** mismatch of any single channel. Beads are light
-	/// (normal:zag:bead = 5:3:1). Per-slot heavies cluster: consecutive ≥2
-	/// become a braid; a lone or gapped heavy falls through to the light
-	/// election. CLI: `--channel-mode independent-max` (this branch's default).
+	/// (normal:zag:bead = 5:3:1). Per-slot heavies (default 2:1 light:heavy)
+	/// cluster: consecutive ≥2 become a braid; a lone or gapped heavy falls
+	/// through to the light election. CLI: `--channel-mode independent-max`
+	/// / `--independent-channels on` (this branch's default).
 	#[default]
 	IndependentMax,
 	/// RFC 001-001-002 additive stacking: `--bead-scoring` combines normal
@@ -1792,8 +1907,12 @@ pub enum ChannelMode {
 impl ChannelMode {
 	pub fn parse(s: &str) -> Result<Self, String> {
 		match s.to_ascii_lowercase().as_str() {
-			"independent-max" | "independent_max" | "max" | "indep-max" => Ok(Self::IndependentMax),
-			"additive" | "legacy" | "sum" | "shared-sum" | "add" => Ok(Self::Additive),
+			"independent-max" | "independent_max" | "max" | "indep-max" | "independent" | "on" => {
+				Ok(Self::IndependentMax)
+			}
+			"additive" | "legacy" | "sum" | "shared-sum" | "add" | "shared" | "off" => {
+				Ok(Self::Additive)
+			}
 			other => {
 				Err(format!("unknown channel-mode '{other}' (expected independent-max|additive)"))
 			}
@@ -2221,9 +2340,13 @@ pub struct RuleSet {
 	/// default `1` is the zag weight 3 in the 5:3:1 light election; `0`
 	/// disables zags (`--zags off` / `--zag-chance 0`).
 	pub zag_numer: u8,
-	/// A piece forms a braid with probability `braid_numer / 7`. Default 1
-	/// (1/7, same rate as zags). `0` disables braids (`--braids off` /
-	/// `--braid-chance 0`). Braids are the only heavy group in both modes.
+	/// Singles : doubles : triples generation weights. Default 7 : 5 : 4.
+	/// CLI `--ring-count-weights`. The previous sequential 7:1 keep-vs-any
+	/// gate made singles ~87%+ of tiles.
+	pub ring_count_weights: RingCountWeights,
+	/// Additive: a piece forms a braid with probability `braid_numer / 7`.
+	/// Independent-max: default `1` is the 2:1 light:heavy per-slot coin
+	/// (~10% braid rings at 7:5:4 counts); `0` disables; `7` always-heavy.
 	pub braid_numer: u8,
 	/// Under [`ChannelMode::Additive`]: a piece forms a 2–3 bead group with
 	/// probability `bead_numer / 7`. Under [`ChannelMode::IndependentMax`]:
@@ -2358,6 +2481,7 @@ impl Default for RuleSet {
 			bag_one_of_each_kind: true,
 			max_rings: MAX_COLOR_RINGS,
 			zag_numer: ZAG_NUMER_DEFAULT,
+			ring_count_weights: RingCountWeights::default(),
 			braid_numer: BRAID_NUMER_DEFAULT,
 			bead_numer: BEAD_NUMER_DEFAULT,
 			dot_percent: DOT_PERCENT_DEFAULT,
@@ -4799,6 +4923,7 @@ pub fn sample_tile(
 		dot_percent,
 		EmblemWeights::default(),
 		ChannelMode::IndependentMax,
+		RingCountWeights::default(),
 		next_id,
 		rng,
 	)
@@ -4819,6 +4944,7 @@ pub fn sample_tile_from_rules(
 		rules.dot_percent,
 		rules.emblem_weights,
 		rules.channel_mode,
+		rules.ring_count_weights,
 		next_id,
 		rng,
 	)
@@ -4833,10 +4959,11 @@ pub fn sample_tile_with(
 	dot_percent: u8,
 	emblem_weights: EmblemWeights,
 	channel_mode: ChannelMode,
+	ring_count_weights: RingCountWeights,
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
-	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
+	let (mut rings, mut n_rings) = sample_rings_with(rng, max_rings, ring_count_weights);
 	let mut ring_type = match channel_mode {
 		ChannelMode::IndependentMax => {
 			let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
@@ -5124,6 +5251,7 @@ mod tests {
 		assert_eq!(rules.capture_mode, CaptureMode::LocalClaim);
 		assert_eq!(rules.bead_scoring, BeadScoring::SharedChannel);
 		assert_eq!(rules.channel_mode, ChannelMode::IndependentMax);
+		assert_eq!(rules.ring_count_weights, RingCountWeights::default());
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
 		assert_eq!(rules.no_same_piece_twice, SamePieceTwice::Off);
 		assert!(rules.no_moves_loses);
@@ -7341,13 +7469,12 @@ mod tests {
 		}
 		assert_eq!(ring_n[0], 0);
 		assert!(ring_n[1] > ring_n[2] && ring_n[2] > ring_n[3]);
-		let two_plus = f64::from(ring_n[2] + ring_n[3]) / f64::from(n);
-		assert!(
-			(0.12..0.22).contains(&two_plus),
-			"P(2+ rings)={two_plus:.4} (expected ~0.17; ring 3 can still add a second color)"
-		);
+		let one = f64::from(ring_n[1]) / f64::from(n);
+		let two = f64::from(ring_n[2]) / f64::from(n);
 		let three = f64::from(ring_n[3]) / f64::from(n);
-		assert!((0.002..0.02).contains(&three), "P(3 rings)={three:.4}");
+		assert!((0.40..0.48).contains(&one), "P(1 ring)={one:.4} (expected 7/16 = 0.4375)");
+		assert!((0.28..0.35).contains(&two), "P(2 rings)={two:.4} (expected 5/16 = 0.3125)");
+		assert!((0.22..0.29).contains(&three), "P(3 rings)={three:.4} (expected 4/16 = 0.2500)");
 		let total_rings = color_hits.iter().sum::<u32>() as f64;
 		let share = |i: usize| f64::from(color_hits[i]) / total_rings;
 		for i in 0..3 {
@@ -7363,6 +7490,14 @@ mod tests {
 			let (_, k) = sample_rings(&mut rng, 1);
 			assert_eq!(k, 1);
 		}
+	}
+
+	#[test]
+	fn historical_sequential_ring_gate_was_seven_to_one() {
+		assert_eq!(RING_SAME_WEIGHT, 7);
+		assert_eq!(RING_ANY_WEIGHT, 1);
+		assert_eq!(RING_EXIST_TOTAL, 8);
+		assert_eq!(RingCountWeights::default().label(), "7,5,4");
 	}
 
 	#[test]
@@ -8199,6 +8334,7 @@ mod tests {
 				DOT_PERCENT_DEFAULT,
 				EmblemWeights::default(),
 				ChannelMode::Additive,
+				RingCountWeights::default(),
 				&mut next_id,
 				&mut rng,
 			);
@@ -9837,6 +9973,7 @@ mod tests {
 				DOT_PERCENT_DEFAULT,
 				EmblemWeights::default(),
 				ChannelMode::Additive,
+				RingCountWeights::default(),
 				&mut next_id,
 				&mut rng,
 			);
@@ -9866,6 +10003,7 @@ mod tests {
 		let mut beads = 0u32;
 		let mut bead_singles = 0u32;
 		let mut braided = 0u32;
+		let mut braid_rings = 0u32;
 		let mut rings = 0u32;
 		for _ in 0..n {
 			let t = sample_tile(
@@ -9880,7 +10018,9 @@ mod tests {
 			);
 			let k = t.n_rings.clamp(1, 3) as usize;
 			rings += k as u32;
-			if t.braid_ring_count() >= 2 {
+			let br = t.braid_ring_count();
+			braid_rings += u32::from(br);
+			if br >= 2 {
 				braided += 1;
 			}
 			if t.bead_ring_count() == 1 {
@@ -9922,10 +10062,26 @@ mod tests {
 		);
 		assert!(bead_singles > 0, "independent-max allows single-bead tiles (got {bead_singles})");
 		let piece_rate = f64::from(braided) / f64::from(n);
+		let ring_rate = f64::from(braid_rings) / f64::from(rings);
 		assert!(
-			piece_rate < 0.08,
-			"consecutive-heavy braids are rarer than piece-level 1/7 (got {piece_rate:.4}); rings={rings}"
+			(0.06..0.12).contains(&piece_rate),
+			"consecutive-heavy braid piece rate={piece_rate:.4} (expected ~0.08 at 7:5:4, 1/3 heavy)"
 		);
+		assert!(
+			(0.08..0.12).contains(&ring_rate),
+			"braid ring rate={ring_rate:.4} (target ~0.10 of generated rings); rings={rings} braid_rings={braid_rings}"
+		);
+	}
+
+	#[test]
+	fn independent_max_default_heavy_is_one_in_three() {
+		assert_eq!(heavy_election_weights(0), [1, 0]);
+		assert_eq!(
+			heavy_election_weights(BRAID_NUMER_DEFAULT),
+			[HEAVY_LIGHT_WEIGHT, HEAVY_BRAID_WEIGHT]
+		);
+		assert_eq!(heavy_election_weights(BRAID_DENOM), [0, 1]);
+		assert_eq!(heavy_election_weights(2), [5, 2]);
 	}
 
 	#[test]
@@ -9978,6 +10134,7 @@ mod tests {
 				DOT_PERCENT_DEFAULT,
 				EmblemWeights::default(),
 				ChannelMode::IndependentMax,
+				RingCountWeights::default(),
 				&mut next_id,
 				&mut rng,
 			);
@@ -10789,6 +10946,7 @@ mod tests {
 			50,
 			EmblemWeights::off(),
 			ChannelMode::IndependentMax,
+			RingCountWeights::default(),
 			&mut a_id,
 			&mut a_rng,
 		);
@@ -10801,6 +10959,7 @@ mod tests {
 			50,
 			EmblemWeights::off(),
 			ChannelMode::IndependentMax,
+			RingCountWeights::default(),
 			&mut b_id,
 			&mut b_rng,
 		);

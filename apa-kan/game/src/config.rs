@@ -9,8 +9,8 @@ use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode, EmblemWeights,
-	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
-	SamePieceTwice, ZagMismatchCount, BAG_SIZE,
+	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint,
+	RingCountWeights, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -373,6 +373,14 @@ where
 		"--channel-mode" => {
 			rules.channel_mode = ChannelMode::parse(&require_value(arg, it.next())?)?;
 		}
+		"--independent-channels" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.channel_mode =
+				if on { ChannelMode::IndependentMax } else { ChannelMode::Additive };
+		}
+		"--ring-count-weights" => {
+			rules.ring_count_weights = RingCountWeights::parse(&require_value(arg, it.next())?)?;
+		}
 		"--capture-mode" => {
 			rules.capture_mode = CaptureMode::parse(&require_value(arg, it.next())?)?;
 		}
@@ -427,8 +435,8 @@ pub fn usage() -> &'static str {
 	 Options:\n\
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts>\n\
-	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay>\n\
+	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest)\n\
 	   --bot-config <path.toml>                   Load a SearchConfig TOML (overlays missing keys with enhanced defaults)\n\
 	   --list-search-profiles                     Print named presets and their labels\n\
 	   --search <k=v,...>                         Overlay any knob: ordering, tt, lmr, pvs, q-depth, pw, puct,\n\
@@ -480,6 +488,8 @@ pub fn usage() -> &'static str {
 	   --bead-chance <0..7>                       Additive: 2–3 bead group k/7. Independent-max: bead light weight (default: 1)\n\
 	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (ignored by independent-max)\n\
 	   --channel-mode <independent-max|additive>  Edge combine + generation (default: independent-max)\n\
+	   --independent-channels <on|off>            Alias: on = independent-max, off = additive shared scoring\n\
+	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
 	   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim; cascade = PR #70)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
@@ -547,6 +557,9 @@ mod tests {
 		let cfg = GameConfig::parse(["--search-profile", "deep"]).unwrap();
 		assert_eq!(cfg.search, SearchConfig::deep_mcts());
 		assert_eq!(cfg.search.profile_name(), "deep_mcts");
+		let cfg = GameConfig::parse(["--search-profile", "counterplay"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::counterplay());
+		assert_eq!(cfg.search.profile_name(), "counterplay");
 	}
 
 	#[test]
@@ -689,6 +702,7 @@ mod tests {
 		assert!(cfg.rules.self_capture_budget);
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
+		assert_eq!(cfg.rules.ring_count_weights, crate::game::RingCountWeights::default());
 		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.bead_numer, 1);
 		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
@@ -826,6 +840,22 @@ mod tests {
 		assert_eq!(legacy.rules.channel_mode, crate::game::ChannelMode::Additive);
 		let err = GameConfig::parse(["--channel-mode", "average"]).unwrap_err();
 		assert!(err.contains("channel-mode"));
+		let on = GameConfig::parse(["--independent-channels", "on"]).unwrap();
+		assert_eq!(on.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		let off = GameConfig::parse(["--independent-channels", "off"]).unwrap();
+		assert_eq!(off.rules.channel_mode, crate::game::ChannelMode::Additive);
+	}
+
+	#[test]
+	fn parses_ring_count_weights() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.ring_count_weights, crate::game::RingCountWeights::default());
+		let custom = GameConfig::parse(["--ring-count-weights", "1,2,3"]).unwrap();
+		assert_eq!(custom.rules.ring_count_weights.singles, 1);
+		assert_eq!(custom.rules.ring_count_weights.doubles, 2);
+		assert_eq!(custom.rules.ring_count_weights.triples, 3);
+		let err = GameConfig::parse(["--ring-count-weights", "0,0,0"]).unwrap_err();
+		assert!(err.contains("ring-count-weights"));
 	}
 
 	#[test]
