@@ -2381,6 +2381,18 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_single_braid_exact_swap_shallow_replays() {
+		for rel in [
+			"benchmark_results/single_braid_exact_swap/h2h_full_link_once.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_full_double.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_full_double_noswap.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_full_double_nobraid.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
 	fn default_games_log_path_is_jsonl_gz_sibling() {
 		let p =
 			std::path::Path::new("apa-kan/game/benchmark_results/low_value_pairs_deck11_on.txt");

@@ -61,10 +61,12 @@ case "$cfg" in
     run_one h2h_full_double --link-once off
     ;;
   noswap)
-    run_one "h2h_full_${link}_noswap" --link-once "$link" --singles-swap off
+    tag=$([[ "$link" == on ]] && echo link_once || echo double)
+    run_one "h2h_full_${tag}_noswap" --link-once "$link" --singles-swap off
     ;;
   nobraid)
-    run_one "h2h_full_${link}_nobraid" --link-once "$link" --single-braids off
+    tag=$([[ "$link" == on ]] && echo link_once || echo double)
+    run_one "h2h_full_${tag}_nobraid" --link-once "$link" --single-braids off
     ;;
   all)
     run_one h2h_full_link_once --link-once on
