@@ -162,11 +162,16 @@ pub struct SearchStats {
 pub struct HistoryTable {
 	moves: Vec<i32>,
 	adds: Vec<i32>,
+	claims: Vec<i32>,
 }
 
 impl HistoryTable {
 	pub fn new() -> Self {
-		Self { moves: vec![0; 32 * 32], adds: vec![0; crate::game::KIND_COUNT * 2 * 32] }
+		Self {
+			moves: vec![0; 32 * 32],
+			adds: vec![0; crate::game::KIND_COUNT * 2 * 32],
+			claims: vec![0; 32],
+		}
 	}
 
 	fn add_ix(kind: u32, node: u8) -> usize {
@@ -179,6 +184,7 @@ impl HistoryTable {
 		match mv {
 			SearchMove::Move { from, to } => self.moves[from as usize * 32 + to as usize],
 			SearchMove::Add { kind, node } => self.adds[Self::add_ix(kind, node)],
+			SearchMove::Claim { node } => self.claims[node as usize],
 			SearchMove::Pass => 0,
 		}
 	}
@@ -192,6 +198,10 @@ impl HistoryTable {
 			}
 			SearchMove::Add { kind, node } => {
 				let slot = &mut self.adds[Self::add_ix(kind, node)];
+				*slot = (*slot + inc).min(20_000);
+			}
+			SearchMove::Claim { node } => {
+				let slot = &mut self.claims[node as usize];
 				*slot = (*slot + inc).min(20_000);
 			}
 			SearchMove::Pass => {}
@@ -360,6 +370,9 @@ pub struct BranchingReport {
 	pub move_n: u64,
 	pub move_sum: u64,
 	pub move_max: u32,
+	pub claim_n: u64,
+	pub claim_sum: u64,
+	pub claim_max: u32,
 	pub all_n: u64,
 	pub all_sum: u64,
 	pub all_max: u32,
@@ -380,6 +393,14 @@ impl BranchingReport {
 			0.0
 		} else {
 			self.move_sum as f64 / self.move_n as f64
+		}
+	}
+
+	pub fn claim_avg(&self) -> f64 {
+		if self.claim_n == 0 {
+			0.0
+		} else {
+			self.claim_sum as f64 / self.claim_n as f64
 		}
 	}
 
@@ -404,6 +425,12 @@ impl BranchingReport {
 			self.move_n += 1;
 			self.move_sum += u64::from(moves);
 			self.move_max = self.move_max.max(moves);
+		}
+		let claims = game.legal_claims().len() as u32;
+		if claims > 0 {
+			self.claim_n += 1;
+			self.claim_sum += u64::from(claims);
+			self.claim_max = self.claim_max.max(claims);
 		}
 		self.all_n += 1;
 		self.all_sum += u64::from(all);
