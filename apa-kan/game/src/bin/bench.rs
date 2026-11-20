@@ -1398,6 +1398,7 @@ fn push_branching(
 	lines.push(format!("ADD       {:<12} {:<6.2} {}", b.add_n, b.add_avg(), b.add_max));
 	lines.push(format!("MOVE      {:<12} {:<6.2} {}", b.move_n, b.move_avg(), b.move_max));
 	lines.push(format!("CLAIM     {:<12} {:<6.2} {}", b.claim_n, b.claim_avg(), b.claim_max));
+	lines.push(format!("SWAP      {:<12} {:<6.2} {}", b.swap_n, b.swap_avg(), b.swap_max));
 	lines.push(format!("ALL       {:<12} {:<6.2} {}", b.all_n, b.all_avg(), b.all_max));
 }
 

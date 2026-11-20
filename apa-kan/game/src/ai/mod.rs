@@ -381,6 +381,9 @@ pub struct BranchingReport {
 	pub claim_n: u64,
 	pub claim_sum: u64,
 	pub claim_max: u32,
+	pub swap_n: u64,
+	pub swap_sum: u64,
+	pub swap_max: u32,
 	pub all_n: u64,
 	pub all_sum: u64,
 	pub all_max: u32,
@@ -412,6 +415,14 @@ impl BranchingReport {
 		}
 	}
 
+	pub fn swap_avg(&self) -> f64 {
+		if self.swap_n == 0 {
+			0.0
+		} else {
+			self.swap_sum as f64 / self.swap_n as f64
+		}
+	}
+
 	pub fn all_avg(&self) -> f64 {
 		if self.all_n == 0 {
 			0.0
@@ -439,6 +450,12 @@ impl BranchingReport {
 			self.claim_n += 1;
 			self.claim_sum += u64::from(claims);
 			self.claim_max = self.claim_max.max(claims);
+		}
+		let swaps = game.legal_swaps().len() as u32;
+		if swaps > 0 {
+			self.swap_n += 1;
+			self.swap_sum += u64::from(swaps);
+			self.swap_max = self.swap_max.max(swaps);
 		}
 		self.all_n += 1;
 		self.all_sum += u64::from(all);

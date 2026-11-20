@@ -502,7 +502,7 @@ pub fn usage() -> &'static str {
 	   --capture-mode <local-claim|cascade>       Local ADD/MOVE/SWAP captures + Claim (default: local-claim; cascade = PR #70)\n\
 	   --singles-swap <off|adjacent-any|adjacent-own|any|own>\n\
 	                                              Single-ring tiles swap as a move (default: off; alias --swap-mode)\n\
-	   --swap-no-immediate-back <on|off>          Ban swapping the same pair back next (default: off)\n\
+	   --swap-no-immediate-back <on|off>          Ban echoing either player's last swap pair (default: off)\n\
 	   --swap-no-just-moved <on|off>              Ban swapping a tile you just moved (default: off)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\

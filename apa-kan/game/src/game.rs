@@ -2531,9 +2531,9 @@ pub struct RuleSet {
 	/// Single-ring tiles swapping positions as a move. Default
 	/// [`SwapMode::Off`]. CLI `--singles-swap` / `--swap-mode`.
 	pub swap_mode: SwapMode,
-	/// If true, a player may not immediately swap the same two tiles back
-	/// (same pair as their last SWAP). Default false. CLI
-	/// `--swap-no-immediate-back`.
+	/// If true, neither player may immediately swap the same two tiles
+	/// back (the pair of either player's last SWAP, or a SWAP already
+	/// played this turn). Default false. CLI `--swap-no-immediate-back`.
 	pub swap_no_immediate_back: bool,
 	/// If true, a player may not SWAP a tile they just MOVEd or SWAPped
 	/// (their `last_moved` / `moved_this_turn`). Opponent tiles are never
@@ -4300,7 +4300,8 @@ impl Game {
 		if self.rules.swap_no_immediate_back {
 			let key = swap_pair_key(init.id, partner.id);
 			if self.swapped_this_turn == Some(key)
-				|| self.last_swap[self.current.index()] == Some(key)
+				|| self.last_swap[0] == Some(key)
+				|| self.last_swap[1] == Some(key)
 			{
 				return false;
 			}
@@ -11877,6 +11878,27 @@ mod tests {
 			game.legal_swaps().is_empty()
 				|| !game.legal_swaps().contains(&Action::Swap { from: to, to: from }),
 			"echo swap must be illegal: {:?}",
+			game.legal_swaps()
+		);
+	}
+
+	#[test]
+	fn swap_no_immediate_back_blocks_the_opponent_echo() {
+		let mut rules = swap_rules(SwapMode::AdjacentAny);
+		rules.swap_no_immediate_back = true;
+		let mut game = Game::empty(rules);
+		let (from, to) = adjacent_pair(&game);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
+		put(&mut game, to, Player::Two, TileColor::Blue, 1, 1);
+		stock_bench(&mut game, Player::One, 3);
+		stock_bench(&mut game, Player::Two, 3);
+		game.set_current(Player::One);
+		game.apply(Action::Swap { from, to }).unwrap();
+		assert_eq!(game.current_player(), Player::Two);
+		assert!(
+			!game.legal_swaps().contains(&Action::Swap { from, to })
+				&& !game.legal_swaps().contains(&Action::Swap { from: to, to: from }),
+			"opponent must not echo the same pair: {:?}",
 			game.legal_swaps()
 		);
 	}

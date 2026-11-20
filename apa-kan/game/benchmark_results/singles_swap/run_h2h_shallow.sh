@@ -29,17 +29,19 @@ run_one() {
   local name="$1"
   local swap="$2"
   local profile="$3"
+  shift 3
   cargo run --release --no-default-features -p apa-kan --bin apa-kan-bench -- \
     "${common[@]}" \
     --singles-swap "$swap" \
     --search-profile "$profile" \
+    "$@" \
     --out "$out/${name}.txt" \
     --record "$out/${name}_record.txt" \
     --games-log "$out/${name}.jsonl.gz" \
     --label "singles-swap ${name} shallow H2H"
 }
 
-# Usage: run_h2h_shallow.sh [adj_any_cp|adj_own_cp|any_cp|own_cp|adj_any_en|adj_own_en|any_en|own_en|all]
+# Usage: run_h2h_shallow.sh [adj_any_cp|adj_own_cp|any_cp|own_cp|adj_any_en|adj_own_en|any_en|own_en|adj_any_cp_noback|all]
 cfg="${1:-all}"
 case "$cfg" in
   adj_any_cp) run_one h2h_b_adj_any_counterplay adjacent-any counterplay ;;
@@ -50,6 +52,10 @@ case "$cfg" in
   adj_own_en) run_one h2h_b_adj_own_enhanced adjacent-own enhanced ;;
   any_en) run_one h2h_b_any_enhanced any enhanced ;;
   own_en) run_one h2h_b_own_enhanced own enhanced ;;
+  adj_any_cp_noback)
+    run_one h2h_b_adj_any_counterplay_noback adjacent-any counterplay \
+      --swap-no-immediate-back on
+    ;;
   all)
     run_one h2h_b_adj_any_counterplay adjacent-any counterplay
     run_one h2h_b_adj_own_counterplay adjacent-own counterplay
@@ -59,9 +65,11 @@ case "$cfg" in
     run_one h2h_b_adj_own_enhanced adjacent-own enhanced
     run_one h2h_b_any_enhanced any enhanced
     run_one h2h_b_own_enhanced own enhanced
+    run_one h2h_b_adj_any_counterplay_noback adjacent-any counterplay \
+      --swap-no-immediate-back on
     ;;
   *)
-    echo "usage: $0 [adj_any_cp|adj_own_cp|any_cp|own_cp|adj_any_en|adj_own_en|any_en|own_en|all]" >&2
+    echo "usage: $0 [adj_any_cp|adj_own_cp|any_cp|own_cp|adj_any_en|adj_own_en|any_en|own_en|adj_any_cp_noback|all]" >&2
     exit 2
     ;;
 esac
