@@ -336,9 +336,19 @@ impl SetupRecord {
 
 /// Opening 7 and +4 sizes for a collection of `deck_len` tiles.
 pub fn pick_plan(deck_len: usize) -> (usize, usize) {
-	let target = BENCH_SIZE.min(deck_len);
+	pick_plan_target(BENCH_SIZE, deck_len)
+}
+
+/// Opening 7 then remainder, targeting `bench` public tiles.
+pub fn pick_plan_target(bench: usize, deck_len: usize) -> (usize, usize) {
+	let target = bench.min(deck_len);
 	let opening = BENCH_OPENING.min(target);
 	(opening, target.saturating_sub(opening))
+}
+
+/// [`pick_plan_target`] using [`RuleSet::bag_size`] (11 two-tier, 13 placement-only).
+pub fn pick_plan_for(rules: &RuleSet, deck_len: usize) -> (usize, usize) {
+	pick_plan_target(rules.bag_size.max(1) as usize, deck_len)
 }
 
 /// How many live ring slots of `typ` are on `tiles`. Braids count by slot
@@ -1128,7 +1138,7 @@ pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) 
 		let mut extend_picks = [Vec::new(), Vec::new()];
 		for p in [Player::One, Player::Two] {
 			let deck = &decks[p.index()];
-			let (opening, ext) = pick_plan(deck.len());
+			let (opening, ext) = pick_plan_for(rules, deck.len());
 			pick7[p.index()] = deck.iter().copied().take(opening).collect();
 			extend_picks[p.index()] = deck.iter().copied().skip(opening).take(ext).collect();
 		}
@@ -1146,7 +1156,7 @@ pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) 
 	let mut pick7 = [Vec::new(), Vec::new()];
 	for p in [Player::One, Player::Two] {
 		let deck = &decks[p.index()];
-		let (opening, need_ext) = pick_plan(deck.len());
+		let (opening, need_ext) = pick_plan_for(rules, deck.len());
 		pick7[p.index()] = pick_from_pool(
 			deck,
 			opening,
@@ -1167,7 +1177,7 @@ pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) 
 		let opp7 = &pick7[p.other().index()];
 		let reserves: Vec<Tile> =
 			deck.iter().copied().filter(|t| !mine7.iter().any(|u| u.id == t.id)).collect();
-		let k = pick_plan(deck.len()).1;
+		let k = pick_plan_for(rules, deck.len()).1;
 		extend_picks[p.index()] = pick_from_pool(
 			&reserves,
 			k,
@@ -1378,6 +1388,14 @@ mod tests {
 		assert_eq!(pick_plan(8), (7, 1));
 		assert_eq!(pick_plan(5), (5, 0));
 		assert_eq!(pick_plan(1), (1, 0));
+	}
+
+	#[test]
+	fn pick_plan_for_placement_only_is_seven_then_six() {
+		let mut rules = RuleSet::default();
+		rules.bag_size = crate::game::PLACEMENT_ONLY_BENCH_SIZE as u8;
+		assert_eq!(pick_plan_for(&rules, 27), (7, 6));
+		assert_eq!(pick_plan_target(13, 13), (7, 6));
 	}
 
 	#[test]

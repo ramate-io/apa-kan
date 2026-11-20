@@ -12,7 +12,8 @@ use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
 use crate::deck::{
-	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
+	self, pick_from_pool, pick_plan_for, respects_type_cap, would_respect_cap, SetupConfig,
+	SetupRecord,
 };
 use crate::game::{Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
@@ -199,8 +200,8 @@ impl SetupSession {
 
 	fn need(&self) -> usize {
 		match self.stage {
-			SetupStage::Opening(p) => pick_plan(self.decks[p.index()].len()).0,
-			SetupStage::Extend(p) => pick_plan(self.decks[p.index()].len()).1,
+			SetupStage::Opening(p) => pick_plan_for(&self.rules, self.decks[p.index()].len()).0,
+			SetupStage::Extend(p) => pick_plan_for(&self.rules, self.decks[p.index()].len()).1,
 			SetupStage::Reveal | SetupStage::Done => 0,
 		}
 	}
@@ -305,7 +306,7 @@ impl SetupSession {
 	}
 
 	fn auto_pick(&mut self, p: Player) {
-		let (opening, ext) = pick_plan(self.decks[p.index()].len());
+		let (opening, ext) = pick_plan_for(&self.rules, self.decks[p.index()].len());
 		match self.stage {
 			SetupStage::Opening(cur) if cur == p => {
 				let tiles = pick_from_pool(
@@ -713,8 +714,26 @@ fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
 		}
 		if let Some(tile) = play.game.tile_at(node) {
 			if tile.owner == current {
+				if play.game.rules().win_condition.is_placement_only()
+					&& matches!(play.selection, Selection::Piece(from) if from == node)
+					&& play.game.is_overwhelmed(node)
+				{
+					apply_action(play, Action::Remove { node });
+					return;
+				}
 				play.selection = Selection::Piece(node);
 				play.warning.clear();
+				return;
+			}
+			if play.game.rules().win_condition.is_placement_only() {
+				if play.game.is_overwhelmed(node) {
+					apply_action(play, Action::Remove { node });
+					return;
+				}
+				play.warning = format!(
+					"{} at {node} is not overwhelmed (REMOVE is harvest-only).",
+					tile.kind_label()
+				);
 				return;
 			}
 		} else if play.game.board().is_spawn(node) {
@@ -779,6 +798,11 @@ fn update_add_warning(play: &mut PlayState) {
 				.collect();
 			if killers.is_empty() {
 				play.warning = format!("Spawn {node}: pick an unplaced deck tile to ADD.");
+			} else if play.game.rules().win_condition.is_placement_only() {
+				play.warning = format!(
+					"Illegal: spawn {node} would immediately overwhelm: {}",
+					killers.join(", ")
+				);
 			} else {
 				play.warning = format!(
 					"Warning: spawn {node} would immediately overwhelm: {}",
@@ -803,6 +827,12 @@ fn update_add_warning(play: &mut PlayState) {
 					play.warning = format!(
 						"Selected {} - click a yellow spawn (ADD markers).",
 						tile.kind_label()
+					);
+				} else if play.game.rules().win_condition.is_placement_only() {
+					play.warning = format!(
+						"Illegal: {} would be immediately overwhelmed on spawn(s) {}.",
+						tile.kind_label(),
+						bad.join(", ")
 					);
 				} else {
 					play.warning = format!(

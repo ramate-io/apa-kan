@@ -114,7 +114,8 @@ fn usage() -> &'static str {
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
 	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
-	   --path-constraint, --no-repeated-edge, --turn-limit\n\
+	   --path-constraint, --no-repeated-edge, --turn-limit,\n\
+	   --win-condition two-tier|placement-only\n\
 	   -h, --help\n"
 }
 
@@ -502,6 +503,7 @@ struct SeatStats {
 	turns: u32,
 	elim: u32,
 	locked_out: u32,
+	no_legal_placement: u32,
 	center_hold: u32,
 	petal_majority: u32,
 	control: u32,
@@ -624,7 +626,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} win_condition={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -656,6 +658,7 @@ fn run(cfg: BenchConfig) {
 		rules.blocker_blocks.name(),
 		rules.zag_mismatch.name(),
 		rules.path_constraint.name(),
+		rules.win_condition.name(),
 		cfg.scenario.as_ref().map(|s| s.name.as_str()).unwrap_or("default")
 	));
 	push_ring_process(&mut lines, rules, cfg.seed);
@@ -672,7 +675,7 @@ fn run(cfg: BenchConfig) {
 		"# root_spread: visit entropy / effective branching, top-1 visit share, #moves within 1/sqrt(n) of best Q, Q spread of top 10, best-move stability.".into(),
 	);
 	lines.push(
-		"# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
+		"# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  no_legal_placement  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
 	);
 
 	let keep_log = cfg.games_log.is_some();
@@ -802,6 +805,7 @@ fn run(cfg: BenchConfig) {
 	let mut p1_l = 0u32;
 	let mut end_elim = 0u32;
 	let mut end_lock = 0u32;
+	let mut end_no_place = 0u32;
 	let mut end_hold = 0u32;
 	let mut end_petal = 0u32;
 	let mut end_control = 0u32;
@@ -850,6 +854,7 @@ fn run(cfg: BenchConfig) {
 		p1_l += stats.losses;
 		end_elim += stats.elim;
 		end_lock += stats.locked_out;
+		end_no_place += stats.no_legal_placement;
 		end_hold += stats.center_hold;
 		end_petal += stats.petal_majority;
 		end_control += stats.control;
@@ -905,13 +910,13 @@ fn run(cfg: BenchConfig) {
 		p1_w + p1_d + p1_l
 	));
 	lines.push(format!(
-		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
+		"# end_reasons  elim={end_elim} locked_out={end_lock} no_legal_placement={end_no_place} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
 	));
 	lines.push(format!(
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
 	));
 	println!(
-		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
+		"# end_reasons  elim={end_elim} locked_out={end_lock} no_legal_placement={end_no_place} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
 	);
 	println!(
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
@@ -944,6 +949,41 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!(
 		"# emblems  crescent_saves={crescent_saves} avg_per_game={avg_moon:.2}  zs_bonuses={zs_bonuses} avg_per_game={avg_zs:.2}"
 	));
+	if rules.win_condition.is_placement_only() {
+		let mut n = 0u32;
+		let mut turn_sum = 0u32;
+		let mut turn_min = u32::MAX;
+		let mut turn_max = 0u32;
+		let mut no_place = 0u32;
+		let mut p1_wins = 0u32;
+		for results in &by_pair {
+			for r in results {
+				n += 1;
+				turn_sum += r.turns;
+				turn_min = turn_min.min(r.turns);
+				turn_max = turn_max.max(r.turns);
+				match r.status {
+					GameStatus::Won { reason: EndReason::NoLegalPlacement, winner } => {
+						no_place += 1;
+						if winner == Player::One {
+							p1_wins += 1;
+						}
+					}
+					GameStatus::Won { winner: Player::One, .. } => p1_wins += 1,
+					_ => {}
+				}
+			}
+		}
+		let avg_turns = if n == 0 { 0.0 } else { f64::from(turn_sum) / f64::from(n) };
+		let p1_rate = if n == 0 { 0.0 } else { f64::from(p1_wins) / f64::from(n) };
+		let no_place_rate = if n == 0 { 0.0 } else { f64::from(no_place) / f64::from(n) };
+		let turn_min = if n == 0 { 0 } else { turn_min };
+		let line = format!(
+			"# placement_only  games={n}  turns_avg={avg_turns:.2} turns_min={turn_min} turns_max={turn_max}  no_legal_placement={no_place} rate={no_place_rate:.2}  p1_wins={p1_wins} p1_win_rate={p1_rate:.2}"
+		);
+		lines.push(line.clone());
+		println!("{line}");
+	}
 	let mm_avg = if mm_depth_n == 0 { 0.0 } else { mm_depth_sum / f64::from(mm_depth_n) };
 	let mcts_avg = if mcts_depth_n == 0 { 0.0 } else { mcts_depth_sum / f64::from(mcts_depth_n) };
 	lines.push(format!(
@@ -1055,6 +1095,7 @@ fn run(cfg: BenchConfig) {
 				short_n += 1;
 				match r.status {
 					GameStatus::Won { reason: EndReason::LockedOut, .. } => short_lock += 1,
+					GameStatus::Won { reason: EndReason::NoLegalPlacement, .. } => short_lock += 1,
 					GameStatus::Won { reason: EndReason::Control, .. } => short_ctrl += 1,
 					_ => {}
 				}
@@ -1087,8 +1128,12 @@ fn run(cfg: BenchConfig) {
 		.map(|i| format!("dots{}={}-{}-{}", i, pick_w[i], pick_d[i], pick_l[i]))
 		.collect();
 	lines.push(format!("# pick_dot_ratio  P1_opening_dots W-D-L  {}", pick_bits.join("  ")));
-	println!("# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}");
-	println!("# center_captures  opponent_tiles_removed={center_captures}  avg_per_game={avg_center:.2}  self_captures={center_self_captures}  self_avg_per_game={avg_center_self:.2}");
+	println!(
+		"# captures  opponent_tiles_removed={captures}  avg_per_game={avg_cap:.2}  self_captures={self_captures}  self_avg_per_game={avg_self:.2}"
+	);
+	println!(
+		"# center_captures  opponent_tiles_removed={center_captures}  avg_per_game={avg_center:.2}  self_captures={center_self_captures}  self_avg_per_game={avg_center_self:.2}"
+	);
 	println!(
 		"# capture_dest  bench={bench_captures} avg_per_game={avg_bench_cap:.2}  tokens={token_captures} avg_per_game={avg_token_cap:.2}"
 	);
@@ -1255,7 +1300,9 @@ fn run_calibrate(cfg: &BenchConfig) {
 		think.as_millis(),
 		seeds.len()
 	);
-	println!("# minimax_nodes n={node_n} mean={mean_nodes:.0} min={node_min} max={node_max} mean_depth={mean_depth:.2}");
+	println!(
+		"# minimax_nodes n={node_n} mean={mean_nodes:.0} min={node_min} max={node_max} mean_depth={mean_depth:.2}"
+	);
 	println!("# mcts_iters n={iter_n} mean={mean_iters:.0} min={iter_min} max={iter_max}");
 	println!("# search_depth  mm_avg={mean_depth:.2}");
 	println!("# recommended --budget nodes:{rec_nodes},iters:{rec_iters}");
@@ -1455,7 +1502,7 @@ fn summarize_pairing(
 	let avg_cap = f64::from(stats.captures) / f64::from(n);
 	let avg_self = f64::from(stats.self_captures) / f64::from(n);
 	let line = format!(
-		"{:<15} vs {:<15}  {:<13}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}  self={:.2}  mm_max={} mcts_avg={:.2} mcts_max={}",
+		"{:<15} vs {:<15}  {:<13}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}  self={:.2}  mm_max={} mcts_avg={:.2} mcts_max={}",
 		p1.name(),
 		p2.name(),
 		matchup,
@@ -1465,6 +1512,7 @@ fn summarize_pairing(
 		avg,
 		stats.elim,
 		stats.locked_out,
+		stats.no_legal_placement,
 		stats.center_hold,
 		stats.petal_majority,
 		stats.control,
@@ -1491,6 +1539,7 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 		EndReason::TurnLimit => stats.turn_limit += 1,
 		EndReason::DoublePass => stats.double_pass += 1,
 		EndReason::LockedOut => stats.locked_out += 1,
+		EndReason::NoLegalPlacement => stats.no_legal_placement += 1,
 		EndReason::CenterHold => stats.center_hold += 1,
 		EndReason::PetalMajority => stats.petal_majority += 1,
 		EndReason::Control => stats.control += 1,
@@ -1605,8 +1654,7 @@ fn run_ablate(cfg: &BenchConfig) {
 		"# positions: opening seeds 1,2,3 and 6 greedy plies from seed 4. jobs={}",
 		cfg.jobs
 	));
-	let header =
-		"# profile  pos  mm_depth  mm_nodes  mcts_avg  mcts_max  mcts_iters  entropy  eff_branch  top1  near_q  q_spread10  stability  legal  mm_ms  mcts_ms";
+	let header = "# profile  pos  mm_depth  mm_nodes  mcts_avg  mcts_max  mcts_iters  entropy  eff_branch  top1  near_q  q_spread10  stability  legal  mm_ms  mcts_ms";
 	lines.push(header.into());
 	println!("{header}");
 	let mut positions = Vec::new();
@@ -1657,9 +1705,18 @@ fn run_ablate(cfg: &BenchConfig) {
 			let mt = mcts.stats();
 			let line = format!(
 				"{name}  {pos_name}  mm_depth={} mm_nodes={}  mcts_avg={:.2} mcts_max={} mcts_iters={}  entropy={:.2} eff_branch={:.1} top1={:.2} near_q={} q_spread10={:.3} stability={:.2} legal={}  mm_ms={mm_ms:.0} mcts_ms={mcts_ms:.0}",
-				st.depth, st.nodes, mt.mcts_avg_depth, mt.mcts_max_depth, mt.iterations,
-				mt.root_entropy, mt.root_eff_branch, mt.root_top1_share, mt.root_near_best_q,
-				mt.root_q_spread_top10, mt.root_best_stability, mt.root_legal
+				st.depth,
+				st.nodes,
+				mt.mcts_avg_depth,
+				mt.mcts_max_depth,
+				mt.iterations,
+				mt.root_entropy,
+				mt.root_eff_branch,
+				mt.root_top1_share,
+				mt.root_near_best_q,
+				mt.root_q_spread_top10,
+				mt.root_best_stability,
+				mt.root_legal
 			);
 			println!("{line}");
 			lines.push(line);
@@ -2008,6 +2065,7 @@ fn play_game(
 					move_rings[t.n_rings.clamp(1, 3) as usize] += 1;
 				}
 			}
+			Action::Remove { .. } => {}
 			Action::Pass => {}
 		}
 		match game.apply(action) {
@@ -2535,6 +2593,7 @@ mod tests {
 					|| line.starts_with("# capture_dest")
 					|| line.starts_with("# bead_captures")
 					|| line.starts_with("# emblems")
+					|| line.starts_with("# placement_only")
 					|| line.starts_with("# search_depth")
 					|| line.starts_with("# root_spread")
 					|| line.starts_with("# matchup_totals")

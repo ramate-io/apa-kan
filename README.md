@@ -71,6 +71,7 @@ Usage: apa-kan [OPTIONS]
 	   --p2-deck <mixed|braid|bead|crescent|zs|emblem>  P2 collection archetype
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)
   --channel-mode <independent-max|additive>  Edge combine + bead generation (default: independent-max)
+  --win-condition <two-tier|placement-only>  Default two-tier; placement-only is 13-tile bench, spawn ADD, MOVE on, no suicide landing, cannot-place (no ADD/MOVE) loses
   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)
   --path-constraint <no-node-revisit|no-edge-revisit|both>
   -h, --help

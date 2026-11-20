@@ -169,11 +169,9 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 /// showed up as tofu boxes between HUD items.
 pub const HUD_SEP: &str = " | ";
 
-pub const HELP_TEXT: &str =
-	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both have board+usable <5.";
+pub const HELP_TEXT: &str = "Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both have board+usable <5.";
 
-pub const SETUP_HELP_TEXT: &str =
-	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6). Normal uncapped.";
+pub const SETUP_HELP_TEXT: &str = "Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6). Normal uncapped.";
 
 pub const NEUTRAL_ARC_RGB: [f32; 3] = [0.38, 0.40, 0.45];
 pub const BG_RGB: [f32; 3] = [0.07, 0.08, 0.10];
@@ -2668,7 +2666,9 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 					game.rules().petal_majority_n
 				));
 			}
-			if game.rules().control_win {
+			if game.rules().win_condition.is_placement_only() {
+				extra.push_str(&format!("{HUD_SEP}placement-only"));
+			} else if game.rules().control_win {
 				extra.push_str(&format!(
 					"{HUD_SEP}ctl P1 {}/{} {}/{} P2 {}/{} {}/{}",
 					game.control_count(Player::One),

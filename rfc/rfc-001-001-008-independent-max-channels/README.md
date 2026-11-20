@@ -54,6 +54,7 @@ aggregation changes. `--bead-scoring` is ignored under independent-max.
 | Two Zag Zs | +1 on the zag component before aggregate | same; only the aggregate changes |
 | Crescent | `eff > n_rings` at 1 occupied neighbor | same test; `eff` uses max-per-edge |
 | Overwhelm | `Σ(mismatch − match) >= weight` | same inequality, new totals |
+| Placement-only ADD (`--win-condition placement-only`) | `would_overwhelm_add` uses additive totals | `would_overwhelm_add` uses max-per-edge totals |
 | HUD `tile_score` | `(weight + Σ match, Σ mismatch)` | same shape, per-edge maxes |
 | `classify_bead_capture` | with vs without bead fields, then aggregate | same, through max |
 | Lane paint | every firing channel | only the max-match channel and the max-mismatch channel |

@@ -7,7 +7,8 @@ use crate::game::{
 	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
 	ChannelMode, Emblem, EmblemWeights, EndReason, Game, GameStatus, HopWeightCmp,
 	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player,
-	RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	RingType, RuleSet, SamePieceTwice, Tile, TileColor, WinCondition, ZagMismatchCount,
+	DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -117,6 +118,7 @@ fn end_reason_name(reason: EndReason) -> &'static str {
 		EndReason::TurnLimit => "turn_limit",
 		EndReason::DoublePass => "double_pass",
 		EndReason::LockedOut => "locked_out",
+		EndReason::NoLegalPlacement => "no_legal_placement",
 		EndReason::CenterHold => "center_hold",
 		EndReason::PetalMajority => "petal_majority",
 		EndReason::Control => "control",
@@ -131,6 +133,7 @@ fn end_reason_parse(s: &str) -> Result<EndReason, String> {
 		"turn_limit" => Ok(EndReason::TurnLimit),
 		"double_pass" => Ok(EndReason::DoublePass),
 		"locked_out" => Ok(EndReason::LockedOut),
+		"no_legal_placement" => Ok(EndReason::NoLegalPlacement),
 		"center_hold" => Ok(EndReason::CenterHold),
 		"petal_majority" => Ok(EndReason::PetalMajority),
 		"control" => Ok(EndReason::Control),
@@ -360,6 +363,18 @@ pub struct RulesLog {
 		skip_serializing_if = "skip_default_blocker_blocks"
 	)]
 	pub blocker_blocks: String,
+	/// `two-tier` (default) or `placement-only`. Absent on older logs;
+	/// replay uses two-tier.
+	#[serde(default = "default_two_tier", skip_serializing_if = "skip_two_tier")]
+	pub win_condition: String,
+}
+
+fn default_two_tier() -> String {
+	WinCondition::TwoTier.name().to_string()
+}
+
+fn skip_two_tier(v: &String) -> bool {
+	*v == WinCondition::TwoTier.name()
 }
 
 fn default_blocker_blocks() -> String {
@@ -414,6 +429,7 @@ impl RulesLog {
 			channel_mode: r.channel_mode.name().into(),
 			emblem_weights: r.emblem_weights.label(),
 			blocker_blocks: r.blocker_blocks.name().into(),
+			win_condition: r.win_condition.name().into(),
 		}
 	}
 
@@ -462,6 +478,7 @@ impl RulesLog {
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
 				.unwrap_or_else(|_| EmblemWeights::default()),
 			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
+			win_condition: WinCondition::parse(&self.win_condition).unwrap_or_default(),
 		})
 	}
 }
@@ -635,6 +652,7 @@ impl ActionLog {
 				("ADD".to_string(), None, Some(node), Some(bench_index))
 			}
 			Action::Move { from, to } => ("MOVE".to_string(), Some(from), Some(to), None),
+			Action::Remove { node } => ("REMOVE".to_string(), Some(node), None, None),
 			Action::Pass => ("PASS".to_string(), None, None, None),
 		};
 		let capture = outcome.removals.iter().filter(|r| r.tile.owner != player).count() as u8;
@@ -709,6 +727,10 @@ impl ActionLog {
 				let to = self.to.ok_or("MOVE missing to")?;
 				Ok(Action::Move { from, to })
 			}
+			"REMOVE" => {
+				let node = self.from.ok_or("REMOVE missing from")?;
+				Ok(Action::Remove { node })
+			}
 			"PASS" => Ok(Action::Pass),
 			other => Err(format!("unknown action kind '{other}'")),
 		}
@@ -719,6 +741,7 @@ impl ActionLog {
 		match self.kind.as_str() {
 			"ADD" => tags.push("ADD"),
 			"MOVE" => tags.push("MOVE"),
+			"REMOVE" => tags.push("REMOVE"),
 			"PASS" => tags.push("PASS"),
 			_ => {}
 		}
@@ -1267,6 +1290,7 @@ pub fn piece_for_action(game: &Game, action: Action) -> Option<Tile> {
 			game.bench(game.current_player()).get(bench_index).copied()
 		}
 		Action::Move { from, .. } => game.tile_at(from),
+		Action::Remove { node } => game.tile_at(node),
 		Action::Pass => None,
 	}
 }

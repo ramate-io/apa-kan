@@ -94,6 +94,9 @@ pub const BAG_SIZE: usize = 27;
 /// Spawn tokens default separately to 7. CLI `--deck-size` is the 27-tile
 /// collection, not this field.
 pub const BAG_SIZE_DEFAULT: usize = 11;
+/// Public bench in [`WinCondition::PlacementOnly`]. CLI `--win-condition
+/// placement-only` sets [`RuleSet::bag_size`] to this (7+6 from the 27).
+pub const PLACEMENT_ONLY_BENCH_SIZE: usize = 13;
 /// Default opening spawn-token stack. Independent of [`BAG_SIZE_DEFAULT`].
 pub const STARTING_TOKENS_DEFAULT: u8 = 7;
 pub const MAX_COLOR_RINGS: u8 = 3;
@@ -1424,6 +1427,9 @@ pub enum EndReason {
 	DoublePass,
 	/// Player to move had no legal ADD or MOVE (`no_moves_loses`).
 	LockedOut,
+	/// Placement-only: the player to move had no legal ADD and no legal
+	/// MOVE. A leftover REMOVE of an overwhelmed tile does not delay this.
+	NoLegalPlacement,
 	/// Occupied the center for N consecutive own turns (`center_hold_win`).
 	CenterHold,
 	/// Held a majority of inner-ring (petal) nodes for N consecutive own turns.
@@ -2042,6 +2048,46 @@ impl InsufficientTilesLoss {
 	}
 }
 
+/// Which end-of-game package is live. Default [`Self::TwoTier`] is control
+/// then low-value. [`Self::PlacementOnly`] is the alternate: ADD, MOVE, or
+/// REMOVE; no suicide landing; no auto-removal; cannot-place loses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum WinCondition {
+	/// Default: control (k=5, t=1) then low-value pair check.
+	#[default]
+	TwoTier,
+	/// Alternate: ADD on empty spawns with no spawn-token cap (13-tile
+	/// bench), MOVE with the usual dest rules, or REMOVE an overwhelmed
+	/// tile. ADD/MOVE into immediate overwhelm is illegal. Later-overwhelmed
+	/// tiles stay. The player to move loses when they have no legal ADD and
+	/// no legal MOVE (`EndReason::NoLegalPlacement`); leftover REMOVEs do
+	/// not count as placement.
+	PlacementOnly,
+}
+
+impl WinCondition {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().replace('_', "-").as_str() {
+			"two-tier" | "two" | "control" | "default" => Ok(Self::TwoTier),
+			"placement-only" | "placement" | "place" => Ok(Self::PlacementOnly),
+			other => {
+				Err(format!("unknown win-condition '{other}' (expected two-tier|placement-only)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::TwoTier => "two-tier",
+			Self::PlacementOnly => "placement-only",
+		}
+	}
+
+	pub fn is_placement_only(self) -> bool {
+		matches!(self, Self::PlacementOnly)
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GameStatus {
 	InProgress,
@@ -2201,6 +2247,9 @@ pub struct RuleSet {
 	/// [`ChannelMode::IndependentMax`]. `--channel-mode additive` restores
 	/// RFC 001-001-002 additive stacking and 2–3 bead groups.
 	pub channel_mode: ChannelMode,
+	/// Default [`WinCondition::TwoTier`] (control then low-value).
+	/// [`WinCondition::PlacementOnly`] is `--win-condition placement-only`.
+	pub win_condition: WinCondition,
 }
 
 impl Default for RuleSet {
@@ -2245,6 +2294,7 @@ impl Default for RuleSet {
 			braid_fail_mismatch: BraidFailMismatch::One,
 			bead_scoring: BeadScoring::SharedChannel,
 			channel_mode: ChannelMode::IndependentMax,
+			win_condition: WinCondition::TwoTier,
 		}
 	}
 }
@@ -2266,8 +2316,20 @@ impl RuleSet {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
-	Add { bench_index: usize, node: NodeId },
-	Move { from: NodeId, to: NodeId },
+	Add {
+		bench_index: usize,
+		node: NodeId,
+	},
+	Move {
+		from: NodeId,
+		to: NodeId,
+	},
+	/// Placement-only: take an overwhelmed tile off the board. Capture dest
+	/// and spawn tokens follow the removed tile's mark (same as today's
+	/// simultaneous removal).
+	Remove {
+		node: NodeId,
+	},
 	Pass,
 }
 
@@ -3149,14 +3211,40 @@ impl Game {
 
 	/// Would `tile` be overwhelmed if placed at `node` (other tiles unchanged)?
 	pub fn would_overwhelm_add(&self, tile: Tile, node: NodeId) -> bool {
+		self.would_overwhelm_on(tile, node, None)
+	}
+
+	/// Would the tile at `from` be overwhelmed after MOVEing to empty `to`?
+	/// Vacates `from` so a neighboring origin is not counted as a neighbor.
+	pub fn would_overwhelm_move(&self, from: NodeId, to: NodeId) -> bool {
+		let Some(tile) = self.tile_at(from) else {
+			return false;
+		};
+		self.would_overwhelm_on(tile, to, Some(from))
+	}
+
+	fn would_overwhelm_on(&self, tile: Tile, node: NodeId, skip: Option<NodeId>) -> bool {
 		if self.tile_at(node).is_some() {
 			return false;
 		}
-		Self::overwhelms(
-			tile,
-			self.occupied_adjacency_count(node),
-			self.effective_for_tile(node, tile),
-		)
+		let mut seen = [false; 32];
+		let mut occ = 0u8;
+		let mut effective = 0i32;
+		for nb in self.board.incident_others(node) {
+			if skip == Some(nb) {
+				continue;
+			}
+			let Some(other) = self.tile_at(nb) else {
+				continue;
+			};
+			effective += self.edge_channels(tile, other).effective_for_rules(&self.rules);
+			let i = nb as usize;
+			if i < seen.len() && !seen[i] {
+				seen[i] = true;
+				occ = occ.saturating_add(1);
+			}
+		}
+		Self::overwhelms(tile, occ, effective)
 	}
 
 	/// Bead-channel role in an overwhelm of `tile` at `node`.
@@ -3241,7 +3329,13 @@ impl Game {
 		let mut acts = Vec::new();
 		acts.extend(self.legal_adds());
 		acts.extend(self.legal_moves());
-		if acts.is_empty() && !self.rules.no_moves_loses {
+		if self.rules.win_condition.is_placement_only() {
+			acts.extend(self.legal_removes());
+		}
+		if acts.is_empty()
+			&& !self.rules.no_moves_loses
+			&& !self.rules.win_condition.is_placement_only()
+		{
 			acts.push(Action::Pass);
 		}
 		acts
@@ -3251,8 +3345,9 @@ impl Game {
 		if self.status.is_over() {
 			return Vec::new();
 		}
-		// Usable budget is 0 when the stack is empty or the remaining deck is empty.
-		if self.budget(self.current) == 0 {
+		// Placement-only has no spawn-token cap: every remaining bench tile
+		// is usable. Two-tier still needs usable budget.
+		if !self.rules.win_condition.is_placement_only() && self.budget(self.current) == 0 {
 			return Vec::new();
 		}
 		let bench = &self.benches[self.current.index()];
@@ -3276,7 +3371,27 @@ impl Game {
 		let mut acts = Vec::new();
 		for i in 0..bench.len() {
 			for &node in &dests {
+				if self.rules.win_condition.is_placement_only()
+					&& self.would_overwhelm_add(bench[i], node)
+				{
+					continue;
+				}
 				acts.push(Action::Add { bench_index: i, node });
+			}
+		}
+		acts
+	}
+
+	/// Placement-only: REMOVE any currently overwhelmed tile. Capture dest
+	/// and spawn tokens follow that tile's mark. Not generated in two-tier.
+	pub fn legal_removes(&self) -> Vec<Action> {
+		if self.status.is_over() || !self.rules.win_condition.is_placement_only() {
+			return Vec::new();
+		}
+		let mut acts = Vec::new();
+		for (node, _) in self.tiles() {
+			if self.is_overwhelmed(node) {
+				acts.push(Action::Remove { node });
 			}
 		}
 		acts
@@ -3291,11 +3406,7 @@ impl Game {
 			if tile.owner != self.current {
 				continue;
 			}
-			let restricted = self.same_piece_is_restricted(tile.id);
-			for dest in self.destinations(node) {
-				if restricted && !self.move_removes_opponent(node, dest) {
-					continue;
-				}
+			for dest in self.legal_destinations(node) {
 				acts.push(Action::Move { from: node, to: dest });
 			}
 		}
@@ -3370,6 +3481,13 @@ impl Game {
 		!self.legal_adds().is_empty() || !self.legal_moves().is_empty()
 	}
 
+	/// True when the current player has a legal ADD or a legal MOVE.
+	/// Placement-only ends the game when this is false; leftover
+	/// [`Self::legal_removes`] do not count as placement.
+	pub fn has_legal_placement(&self) -> bool {
+		self.has_add_or_move()
+	}
+
 	/// Destinations that are legal for the tile at `from` under path rules
 	/// *and* the same-piece restriction (including the capture exception).
 	pub fn legal_destinations(&self, from: NodeId) -> Vec<NodeId> {
@@ -3382,7 +3500,17 @@ impl Game {
 		let restricted = self.same_piece_is_restricted(tile.id);
 		self.destinations(from)
 			.into_iter()
-			.filter(|&to| !restricted || self.move_removes_opponent(from, to))
+			.filter(|&to| {
+				if restricted && !self.move_removes_opponent(from, to) {
+					return false;
+				}
+				if self.rules.win_condition.is_placement_only()
+					&& self.would_overwhelm_move(from, to)
+				{
+					return false;
+				}
+				true
+			})
 			.collect()
 	}
 
@@ -3581,14 +3709,25 @@ impl Game {
 			return Err("game is over".into());
 		}
 		let player = self.current;
+		let mut placed_removal = None;
 		match action {
 			Action::Add { bench_index, node } => self.apply_add(bench_index, node)?,
 			Action::Move { from, to } => self.apply_move(from, to)?,
+			Action::Remove { node } => {
+				placed_removal = Some(self.apply_remove(node)?);
+			}
 			Action::Pass => {
-				if self.has_add_or_move() {
+				if self.rules.win_condition.is_placement_only() {
+					if self.has_legal_placement() || !self.legal_removes().is_empty() {
+						return Err("pass is only legal when no ADD or MOVE exists".into());
+					}
+					self.status = GameStatus::Won {
+						winner: player.other(),
+						reason: EndReason::NoLegalPlacement,
+					};
+				} else if self.has_add_or_move() {
 					return Err("pass is only legal when no ADD or MOVE exists".into());
-				}
-				if self.rules.no_moves_loses {
+				} else if self.rules.no_moves_loses {
 					self.status =
 						GameStatus::Won { winner: player.other(), reason: EndReason::LockedOut };
 				}
@@ -3601,27 +3740,34 @@ impl Game {
 			self.consecutive_passes = 0;
 		}
 
-		let dest = self.acting_capture(action).dest();
 		let just_added = match action {
 			Action::Add { node, .. } => Some(node),
 			_ => None,
 		};
-		let mut removals = self.collect_removals();
 		let emblem = self.emblem_triggers();
-		for rem in &mut removals {
-			rem.dest = dest;
-			let (contrib, needed, spawn) =
-				self.classify_bead_capture(rem.node, rem.tile, just_added);
-			rem.bead_contrib = contrib;
-			rem.bead_needed = needed;
-			rem.spawn_two_ring_single_bead = spawn;
-		}
+		let mut removals = if self.rules.win_condition.is_placement_only() {
+			// No auto-removal and no chain reactions. A REMOVE takes exactly
+			// the chosen overwhelmed tile.
+			placed_removal.into_iter().collect()
+		} else {
+			let dest = self.acting_capture(action).dest();
+			let mut removals = self.collect_removals();
+			for rem in &mut removals {
+				rem.dest = dest;
+				let (contrib, needed, spawn) =
+					self.classify_bead_capture(rem.node, rem.tile, just_added);
+				rem.bead_contrib = contrib;
+				rem.bead_needed = needed;
+				rem.spawn_two_ring_single_bead = spawn;
+			}
+			removals
+		};
 		let opponent = player.other();
 		let mut draws = 0u8;
 		let is_move = matches!(action, Action::Move { .. });
-		for rem in &removals {
+		for rem in &mut removals {
 			self.tiles[rem.node as usize] = None;
-			match dest {
+			match rem.dest {
 				CaptureDest::Bench => {
 					let mut tile = rem.tile;
 					tile.owner = player;
@@ -3648,6 +3794,7 @@ impl Game {
 		self.check_elimination();
 		if self.status == GameStatus::InProgress
 			&& !self.rules.no_moves_loses
+			&& !self.rules.win_condition.is_placement_only()
 			&& self.consecutive_passes >= 2
 		{
 			self.status = GameStatus::Draw { reason: EndReason::DoublePass };
@@ -3668,15 +3815,17 @@ impl Game {
 
 	fn finish_turn(&mut self, who: Player) {
 		self.last_moved[who.index()] = self.moved_this_turn.take();
-		self.update_center_hold(who);
-		if !self.status.is_over() {
-			self.update_petal_majority(who);
-		}
-		if !self.status.is_over() {
-			self.update_control(who);
-		}
-		if !self.status.is_over() {
-			self.check_insufficient_tiles();
+		if !self.rules.win_condition.is_placement_only() {
+			self.update_center_hold(who);
+			if !self.status.is_over() {
+				self.update_petal_majority(who);
+			}
+			if !self.status.is_over() {
+				self.update_control(who);
+			}
+			if !self.status.is_over() {
+				self.check_insufficient_tiles();
+			}
 		}
 		self.actions_this_turn = 0;
 		self.turn_count = self.turn_count.saturating_add(1);
@@ -3688,6 +3837,12 @@ impl Game {
 			return;
 		}
 		self.current = who.other();
+		if self.rules.win_condition.is_placement_only() {
+			if !self.has_legal_placement() {
+				self.status = GameStatus::Won { winner: who, reason: EndReason::NoLegalPlacement };
+			}
+			return;
+		}
 		if self.rules.no_moves_loses && !self.has_add_or_move() {
 			self.status = GameStatus::Won { winner: who, reason: EndReason::LockedOut };
 		}
@@ -3880,13 +4035,14 @@ impl Game {
 	fn acting_capture(&self, action: Action) -> CaptureMark {
 		let node = match action {
 			Action::Add { node, .. } | Action::Move { to: node, .. } => node,
+			Action::Remove { node } => node,
 			Action::Pass => return CaptureMark::Triangle,
 		};
 		self.tile_at(node).map(|t| t.capture).unwrap_or(CaptureMark::Triangle)
 	}
 
 	fn apply_add(&mut self, bench_index: usize, node: NodeId) -> Result<(), String> {
-		if self.budget(self.current) == 0 {
+		if !self.rules.win_condition.is_placement_only() && self.budget(self.current) == 0 {
 			return Err("no capture budget".into());
 		}
 		if self.rules.add_only_on_spawns && !self.board.is_spawn(node) {
@@ -3895,14 +4051,43 @@ impl Game {
 		if self.tile_at(node).is_some() {
 			return Err("destination is occupied".into());
 		}
-		let bench = &mut self.benches[self.current.index()];
+		let bench = &self.benches[self.current.index()];
 		if bench_index >= bench.len() {
 			return Err("bench index out of range".into());
 		}
-		let tile = bench.remove(bench_index);
+		let tile = bench[bench_index];
+		if self.rules.win_condition.is_placement_only() && self.would_overwhelm_add(tile, node) {
+			return Err("ADD would be immediately overwhelmed".into());
+		}
+		let tile = self.benches[self.current.index()].remove(bench_index);
 		self.tiles[node as usize] = Some(tile);
-		self.spend_budget(self.current)?;
+		if !self.rules.win_condition.is_placement_only() {
+			self.spend_budget(self.current)?;
+		}
 		Ok(())
+	}
+
+	fn apply_remove(&mut self, node: NodeId) -> Result<Removal, String> {
+		if !self.rules.win_condition.is_placement_only() {
+			return Err("REMOVE is only legal in placement-only mode".into());
+		}
+		let tile = self.tile_at(node).ok_or_else(|| "no tile to remove".to_string())?;
+		if !self.is_overwhelmed(node) {
+			return Err("REMOVE is only legal on an overwhelmed tile".into());
+		}
+		let (matches, mismatches) = self.tile_score(node).unwrap_or((0, 0));
+		let (contrib, needed, spawn) = self.classify_bead_capture(node, tile, None);
+		self.tiles[node as usize] = None;
+		Ok(Removal {
+			node,
+			tile,
+			matches,
+			mismatches,
+			dest: tile.capture.dest(),
+			bead_contrib: contrib,
+			bead_needed: needed,
+			spawn_two_ring_single_bead: spawn,
+		})
 	}
 
 	fn apply_move(&mut self, from: NodeId, to: NodeId) -> Result<(), String> {
@@ -3919,6 +4104,9 @@ impl Game {
 					.into(),
 			);
 		}
+		if self.rules.win_condition.is_placement_only() && self.would_overwhelm_move(from, to) {
+			return Err("MOVE would be immediately overwhelmed".into());
+		}
 		self.tiles[from as usize] = None;
 		self.tiles[to as usize] = Some(tile);
 		self.moved_this_turn = Some(tile.id);
@@ -3927,6 +4115,9 @@ impl Game {
 
 	fn check_elimination(&mut self) {
 		if self.status.is_over() {
+			return;
+		}
+		if self.rules.win_condition.is_placement_only() {
 			return;
 		}
 		let p1 = self.is_alive(Player::One);
@@ -4056,6 +4247,7 @@ fn format_log(
 			format!("ADD bench[{bench_index}] to {}{}", node_tag(board, node), node)
 		}
 		Action::Move { from, to } => format!("MOVE {} -> {}", from, to),
+		Action::Remove { node } => format!("REMOVE {}", node),
 		Action::Pass => "PASS".to_string(),
 	};
 	let mut line = format!("{} ({}) {}", player.label(), player.shade(), act);
@@ -4250,6 +4442,7 @@ mod tests {
 	fn default_rules_are_control_win_with_seven_tokens() {
 		let rules = RuleSet::default();
 		assert!(!rules.center_hold_win);
+		assert_eq!(rules.win_condition, WinCondition::TwoTier);
 		assert!(rules.control_win);
 		assert_eq!(rules.control_n, 5);
 		assert_eq!(rules.control_hold_turns, 1);
@@ -5044,6 +5237,258 @@ mod tests {
 		assert_eq!(
 			game.status(),
 			GameStatus::Won { winner: Player::One, reason: EndReason::LockedOut }
+		);
+	}
+
+	fn placement_only_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.win_condition = WinCondition::PlacementOnly;
+		rules.control_win = false;
+		rules.bag_size = PLACEMENT_ONLY_BENCH_SIZE as u8;
+		assert_eq!(rules.channel_mode, ChannelMode::IndependentMax);
+		assert!(rules.add_only_on_spawns);
+		rules
+	}
+
+	#[test]
+	fn placement_only_rejects_add_into_immediate_overwhelm() {
+		let mut game = Game::empty(placement_only_rules());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
+		let tile = take(&mut game, Player::One, TileColor::Green, 1, 1);
+		assert!(game.would_overwhelm_add(tile, spawn), "1-ring hitch vs 1-ring is overwhelmed");
+		game.set_bench(Player::One, vec![tile]);
+		game.set_current(Player::One);
+		assert!(
+			!game
+				.legal_adds()
+				.iter()
+				.any(|a| matches!(a, Action::Add { node, .. } if *node == spawn)),
+			"suicide ADD must not be generated"
+		);
+		let err = game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap_err();
+		assert!(err.contains("overwhelmed"), "{err}");
+		assert!(game.tile_at(spawn).is_none());
+		assert_eq!(game.bench(Player::One).len(), 1);
+	}
+
+	#[test]
+	fn placement_only_uses_independent_max_not_additive_stacking() {
+		// Orange zag vs a 2-ring: additive hitch+zag is +2 (suicide for a
+		// 2-ring); independent-max is +1, so the ADD is legal.
+		let mut game = Game::empty(placement_only_rules());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let zag = game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		game.place_tile(nbs[0], zag);
+		let two = take_rings(&mut game, Player::One, &[TileColor::Orange, TileColor::Blue], 1);
+		assert!(!game.would_overwhelm_add(two, spawn), "max mismatch 1 < rings 2");
+		game.set_bench(Player::One, vec![two]);
+		game.set_current(Player::One);
+		assert!(game
+			.legal_adds()
+			.iter()
+			.any(|a| matches!(a, Action::Add { node, .. } if *node == spawn)));
+
+		let mut additive = placement_only_rules();
+		additive.channel_mode = ChannelMode::Additive;
+		let mut stacked = Game::empty(additive);
+		let spawn = stacked.board().spawns()[0];
+		let nbs = stacked.board().neighbors(spawn).to_vec();
+		let zag =
+			stacked.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		stacked.place_tile(nbs[0], zag);
+		let two = take_rings(&mut stacked, Player::One, &[TileColor::Orange, TileColor::Blue], 1);
+		assert!(stacked.would_overwhelm_add(two, spawn), "additive hitch+zag is +2 >= 2");
+	}
+
+	#[test]
+	fn placement_only_keeps_later_overwhelmed_tiles() {
+		let mut game = Game::empty(placement_only_rules());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		assert!(nbs.len() >= 2);
+		put_rings(&mut game, spawn, Player::One, &[TileColor::Green, TileColor::Blue], 1);
+		put_rings(&mut game, nbs[0], Player::Two, &[TileColor::Orange, TileColor::Teal], 1);
+		assert!(!game.is_overwhelmed(spawn), "one mismatch does not drop a 2-ring");
+		put_rings(&mut game, nbs[1], Player::Two, &[TileColor::Orange, TileColor::Teal], 1);
+		assert!(game.is_overwhelmed(spawn), "two mismatches overwhelm the 2-ring");
+		assert!(game.tile_at(spawn).is_some(), "later-overwhelmed tiles stay; no chain removal");
+		assert!(game.legal_removes().contains(&Action::Remove { node: spawn }));
+		let dest = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none())
+			.expect("free spawn for a later ADD");
+		let extra = take_rings(&mut game, Player::Two, &[TileColor::Orange, TileColor::Teal], 1);
+		assert!(!game.would_overwhelm_add(extra, dest));
+		game.set_bench(Player::Two, vec![extra]);
+		game.set_current(Player::Two);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(game.tile_at(spawn).is_some(), "ADD does not auto-remove later-overwhelmed tiles");
+		assert!(game.is_overwhelmed(spawn));
+	}
+
+	#[test]
+	fn placement_only_add_does_not_spend_tokens() {
+		let mut game = Game::empty(placement_only_rules());
+		game.set_budget_tokens(Player::One, Vec::new());
+		let spawn = game.board().spawns()[0];
+		let tile = take(&mut game, Player::One, TileColor::Green, 3, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_current(Player::One);
+		assert_eq!(game.budget(Player::One), 0);
+		assert!(game
+			.legal_adds()
+			.iter()
+			.any(|a| matches!(a, Action::Add { node, .. } if *node == spawn)));
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert!(game.tile_at(spawn).is_some());
+		assert_eq!(game.budget_token_count(Player::One), 0);
+	}
+
+	#[test]
+	fn placement_only_opening_bench_is_thirteen() {
+		let game = Game::new(placement_only_rules(), 1);
+		assert_eq!(game.bench(Player::One).len(), PLACEMENT_ONLY_BENCH_SIZE);
+		assert_eq!(game.bench(Player::Two).len(), PLACEMENT_ONLY_BENCH_SIZE);
+		assert_eq!(game.rules().bag_size as usize, PLACEMENT_ONLY_BENCH_SIZE);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - PLACEMENT_ONLY_BENCH_SIZE);
+		assert_eq!(game.bag_len(Player::Two), BAG_SIZE - PLACEMENT_ONLY_BENCH_SIZE);
+	}
+
+	#[test]
+	fn placement_only_add_stays_spawn_only() {
+		let mut game = Game::empty(placement_only_rules());
+		let center = game.board().center();
+		assert!(!game.board().is_spawn(center));
+		let tile = take(&mut game, Player::One, TileColor::Green, 3, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_current(Player::One);
+		assert!(game.legal_adds().iter().all(|a| match a {
+			Action::Add { node, .. } => game.board().is_spawn(*node),
+			_ => false,
+		}));
+		assert!(!game
+			.legal_adds()
+			.iter()
+			.any(|a| matches!(a, Action::Add { node, .. } if *node == center)));
+		let err = game.apply(Action::Add { bench_index: 0, node: center }).unwrap_err();
+		assert!(err.contains("spawn"), "{err}");
+	}
+
+	#[test]
+	fn placement_only_move_off_spawn_is_legal() {
+		let mut game = Game::empty(placement_only_rules());
+		let spawn = game.board().spawns()[0];
+		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
+		game.set_current(Player::One);
+		let dests = game.legal_destinations(spawn);
+		assert!(!dests.is_empty(), "3-ring on an empty spawn can MOVE");
+		let to = dests[0];
+		game.apply(Action::Move { from: spawn, to }).unwrap();
+		assert!(game.tile_at(spawn).is_none());
+		assert!(game.tile_at(to).is_some());
+	}
+
+	#[test]
+	fn placement_only_rejects_suicide_move() {
+		let mut game = Game::empty(placement_only_rules());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
+		let from = *game
+			.board()
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| n != nbs[0] && game.tile_at(n).is_none())
+			.unwrap_or(&nbs[1]);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
+		game.set_current(Player::One);
+		assert!(
+			game.destinations(from).contains(&spawn),
+			"1-dot on a spawn neighbor can step onto the empty spawn"
+		);
+		assert!(game.would_overwhelm_move(from, spawn));
+		assert!(!game.legal_destinations(from).contains(&spawn));
+		let err = game.apply(Action::Move { from, to: spawn }).unwrap_err();
+		assert!(err.contains("overwhelmed") || err.contains("illegal"), "{err}");
+	}
+
+	#[test]
+	fn placement_only_legal_move_counts_as_placement() {
+		let mut game = Game::empty(placement_only_rules());
+		let spawns = game.board().spawns().to_vec();
+		put(&mut game, spawns[0], Player::One, TileColor::Green, 3, 1);
+		game.set_bench(Player::One, vec![]);
+		game.set_current(Player::One);
+		assert!(game.legal_adds().is_empty());
+		assert!(!game.legal_moves().is_empty());
+		assert!(game.has_legal_placement(), "a legal MOVE counts as placement");
+		let t = take(&mut game, Player::Two, TileColor::Blue, 3, 1);
+		game.set_bench(Player::Two, vec![t]);
+		game.set_current(Player::Two);
+		let dest = spawns
+			.iter()
+			.copied()
+			.find(|&s| {
+				game.tile_at(s).is_none()
+					&& !game.would_overwhelm_add(game.bench(Player::Two)[0], s)
+			})
+			.expect("P2 spawn");
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.current_player(), Player::One);
+		assert!(game.has_legal_placement());
+	}
+
+	#[test]
+	fn placement_only_ends_when_the_player_to_move_cannot_place() {
+		let mut game = Game::empty(placement_only_rules());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put_rings(&mut game, spawn, Player::Two, &[TileColor::Green, TileColor::Blue], 1);
+		put_rings(&mut game, nbs[0], Player::Two, &[TileColor::Orange, TileColor::Teal], 1);
+		put_rings(&mut game, nbs[1], Player::Two, &[TileColor::Orange, TileColor::Teal], 1);
+		assert!(game.is_overwhelmed(spawn));
+		assert!(!game.legal_removes().is_empty(), "harvest is still available");
+		game.set_bench(Player::One, vec![]);
+		{
+			let t = take(&mut game, Player::Two, TileColor::Blue, 3, 1);
+			game.set_bench(Player::Two, vec![t]);
+		}
+		let p2_spawn = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| {
+				game.tile_at(s).is_none()
+					&& !game.would_overwhelm_add(game.bench(Player::Two)[0], s)
+			})
+			.expect("P2 needs a legal spawn");
+		game.set_current(Player::Two);
+		assert!(game.has_legal_placement());
+		game.apply(Action::Add { bench_index: 0, node: p2_spawn }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::NoLegalPlacement },
+			"incoming player loses on no ADD and no MOVE even if a REMOVE exists"
+		);
+	}
+
+	#[test]
+	fn placement_only_empty_to_move_is_terminal_without_pass() {
+		let mut game = Game::empty(placement_only_rules());
+		assert!(!game.has_legal_placement());
+		assert!(game.legal_actions().is_empty());
+		game.apply(Action::Pass).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::NoLegalPlacement }
 		);
 	}
 

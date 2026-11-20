@@ -213,6 +213,19 @@ The **control set** is the center (node 0) plus the 8 inner-ring nodes (`Board::
 - Chosen default package (from [`control_win_t1_bench7.txt`](../../apa-kan/game/benchmark_results/control_win_t1_bench7.txt)): control-win **on** (5 of 9, t=1), center-hold **off**, starting bench 7, insufficient-tiles **off**, petal-majority **off**. Restore the previous package with `--center-hold-win on --control-win off --starting-bench 5`.
 - Total game clocks (a draw condition) are a planned follow-up; they are not implemented here.
 
+#### 6b. `win_condition` (default **two-tier**)
+
+CLI: `--win-condition <two-tier|placement-only>`
+
+Default **two-tier** is the control-then-low-value package above. **placement-only** is an alternate game:
+
+1. A turn is **ADD** a remaining bench tile on an empty spawn, **MOVE** a tile with the usual dest rules, or **REMOVE** an overwhelmed tile. ADD stays spawn-only (`add_only_on_spawns`); it is not any empty board cell. There is **no spawn-token cap**: `--win-condition placement-only` sets `bag_size=13` (7+6 from the 27) and every remaining bench tile is usable. MOVE off a spawn frees it for a later ADD.
+2. ADD is illegal if the tile would be immediately overwhelmed (`would_overwhelm_add`). MOVE is illegal if the landing would be immediately overwhelmed (`would_overwhelm_move`, origin vacated so a neighboring start square is not counted). On this stack overwhelm uses **independent-max** (max match / max mismatch of any single channel per edge; [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md)). Tiles that later become overwhelmed **stay**; there is no simultaneous capture and no chain reaction.
+3. REMOVE uses the existing capture dest / token rules on that one tile (dot → mover's bench, triangle → spawn token). Opponent tiles always earn a token; own-tile harvests follow `self_capture_budget`.
+4. The player to move **loses** (`EndReason::NoLegalPlacement`) when they have **no legal ADD and no legal MOVE**. A leftover REMOVE of an overwhelmed tile does **not** count as placement and does not delay the loss. A legal MOVE does count: a player with an empty bench (or filled spawns) who can still MOVE is not locked out.
+
+Search uses the same legal-move generator (`legal_adds` / `legal_moves` / `legal_removes`) and treats no-legal-placement as a terminal.
+
 #### 7. `insufficient_tiles_loss` (experimental, default **off**) — "can't reach control"
 
 CLI: `--insufficient-tiles-loss <off|strict|no-recapture>`
@@ -259,6 +272,7 @@ apa-kan --bot1 <human|random|greedy|minimax|mcts> --bot2 <...>
         --pass-through-ring-cmp ge|gt
         --petal-majority-win on|off --petal-majority-n N
         --control-win on|off --control-n K --control-hold-turns T
+        --win-condition two-tier|placement-only
         --insufficient-tiles-loss off|strict|no-recapture
         --starting-tokens N --deck-size N --deck-seed N --deck-noise 0..100 --pick heuristic|search|greedy --self-capture-budget on|off
         --max-rings 1..3 --zag-chance 0..7 --zags on|off

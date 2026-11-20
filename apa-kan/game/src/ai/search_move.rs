@@ -17,6 +17,9 @@ pub enum SearchMove {
 		from: NodeId,
 		to: NodeId,
 	},
+	Remove {
+		node: NodeId,
+	},
 	Pass,
 }
 
@@ -32,6 +35,7 @@ impl SearchMove {
 				SearchMove::Add { kind, node }
 			}
 			Action::Move { from, to } => SearchMove::Move { from, to },
+			Action::Remove { node } => SearchMove::Remove { node },
 			Action::Pass => SearchMove::Pass,
 		}
 	}
@@ -46,6 +50,7 @@ impl SearchMove {
 				Some(Action::Add { bench_index: idx, node })
 			}
 			SearchMove::Move { from, to } => Some(Action::Move { from, to }),
+			SearchMove::Remove { node } => Some(Action::Remove { node }),
 			SearchMove::Pass => Some(Action::Pass),
 		}
 	}
@@ -64,6 +69,8 @@ impl SearchMove {
 				(state, node, dots | (capture << 2) | (emblem << 3))
 			}
 			SearchMove::Move { from, to } => (0, from, to),
+			// u16::MAX is PASS; u16::MAX-1 is the empty-TT sentinel in minimax.
+			SearchMove::Remove { node } => (u16::MAX - 2, node, 0),
 			SearchMove::Pass => (u16::MAX, 0, 0),
 		}
 	}
@@ -71,6 +78,7 @@ impl SearchMove {
 	pub fn unpack(kind: u16, a: u8, b: u8) -> Option<Self> {
 		match kind {
 			u16::MAX => Some(SearchMove::Pass),
+			k if k == u16::MAX - 2 => Some(SearchMove::Remove { node: a }),
 			0 => Some(SearchMove::Move { from: a, to: b }),
 			state
 				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
@@ -115,8 +123,11 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	let mut out = Vec::new();
 	let current = game.current_player();
 	let bench = game.bench(current);
-	// `budget()` is usable ADD permission (min(tokens, remaining deck)).
-	if game.budget(current) > 0 && !bench.is_empty() {
+	// Two-tier: `budget()` is usable ADD permission. Placement-only has
+	// no spawn-token cap, so a non-empty bench is enough.
+	let can_add = !bench.is_empty()
+		&& (game.rules().win_condition.is_placement_only() || game.budget(current) > 0);
+	if can_add {
 		let mut seen = std::collections::HashSet::<u32>::new();
 		let dests: Vec<NodeId> = if game.rules().add_only_on_spawns {
 			game.board()
@@ -136,6 +147,11 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 				continue;
 			}
 			for &node in &dests {
+				if game.rules().win_condition.is_placement_only()
+					&& game.would_overwhelm_add(*tile, node)
+				{
+					continue;
+				}
 				out.push(SearchMove::Add { kind: k, node });
 			}
 		}
@@ -143,7 +159,15 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	for mv in game.legal_moves() {
 		out.push(SearchMove::from_action(game, mv));
 	}
-	if out.is_empty() && !game.rules().no_moves_loses {
+	if game.rules().win_condition.is_placement_only() {
+		for mv in game.legal_removes() {
+			out.push(SearchMove::from_action(game, mv));
+		}
+	}
+	if out.is_empty()
+		&& !game.rules().no_moves_loses
+		&& !game.rules().win_condition.is_placement_only()
+	{
 		out.push(SearchMove::Pass);
 	}
 	out
@@ -252,6 +276,17 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 			}
 			s
 		}
+		SearchMove::Remove { node } => {
+			let mut s = 40;
+			if let Some(tile) = game.tile_at(node) {
+				if tile.owner != game.current_player() {
+					s += 80;
+				} else {
+					s += 10;
+				}
+			}
+			s
+		}
 		SearchMove::Pass => -1_000,
 	}
 }
@@ -323,6 +358,11 @@ mod tests {
 		let mv = SearchMove::Move { from: 2, to: 7 };
 		let (k, a, b) = mv.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));
+		let rem = SearchMove::Remove { node: 6 };
+		let packed = rem.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(rem));
+		assert_ne!(packed.0, u16::MAX);
+		assert_ne!(packed.0, u16::MAX - 1);
 	}
 
 	#[test]
@@ -367,6 +407,46 @@ mod tests {
 	}
 
 	#[test]
+	fn placement_only_search_includes_moves() {
+		let mut rules = RuleSet::default();
+		rules.win_condition = crate::game::WinCondition::PlacementOnly;
+		rules.control_win = false;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let tile = game.alloc_tile(crate::game::Player::One, crate::game::TileColor::Green, 3, 1);
+		game.place_tile(spawn, tile);
+		game.set_current(crate::game::Player::One);
+		assert!(legal_search_moves(&game)
+			.iter()
+			.any(|mv| matches!(mv, SearchMove::Move { from, .. } if *from == spawn)));
+	}
+
+	#[test]
+	fn placement_only_search_moves_skip_suicide_adds() {
+		let mut rules = RuleSet::default();
+		rules.win_condition = crate::game::WinCondition::PlacementOnly;
+		rules.control_win = false;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let opp = game.alloc_tile(crate::game::Player::Two, crate::game::TileColor::Orange, 1, 1);
+		game.place_tile(nbs[0], opp);
+		let tile = crate::game::Tile::mono(
+			9,
+			crate::game::Player::One,
+			crate::game::TileColor::Green,
+			1,
+			1,
+		);
+		assert!(game.would_overwhelm_add(tile, spawn));
+		game.set_bench(crate::game::Player::One, vec![tile]);
+		game.set_current(crate::game::Player::One);
+		assert!(!legal_search_moves(&game)
+			.iter()
+			.any(|mv| matches!(mv, SearchMove::Add { node, .. } if *node == spawn)));
+	}
+
+	#[test]
 	fn pass_is_injected_when_no_moves_loses_is_off() {
 		let mut rules = RuleSet::default();
 		rules.no_moves_loses = false;
@@ -403,8 +483,8 @@ mod tests {
 			.bench(crate::game::Player::One)
 			.iter()
 			.any(|t| t.id == opp_id && t.owner == crate::game::Player::One));
-		assert!(game.deck_slots(crate::game::Player::One).iter().any(|s| s
-			.tile()
-			.is_some_and(|t| t.id == opp_id && t.owner == crate::game::Player::One)));
+		assert!(game.deck_slots(crate::game::Player::One).iter().any(|s| {
+			s.tile().is_some_and(|t| t.id == opp_id && t.owner == crate::game::Player::One)
+		}));
 	}
 }
