@@ -76,19 +76,20 @@ pub const RING_COUNT_1_WEIGHT: u16 = 7;
 pub const RING_COUNT_2_WEIGHT: u16 = 5;
 pub const RING_COUNT_3_WEIGHT: u16 = 4;
 /// IndependentMax per-slot [light, heavy] when `braid_numer` is the default 1.
-/// Tuned so braid rings land near 10% of generated rings at 7:5:4 counts.
-pub const HEAVY_LIGHT_WEIGHT: u32 = 2;
-pub const HEAVY_BRAID_WEIGHT: u32 = 1;
+/// Tuned so ~10% of generated **tiles** contain a braid (consecutive ≥2
+/// heavies). At 7:5:4 and 4:3:2 counts that is about 10% of tiles / ~12% of
+/// rings; 4:3:1 is a bit under (fewer triples). Was 2:1 (~8% of tiles).
+pub const HEAVY_LIGHT_WEIGHT: u32 = 5;
+pub const HEAVY_BRAID_WEIGHT: u32 = 3;
 /// Each ring is independently a zag with probability `zag_numer / ZAG_DENOM`.
 pub const ZAG_DENOM: u8 = 7;
 pub const ZAG_NUMER_DEFAULT: u8 = 1;
 /// A piece forms a braid with probability `braid_numer / BRAID_DENOM`.
 pub const BRAID_DENOM: u8 = 7;
 pub const BRAID_NUMER_DEFAULT: u8 = 1;
-/// A piece forms a 2–3 bead group with probability `bead_numer / BEAD_DENOM`.
-/// Rolled after braid and zag. `bead_numer == 0` (`--bead-chance 0`) skips the
-/// RNG and matches the pre-bead deal. Used under [`ChannelMode::Additive`].
-/// [`ChannelMode::IndependentMax`] elects beads per light slot instead.
+/// Historical Additive piece-level 2–3 bead group used `bead_numer / BEAD_DENOM`.
+/// Live generation always elects beads per light slot (`--bead-chance 0` still
+/// disables). [`sample_bead_types`] remains for replay of that roll.
 pub const BEAD_DENOM: u8 = 7;
 pub const BEAD_NUMER_DEFAULT: u8 = 1;
 /// Light-slot election under [`ChannelMode::IndependentMax`]:
@@ -171,6 +172,11 @@ impl RingType {
 
 	pub fn is_bead(self) -> bool {
 		matches!(self, Self::Bead)
+	}
+
+	/// Beads score and paint as part of the normal channel.
+	pub fn is_folded_normal(self) -> bool {
+		self.is_normal() || self.is_bead()
 	}
 
 	pub fn from_zag(zag: bool) -> Self {
@@ -380,9 +386,9 @@ pub fn sample_braid(
 /// IndependentMax per-slot [light, heavy] weights.
 ///
 /// Default `braid_numer == 1` uses [`HEAVY_LIGHT_WEIGHT`] : [`HEAVY_BRAID_WEIGHT`]
-/// (2 : 1, one-in-three) so consecutive-heavy braids land near 10% of rings
-/// at 7:5:4 ring counts. `0` disables; `7` is always-heavy (collectors);
-/// any other numerator keeps the `k/7` coin.
+/// (5 : 3) so consecutive-heavy braids land near 10% of **tiles**. `0`
+/// disables; `7` is always-heavy (collectors); any other numerator keeps
+/// the `k/7` coin.
 pub fn heavy_election_weights(braid_numer: u8) -> [u32; 2] {
 	if braid_numer == 0 {
 		[1, 0]
@@ -1081,6 +1087,10 @@ impl Tile {
 		self.stroke_type(k).is_bead()
 	}
 
+	pub fn stroke_is_folded_normal(self, k: u8) -> bool {
+		self.stroke_type(k).is_folded_normal()
+	}
+
 	pub fn color_mask(self) -> u8 {
 		let mut m = 0u8;
 		for &c in self.ring_colors() {
@@ -1194,6 +1204,30 @@ impl Tile {
 	/// either tile is in the other tile's [`Self::non_zag_colors_multiset`].
 	pub fn normal_channel_matches(self, other: Tile) -> bool {
 		self.normal_color_in(other) || other.normal_color_in(self)
+	}
+
+	/// Beads are part of the normal channel: a bead-ring color matches the
+	/// same way a normal-ring color does.
+	pub fn folded_normal_color_in(self, other: Tile) -> bool {
+		self.ring_colors().iter().enumerate().any(|(i, &c)| {
+			self.ring_type[i].is_folded_normal() && other.has_non_zag_color(c)
+		})
+	}
+
+	pub fn folded_normal_channel_matches(self, other: Tile) -> bool {
+		self.folded_normal_color_in(other) || other.folded_normal_color_in(self)
+	}
+
+	/// Collection identity for same-deck mirroring (ids and owner excluded).
+	pub fn collection_kind(self) -> (u8, u8, [u8; 3], [u8; 3], u8, u8) {
+		(
+			self.n_rings,
+			self.dots,
+			self.rings.map(|c| c as u8),
+			self.ring_type.map(|r| r as u8),
+			self.capture.bit(),
+			self.emblem.bit(),
+		)
 	}
 
 	/// How many of this tile's zag **rings** of `color` hit `target`
@@ -1886,21 +1920,22 @@ impl BeadScoring {
 /// overwhelm, HUD `tile_score`, and search.
 ///
 /// Channel *components* ([`EdgeChannels`]) are always independent. This flag
-/// only changes aggregation, and (for generation) whether beads are a light
-/// per-slot election or a 2–3 heavy group.
+/// only changes aggregation. Tile generation always uses IndependentMax
+/// clustering (per-slot heavy coin + 5:3:1 light election) regardless of
+/// mode, so `--channel-mode additive` does not stuff 2–3 braid/bead groups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ChannelMode {
 	/// Independent channels; the edge takes the **maximum** match and the
-	/// **maximum** mismatch of any single channel. Beads are light
-	/// (normal:zag:bead = 5:3:1). Per-slot heavies (default 2:1 light:heavy)
-	/// cluster: consecutive ≥2 become a braid; a lone or gapped heavy falls
-	/// through to the light election. CLI: `--channel-mode independent-max`
+	/// **maximum** mismatch of any single channel. Beads fold into the
+	/// normal channel for HUD kind and paint (`max(normal, bead)` is the
+	/// folded-normal component). CLI: `--channel-mode independent-max`
 	/// / `--independent-channels on` (this branch's default).
 	#[default]
 	IndependentMax,
 	/// RFC 001-001-002 additive stacking: `--bead-scoring` combines normal
-	/// and bead, then zag and braid add. Beads generate as 2–3 groups.
-	/// CLI: `--channel-mode additive` (legacy comparison).
+	/// and bead (default shared = beads part of normal), then zag and braid
+	/// **sum**. Generation is the same clustering as IndependentMax.
+	/// CLI: `--channel-mode additive`.
 	Additive,
 }
 
@@ -2335,24 +2370,23 @@ pub struct RuleSet {
 	/// Max distinct rings per tile (1–3). Default 3. `1` is the
 	/// single-ring baseline (still the six-color tree).
 	pub max_rings: u8,
-	/// Each ring is a zag with probability `zag_numer / 7` under
-	/// [`ChannelMode::Additive`]. Under [`ChannelMode::IndependentMax`],
-	/// default `1` is the zag weight 3 in the 5:3:1 light election; `0`
-	/// disables zags (`--zags off` / `--zag-chance 0`).
+	/// Default `1` is the zag weight 3 in the 5:3:1 light election; `0`
+	/// disables zags (`--zags off` / `--zag-chance 0`). Historical Additive
+	/// generation used `zag_numer / 7` per ring; live generation always
+	/// elects light slots.
 	pub zag_numer: u8,
 	/// Singles : doubles : triples generation weights. Default 7 : 5 : 4.
 	/// CLI `--ring-count-weights`. The previous sequential 7:1 keep-vs-any
 	/// gate made singles ~87%+ of tiles.
 	pub ring_count_weights: RingCountWeights,
-	/// Additive: a piece forms a braid with probability `braid_numer / 7`.
-	/// Independent-max: default `1` is the 2:1 light:heavy per-slot coin
-	/// (~10% braid rings at 7:5:4 counts); `0` disables; `7` always-heavy.
+	/// Default `1` is the 5:3 light:heavy per-slot coin (~10% of tiles
+	/// braid). `0` disables; `7` always-heavy. `--braid-chance 2..6` keeps
+	/// the historical `k/7` coin. Channel mode does not change this.
 	pub braid_numer: u8,
-	/// Under [`ChannelMode::Additive`]: a piece forms a 2–3 bead group with
-	/// probability `bead_numer / 7`. Under [`ChannelMode::IndependentMax`]:
-	/// default `1` is the bead weight 1 in the 5:3:1 light election (singles
+	/// Default `1` is the bead weight 1 in the 5:3:1 light election (singles
 	/// allowed); a stuffed numerator (collectors) replaces that weight.
-	/// `0` disables beads (`--bead-chance 0`).
+	/// `0` disables beads (`--bead-chance 0`). Channel mode does not change
+	/// this — Additive no longer rolls a piece-level 2–3 group.
 	pub bead_numer: u8,
 	/// Percent of generated tiles that carry a **dot** capture mark (rest
 	/// triangles). Default [`DOT_PERCENT_DEFAULT`] (50). CLI `--dot-chance`.
@@ -2453,14 +2487,14 @@ pub struct RuleSet {
 	/// research variants (issue #39).
 	pub braid_fail_mismatch: BraidFailMismatch,
 	/// How normal and bead channels combine under [`ChannelMode::Additive`].
-	/// Default [`BeadScoring::SharedChannel`] (rule B): `max` instead of sum.
-	/// [`BeadScoring::Independent`] is rule A (`--bead-scoring independent`).
-	/// Ignored under [`ChannelMode::IndependentMax`] (all four channels are
-	/// independent, then the edge takes max match and max mismatch).
+	/// Default [`BeadScoring::SharedChannel`] (rule B): beads are part of
+	/// the normal channel (`max` instead of sum). [`BeadScoring::Independent`]
+	/// is rule A (`--bead-scoring independent`, four-way sum). IndependentMax
+	/// still takes max of the four components (associative with the fold).
 	pub bead_scoring: BeadScoring,
-	/// How channel totals combine, and how beads generate. Default
-	/// [`ChannelMode::IndependentMax`]. `--channel-mode additive` restores
-	/// RFC 001-001-002 additive stacking and 2–3 bead groups.
+	/// How channel totals combine. Default [`ChannelMode::IndependentMax`].
+	/// `--channel-mode additive` sums folded-normal + zag + braid. Does not
+	/// change tile generation.
 	pub channel_mode: ChannelMode,
 	/// How overwhelmed tiles leave the board. Default
 	/// [`CaptureMode::LocalClaim`]: ADD/MOVE capture only the placed/moved
@@ -2525,9 +2559,9 @@ impl RuleSet {
 		Self::default()
 	}
 
-	/// RFC 001-001-002 additive stacking with shared-channel beads and 2–3
-	/// bead groups. Used by `--channel-mode additive` and by tests that lock
-	/// the previous default.
+	/// RFC 001-001-002 additive stacking with shared-channel beads.
+	/// Generation stays IndependentMax clustering; only aggregation sums.
+	/// Used by `--channel-mode additive`.
 	pub fn additive() -> Self {
 		let mut rules = Self::default();
 		rules.channel_mode = ChannelMode::Additive;
@@ -3731,7 +3765,9 @@ impl Game {
 	/// normal is a hitch plus a zag hit. Aggregation into edge totals is
 	/// [`RuleSet::channel_mode`]: [`ChannelMode::IndependentMax`] (default)
 	/// takes max match and max mismatch of any one channel;
-	/// [`ChannelMode::Additive`] stacks with [`BeadScoring`].
+	/// [`ChannelMode::Additive`] stacks with [`BeadScoring`]. Beads are part
+	/// of the normal channel for HUD/paint; components stay separate so the
+	/// unmatched-bead bomb (`bead_mismatch`) still feeds `max(normal, bead)`.
 	///
 	/// - **Normal:** match 1 if some normal-ring color of either tile is in
 	///   the other tile's [`Tile::non_zag_colors_multiset`]; otherwise
@@ -3747,7 +3783,7 @@ impl Game {
 	///   the rings, not color-pairs). If any bead is matched — same presence
 	///   test as the normal channel, `other.has_non_zag_color(bead_color)` —
 	///   a single match of 1 (one −1 at most per edge). Mixed edges can
-	///   score both.
+	///   score both. Painted on the normal lane.
 	pub fn edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
 		EdgeChannels::between(tile, other, &self.rules)
 	}
@@ -4963,25 +4999,11 @@ pub fn sample_tile_with(
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
-	let (mut rings, mut n_rings) = sample_rings_with(rng, max_rings, ring_count_weights);
-	let mut ring_type = match channel_mode {
-		ChannelMode::IndependentMax => {
-			let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
-			cluster_consecutive_heavies(heavy, n_rings)
-		}
-		ChannelMode::Additive => {
-			sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer)
-		}
-	};
-	match channel_mode {
-		ChannelMode::IndependentMax => {
-			sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
-		}
-		ChannelMode::Additive => {
-			sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
-			sample_bead_types(rng, &mut rings, &mut n_rings, max_rings, &mut ring_type, bead_numer);
-		}
-	}
+	let _ = channel_mode; // scoring-only; generation always IndependentMax clustering
+	let (rings, n_rings) = sample_rings_with(rng, max_rings, ring_count_weights);
+	let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
+	let mut ring_type = cluster_consecutive_heavies(heavy, n_rings);
+	sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
 	let weight = n_rings.max(1);
 	let dots = rng.gen_range(1..=3);
 	let capture = if rng.gen_range(0..100u8) < dot_percent.min(100) {
@@ -7501,6 +7523,33 @@ mod tests {
 	}
 
 	#[test]
+	fn same_deck_both_players_start_with_identical_27_tile_collections() {
+		let rules = RuleSet::default();
+		assert!(rules.identical_bags, "same-deck is the live default");
+		assert_eq!(rules.deck_size as usize, BAG_SIZE);
+		let setup = crate::deck::SetupConfig::same_deck();
+		assert_eq!(setup.deck_noise, 0);
+		assert_eq!(setup.p1_deck, crate::deck::DeckArchetype::Mixed);
+		assert_eq!(setup.p2_deck, crate::deck::DeckArchetype::Mixed);
+		for seed in [1u64, 7, 42, 99] {
+			let game = Game::new_with_setup(rules, seed, setup.with_seed(seed));
+			let p1 = game.collection(Player::One);
+			let p2 = game.collection(Player::Two);
+			assert_eq!(p1.len(), 27, "seed {seed}");
+			assert_eq!(p2.len(), 27, "seed {seed}");
+			let k1: Vec<_> = p1.iter().map(|t| t.collection_kind()).collect();
+			let k2: Vec<_> = p2.iter().map(|t| t.collection_kind()).collect();
+			assert_eq!(
+				k1, k2,
+				"same-deck: both players begin with the identical 27-tile set (seed {seed})"
+			);
+			assert_ne!(p1[0].id, p2[0].id, "mirrored copies still have distinct ids");
+			assert_eq!(p1[0].owner, Player::One);
+			assert_eq!(p2[0].owner, Player::Two);
+		}
+	}
+
+	#[test]
 	fn sampled_decks_are_mirrored_and_size_11() {
 		let game = Game::new(RuleSet::default(), 11);
 		assert_eq!(game.rules().bag_size as usize, BAG_SIZE_DEFAULT);
@@ -8350,11 +8399,14 @@ mod tests {
 		}
 		let piece_rate = f64::from(braided) / f64::from(n);
 		assert!(
-			(0.12..0.17).contains(&piece_rate),
-			"braid piece rate={piece_rate:.4} (expected ~0.1429 = 1/7)"
+			(0.08..0.13).contains(&piece_rate),
+			"braid tile rate={piece_rate:.4} (expected ~0.10 of tiles at 7:5:4, 5:3 heavy)"
 		);
 		let ring_rate = f64::from(braid_rings) / f64::from(rings);
-		assert!(ring_rate > 0.05, "braid rings should show up (rate={ring_rate:.4})");
+		assert!(
+			(0.10..0.16).contains(&ring_rate),
+			"braid ring rate={ring_rate:.4} (a bit above the tile rate)"
+		);
 		let mut rng = StdRng::seed_from_u64(6);
 		let mut rings = [TileColor::Green; 3];
 		let mut n = 2u8;
@@ -9957,39 +10009,71 @@ mod tests {
 	}
 
 	#[test]
-	fn bead_generation_is_a_piece_level_two_or_three_group() {
+	fn bead_generation_allows_singles_under_every_channel_mode() {
 		let mut rng = StdRng::seed_from_u64(7);
 		let mut next_id = 1u32;
-		let n = 20_000u32;
-		let mut pieces = 0u32;
-		let mut bead_tiles = 0u32;
-		for _ in 0..n {
-			let t = sample_tile_with(
+		let n = 8_000u32;
+		let mut singles = 0u32;
+		for mode in [ChannelMode::Additive, ChannelMode::IndependentMax] {
+			for _ in 0..n {
+				let t = sample_tile_with(
+					Player::One,
+					3,
+					0,
+					0,
+					BEAD_NUMER_DEFAULT,
+					DOT_PERCENT_DEFAULT,
+					EmblemWeights::default(),
+					mode,
+					RingCountWeights::default(),
+					&mut next_id,
+					&mut rng,
+				);
+				if t.bead_ring_count() == 1 {
+					singles += 1;
+				}
+			}
+		}
+		assert!(singles > 0, "light election allows single-bead tiles (got {singles})");
+	}
+
+	#[test]
+	fn channel_mode_does_not_change_tile_generation() {
+		let mut a_id = 1u32;
+		let mut b_id = 1u32;
+		let mut a_rng = StdRng::seed_from_u64(19);
+		let mut b_rng = StdRng::seed_from_u64(19);
+		for _ in 0..200 {
+			let a = sample_tile_with(
 				Player::One,
 				3,
-				0,
-				0,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::IndependentMax,
+				RingCountWeights::default(),
+				&mut a_id,
+				&mut a_rng,
+			);
+			let b = sample_tile_with(
+				Player::One,
+				3,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
 				BEAD_NUMER_DEFAULT,
 				DOT_PERCENT_DEFAULT,
 				EmblemWeights::default(),
 				ChannelMode::Additive,
 				RingCountWeights::default(),
-				&mut next_id,
-				&mut rng,
+				&mut b_id,
+				&mut b_rng,
 			);
-			pieces += 1;
-			let e = t.bead_ring_count();
-			assert_ne!(e, 1, "generated tiles never have a single bead ring");
-			if e > 0 {
-				assert!(e == 2 || e == 3, "bead groups are 2 or 3, got {e}");
-				bead_tiles += 1;
-			}
+			assert_eq!(a.collection_kind(), b.collection_kind());
+			assert_eq!(a.n_rings, b.n_rings);
+			assert_eq!(a.ring_type, b.ring_type);
 		}
-		let rate = f64::from(bead_tiles) / f64::from(pieces);
-		assert!(
-			(0.12..0.17).contains(&rate),
-			"bead-tile rate={rate:.4} (expected ~0.1429 = 1/7) with zags and braids off"
-		);
 	}
 
 	#[test]
@@ -10064,24 +10148,73 @@ mod tests {
 		let piece_rate = f64::from(braided) / f64::from(n);
 		let ring_rate = f64::from(braid_rings) / f64::from(rings);
 		assert!(
-			(0.06..0.12).contains(&piece_rate),
-			"consecutive-heavy braid piece rate={piece_rate:.4} (expected ~0.08 at 7:5:4, 1/3 heavy)"
+			(0.08..0.13).contains(&piece_rate),
+			"consecutive-heavy braid tile rate={piece_rate:.4} (expected ~0.10 of tiles at 7:5:4, 5:3 heavy)"
 		);
 		assert!(
-			(0.08..0.12).contains(&ring_rate),
-			"braid ring rate={ring_rate:.4} (target ~0.10 of generated rings); rings={rings} braid_rings={braid_rings}"
+			(0.10..0.16).contains(&ring_rate),
+			"braid ring rate={ring_rate:.4} (a bit above the tile rate); rings={rings} braid_rings={braid_rings}"
 		);
 	}
 
 	#[test]
-	fn independent_max_default_heavy_is_one_in_three() {
+	fn independent_max_default_heavy_is_five_to_three() {
 		assert_eq!(heavy_election_weights(0), [1, 0]);
 		assert_eq!(
 			heavy_election_weights(BRAID_NUMER_DEFAULT),
 			[HEAVY_LIGHT_WEIGHT, HEAVY_BRAID_WEIGHT]
 		);
+		assert_eq!(HEAVY_LIGHT_WEIGHT, 5);
+		assert_eq!(HEAVY_BRAID_WEIGHT, 3);
 		assert_eq!(heavy_election_weights(BRAID_DENOM), [0, 1]);
 		assert_eq!(heavy_election_weights(2), [5, 2]);
+	}
+
+	fn braid_tile_rate(weights: RingCountWeights, seed: u64, n: u32) -> f64 {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let mut next_id = 1u32;
+		let mut braided = 0u32;
+		for _ in 0..n {
+			let t = sample_tile_with(
+				Player::One,
+				3,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::IndependentMax,
+				weights,
+				&mut next_id,
+				&mut rng,
+			);
+			if t.braid_ring_count() >= 2 {
+				braided += 1;
+			}
+		}
+		f64::from(braided) / f64::from(n)
+	}
+
+	#[test]
+	fn braid_tile_share_is_near_ten_percent_at_bench_counts() {
+		let n = 20_000u32;
+		let w432 = RingCountWeights { singles: 4, doubles: 3, triples: 2 };
+		let w431 = RingCountWeights { singles: 4, doubles: 3, triples: 1 };
+		let r754 = braid_tile_rate(RingCountWeights::default(), 23, n);
+		let r432 = braid_tile_rate(w432, 29, n);
+		let r431 = braid_tile_rate(w431, 31, n);
+		assert!(
+			(0.08..0.13).contains(&r754),
+			"7:5:4 braid tile rate={r754:.4} (target ~0.10)"
+		);
+		assert!(
+			(0.08..0.13).contains(&r432),
+			"4:3:2 braid tile rate={r432:.4} (target ~0.10)"
+		);
+		assert!(
+			(0.06..0.12).contains(&r431),
+			"4:3:1 braid tile rate={r431:.4} (fewer triples, a bit under 10%)"
+		);
 	}
 
 	#[test]

@@ -12,7 +12,7 @@ use apa_kan::ai::{
 };
 use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
-use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig};
+use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT};
 use apa_kan::game::{
 	sample_tile_from_rules, Action, EndReason, Game, GameStatus, LowValueResolution, Player,
 	RuleSet, Tile, TileColor,
@@ -58,6 +58,8 @@ struct BenchConfig {
 	ablate: bool,
 	/// Time a handful of positions trying to complete this minimax ID depth.
 	ply_probe: Option<u8>,
+	/// When true, both players start from the identical 27-tile collection.
+	same_deck: bool,
 }
 
 fn usage() -> &'static str {
@@ -94,6 +96,7 @@ fn usage() -> &'static str {
 	   --p1-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P1 collection archetype when --deck-matchups is omitted\n\
 	   --p2-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P2 collection archetype\n\
 	   --deck-matchups <list>  a:b,c:d archetype pairs (mixed|braid|bead|crescent|zs|emblem|blocker|rosette). Default: --p1-deck vs --p2-deck\n\
+	   --same-deck <on|off>  Identical 27-tile start for both players (forces mixed:mixed, identical_bags, deck-size 27, noise 0)\n\
 	   --depth-probe        Also time minimax ID depth at 1000 ms and 3000 ms\n\
 	   --measure-games <n>  Games for branching sample (default: 12)\n\
 	   --out <path>         Output log path\n\
@@ -154,6 +157,7 @@ where
 		p2_search: None,
 		ablate: false,
 		ply_probe: None,
+		same_deck: false,
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -215,6 +219,16 @@ where
 			}
 			"--deck-matchups" => {
 				cfg.matchups = parse_deck_matchups(&need("--deck-matchups", it.next())?)?;
+			}
+			"--same-deck" => {
+				let v = need("--same-deck", it.next())?;
+				cfg.same_deck = match v.to_ascii_lowercase().as_str() {
+					"on" | "true" | "1" | "yes" => true,
+					"off" | "false" | "0" | "no" => false,
+					other => {
+						return Err(format!("invalid --same-deck '{other}' (expected on|off)"));
+					}
+				};
 			}
 			"--pairings" => {
 				cfg.pairings = Some(parse_pairings_flag(&need("--pairings", it.next())?)?);
@@ -334,6 +348,12 @@ where
 		SearchLimit::work(budget_nodes, budget_iters)
 	};
 	cfg.setup.limit = cfg.limit;
+	if cfg.same_deck {
+		cfg.rules.identical_bags = true;
+		cfg.rules.deck_size = DECK_SIZE_DEFAULT as u8;
+		cfg.setup.apply_same_deck();
+		cfg.matchups = vec![(DeckArchetype::Mixed, DeckArchetype::Mixed)];
+	}
 	if cfg.matchups.is_empty() {
 		cfg.matchups = vec![(cfg.setup.p1_deck, cfg.setup.p2_deck)];
 	}
@@ -2400,6 +2420,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut braid_pieces = 0u32;
 	let mut bead_rings = 0u32;
 	let mut bead_pieces = 0u32;
+	let mut bead_any = 0u32;
 	let mut crescent = 0u32;
 	let mut zs = 0u32;
 	let mut blocker = 0u32;
@@ -2418,6 +2439,9 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 		bead_rings += u32::from(t.bead_ring_count());
 		if t.bead_ring_count() >= 2 {
 			bead_pieces += 1;
+		}
+		if t.bead_ring_count() > 0 {
+			bead_any += 1;
 		}
 		if t.emblem.is_crescent() {
 			crescent += 1;
@@ -2443,12 +2467,13 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			f64::from(zag_rings) / f64::from(rings)
 		));
 		lines.push(format!(
-			"# ring_process_braids  pieces={n} braided={braid_pieces} piece_rate={:.4} rings={rings} braid_rings={braid_rings} ring_rate={:.4}",
+			"# ring_process_braids  pieces={n} braided={braid_pieces} tile_rate={:.4} rings={rings} braid_rings={braid_rings} ring_rate={:.4}",
 			f64::from(braid_pieces) / f64::from(n),
 			f64::from(braid_rings) / f64::from(rings)
 		));
 		lines.push(format!(
-			"# ring_process_beads  pieces={n} grouped={bead_pieces} piece_rate={:.4} rings={rings} beads={bead_rings} ring_rate={:.4}",
+			"# ring_process_beads  pieces={n} any={bead_any} any_rate={:.4} grouped={bead_pieces} grouped_rate={:.4} rings={rings} beads={bead_rings} ring_rate={:.4}",
+			f64::from(bead_any) / f64::from(n),
 			f64::from(bead_pieces) / f64::from(n),
 			f64::from(bead_rings) / f64::from(rings)
 		));
@@ -2467,6 +2492,29 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 		bits.push(format!("{name}={}", color_n[i]));
 	}
 	lines.push(format!("# ring_process_colors  {}", bits.join(" ")));
+	let decks = 2_000u32;
+	let deck_size = usize::from(rules.deck_size.max(1));
+	let mut deck_braid_tiles = 0u32;
+	let mut decks_with_braid = 0u32;
+	for _ in 0..decks {
+		let mut has_braid = false;
+		for _ in 0..deck_size {
+			let t = sample_tile_from_rules(Player::One, &rules, &mut next_id, &mut rng);
+			if t.braid_ring_count() >= 2 {
+				deck_braid_tiles += 1;
+				has_braid = true;
+			}
+		}
+		if has_braid {
+			decks_with_braid += 1;
+		}
+	}
+	let deck_tiles = decks * deck_size as u32;
+	lines.push(format!(
+		"# ring_process_decks  decks={decks} size={deck_size} braid_tiles={deck_braid_tiles} tile_rate={:.4} decks_with_braid={decks_with_braid} deck_rate={:.4}",
+		f64::from(deck_braid_tiles) / f64::from(deck_tiles),
+		f64::from(decks_with_braid) / f64::from(decks)
+	));
 }
 
 fn push_observed_rings(lines: &mut Vec<String>, rows: &[DeckRow]) {
@@ -2815,6 +2863,24 @@ mod tests {
 		let cfg = parse(vec!["--search-profile".to_string(), "counterplay".to_string()]).unwrap();
 		assert_eq!(cfg.search, SearchConfig::counterplay());
 		assert_eq!(cfg.search.profile_name(), "counterplay");
+	}
+
+	#[test]
+	fn parse_same_deck_forces_identical_27_mixed() {
+		let cfg = parse(vec![
+			"--same-deck".to_string(),
+			"on".to_string(),
+			"--deck-matchups".to_string(),
+			"braid:bead".to_string(),
+			"--deck-noise".to_string(),
+			"40".to_string(),
+		])
+		.unwrap();
+		assert!(cfg.same_deck);
+		assert!(cfg.rules.identical_bags);
+		assert_eq!(cfg.rules.deck_size as usize, DECK_SIZE_DEFAULT);
+		assert_eq!(cfg.setup.deck_noise, 0);
+		assert_eq!(cfg.matchups, vec![(DeckArchetype::Mixed, DeckArchetype::Mixed)]);
 	}
 
 	#[test]

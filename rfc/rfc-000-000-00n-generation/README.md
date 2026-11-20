@@ -99,7 +99,7 @@ impl RingPass {
     fn base() -> Self {
         Self {
             count_weights: [7, 5, 4],
-            heavy_weights: [2, 1],        // 1 in 3 heavy (braid group; ~10% braid rings)
+            heavy_weights: [5, 3],        // 3/8 heavy; ~10% of tiles braid
             light_weights: [5, 3, 1],    // normal : zag : bead
         }
     }
@@ -141,11 +141,11 @@ impl RingPass {
 | Step | Live type | Base weights | Odds |
 |---|---|---|---|
 | Ring count | `n_rings` 1 / 2 / 3 | 7 : 5 : 4 | 7/16 · 5/16 · 4/16 |
-| Per slot | light / heavy (braid) | 2 : 1 | 2/3 · 1/3 |
+| Per slot | light / heavy (braid) | 5 : 3 | 5/8 · 3/8 |
 | Consecutive heavies (≥2) | `Braid` | — | always |
 | Light slot | `Normal` / `Zag` / `Bead` | 5 : 3 : 1 | 5/9 · 1/3 · 1/9 |
 
-Live `sample_tile_with` IndependentMax: ring count 7:5:4; default per-slot heavy coin is 2:1 light:heavy (`braid_numer=1`); consecutive ≥2 heavies → braid; lone/gapped heavies fall through to 5:3:1 light (single beads allowed). `--channel-mode additive` restores piece-level 1/7 braid occupying the first 2–3 slots, then 2–3 bead groups. See [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md).
+Live `sample_tile_with` always uses this clustering, regardless of `--channel-mode`: ring count from `RingCountWeights` (default 7:5:4); default per-slot heavy coin is 5:3 light:heavy (`braid_numer=1`) so ~10% of **tiles** contain a braid; consecutive ≥2 heavies → braid; lone/gapped heavies fall through to 5:3:1 light (single beads allowed). `--channel-mode` only changes how edge totals aggregate. See [`rfc-001-001-008`](../rfc-001-001-008-independent-max-channels/README.md).
 
 ### Color pass
 

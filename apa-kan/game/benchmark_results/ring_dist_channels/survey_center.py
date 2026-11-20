@@ -138,10 +138,45 @@ def walk_center(game: dict) -> dict:
     }
 
 
+def tile_kind(tile: dict) -> tuple:
+    rings = tuple(
+        (r.get("c"), r.get("z"), r.get("b"), r.get("e")) for r in (tile.get("rings") or [])
+    )
+    return (
+        tile.get("n_rings"),
+        tile.get("dots"),
+        tile.get("capture"),
+        tile.get("emblem"),
+        rings,
+    )
+
+
+def same_deck_stats(games: list[dict]) -> tuple[int, int, int]:
+    """Return (with_setup, identical_27, mismatched)."""
+    with_setup = 0
+    identical = 0
+    mismatched = 0
+    for g in games:
+        setup = g.get("setup") or {}
+        p1 = setup.get("p1_deck") or []
+        p2 = setup.get("p2_deck") or []
+        if not p1 and not p2:
+            continue
+        with_setup += 1
+        k1 = [tile_kind(t) for t in p1]
+        k2 = [tile_kind(t) for t in p2]
+        if len(p1) == 27 and len(p2) == 27 and k1 == k2:
+            identical += 1
+        else:
+            mismatched += 1
+    return with_setup, identical, mismatched
+
+
 def summarize(path: Path) -> None:
     games = load_games(path)
     rows = [walk_center(g) for g in games]
     n = len(rows)
+    with_setup, identical_27, mismatched = same_deck_stats(games)
     took = [r for r in rows if r["first_owner"] is not None]
     still = [r for r in took if r["still_first"]]
     never_left = [r for r in still if r["holders"] == 1]
@@ -164,6 +199,10 @@ def summarize(path: Path) -> None:
 
     print(f"file {path}")
     print(f"games {n}  mean_turns {mean_turns:.2f}")
+    print(
+        f"same_deck_27 identical={identical_27}/{with_setup} mismatched={mismatched} "
+        f"(both players begin with the identical 27-tile collection)"
+    )
     print(f"winners {dict(winners)}  reasons {dict(reasons)}")
     print(
         f"first_center_taker {len(took)}/{n}  mean_first_turn {mean_first_turn:.2f}"

@@ -52,16 +52,16 @@ pub enum DeckArchetype {
 	/// Multi-braid tiles (2–3 slots) and leftover braid+normal packing.
 	BraidHeavy,
 	/// Strong bead opportunities: `bead_numer=5`, `braid_numer=0`, zags on.
-	/// Under [`crate::game::ChannelMode::IndependentMax`] singles are allowed
-	/// (beads are light); under additive mode generation is still 2–3 groups.
+	/// Collector: many bead tiles. Light election stuffed (`bead_numer=5`);
+	/// singles are allowed.
 	BeadHeavy,
 	/// Collector: many Crescent Moon tiles. Default ring mix, emblem weights
 	/// stuffed toward crescent (`none=1,crescent=20`, others 0).
 	Crescent,
 	/// Collector: many Two Zag Zs tiles. Emblem weights `none=1,zs=20`.
 	Zs,
-	/// Collector: emblem-heavy braid/bead mix. Crescent and Zs stuffed, braids
-	/// and 2–3 bead groups still roll.
+	/// Collector: emblem-heavy braid/bead mix. Crescent and Zs stuffed, plus
+	/// a modest braid/bead light-election bump.
 	EmblemMix,
 	/// Collector: many Blocker tiles. Emblem weights `none=1,blocker=20`.
 	Blocker,
@@ -69,13 +69,12 @@ pub enum DeckArchetype {
 	Rosette,
 }
 
-/// Braid roll used for [`DeckArchetype::BraidHeavy`]. Independent-max: per-slot
-/// heavy chance; 7/7 so every 2–3 ring tile clusters into a braid (1-ring
-/// tiles never braid under consecutive-heavy clustering). Additive: 7/7
-/// piece-level group.
+/// Braid roll used for [`DeckArchetype::BraidHeavy`]. Per-slot heavy chance
+/// 7/7 so every 2–3 ring tile clusters into a braid (1-ring tiles never
+/// braid under consecutive-heavy clustering).
 pub const ARCHETYPE_BRAID_NUMER: u8 = 7;
-/// Bead roll used for [`DeckArchetype::BeadHeavy`]. Additive: 5/7 piece-level
-/// 2–3 group. Independent-max: bead weight 5 in the light election.
+/// Bead roll used for [`DeckArchetype::BeadHeavy`]. Bead weight 5 in the
+/// light election.
 pub const ARCHETYPE_BEAD_NUMER: u8 = 5;
 /// Minimum braid rings in a 27-tile braid-heavy collection.
 pub const BRAID_HEAVY_MIN_RINGS: u8 = 10;
@@ -297,6 +296,28 @@ impl Default for SetupConfig {
 impl SetupConfig {
 	pub fn for_seed(seed: u64) -> Self {
 		Self { deck_seed: Some(seed), ..Self::default() }
+	}
+
+	/// Both players begin with the identical 27-tile collection (mixed
+	/// archetype, zero noise). Draft 7+4 may still differ by picker.
+	pub fn same_deck() -> Self {
+		Self {
+			deck_noise: 0,
+			p1_deck: DeckArchetype::Mixed,
+			p2_deck: DeckArchetype::Mixed,
+			..Self::default()
+		}
+	}
+
+	pub fn with_seed(mut self, seed: u64) -> Self {
+		self.deck_seed = Some(seed);
+		self
+	}
+
+	pub fn apply_same_deck(&mut self) {
+		self.deck_noise = 0;
+		self.p1_deck = DeckArchetype::Mixed;
+		self.p2_deck = DeckArchetype::Mixed;
 	}
 
 	pub fn deck_seed(self, game_seed: u64) -> u64 {
@@ -622,14 +643,7 @@ pub fn generate_both_collections(
 }
 
 fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3], u8, u8) {
-	(
-		t.n_rings,
-		t.dots,
-		t.rings.map(|c| c as u8),
-		t.ring_type.map(|r| r as u8),
-		t.capture.bit(),
-		t.emblem.bit(),
-	)
+	t.collection_kind()
 }
 
 fn tile_score(tile: Tile) -> i32 {
@@ -1404,6 +1418,24 @@ mod tests {
 		let kinds = |tiles: &[Tile]| tiles.iter().map(|t| kind_key(*t)).collect::<Vec<_>>();
 		assert_eq!(kinds(&rec.decks[0]), kinds(&rec.decks[1]));
 		assert_eq!(kinds(&b1), kinds(&b2));
+	}
+
+	#[test]
+	fn same_deck_mode_mirrors_the_full_27_tile_start() {
+		let mut rules = RuleSet::default();
+		rules.identical_bags = true;
+		rules.deck_size = DECK_SIZE_DEFAULT as u8;
+		let setup = SetupConfig::same_deck().with_seed(17);
+		let mut next = 1u32;
+		let rec = deal_and_pick(&rules, &setup, 17, &mut next);
+		assert_eq!(rec.decks[0].len(), 27);
+		assert_eq!(rec.decks[1].len(), 27);
+		let k1: Vec<_> = rec.decks[0].iter().map(|t| t.collection_kind()).collect();
+		let k2: Vec<_> = rec.decks[1].iter().map(|t| t.collection_kind()).collect();
+		assert_eq!(k1, k2, "same-deck: identical 27-tile collections");
+		assert_eq!(setup.deck_noise, 0);
+		assert_eq!(setup.p1_deck, DeckArchetype::Mixed);
+		assert_eq!(setup.p2_deck, DeckArchetype::Mixed);
 	}
 
 	#[test]

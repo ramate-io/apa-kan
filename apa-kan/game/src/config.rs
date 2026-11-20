@@ -77,6 +77,7 @@ impl GameConfig {
 		S: AsRef<str>,
 	{
 		let mut cfg = Self::default();
+		let mut same_deck = None;
 		let mut it = args.into_iter();
 		while let Some(raw) = it.next() {
 			let arg = raw.as_ref();
@@ -115,6 +116,10 @@ impl GameConfig {
 				"--p2-deck" => {
 					cfg.setup.p2_deck =
 						DeckArchetype::parse(&require_value("--p2-deck", it.next())?)?;
+				}
+				"--same-deck" => {
+					same_deck =
+						Some(parse_bool("--same-deck", &require_value("--same-deck", it.next())?)?);
 				}
 				"--think-ms" => {
 					let ms = parse_u64("--think-ms", &require_value("--think-ms", it.next())?)?;
@@ -191,6 +196,13 @@ impl GameConfig {
 					return Err(format!("unknown argument '{other}'"));
 				}
 			}
+		}
+		if same_deck == Some(true) {
+			cfg.rules.identical_bags = true;
+			cfg.rules.deck_size = DECK_SIZE_DEFAULT as u8;
+			cfg.setup.apply_same_deck();
+		} else if same_deck == Some(false) {
+			cfg.rules.identical_bags = false;
 		}
 		validate_rule_flags(&cfg.rules)?;
 		if cfg.setup.deck_seed.is_none() {
@@ -381,6 +393,9 @@ where
 		"--ring-count-weights" => {
 			rules.ring_count_weights = RingCountWeights::parse(&require_value(arg, it.next())?)?;
 		}
+		"--identical-bags" => {
+			rules.identical_bags = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--capture-mode" => {
 			rules.capture_mode = CaptureMode::parse(&require_value(arg, it.next())?)?;
 		}
@@ -448,6 +463,8 @@ pub fn usage() -> &'static str {
 	   --pick <heuristic|search|greedy>           Bench 7+4 picker (default: heuristic)\n\
 	   --p1-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P1 collection archetype (default: mixed)\n\
 	   --p2-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P2 collection archetype (default: mixed)\n\
+	   --same-deck <on|off>                       Identical 27-tile start for both players (default: on)\n\
+	   --identical-bags <on|off>                  Mirror collections when archetypes match (default: on)\n\
 	   --think-ms <n>                             Bot think time in ms (default: 80)\n\
 	   --delay-ms <n>                             Delay between bot moves (default: 350)\n\
 	   --actions <1..8>                           Actions per turn (default: 1)\n\
@@ -485,10 +502,10 @@ pub fn usage() -> &'static str {
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
-	   --bead-chance <0..7>                       Additive: 2–3 bead group k/7. Independent-max: bead light weight (default: 1)\n\
-	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (ignored by independent-max)\n\
-	   --channel-mode <independent-max|additive>  Edge combine + generation (default: independent-max)\n\
-	   --independent-channels <on|off>            Alias: on = independent-max, off = additive shared scoring\n\
+	   --bead-chance <0..7>                       Bead light-election weight (default: 1; 0 disables)\n\
+	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine; shared = beads part of normal\n\
+	   --channel-mode <independent-max|additive>  Edge combine only (default: independent-max). Generation is always clustering\n\
+	   --independent-channels <on|off>            Alias: on = independent-max, off = additive scoring\n\
 	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
 	   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim; cascade = PR #70)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
@@ -844,6 +861,20 @@ mod tests {
 		assert_eq!(on.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
 		let off = GameConfig::parse(["--independent-channels", "off"]).unwrap();
 		assert_eq!(off.rules.channel_mode, crate::game::ChannelMode::Additive);
+	}
+
+	#[test]
+	fn parses_same_deck() {
+		let on = GameConfig::parse(["--same-deck", "on"]).unwrap();
+		assert!(on.rules.identical_bags);
+		assert_eq!(on.rules.deck_size as usize, DECK_SIZE_DEFAULT);
+		assert_eq!(on.setup.deck_noise, 0);
+		assert_eq!(on.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
+		assert_eq!(on.setup.p2_deck, crate::deck::DeckArchetype::Mixed);
+		let off = GameConfig::parse(["--same-deck", "off"]).unwrap();
+		assert!(!off.rules.identical_bags);
+		let bags = GameConfig::parse(["--identical-bags", "off"]).unwrap();
+		assert!(!bags.rules.identical_bags);
 	}
 
 	#[test]
