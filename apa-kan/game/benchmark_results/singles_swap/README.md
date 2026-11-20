@@ -9,7 +9,9 @@ removed; no-echo is baked in whenever swaps are on.
 
 The `h2h_*` logs below are a historical record of the comparison suite.
 Do not overwrite them. The locked-in confirmation run is
-[`h2h_b_locked_counterplay`](h2h_b_locked_counterplay.txt).
+[`h2h_b_locked_counterplay`](h2h_b_locked_counterplay.txt) (defaults,
+counterplay, 100 games): P1 **50-3-47**, mean 71.20, never-left **25.0%**,
+matching the earlier adj-any + no-back log.
 
 Stacked on `cursor/ring-dist-channels-search-97b5` (PR #79). This package
 measured a new full action: a **single-ring tile** swaps positions with
@@ -95,6 +97,7 @@ survey: [`survey_center.py`](survey_center.py).
 | [`h2h_b_any_counterplay`](h2h_b_any_counterplay.txt) | any | counterplay | off | 100 |
 | [`h2h_b_own_counterplay`](h2h_b_own_counterplay.txt) | own | counterplay | off | 100 |
 | [`h2h_b_adj_any_counterplay_noback`](h2h_b_adj_any_counterplay_noback.txt) | adjacent-any | counterplay | no-immediate-back | 100 |
+| [`h2h_b_locked_counterplay`](h2h_b_locked_counterplay.txt) | on (live default) | counterplay | no-echo baked in | 100 |
 | [`h2h_b_adj_any_enhanced`](h2h_b_adj_any_enhanced.txt) | adjacent-any | enhanced | off | 100 |
 | [`h2h_b_adj_own_enhanced`](h2h_b_adj_own_enhanced.txt) | adjacent-own | enhanced | off | 100 |
 
@@ -111,6 +114,7 @@ modes are spammy.
 | any counterplay | **60-3-37** | 79.72 | 11 / 86 / 0 / 3 / 0 | 5.72 / 5.42 | 0.01 | 0.48 | **0.55** | **12.69** | 3.54 |
 | own counterplay | 54-3-43 | 63.50 | 6 / 90 / 1 / 2 / 1 | 4.13 / 4.80 | 0.01 | 0.35 | 0.26 | 5.33 | 2.10 |
 | adj-any + no-back | 50-3-47 | 71.20 | 10 / 86 / 2 / 2 / 0 | 4.13 / 4.95 | 0.01 | 0.27 | 0.35 | 5.55 | 2.28 |
+| locked default | 50-3-47 | 71.20 | 10 / 86 / 2 / 2 / 0 | 4.13 / 4.95 | 0.01 | 0.27 | 0.35 | 5.55 | 2.28 |
 | B off enhanced (#79) | 48-3-49 | 63.50 | 3 / 93 / 1 / 3 / 0 | 3.32 / 4.85 | 0.01 | 0.22 | 0.14 | 0 | 0 |
 | adj-any enhanced | 49-4-47 | 62.94 | 4 / 92 / 0 / 4 / 0 | 3.62 / 4.60 | 0.01 | 0.21 | 0.24 | 5.67 | 2.88 |
 | adj-own enhanced | 38-5-57 | 63.58 | 3 / 90 / 0 / 5 / 2 | 3.48 / 4.85 | 0.00 | 0.21 | 0.20 | 2.12 | 1.52 |
@@ -134,6 +138,7 @@ SWAP onto/off center transfers occupancy (initiator lands at `to`).
 | any counterplay | 100 @ t7.0 | **24.0% / 16.0%** | 46.0% | 18/24 = 75% | 515 | 55 | 12.69 / 3.54 |
 | own counterplay | 100 @ t5.2 | 41.0% / 36.0% | **62.0%** | 34/41 = 83% | 305 | 26 | 5.33 / 2.10 |
 | adj-any + no-back | 100 @ t5.3 | 31.0% / 25.0% | 45.0% | 24/31 = 77% | 382 | 35 | 5.55 / 2.28 |
+| locked default | 100 @ t5.3 | 31.0% / 25.0% | 45.0% | 24/31 = 77% | 382 | 35 | 5.55 / 2.28 |
 | B off enhanced (#79) | 99 @ t9.1 | 48.5% / **43.4%** | 49.5% | 29/48 = 60% | 158 | 14 | 0 / 0 |
 | adj-any enhanced | 100 @ t9.3 | 33.0% / 29.0% | **64.0%** | 29/33 = 88% | 454 | 24 | 5.67 / 2.88 |
 | adj-own enhanced | 100 @ t9.4 | 39.0% / 34.0% | 59.0% | 32/39 = 82% | 346 | 20 | 2.12 / 1.52 |
