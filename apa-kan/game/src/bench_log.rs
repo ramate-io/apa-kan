@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
 	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
-	ChannelMode, Emblem, EmblemWeights, EndReason, Game, GameStatus, HopWeightCmp,
-	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player,
-	RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus, HopWeightCmp,
+	InsufficientTilesLoss, LowValueResolution, MaterialValueResolution, MaterialValueTier,
+	PassThroughRingCmp, PathConstraint, Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor,
+	ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -122,6 +123,7 @@ fn end_reason_name(reason: EndReason) -> &'static str {
 		EndReason::Control => "control",
 		EndReason::InsufficientTiles => "insufficient_tiles",
 		EndReason::LowValue => "low_value",
+		EndReason::MaterialValue => "material_value",
 	}
 }
 
@@ -136,6 +138,7 @@ fn end_reason_parse(s: &str) -> Result<EndReason, String> {
 		"control" => Ok(EndReason::Control),
 		"insufficient_tiles" => Ok(EndReason::InsufficientTiles),
 		"low_value" => Ok(EndReason::LowValue),
+		"material_value" => Ok(EndReason::MaterialValue),
 		other => Err(format!("unknown end reason '{other}'")),
 	}
 }
@@ -360,6 +363,10 @@ pub struct RulesLog {
 		skip_serializing_if = "skip_default_blocker_blocks"
 	)]
 	pub blocker_blocks: String,
+	/// `material-value` (live default) or `low-value` (previous default).
+	/// Absent on older logs; replay uses low-value so those games match.
+	#[serde(default = "default_low_value_endgame", skip_serializing_if = "skip_low_value_endgame")]
+	pub endgame_rule: String,
 }
 
 fn default_blocker_blocks() -> String {
@@ -368,6 +375,14 @@ fn default_blocker_blocks() -> String {
 
 fn skip_default_blocker_blocks(v: &String) -> bool {
 	*v == BlockerBlocks::default().name()
+}
+
+fn default_low_value_endgame() -> String {
+	EndgameRule::LowValue.name().to_string()
+}
+
+fn skip_low_value_endgame(v: &String) -> bool {
+	v == EndgameRule::LowValue.name()
 }
 
 impl RulesLog {
@@ -414,6 +429,7 @@ impl RulesLog {
 			channel_mode: r.channel_mode.name().into(),
 			emblem_weights: r.emblem_weights.label(),
 			blocker_blocks: r.blocker_blocks.name().into(),
+			endgame_rule: r.endgame_rule.name().into(),
 		}
 	}
 
@@ -462,6 +478,7 @@ impl RulesLog {
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
 				.unwrap_or_else(|_| EmblemWeights::default()),
 			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
+			endgame_rule: EndgameRule::parse(&self.endgame_rule)?,
 		})
 	}
 }
@@ -760,6 +777,44 @@ impl LowValueLog {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MaterialValueLog {
+	pub kind: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub winner: Option<u8>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tier: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub pair: Option<usize>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub by_piece_count: Option<bool>,
+}
+
+impl MaterialValueLog {
+	pub fn from_resolution(res: MaterialValueResolution) -> Self {
+		match res {
+			MaterialValueResolution::Draw => Self {
+				kind: "draw".into(),
+				winner: None,
+				tier: None,
+				pair: None,
+				by_piece_count: None,
+			},
+			MaterialValueResolution::Win { winner, tier, pair, by_piece_count } => Self {
+				kind: "win".into(),
+				winner: Some(player_num(winner)),
+				tier: Some(tier.name().into()),
+				pair,
+				by_piece_count: if matches!(tier, MaterialValueTier::LowValue) {
+					Some(by_piece_count)
+				} else {
+					None
+				},
+			},
+		}
+	}
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EndLog {
 	pub status: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -768,26 +823,39 @@ pub struct EndLog {
 	pub winner: Option<u8>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub low_value: Option<LowValueLog>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub material_value: Option<MaterialValueLog>,
 }
 
 impl EndLog {
-	pub fn from_status(status: GameStatus, low_value: Option<LowValueResolution>) -> Self {
+	pub fn from_status(
+		status: GameStatus,
+		low_value: Option<LowValueResolution>,
+		material_value: Option<MaterialValueResolution>,
+	) -> Self {
 		let low_value = low_value.map(LowValueLog::from_resolution);
+		let material_value = material_value.map(MaterialValueLog::from_resolution);
 		match status {
-			GameStatus::InProgress => {
-				Self { status: "in_progress".into(), reason: None, winner: None, low_value }
-			}
+			GameStatus::InProgress => Self {
+				status: "in_progress".into(),
+				reason: None,
+				winner: None,
+				low_value,
+				material_value,
+			},
 			GameStatus::Won { winner, reason } => Self {
 				status: "won".into(),
 				reason: Some(end_reason_name(reason).into()),
 				winner: Some(player_num(winner)),
 				low_value,
+				material_value,
 			},
 			GameStatus::Draw { reason } => Self {
 				status: "draw".into(),
 				reason: Some(end_reason_name(reason).into()),
 				winner: None,
 				low_value,
+				material_value,
 			},
 		}
 	}
@@ -985,7 +1053,7 @@ impl GameLog {
 			opening: OpeningLog::from_game(live),
 			setup: SetupLog::from_game(live),
 			turns: 0,
-			end: EndLog::from_status(GameStatus::InProgress, None),
+			end: EndLog::from_status(GameStatus::InProgress, None, None),
 			actions: Vec::new(),
 			final_state: None,
 			deck_matchup: live
@@ -1036,7 +1104,7 @@ impl GameLog {
 
 	pub fn finish(&mut self, live: &Game, low_value: Option<LowValueResolution>) {
 		self.turns = live.turn_count();
-		self.end = EndLog::from_status(live.status(), low_value);
+		self.end = EndLog::from_status(live.status(), low_value, material_value_of(live));
 		self.final_state = Some(FinalLog::from_game(live));
 		let mut contrib = 0u32;
 		let mut needed = 0u32;
@@ -1124,6 +1192,24 @@ pub fn low_value_of(game: &Game) -> Option<LowValueResolution> {
 	match game.status() {
 		GameStatus::Won { reason: EndReason::LowValue, .. }
 		| GameStatus::Draw { reason: EndReason::LowValue } => Some(game.low_value_resolution()),
+		GameStatus::Won { reason: EndReason::MaterialValue, .. }
+		| GameStatus::Draw { reason: EndReason::MaterialValue } => {
+			match game.material_value_resolution() {
+				MaterialValueResolution::Draw
+				| MaterialValueResolution::Win { tier: MaterialValueTier::LowValue, .. } => {
+					Some(game.low_value_resolution())
+				}
+				_ => None,
+			}
+		}
+		_ => None,
+	}
+}
+
+pub fn material_value_of(game: &Game) -> Option<MaterialValueResolution> {
+	match game.status() {
+		GameStatus::Won { reason: EndReason::MaterialValue, .. }
+		| GameStatus::Draw { reason: EndReason::MaterialValue } => Some(game.material_value_resolution()),
 		_ => None,
 	}
 }
@@ -1500,6 +1586,7 @@ mod tests {
 		let end = EndLog::from_status(
 			GameStatus::Won { winner: Player::Two, reason: EndReason::LowValue },
 			Some(res),
+			None,
 		);
 		let json = serde_json::to_string(&end).unwrap();
 		assert!(json.contains("\"low_value\""));
@@ -1516,6 +1603,46 @@ mod tests {
 		assert_eq!(lv.winner, Some(2));
 		assert_eq!(lv.pair, Some(1));
 		assert_eq!(lv.by_piece_count, Some(true));
+	}
+
+	#[test]
+	fn material_value_end_fields_roundtrip() {
+		let res = MaterialValueResolution::Win {
+			winner: Player::One,
+			tier: MaterialValueTier::TotalMaterial,
+			pair: None,
+			by_piece_count: false,
+		};
+		let end = EndLog::from_status(
+			GameStatus::Won { winner: Player::One, reason: EndReason::MaterialValue },
+			None,
+			Some(res),
+		);
+		let json = serde_json::to_string(&end).unwrap();
+		assert!(json.contains("\"material_value\""));
+		assert!(json.contains("\"tier\":\"total_material\""));
+		let parsed: EndLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed, end);
+		assert_eq!(
+			parsed.to_status().unwrap(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::MaterialValue }
+		);
+		let mv = parsed.material_value.unwrap();
+		assert_eq!(mv.kind, "win");
+		assert_eq!(mv.winner, Some(1));
+		assert_eq!(mv.tier.as_deref(), Some("total_material"));
+	}
+
+	#[test]
+	fn missing_endgame_rule_replays_as_low_value() {
+		let mut r = RuleSet::default();
+		r.endgame_rule = EndgameRule::LowValue;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("endgame_rule"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.endgame_rule, "low-value");
+		assert_eq!(parsed.to_rules().unwrap().endgame_rule, EndgameRule::LowValue);
 	}
 
 	#[test]

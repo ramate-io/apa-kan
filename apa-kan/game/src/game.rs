@@ -1298,9 +1298,106 @@ pub enum LowValueResolution {
 	Win { winner: Player, pair: usize, by_piece_count: bool },
 }
 
+impl LowValueResolution {
+	pub fn winner(self) -> Option<Player> {
+		match self {
+			Self::Draw => None,
+			Self::Win { winner, .. } => Some(winner),
+		}
+	}
+}
+
 /// Both players must have `board tiles + usable budget` strictly below this
-/// for [`EndReason::LowValue`]. Usable budget is [`Game::budget`].
+/// for [`EndReason::LowValue`] and [`EndReason::MaterialValue`]. Usable
+/// budget is [`Game::budget`] (`min(spawn tokens, unplaced bench)`), not the
+/// raw token-stack length. Surplus tokens on an empty remaining deck do not
+/// count; see the open question on the `--endgame-rule` PR.
 pub const LOW_VALUE_BOARD_LT: u8 = 5;
+
+/// Which comparison runs once both players drop below [`LOW_VALUE_BOARD_LT`].
+/// CLI: `--endgame-rule`. Default [`Self::MaterialValue`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum EndgameRule {
+	/// Three-tier: higher total material, then more tiles on the board, then
+	/// the pairwise lowest-tile check. Draw only if every tier ties.
+	#[default]
+	MaterialValue,
+	/// Immediate pairwise lowest-tile comparison (the previous default).
+	LowValue,
+}
+
+impl EndgameRule {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"material-value" | "material_value" | "material" => Ok(Self::MaterialValue),
+			"low-value" | "low_value" | "lowvalue" => Ok(Self::LowValue),
+			other => {
+				Err(format!("unknown endgame-rule '{other}' (expected material-value|low-value)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::MaterialValue => "material-value",
+			Self::LowValue => "low-value",
+		}
+	}
+}
+
+/// Which of the three material-value tiers decided the game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialValueTier {
+	/// `board tiles + usable spawn tokens` (usable = [`Game::budget`]).
+	TotalMaterial,
+	/// Tiles currently on the board.
+	BoardTiles,
+	/// Pairwise lowest-tile check ([`LowValueResolution`]).
+	LowValue,
+}
+
+impl MaterialValueTier {
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::TotalMaterial => "total_material",
+			Self::BoardTiles => "board_tiles",
+			Self::LowValue => "low_value",
+		}
+	}
+
+	pub fn hud_name(self) -> &'static str {
+		match self {
+			Self::TotalMaterial => "total material",
+			Self::BoardTiles => "board tiles",
+			Self::LowValue => "low-value",
+		}
+	}
+}
+
+/// Outcome of [`EndgameRule::MaterialValue`]. Search reads the resulting
+/// [`GameStatus`]. `pair` / `by_piece_count` are set only on the low-value
+/// fallback tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialValueResolution {
+	Draw,
+	Win { winner: Player, tier: MaterialValueTier, pair: Option<usize>, by_piece_count: bool },
+}
+
+impl MaterialValueResolution {
+	pub fn winner(self) -> Option<Player> {
+		match self {
+			Self::Draw => None,
+			Self::Win { winner, .. } => Some(winner),
+		}
+	}
+
+	pub fn tier(self) -> Option<MaterialValueTier> {
+		match self {
+			Self::Draw => None,
+			Self::Win { tier, .. } => Some(tier),
+		}
+	}
+}
 
 /// One spawn token. The opening stack is [`BudgetToken::Blank`] copies
 /// ([`RuleSet::starting_bench_size`], default 7); captures push
@@ -1438,7 +1535,13 @@ pub enum EndReason {
 	/// Sorted lowest-tile pairs decide (primary, then zag/braid-weighted
 	/// tiebreak). A missing piece is maximum value, so more surviving tiles
 	/// win; a draw only if the counts match and every pair ties on both passes.
+	/// Used when [`RuleSet::endgame_rule`] is [`EndgameRule::LowValue`].
 	LowValue,
+	/// Same trigger as [`Self::LowValue`]. Three-tier resolution: higher
+	/// total material, then more tiles on the board, then the pairwise
+	/// lowest-tile check. Sub-reason is [`MaterialValueResolution`]. Used
+	/// when [`RuleSet::endgame_rule`] is [`EndgameRule::MaterialValue`].
+	MaterialValue,
 }
 
 /// Restriction on moving the same tile on two consecutive own turns.
@@ -2167,6 +2270,11 @@ pub struct RuleSet {
 	/// Lose when board + remaining deck cannot reach 5 tiles (see
 	/// [`InsufficientTilesLoss`]). Default off.
 	pub insufficient_tiles_loss: InsufficientTilesLoss,
+	/// Comparison used once both players have `board + usable budget`
+	/// strictly below [`LOW_VALUE_BOARD_LT`]. Default
+	/// [`EndgameRule::MaterialValue`]. `--endgame-rule low-value` restores
+	/// the immediate pairwise lowest-tile check.
+	pub endgame_rule: EndgameRule,
 	/// Uniqueness constraint along a single MOVE path.
 	/// Default [`PathConstraint::NoEdgeRevisit`] (`no_repeated_edge` on;
 	/// node revisits via a different arc are allowed).
@@ -2238,6 +2346,7 @@ impl Default for RuleSet {
 			control_n: 5,
 			control_hold_turns: 1,
 			insufficient_tiles_loss: InsufficientTilesLoss::Off,
+			endgame_rule: EndgameRule::MaterialValue,
 			path_constraint: PathConstraint::NoEdgeRevisit,
 			counted_pass_through: true,
 			pass_through_ring_cmp: PassThroughRingCmp::Ge,
@@ -3692,7 +3801,7 @@ impl Game {
 			self.status = GameStatus::Won { winner: who, reason: EndReason::LockedOut };
 		}
 		if !self.status.is_over() {
-			self.check_low_value();
+			self.check_endgame();
 		}
 	}
 
@@ -3792,25 +3901,35 @@ impl Game {
 	/// tiles (usable 3) is already below 5. Surplus tokens on an empty
 	/// remaining deck do not count toward possible pieces. Compared after
 	/// lockout: a player who cannot act still loses by lockout even if they
-	/// hold the lowest piece.
-	fn check_low_value(&mut self) {
+	/// hold the lowest piece. Dispatches on [`RuleSet::endgame_rule`].
+	fn check_endgame(&mut self) {
 		if self.status.is_over() {
 			return;
 		}
 		if !self.low_value_applies() {
 			return;
 		}
-		self.status = match self.low_value_resolution() {
-			LowValueResolution::Draw => GameStatus::Draw { reason: EndReason::LowValue },
-			LowValueResolution::Win { winner, .. } => {
-				GameStatus::Won { winner, reason: EndReason::LowValue }
-			}
+		self.status = match self.rules.endgame_rule {
+			EndgameRule::LowValue => match self.low_value_resolution() {
+				LowValueResolution::Draw => GameStatus::Draw { reason: EndReason::LowValue },
+				LowValueResolution::Win { winner, .. } => {
+					GameStatus::Won { winner, reason: EndReason::LowValue }
+				}
+			},
+			EndgameRule::MaterialValue => match self.material_value_resolution() {
+				MaterialValueResolution::Draw => {
+					GameStatus::Draw { reason: EndReason::MaterialValue }
+				}
+				MaterialValueResolution::Win { winner, .. } => {
+					GameStatus::Won { winner, reason: EndReason::MaterialValue }
+				}
+			},
 		};
 	}
 
 	#[cfg(test)]
 	pub(crate) fn evaluate_low_value_for_test(&mut self) {
-		self.check_low_value();
+		self.check_endgame();
 	}
 
 	/// Sorted `(primary, tiebreak)` keys of `player`'s on-board pieces,
@@ -3861,6 +3980,44 @@ impl Game {
 			}
 		}
 		LowValueResolution::Draw
+	}
+
+	/// Three-tier material-value comparison. Total material is
+	/// [`Self::possible_board_tiles`] (board + usable budget). Board tiles
+	/// are [`Self::board_count`]. Equal counts fall through to
+	/// [`Self::low_value_resolution`].
+	pub fn material_value_resolution(&self) -> MaterialValueResolution {
+		let m1 = self.possible_board_tiles(Player::One);
+		let m2 = self.possible_board_tiles(Player::Two);
+		if m1 != m2 {
+			return MaterialValueResolution::Win {
+				winner: if m1 > m2 { Player::One } else { Player::Two },
+				tier: MaterialValueTier::TotalMaterial,
+				pair: None,
+				by_piece_count: false,
+			};
+		}
+		let b1 = self.board_count(Player::One);
+		let b2 = self.board_count(Player::Two);
+		if b1 != b2 {
+			return MaterialValueResolution::Win {
+				winner: if b1 > b2 { Player::One } else { Player::Two },
+				tier: MaterialValueTier::BoardTiles,
+				pair: None,
+				by_piece_count: false,
+			};
+		}
+		match self.low_value_resolution() {
+			LowValueResolution::Draw => MaterialValueResolution::Draw,
+			LowValueResolution::Win { winner, pair, by_piece_count } => {
+				MaterialValueResolution::Win {
+					winner,
+					tier: MaterialValueTier::LowValue,
+					pair: Some(pair),
+					by_piece_count,
+				}
+			}
+		}
 	}
 
 	fn spend_budget(&mut self, player: Player) -> Result<(), String> {
@@ -7063,6 +7220,16 @@ mod tests {
 		rules.control_win = false;
 		rules.center_hold_win = false;
 		rules.petal_majority_win = false;
+		rules.endgame_rule = EndgameRule::LowValue;
+		rules
+	}
+
+	fn material_value_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.endgame_rule = EndgameRule::MaterialValue;
 		rules
 	}
 
@@ -9048,6 +9215,188 @@ mod tests {
 		let to = game.destinations(from).into_iter().next().expect("P1 can step");
 		game.apply(Action::Move { from, to }).unwrap();
 		assert_eq!(game.status(), GameStatus::InProgress);
+	}
+
+	#[test]
+	fn default_endgame_rule_is_material_value() {
+		assert_eq!(RuleSet::default().endgame_rule, EndgameRule::MaterialValue);
+	}
+
+	#[test]
+	fn material_value_total_material_beats_a_lower_piece() {
+		// P1 has a *higher* on-board piece (would lose low-value) but more
+		// usable budget, so total material 3 vs 1 awards P1.
+		let mut game = Game::empty(material_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 3);
+		place_isolated_dot(&mut game, 4, Player::Two, false, 1);
+		let p1_bench =
+			vec![green(&mut game, Player::One, 1, 1), green(&mut game, Player::One, 1, 1)];
+		game.set_bench(Player::One, p1_bench);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 2]);
+		game.set_bench(Player::Two, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.possible_board_tiles(Player::One), 3);
+		assert_eq!(game.possible_board_tiles(Player::Two), 1);
+		assert_eq!(
+			game.low_value_resolution(),
+			LowValueResolution::Win { winner: Player::Two, pair: 0, by_piece_count: false }
+		);
+		game.evaluate_low_value_for_test();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::MaterialValue }
+		);
+		assert_eq!(
+			game.material_value_resolution(),
+			MaterialValueResolution::Win {
+				winner: Player::One,
+				tier: MaterialValueTier::TotalMaterial,
+				pair: None,
+				by_piece_count: false,
+			}
+		);
+	}
+
+	#[test]
+	fn material_value_board_tiles_break_a_total_material_tie() {
+		// Totals 2=2. P1 has 2 tiles on the board; P2 has 1 on the board
+		// plus 1 usable token. P1 wins the board-tiles tier.
+		let mut game = Game::empty(material_value_rules());
+		place_valued(&mut game, 0, Player::One, 3, 1, false);
+		place_valued(&mut game, 1, Player::One, 3, 1, false);
+		place_valued(&mut game, 4, Player::Two, 1, 1, false);
+		game.set_bench(Player::One, Vec::new());
+		game.set_budget_tokens(Player::One, Vec::new());
+		let p2_extra = green(&mut game, Player::Two, 1, 1);
+		game.set_bench(Player::Two, vec![p2_extra]);
+		game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank]);
+		assert_eq!(game.possible_board_tiles(Player::One), 2);
+		assert_eq!(game.possible_board_tiles(Player::Two), 2);
+		assert_eq!(game.board_count(Player::One), 2);
+		assert_eq!(game.board_count(Player::Two), 1);
+		game.evaluate_low_value_for_test();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::MaterialValue }
+		);
+		assert_eq!(
+			game.material_value_resolution(),
+			MaterialValueResolution::Win {
+				winner: Player::One,
+				tier: MaterialValueTier::BoardTiles,
+				pair: None,
+				by_piece_count: false,
+			}
+		);
+	}
+
+	#[test]
+	fn material_value_falls_back_to_low_value_when_counts_tie() {
+		let mut game = Game::empty(material_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 1);
+		place_isolated_dot(&mut game, 4, Player::Two, false, 2);
+		arm_low_value(&mut game);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::MaterialValue }
+		);
+		assert_eq!(
+			game.material_value_resolution(),
+			MaterialValueResolution::Win {
+				winner: Player::One,
+				tier: MaterialValueTier::LowValue,
+				pair: Some(0),
+				by_piece_count: false,
+			}
+		);
+	}
+
+	#[test]
+	fn material_value_full_tie_is_a_draw() {
+		let mut game = Game::empty(material_value_rules());
+		place_valued(&mut game, 0, Player::One, 1, 1, false);
+		place_valued(&mut game, 1, Player::One, 2, 1, false);
+		place_valued(&mut game, 4, Player::Two, 1, 1, false);
+		place_valued(&mut game, 5, Player::Two, 2, 1, false);
+		arm_low_value(&mut game);
+		assert_eq!(game.status(), GameStatus::Draw { reason: EndReason::MaterialValue });
+		assert_eq!(game.material_value_resolution(), MaterialValueResolution::Draw);
+	}
+
+	#[test]
+	fn material_value_cli_low_value_restores_immediate_pair_check() {
+		// Same position as total-material-beats-lower-piece, but with the
+		// baseline rule P2's lower piece wins immediately.
+		let mut game = Game::empty(low_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 3);
+		place_isolated_dot(&mut game, 4, Player::Two, false, 1);
+		let p1_bench =
+			vec![green(&mut game, Player::One, 1, 1), green(&mut game, Player::One, 1, 1)];
+		game.set_bench(Player::One, p1_bench);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 2]);
+		game.set_bench(Player::Two, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.possible_board_tiles(Player::One), 3);
+		assert_eq!(game.possible_board_tiles(Player::Two), 1);
+		game.evaluate_low_value_for_test();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::LowValue }
+		);
+	}
+
+	#[test]
+	fn material_value_uses_usable_budget_not_raw_tokens() {
+		// P1 1 board + 0 usable (5 surplus); P2 1 board + 3 usable. Totals
+		// 1 vs 4, so P2 wins by total material even though P1 holds the
+		// lower piece.
+		let mut game = Game::empty(material_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 1);
+		place_isolated_dot(&mut game, 4, Player::Two, false, 2);
+		game.set_bench(Player::One, Vec::new());
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 5]);
+		let p2_deck = vec![
+			green(&mut game, Player::Two, 1, 1),
+			green(&mut game, Player::Two, 1, 1),
+			green(&mut game, Player::Two, 1, 1),
+		];
+		game.set_bench(Player::Two, p2_deck);
+		assert_eq!(game.budget_token_count(Player::One), 5);
+		assert_eq!(game.budget(Player::One), 0);
+		assert_eq!(game.possible_board_tiles(Player::One), 1);
+		assert_eq!(game.possible_board_tiles(Player::Two), 4);
+		assert!(game.low_value_applies());
+		game.evaluate_low_value_for_test();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::MaterialValue }
+		);
+		assert_eq!(
+			game.material_value_resolution(),
+			MaterialValueResolution::Win {
+				winner: Player::Two,
+				tier: MaterialValueTier::TotalMaterial,
+				pair: None,
+				by_piece_count: false,
+			}
+		);
+	}
+
+	#[test]
+	fn lockout_beats_material_value() {
+		let mut game = Game::empty(material_value_rules());
+		place_isolated_dot(&mut game, 0, Player::One, false, 1);
+		let t = take(&mut game, Player::Two, TileColor::Orange, 3, 1);
+		game.set_bench(Player::Two, vec![t]);
+		zero_budget(&mut game);
+		game.set_current(Player::One);
+		let from = game.board().spawns()[0];
+		let to = game.destinations(from).into_iter().next().expect("P1 can step");
+		game.apply(Action::Move { from, to }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LockedOut }
+		);
 	}
 
 	#[test]

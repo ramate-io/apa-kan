@@ -14,8 +14,8 @@ use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
 use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig};
 use apa_kan::game::{
-	sample_tile_from_rules, Action, EndReason, Game, GameStatus, LowValueResolution, Player,
-	RuleSet, Tile, TileColor,
+	sample_tile_from_rules, Action, EndReason, Game, GameStatus, LowValueResolution,
+	MaterialValueResolution, MaterialValueTier, Player, RuleSet, Tile, TileColor,
 };
 use apa_kan::scenario::{self, DeckStrength, Scenario};
 use rand::rngs::StdRng;
@@ -110,7 +110,7 @@ fn usage() -> &'static str {
 	   --hop-weight-cmp, --counted-pass-through, --graph-hops, --pass-through-ring-cmp,\n\
 	   --petal-majority-win, --petal-majority-n,\n\
 	   --control-win, --control-n, --control-hold-turns,\n\
-	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
+	   --insufficient-tiles-loss, --endgame-rule, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
 	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
@@ -512,6 +512,12 @@ struct SeatStats {
 	low_value_pair0: u32,
 	low_value_later: u32,
 	low_value_piece_count: u32,
+	material_value: u32,
+	material_value_wins: u32,
+	material_value_draws: u32,
+	material_value_total: u32,
+	material_value_board: u32,
+	material_value_low_value: u32,
 	turn_limit: u32,
 	double_pass: u32,
 	games_repeat_ge2: u32,
@@ -624,7 +630,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} insufficient_tiles_loss={} endgame_rule={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -639,6 +645,7 @@ fn run(cfg: BenchConfig) {
 		rules.control_n,
 		rules.control_hold_turns,
 		rules.insufficient_tiles_loss.name(),
+		rules.endgame_rule.name(),
 		rules.starting_bench_size,
 		rules.bag_size,
 		rules.deck_size,
@@ -672,7 +679,7 @@ fn run(cfg: BenchConfig) {
 		"# root_spread: visit entropy / effective branching, top-1 visit share, #moves within 1/sqrt(n) of best Q, Q spread of top 10, best-move stability.".into(),
 	);
 	lines.push(
-		"# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
+		"# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  material_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures".into(),
 	);
 
 	let keep_log = cfg.games_log.is_some();
@@ -812,6 +819,12 @@ fn run(cfg: BenchConfig) {
 	let mut end_low_value_pair0 = 0u32;
 	let mut end_low_value_later = 0u32;
 	let mut end_low_value_piece_count = 0u32;
+	let mut end_material_value = 0u32;
+	let mut end_material_value_wins = 0u32;
+	let mut end_material_value_draws = 0u32;
+	let mut end_material_value_total = 0u32;
+	let mut end_material_value_board = 0u32;
+	let mut end_material_value_low_value = 0u32;
 	let mut end_limit = 0u32;
 	let mut end_pass = 0u32;
 	let mut captures = 0u32;
@@ -860,6 +873,12 @@ fn run(cfg: BenchConfig) {
 		end_low_value_pair0 += stats.low_value_pair0;
 		end_low_value_later += stats.low_value_later;
 		end_low_value_piece_count += stats.low_value_piece_count;
+		end_material_value += stats.material_value;
+		end_material_value_wins += stats.material_value_wins;
+		end_material_value_draws += stats.material_value_draws;
+		end_material_value_total += stats.material_value_total;
+		end_material_value_board += stats.material_value_board;
+		end_material_value_low_value += stats.material_value_low_value;
 		end_limit += stats.turn_limit;
 		end_pass += stats.double_pass;
 		captures += stats.captures;
@@ -905,16 +924,22 @@ fn run(cfg: BenchConfig) {
 		p1_w + p1_d + p1_l
 	));
 	lines.push(format!(
-		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
+		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} material_value={end_material_value} material_value_wins={end_material_value_wins} material_value_draws={end_material_value_draws} turn_limit={end_limit} double_pass={end_pass}"
 	));
 	lines.push(format!(
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
 	));
+	lines.push(format!(
+		"# material_value_tiers  total_material={end_material_value_total} board_tiles={end_material_value_board} low_value={end_material_value_low_value} draws={end_material_value_draws}"
+	));
 	println!(
-		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
+		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} material_value={end_material_value} material_value_wins={end_material_value_wins} material_value_draws={end_material_value_draws} turn_limit={end_limit} double_pass={end_pass}"
 	);
 	println!(
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
+	);
+	println!(
+		"# material_value_tiers  total_material={end_material_value_total} board_tiles={end_material_value_board} low_value={end_material_value_low_value} draws={end_material_value_draws}"
 	);
 	let games_n = p1_w + p1_d + p1_l;
 	let avg_cap = if games_n == 0 { 0.0 } else { f64::from(captures) / f64::from(games_n) };
@@ -1440,6 +1465,7 @@ fn summarize_pairing(
 			}
 		}
 		tally_low_value(&mut stats, result.low_value);
+		tally_material_value(&mut stats, result.material_value);
 	}
 	let n = games.max(1);
 	let avg = f64::from(stats.turns) / f64::from(n);
@@ -1455,7 +1481,7 @@ fn summarize_pairing(
 	let avg_cap = f64::from(stats.captures) / f64::from(n);
 	let avg_self = f64::from(stats.self_captures) / f64::from(n);
 	let line = format!(
-		"{:<15} vs {:<15}  {:<13}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}  self={:.2}  mm_max={} mcts_avg={:.2} mcts_max={}",
+		"{:<15} vs {:<15}  {:<13}  P1  {}-{}-{}  {:.2}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {:.2}  {:.2}  {:.1}  cap={:.2}  self={:.2}  mm_max={} mcts_avg={:.2} mcts_max={}",
 		p1.name(),
 		p2.name(),
 		matchup,
@@ -1470,6 +1496,7 @@ fn summarize_pairing(
 		stats.control,
 		stats.insuff,
 		stats.low_value,
+		stats.material_value,
 		stats.turn_limit,
 		stats.double_pass,
 		stats.games_repeat_ge3,
@@ -1496,6 +1523,7 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 		EndReason::Control => stats.control += 1,
 		EndReason::InsufficientTiles => stats.insuff += 1,
 		EndReason::LowValue => stats.low_value += 1,
+		EndReason::MaterialValue => stats.material_value += 1,
 	}
 }
 
@@ -1511,6 +1539,21 @@ fn tally_low_value(stats: &mut SeatStats, resolution: Option<LowValueResolution>
 				stats.low_value_pair0 += 1;
 			} else {
 				stats.low_value_later += 1;
+			}
+		}
+	}
+}
+
+fn tally_material_value(stats: &mut SeatStats, resolution: Option<MaterialValueResolution>) {
+	match resolution {
+		None => {}
+		Some(MaterialValueResolution::Draw) => stats.material_value_draws += 1,
+		Some(MaterialValueResolution::Win { tier, .. }) => {
+			stats.material_value_wins += 1;
+			match tier {
+				MaterialValueTier::TotalMaterial => stats.material_value_total += 1,
+				MaterialValueTier::BoardTiles => stats.material_value_board += 1,
+				MaterialValueTier::LowValue => stats.material_value_low_value += 1,
 			}
 		}
 	}
@@ -1774,6 +1817,7 @@ impl GameRecord {
 struct PlayResult {
 	status: GameStatus,
 	low_value: Option<LowValueResolution>,
+	material_value: Option<MaterialValueResolution>,
 	turns: u32,
 	max_repeat: u32,
 	max_occ_repeat: u32,
@@ -2114,6 +2158,7 @@ fn play_game(
 		_ => 0,
 	};
 	let low_value = bench_log::low_value_of(&game);
+	let material_value = bench_log::material_value_of(&game);
 	if let Some(log) = game_log.as_mut() {
 		log.finish(&game, low_value);
 	}
@@ -2121,6 +2166,7 @@ fn play_game(
 	PlayResult {
 		status: game.status(),
 		low_value,
+		material_value,
 		turns: game.turn_count(),
 		max_repeat,
 		max_occ_repeat: max_occ,
@@ -2530,6 +2576,7 @@ mod tests {
 					|| line.starts_with("# seat_totals")
 					|| line.starts_with("# end_reasons")
 					|| line.starts_with("# low_value_pairs")
+					|| line.starts_with("# material_value_tiers")
 					|| line.starts_with("# captures")
 					|| line.starts_with("# center_captures")
 					|| line.starts_with("# capture_dest")

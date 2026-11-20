@@ -9,8 +9,8 @@ use std::f64::consts::PI;
 use crate::board::{ArcEdge, Board, NodeId};
 use crate::game::{
 	selected_braid, ActionOutcome, BudgetToken, CaptureDest, CaptureMark, ChannelKind,
-	EdgeChannels, Emblem, Game, GameStatus, Player, RingType, RuleSet, Tile, TileColor,
-	ZagMismatchCount, BAG_SIZE_DEFAULT,
+	EdgeChannels, Emblem, EndReason, Game, GameStatus, MaterialValueResolution, Player, RingType,
+	RuleSet, Tile, TileColor, ZagMismatchCount, BAG_SIZE_DEFAULT,
 };
 
 /// Previous desktop tile radius was 22px at a fixed scale of 210 board-px.
@@ -170,7 +170,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Win: 5 of 9, or lowest pieces in order if both have board+usable <5.";
+	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Win: 5 of 9, or more material (then more on-board tiles, then lowest pieces) if both have board+usable <5.";
 
 pub const SETUP_HELP_TEXT: &str =
 	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6). Normal uncapped.";
@@ -2696,9 +2696,21 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 			)
 		}
 		GameStatus::Won { winner, reason } => {
-			format!("Game over: {} wins by {:?}", winner.label(), reason)
+			format!("Game over: {} wins by {}", winner.label(), format_end_reason(game, reason))
 		}
-		GameStatus::Draw { reason } => format!("Draw ({reason:?})"),
+		GameStatus::Draw { reason } => format!("Draw ({})", format_end_reason(game, reason)),
+	}
+}
+
+fn format_end_reason(game: &Game, reason: EndReason) -> String {
+	match reason {
+		EndReason::MaterialValue => match game.material_value_resolution() {
+			MaterialValueResolution::Draw => "MaterialValue".into(),
+			MaterialValueResolution::Win { tier, .. } => {
+				format!("MaterialValue ({})", tier.hud_name())
+			}
+		},
+		other => format!("{other:?}"),
 	}
 }
 
@@ -4505,6 +4517,36 @@ mod tests {
 		assert!(turn.contains("P1 light 5/11 bud 5+4"), "{turn}");
 		assert!(turn.contains("P2 dark 5/11 bud 5+3"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
+	}
+
+	#[test]
+	fn hud_material_value_win_names_the_tier() {
+		use crate::game::{BudgetToken, EndgameRule, GameStatus};
+
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.endgame_rule = EndgameRule::MaterialValue;
+		let mut game = Game::empty(rules);
+		let p1 = game.board().spawns()[0];
+		let p2 = game.board().spawns()[4];
+		let t1 = game.alloc_tile(Player::One, TileColor::Green, 1, 3);
+		let t2 = game.alloc_tile(Player::Two, TileColor::Orange, 1, 1);
+		let b1 = game.alloc_tile(Player::One, TileColor::Blue, 1, 1);
+		let b2 = game.alloc_tile(Player::One, TileColor::Orange, 1, 1);
+		game.place_tile(p1, t1);
+		game.place_tile(p2, t2);
+		game.set_bench(Player::One, vec![b1, b2]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 2]);
+		game.set_bench(Player::Two, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		game.evaluate_low_value_for_test();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::MaterialValue }
+		);
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("Game over: P1 wins by MaterialValue (total material)"), "{turn}");
+		assert!(is_hud_safe(&turn), "{turn}");
 	}
 
 	#[test]
