@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
 	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
-	ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus, HopWeightCmp,
-	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player,
-	RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	CaptureMode, ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
+	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
+	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
+	DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -58,6 +59,14 @@ fn default_additive_channel_mode() -> String {
 
 fn skip_additive_channel_mode(v: &String) -> bool {
 	v == ChannelMode::Additive.name()
+}
+
+fn default_cascade_capture_mode() -> String {
+	CaptureMode::Cascade.name().to_string()
+}
+
+fn skip_cascade_capture_mode(v: &String) -> bool {
+	v == CaptureMode::Cascade.name()
 }
 
 fn default_mixed() -> String {
@@ -349,6 +358,13 @@ pub struct RulesLog {
 		skip_serializing_if = "skip_additive_channel_mode"
 	)]
 	pub channel_mode: String,
+	/// `local-claim` (live default) or `cascade` (PR #70 full-board sweep).
+	/// Absent on older logs; replay uses cascade, matching those captures.
+	#[serde(
+		default = "default_cascade_capture_mode",
+		skip_serializing_if = "skip_cascade_capture_mode"
+	)]
+	pub capture_mode: String,
 	/// `none,crescent,zs[,blocker,rosette]` generation weights. Absent on
 	/// older logs; replay uses the live default only for new deals, not
 	/// historical tiles (those already store `emblem` per tile).
@@ -421,6 +437,7 @@ impl RulesLog {
 			zag_match_non_zag: Some(true),
 			bead_scoring: r.bead_scoring.name().into(),
 			channel_mode: r.channel_mode.name().into(),
+			capture_mode: r.capture_mode.name().into(),
 			emblem_weights: r.emblem_weights.label(),
 			blocker_blocks: r.blocker_blocks.name().into(),
 		}
@@ -469,6 +486,7 @@ impl RulesLog {
 			},
 			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
 			channel_mode: ChannelMode::parse(&self.channel_mode)?,
+			capture_mode: CaptureMode::parse(&self.capture_mode)?,
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
 				.unwrap_or_else(|_| EmblemWeights::default()),
 			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
@@ -556,7 +574,7 @@ impl OpeningLog {
 	}
 }
 
-/// One applied action. `kind` is ADD/MOVE/PASS; capture flags are outcomes.
+/// One applied action. `kind` is ADD/MOVE/CLAIM/PASS; capture flags are outcomes.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ActionLog {
 	pub turn: u32,
@@ -613,6 +631,13 @@ pub struct ActionLog {
 	pub crescent_saves: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub zs_bonuses: u8,
+	/// Tiles that were overwhelmed before this action and are still on the
+	/// board, no longer overwhelmed, afterwards.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub healed: u8,
+	/// Overwhelmed tiles remaining on the board after this action.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub leftover_overwhelmed: u8,
 }
 
 /// One captured tile: original owner and where it went.
@@ -645,6 +670,7 @@ impl ActionLog {
 				("ADD".to_string(), None, Some(node), Some(bench_index))
 			}
 			Action::Move { from, to } => ("MOVE".to_string(), Some(from), Some(to), None),
+			Action::Claim { node } => ("CLAIM".to_string(), None, Some(node), None),
 			Action::Pass => ("PASS".to_string(), None, None, None),
 		};
 		let capture = outcome.removals.iter().filter(|r| r.tile.owner != player).count() as u8;
@@ -690,7 +716,14 @@ impl ActionLog {
 			root_legal: 0,
 			crescent_saves: outcome.emblem.crescent_saves,
 			zs_bonuses: outcome.emblem.zs_bonuses,
+			healed: 0,
+			leftover_overwhelmed: game_after.overwhelmed_nodes().len() as u8,
 		}
+	}
+
+	pub fn with_overwhelm_delta(mut self, healed: u8) -> Self {
+		self.healed = healed;
+		self
 	}
 
 	pub fn with_search(mut self, stats: crate::ai::SearchStats) -> Self {
@@ -719,6 +752,10 @@ impl ActionLog {
 				let to = self.to.ok_or("MOVE missing to")?;
 				Ok(Action::Move { from, to })
 			}
+			"CLAIM" => {
+				let node = self.to.ok_or("CLAIM missing to")?;
+				Ok(Action::Claim { node })
+			}
 			"PASS" => Ok(Action::Pass),
 			other => Err(format!("unknown action kind '{other}'")),
 		}
@@ -729,6 +766,7 @@ impl ActionLog {
 		match self.kind.as_str() {
 			"ADD" => tags.push("ADD"),
 			"MOVE" => tags.push("MOVE"),
+			"CLAIM" => tags.push("CLAIM"),
 			"PASS" => tags.push("PASS"),
 			_ => {}
 		}
@@ -1296,6 +1334,7 @@ pub fn piece_for_action(game: &Game, action: Action) -> Option<Tile> {
 			game.bench(game.current_player()).get(bench_index).copied()
 		}
 		Action::Move { from, .. } => game.tile_at(from),
+		Action::Claim { node } => game.tile_at(node),
 		Action::Pass => None,
 	}
 }
@@ -1634,6 +1673,18 @@ mod tests {
 	}
 
 	#[test]
+	fn missing_capture_mode_replays_as_cascade() {
+		let mut r = RuleSet::default();
+		r.capture_mode = CaptureMode::Cascade;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("capture_mode"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.capture_mode, "cascade");
+		assert_eq!(parsed.to_rules().unwrap().capture_mode, CaptureMode::Cascade);
+	}
+
+	#[test]
 	fn jsonl_records_capture_dest_per_removal() {
 		use crate::game::{Action, CaptureDest, CaptureMark, Game, Player, TileColor};
 
@@ -1672,6 +1723,58 @@ mod tests {
 		assert!(!act.captures.is_empty());
 		assert!(act.captures.iter().all(|c| c.dest == "bench"));
 		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
+	}
+
+	#[test]
+	fn jsonl_records_and_replays_a_claim() {
+		use crate::game::{Action, CaptureDest, Game, Player, TileColor};
+
+		let mut game = Game::empty(RuleSet::default());
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let victim = game.alloc_tile(Player::Two, TileColor::Green, 1, 1);
+		game.place_tile(spawn, victim);
+		let heavy = game.alloc_rings(
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+			1,
+		);
+		game.place_tile(nbs[0], heavy);
+		let heavy2 = game.alloc_rings(
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+			1,
+		);
+		game.place_tile(nbs[1], heavy2);
+		assert!(game.is_overwhelmed(spawn));
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let mut log = GameLog::begin(1, "t", "g", "g", 0, "default", &game);
+		let action = Action::Claim { node: spawn };
+		let piece = piece_for_action(&game, action);
+		let outcome = game.apply(action).unwrap();
+		log.push_action(action, piece, &outcome, &game);
+		log.finish(&game, None);
+		let act = log.actions.last().unwrap();
+		assert_eq!(act.kind, "CLAIM");
+		assert_eq!(act.to, Some(spawn));
+		assert_eq!(act.capture_dest.as_deref(), Some("tokens"));
+		assert_eq!(act.captures.len(), 1);
+		assert_eq!(act.captures[0].dest, "tokens");
+		assert_eq!(outcome.removals[0].dest, CaptureDest::Tokens);
+		assert_eq!(game.budget_token_count(Player::One), tokens + 1);
+		assert_eq!(log.rules.capture_mode, "local-claim");
+		let json = encode_jsonl(std::slice::from_ref(&log)).unwrap();
+		assert!(json.contains("\"kind\":\"CLAIM\""), "{json}");
+		assert!(json.contains("\"capture_mode\":\"local-claim\""), "{json}");
+		let parsed = decode_jsonl(&json).unwrap();
+		assert_eq!(parsed.len(), 1);
+		assert_eq!(parsed[0].actions[0].kind, "CLAIM");
+		assert_eq!(parsed[0].actions[0].to_action().unwrap(), Action::Claim { node: spawn });
+		assert_eq!(parsed[0].rules.to_rules().unwrap().capture_mode, CaptureMode::LocalClaim);
 	}
 
 	fn opening_weight_equals_rings(log: &GameLog) -> bool {
@@ -1872,6 +1975,14 @@ mod tests {
 		assert_committed_jsonl_gz_replays_n(
 			"benchmark_results/bead_shared_channel/groups/groups_deep.jsonl.gz",
 			10,
+		);
+	}
+
+	#[test]
+	fn committed_local_claim_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/local_claim/h2h_shallow.jsonl.gz",
+			100,
 		);
 	}
 

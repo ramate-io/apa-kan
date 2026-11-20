@@ -112,7 +112,7 @@ fn usage() -> &'static str {
 	   --control-win, --control-n, --control-hold-turns, --endgame-rule,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --dot-chance,\n\
+	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --capture-mode, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -541,6 +541,10 @@ struct SeatStats {
 	bead_contrib: u32,
 	bead_needed: u32,
 	spawn_two_ring_single_bead: u32,
+	claims: u32,
+	claim_own: u32,
+	claim_opp: u32,
+	healed: u32,
 	crescent_saves: u32,
 	zs_bonuses: u32,
 	depth_max: u8,
@@ -628,7 +632,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -656,6 +660,7 @@ fn run(cfg: BenchConfig) {
 		rules.bead_numer,
 		rules.bead_scoring.name(),
 		rules.channel_mode.name(),
+		rules.capture_mode.name(),
 		rules.dot_percent,
 		rules.emblem_weights.label(),
 		rules.blocker_blocks.name(),
@@ -835,6 +840,10 @@ fn run(cfg: BenchConfig) {
 	let mut bead_contrib = 0u32;
 	let mut bead_needed = 0u32;
 	let mut spawn_two_ring = 0u32;
+	let mut claims = 0u32;
+	let mut claim_own = 0u32;
+	let mut claim_opp = 0u32;
+	let mut healed = 0u32;
 	let mut crescent_saves = 0u32;
 	let mut zs_bonuses = 0u32;
 	let mut mm_depth_sum = 0.0f64;
@@ -887,6 +896,10 @@ fn run(cfg: BenchConfig) {
 		bead_contrib += stats.bead_contrib;
 		bead_needed += stats.bead_needed;
 		spawn_two_ring += stats.spawn_two_ring_single_bead;
+		claims += stats.claims;
+		claim_own += stats.claim_own;
+		claim_opp += stats.claim_opp;
+		healed += stats.healed;
 		crescent_saves += stats.crescent_saves;
 		zs_bonuses += stats.zs_bonuses;
 		mm_depth_sum += stats.depth_sum;
@@ -957,6 +970,11 @@ fn run(cfg: BenchConfig) {
 	));
 	lines.push(format!(
 		"# bead_captures  contrib={bead_contrib} needed={bead_needed} spawn_two_ring_single_bead={spawn_two_ring}  of_total={captures}"
+	));
+	let avg_claims = if games_n == 0 { 0.0 } else { f64::from(claims) / f64::from(games_n) };
+	let avg_healed = if games_n == 0 { 0.0 } else { f64::from(healed) / f64::from(games_n) };
+	lines.push(format!(
+		"# claims  total={claims} avg_per_game={avg_claims:.2}  own={claim_own} opponent={claim_opp}  healed={healed} healed_avg_per_game={avg_healed:.2}"
 	));
 	let avg_moon = if games_n == 0 { 0.0 } else { f64::from(crescent_saves) / f64::from(games_n) };
 	let avg_zs = if games_n == 0 { 0.0 } else { f64::from(zs_bonuses) / f64::from(games_n) };
@@ -1113,6 +1131,9 @@ fn run(cfg: BenchConfig) {
 	);
 	println!(
 		"# bead_captures  contrib={bead_contrib} needed={bead_needed} spawn_two_ring_single_bead={spawn_two_ring}  of_total={captures}"
+	);
+	println!(
+		"# claims  total={claims} avg_per_game={avg_claims:.2}  own={claim_own} opponent={claim_opp}  healed={healed} healed_avg_per_game={avg_healed:.2}"
 	);
 	println!(
 		"# emblems  crescent_saves={crescent_saves} avg_per_game={avg_moon:.2}  zs_bonuses={zs_bonuses} avg_per_game={avg_zs:.2}"
@@ -1322,6 +1343,7 @@ fn push_branching(
 	lines.push("# kind     n_positions  avg    max".into());
 	lines.push(format!("ADD       {:<12} {:<6.2} {}", b.add_n, b.add_avg(), b.add_max));
 	lines.push(format!("MOVE      {:<12} {:<6.2} {}", b.move_n, b.move_avg(), b.move_max));
+	lines.push(format!("CLAIM     {:<12} {:<6.2} {}", b.claim_n, b.claim_avg(), b.claim_max));
 	lines.push(format!("ALL       {:<12} {:<6.2} {}", b.all_n, b.all_avg(), b.all_max));
 }
 
@@ -1438,6 +1460,10 @@ fn summarize_pairing(
 		stats.bead_contrib += result.bead_contrib;
 		stats.bead_needed += result.bead_needed;
 		stats.spawn_two_ring_single_bead += result.spawn_two_ring_single_bead;
+		stats.claims += result.claims;
+		stats.claim_own += result.claim_own;
+		stats.claim_opp += result.claim_opp;
+		stats.healed += result.healed;
 		stats.crescent_saves += result.crescent_saves;
 		stats.zs_bonuses += result.zs_bonuses;
 		match result.status {
@@ -1841,6 +1867,10 @@ struct PlayResult {
 	bead_contrib: u32,
 	bead_needed: u32,
 	spawn_two_ring_single_bead: u32,
+	claims: u32,
+	claim_own: u32,
+	claim_opp: u32,
+	healed: u32,
 	crescent_saves: u32,
 	zs_bonuses: u32,
 	record: Option<GameRecord>,
@@ -1950,6 +1980,10 @@ fn play_game(
 	let mut bead_contrib = 0u32;
 	let mut bead_needed = 0u32;
 	let mut spawn_two_ring_single_bead = 0u32;
+	let mut claims = 0u32;
+	let mut claim_own = 0u32;
+	let mut claim_opp = 0u32;
+	let mut healed = 0u32;
 	let mut crescent_saves = 0u32;
 	let mut zs_bonuses = 0u32;
 	let mut token_sum = 0u64;
@@ -2042,8 +2076,13 @@ fn play_game(
 					move_rings[t.n_rings.clamp(1, 3) as usize] += 1;
 				}
 			}
-			Action::Pass => {}
+			Action::Claim { .. } | Action::Pass => {}
 		}
+		let before_overwhelmed: Vec<(u8, u32)> = game
+			.tiles()
+			.filter(|(n, _)| game.is_overwhelmed(*n))
+			.map(|(n, t)| (n, t.id))
+			.collect();
 		match game.apply(action) {
 			Ok(outcome) => {
 				captures +=
@@ -2078,6 +2117,22 @@ fn play_game(
 					outcome.removals.iter().filter(|r| r.spawn_two_ring_single_bead).count() as u32;
 				crescent_saves += u32::from(outcome.emblem.crescent_saves);
 				zs_bonuses += u32::from(outcome.emblem.zs_bonuses);
+				if matches!(action, Action::Claim { .. }) {
+					claims += 1;
+					claim_own +=
+						outcome.removals.iter().filter(|r| r.tile.owner == outcome.player).count()
+							as u32;
+					claim_opp +=
+						outcome.removals.iter().filter(|r| r.tile.owner != outcome.player).count()
+							as u32;
+				}
+				let healed_now = before_overwhelmed
+					.iter()
+					.filter(|(n, id)| {
+						game.tile_at(*n).is_some_and(|t| t.id == *id) && !game.is_overwhelmed(*n)
+					})
+					.count() as u32;
+				healed += healed_now;
 				if keep_record {
 					record_lines.push(format!(
 						"{:>3}. {}   [mm_depth={} iters={} mcts_depth={:.2}/{}]",
@@ -2091,6 +2146,9 @@ fn play_game(
 				}
 				if let Some(log) = game_log.as_mut() {
 					log.push_action_with_search(action, piece, &outcome, &game, st);
+					if let Some(last) = log.actions.last_mut() {
+						last.healed = healed_now as u8;
+					}
 				}
 			}
 			Err(_) => {
@@ -2192,6 +2250,10 @@ fn play_game(
 		bead_contrib,
 		bead_needed,
 		spawn_two_ring_single_bead,
+		claims,
+		claim_own,
+		claim_opp,
+		healed,
 		crescent_saves,
 		zs_bonuses,
 		record,
@@ -2573,6 +2635,7 @@ mod tests {
 					|| line.starts_with("# center_captures")
 					|| line.starts_with("# capture_dest")
 					|| line.starts_with("# bead_captures")
+					|| line.starts_with("# claims")
 					|| line.starts_with("# emblems")
 					|| line.starts_with("# search_depth")
 					|| line.starts_with("# root_spread")

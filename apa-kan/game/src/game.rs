@@ -1810,6 +1810,48 @@ impl ChannelMode {
 	}
 }
 
+/// How overwhelmed tiles leave the board after an action.
+///
+/// CLI: `--capture-mode local-claim` (this branch's default) or
+/// `--capture-mode cascade` (PR #70 simultaneous full-board sweep).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum CaptureMode {
+	/// After ADD/MOVE, remove only the placed/moved tile (if self-overwhelmed)
+	/// and tiles on its immediate destination neighbors. Leftover overwhelmed
+	/// tiles stay on the board until healed or [`Action::Claim`]ed. Claim
+	/// itself does not cascade. CLI: `--capture-mode local-claim`.
+	#[default]
+	LocalClaim,
+	/// After ADD/MOVE, remove every currently overwhelmed tile (PR #70).
+	/// Claim is not a legal action. CLI: `--capture-mode cascade`.
+	Cascade,
+}
+
+impl CaptureMode {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"local-claim" | "local_claim" | "local" | "claim" => Ok(Self::LocalClaim),
+			"cascade" | "full" | "sweep" | "global" => Ok(Self::Cascade),
+			other => Err(format!("unknown capture-mode '{other}' (expected local-claim|cascade)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::LocalClaim => "local-claim",
+			Self::Cascade => "cascade",
+		}
+	}
+
+	pub fn is_local_claim(self) -> bool {
+		matches!(self, Self::LocalClaim)
+	}
+
+	pub fn allows_claim(self) -> bool {
+		self.is_local_claim()
+	}
+}
+
 /// Which independent channel won an edge's max match or max mismatch.
 /// Tie-break for HUD: match order normal → bead → braid; mismatch order
 /// normal → zag → bead → braid.
@@ -2187,9 +2229,10 @@ pub struct RuleSet {
 	/// Hopped tiles must have ring count >= the mover. Default true.
 	/// Ignored when [`Self::color_restricted_hops`] is on.
 	pub hop_requires_ge_weight: bool,
-	/// If the player to move has no legal ADD or MOVE, they lose immediately
-	/// instead of passing. Default true. Double-pass draws are disabled while
-	/// this is on (a pass is never legal).
+	/// If the player to move has no legal ADD, MOVE, or (under
+	/// [`CaptureMode::LocalClaim`]) CLAIM, they lose immediately instead of
+	/// passing. Default true. Double-pass draws are disabled while this is
+	/// on (a pass is never legal).
 	pub no_moves_loses: bool,
 	/// Win by occupying the center at the end of `center_hold_n` consecutive
 	/// own turns. Default false (optional; N = [`Self::center_hold_n`]).
@@ -2262,6 +2305,12 @@ pub struct RuleSet {
 	/// [`ChannelMode::IndependentMax`]. `--channel-mode additive` restores
 	/// RFC 001-001-002 additive stacking and 2–3 bead groups.
 	pub channel_mode: ChannelMode,
+	/// How overwhelmed tiles leave the board. Default
+	/// [`CaptureMode::LocalClaim`]: ADD/MOVE capture only the placed/moved
+	/// tile and its destination neighbors; leftover overwhelmed tiles stay
+	/// until healed or [`Action::Claim`]ed. `--capture-mode cascade`
+	/// restores PR #70's full-board simultaneous sweep.
+	pub capture_mode: CaptureMode,
 }
 
 impl Default for RuleSet {
@@ -2307,6 +2356,7 @@ impl Default for RuleSet {
 			braid_fail_mismatch: BraidFailMismatch::One,
 			bead_scoring: BeadScoring::SharedChannel,
 			channel_mode: ChannelMode::IndependentMax,
+			capture_mode: CaptureMode::LocalClaim,
 		}
 	}
 }
@@ -2328,8 +2378,20 @@ impl RuleSet {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
-	Add { bench_index: usize, node: NodeId },
-	Move { from: NodeId, to: NodeId },
+	Add {
+		bench_index: usize,
+		node: NodeId,
+	},
+	Move {
+		from: NodeId,
+		to: NodeId,
+	},
+	/// Remove one currently overwhelmed tile (own or opponent). Legal only
+	/// under [`CaptureMode::LocalClaim`]. Always awards a spawn token; does
+	/// not spend a token and does not cascade.
+	Claim {
+		node: NodeId,
+	},
 	Pass,
 }
 
@@ -3311,25 +3373,86 @@ impl Game {
 
 	pub fn collect_removals(&self) -> Vec<Removal> {
 		let mut out = Vec::new();
-		for (node, tile) in self.tiles() {
-			if !self.is_overwhelmed(node) {
-				continue;
-			}
-			if let Some((matches, mismatches)) = self.tile_score(node) {
-				out.push(Removal {
-					node,
-					tile,
-					matches,
-					mismatches,
-					dest: CaptureDest::Tokens,
-					bead_contrib: false,
-					bead_needed: false,
-					spawn_two_ring_single_bead: false,
-				});
+		for (node, _) in self.tiles() {
+			if let Some(rem) = self.removal_at(node) {
+				out.push(rem);
 			}
 		}
 		out.sort_by_key(|r| r.node);
 		out
+	}
+
+	fn removal_at(&self, node: NodeId) -> Option<Removal> {
+		if !self.is_overwhelmed(node) {
+			return None;
+		}
+		let tile = self.tile_at(node)?;
+		let (matches, mismatches) = self.tile_score(node)?;
+		Some(Removal {
+			node,
+			tile,
+			matches,
+			mismatches,
+			dest: CaptureDest::Tokens,
+			bead_contrib: false,
+			bead_needed: false,
+			spawn_two_ring_single_bead: false,
+		})
+	}
+
+	/// Overwhelmed tiles on `focus` and its unique adjacent nodes.
+	pub fn collect_local_removals(&self, focus: NodeId) -> Vec<Removal> {
+		let mut nodes = Vec::with_capacity(8);
+		nodes.push(focus);
+		nodes.extend(self.board.neighbors(focus).iter().copied());
+		nodes.sort_unstable();
+		nodes.dedup();
+		let mut out = Vec::new();
+		for node in nodes {
+			if let Some(rem) = self.removal_at(node) {
+				out.push(rem);
+			}
+		}
+		out
+	}
+
+	/// Removals that this action actually applies. Cascade sweeps the whole
+	/// board; local-claim keeps only the destination (or claimed node) and,
+	/// for ADD/MOVE, that node's immediate neighbors. Claim never cascades.
+	pub fn collect_captures_for(&self, action: Action) -> Vec<Removal> {
+		match action {
+			Action::Pass => Vec::new(),
+			Action::Claim { node } => self.claim_removal(node).into_iter().collect(),
+			Action::Add { node, .. } | Action::Move { to: node, .. } => {
+				match self.rules.capture_mode {
+					CaptureMode::Cascade => self.collect_removals(),
+					CaptureMode::LocalClaim => self.collect_local_removals(node),
+				}
+			}
+		}
+	}
+
+	fn claim_removal(&self, node: NodeId) -> Option<Removal> {
+		let tile = self.tile_at(node)?;
+		let (matches, mismatches) = self.tile_score(node).unwrap_or((i32::from(tile.weight), 0));
+		Some(Removal {
+			node,
+			tile,
+			matches,
+			mismatches,
+			dest: CaptureDest::Tokens,
+			bead_contrib: false,
+			bead_needed: false,
+			spawn_two_ring_single_bead: false,
+		})
+	}
+
+	/// Nodes that currently host an overwhelmed tile.
+	pub fn overwhelmed_nodes(&self) -> Vec<NodeId> {
+		self.tiles()
+			.filter(|(node, _)| self.is_overwhelmed(*node))
+			.map(|(node, _)| node)
+			.collect()
 	}
 
 	/// Crescent saves and Two Zag Zs bonuses on the live board.
@@ -3356,8 +3479,24 @@ impl Game {
 		let mut acts = Vec::new();
 		acts.extend(self.legal_adds());
 		acts.extend(self.legal_moves());
+		acts.extend(self.legal_claims());
 		if acts.is_empty() && !self.rules.no_moves_loses {
 			acts.push(Action::Pass);
+		}
+		acts
+	}
+
+	/// Claim any one currently overwhelmed tile. Own and opponent tiles are
+	/// both legal. Empty under [`CaptureMode::Cascade`].
+	pub fn legal_claims(&self) -> Vec<Action> {
+		if self.status.is_over() || !self.rules.capture_mode.allows_claim() {
+			return Vec::new();
+		}
+		let mut acts = Vec::new();
+		for (node, _) in self.tiles() {
+			if self.is_overwhelmed(node) {
+				acts.push(Action::Claim { node });
+			}
 		}
 		acts
 	}
@@ -3478,11 +3617,16 @@ impl Game {
 		preview.tiles[from as usize] = None;
 		preview.tiles[to as usize] = Some(tile);
 		let opponent = tile.owner.other();
-		preview.collect_removals().iter().any(|r| r.tile.owner == opponent)
+		preview
+			.collect_captures_for(Action::Move { from, to })
+			.iter()
+			.any(|r| r.tile.owner == opponent)
 	}
 
 	pub fn has_add_or_move(&self) -> bool {
-		!self.legal_adds().is_empty() || !self.legal_moves().is_empty()
+		!self.legal_adds().is_empty()
+			|| !self.legal_moves().is_empty()
+			|| !self.legal_claims().is_empty()
 	}
 
 	/// Destinations that are legal for the tile at `from` under path rules
@@ -3699,9 +3843,10 @@ impl Game {
 		match action {
 			Action::Add { bench_index, node } => self.apply_add(bench_index, node)?,
 			Action::Move { from, to } => self.apply_move(from, to)?,
+			Action::Claim { node } => self.apply_claim(node)?,
 			Action::Pass => {
 				if self.has_add_or_move() {
-					return Err("pass is only legal when no ADD or MOVE exists".into());
+					return Err("pass is only legal when no ADD, MOVE, or CLAIM exists".into());
 				}
 				if self.rules.no_moves_loses {
 					self.status =
@@ -3716,12 +3861,15 @@ impl Game {
 			self.consecutive_passes = 0;
 		}
 
-		let dest = self.acting_capture(action).dest();
+		let dest = match action {
+			Action::Claim { .. } => CaptureDest::Tokens,
+			_ => self.acting_capture(action).dest(),
+		};
 		let just_added = match action {
 			Action::Add { node, .. } => Some(node),
 			_ => None,
 		};
-		let mut removals = self.collect_removals();
+		let mut removals = self.collect_captures_for(action);
 		let emblem = self.emblem_triggers();
 		for rem in &mut removals {
 			rem.dest = dest;
@@ -3743,10 +3891,11 @@ impl Game {
 					self.benches[player.index()].push(tile);
 				}
 				CaptureDest::Tokens => {
-					// Opponent tiles always earn +1. Own-tile removals
-					// (self-capture via simultaneous overwhelm) earn +1
-					// only when `self_capture_budget` is on (default).
-					if rem.tile.owner != player || self.rules.self_capture_budget {
+					// Claim always awards a spawn token, even for the
+					// mover's own tile and even when `self_capture_budget`
+					// is off. ADD/MOVE self-captures still honor that flag.
+					let award_claim = matches!(action, Action::Claim { .. });
+					if award_claim || rem.tile.owner != player || self.rules.self_capture_budget {
 						self.earn_budget(player, rem.tile);
 					}
 				}
@@ -4010,9 +4159,20 @@ impl Game {
 	fn acting_capture(&self, action: Action) -> CaptureMark {
 		let node = match action {
 			Action::Add { node, .. } | Action::Move { to: node, .. } => node,
-			Action::Pass => return CaptureMark::Triangle,
+			Action::Claim { .. } | Action::Pass => return CaptureMark::Triangle,
 		};
 		self.tile_at(node).map(|t| t.capture).unwrap_or(CaptureMark::Triangle)
+	}
+
+	fn apply_claim(&self, node: NodeId) -> Result<(), String> {
+		if !self.rules.capture_mode.allows_claim() {
+			return Err("CLAIM is only legal under local-claim capture mode".into());
+		}
+		let _tile = self.tile_at(node).ok_or_else(|| "no tile to claim".to_string())?;
+		if !self.is_overwhelmed(node) {
+			return Err("can only claim an overwhelmed tile".into());
+		}
+		Ok(())
 	}
 
 	fn apply_add(&mut self, bench_index: usize, node: NodeId) -> Result<(), String> {
@@ -4186,6 +4346,7 @@ fn format_log(
 			format!("ADD bench[{bench_index}] to {}{}", node_tag(board, node), node)
 		}
 		Action::Move { from, to } => format!("MOVE {} -> {}", from, to),
+		Action::Claim { node } => format!("CLAIM {}{}", node_tag(board, node), node),
 		Action::Pass => "PASS".to_string(),
 	};
 	let mut line = format!("{} ({}) {}", player.label(), player.shade(), act);
@@ -4425,6 +4586,7 @@ mod tests {
 		assert_eq!(rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
 		assert_eq!(rules.braid_fail_mismatch, BraidFailMismatch::One);
+		assert_eq!(rules.capture_mode, CaptureMode::LocalClaim);
 		assert_eq!(rules.bead_scoring, BeadScoring::SharedChannel);
 		assert_eq!(rules.channel_mode, ChannelMode::IndependentMax);
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
@@ -4530,7 +4692,9 @@ mod tests {
 
 	#[test]
 	fn simultaneous_removal_logs_owner_node_and_counts() {
-		let mut game = Game::empty(RuleSet::additive());
+		let mut rules = RuleSet::additive();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
 		let s0 = game.board().spawns()[0];
 		let s1 = game.board().spawns()[1];
 		let n0 = game.board().neighbors(s0).to_vec();
@@ -5728,6 +5892,32 @@ mod tests {
 			baseline.status(),
 			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
 		);
+	}
+
+	#[test]
+	fn control_cascade_claim_of_leftover_lowers_live_target() {
+		let mut game = Game::empty(cascade_rules());
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		let (dest, _mid, far, _, _) = local_claim_leftover_fixture(&mut game);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(game.tile_at(far).is_some(), "leftover occupies the board");
+		assert_eq!(game.tile_at(far).unwrap().owner, Player::Two);
+		pin_material(&mut game, Player::One, 4);
+		pin_material(&mut game, Player::Two, 5);
+		assert_eq!(game.max_material(), 5);
+		assert_eq!(game.control_need(), 5);
+		game.set_current(Player::One);
+		game.apply(Action::Claim { node: far }).unwrap();
+		assert!(game.tile_at(far).is_none());
+		assert_eq!(game.total_material(Player::Two), 4, "leftover no longer counts");
+		assert_eq!(
+			game.total_material(Player::One),
+			4,
+			"claim token is unusable without extra bench"
+		);
+		assert_eq!(game.max_material(), 4);
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.cascade_control_target(), Some(4));
 	}
 
 	#[test]
@@ -7445,9 +7635,11 @@ mod tests {
 	#[test]
 	fn self_capture_on_own_turn_earns_budget() {
 		// Overwhelm already removes own tiles. A MOVE that leaves an existing
-		// own tile overwhelmed is a self-capture; it must earn +1 without a
-		// new capture rule.
-		let mut game = Game::empty(RuleSet::additive());
+		// own tile overwhelmed is a self-capture under cascade sweep; it must
+		// earn +1 without a new capture rule.
+		let mut rules = RuleSet::additive();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
@@ -7531,6 +7723,8 @@ mod tests {
 	fn self_capture_rules(refund: bool) -> RuleSet {
 		let mut rules = RuleSet::default();
 		rules.self_capture_budget = refund;
+		// Distant MOVE sweeping a pre-overwhelmed own tile is cascade behavior.
+		rules.capture_mode = CaptureMode::Cascade;
 		rules
 	}
 
@@ -9499,7 +9693,9 @@ mod tests {
 
 	#[test]
 	fn dealt_dot_capture_puts_own_and_opponent_in_mover_hand() {
-		let mut game = Game::new(RuleSet::default(), 1);
+		let mut rules = RuleSet::default();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::new(rules, 1);
 		let spawn = game.board().spawns()[0];
 		overwhelm_neighbors(&mut game, spawn, Player::Two);
 		let own = take(&mut game, Player::One, TileColor::Green, 1, 1);
@@ -9606,7 +9802,9 @@ mod tests {
 
 	#[test]
 	fn dot_self_capture_joins_mover_bench() {
-		let mut game = Game::empty(RuleSet::additive());
+		let mut rules = RuleSet::additive();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
 		let spawn = game.board().spawns()[0];
 		overwhelm_neighbors(&mut game, spawn, Player::Two);
 		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
@@ -9634,7 +9832,9 @@ mod tests {
 
 	#[test]
 	fn mixed_multi_capture_shares_one_destination() {
-		let mut game = Game::empty(RuleSet::additive());
+		let mut rules = RuleSet::additive();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		overwhelm_neighbors(&mut game, spawn, Player::Two);
@@ -10005,5 +10205,330 @@ mod tests {
 		assert_eq!(one.cost(), TILE_COST_MIN);
 		assert_eq!(TILE_COST_MIN, 0, "existing u8 cost cannot go below 0");
 		assert_eq!(one.weight, 1, "overwhelm weight is unchanged at the floor");
+	}
+
+	/// How many generating-circle petals join `a` and `b`. Inner↔center is 2.
+	fn arc_multiplicity(game: &Game, a: NodeId, b: NodeId) -> usize {
+		game.board().incident_others(a).filter(|&n| n == b).count()
+	}
+
+	/// 2-hop spawn chain that avoids the origin. Center petals score twice, so
+	/// a matching inner↔center edge cancels two mismatch neighbors and the
+	/// leftover overwhelm never appears under independent-max.
+	///
+	/// `extra_mid` may touch `dest` (the ADD still only mismatches `mid`) but
+	/// must not touch `far`, or `far` is leftover-overwhelmed before the ADD.
+	fn two_hop_chain(game: &Game) -> (NodeId, NodeId, NodeId, NodeId, NodeId) {
+		let center = game.board().center();
+		for &dest in game.board().spawns() {
+			if dest == center {
+				continue;
+			}
+			for &mid in game.board().neighbors(dest) {
+				if mid == center || arc_multiplicity(game, dest, mid) != 1 {
+					continue;
+				}
+				for &far in game.board().neighbors(mid) {
+					if far == dest
+						|| far == center || game.board().neighbors(dest).contains(&far)
+						|| arc_multiplicity(game, mid, far) != 1
+					{
+						continue;
+					}
+					let extra_mid = game.board().neighbors(mid).iter().copied().find(|&n| {
+						n != dest
+							&& n != far && n != center
+							&& !game.board().neighbors(far).contains(&n)
+							&& arc_multiplicity(game, mid, n) == 1
+					});
+					let far_extra = game.board().neighbors(far).iter().copied().find(|&n| {
+						n != mid
+							&& n != dest && n != center
+							&& !game.board().neighbors(dest).contains(&n)
+							&& !game.board().neighbors(mid).contains(&n)
+							&& arc_multiplicity(game, far, n) == 1
+					});
+					if let (Some(extra_mid), Some(far_extra)) = (extra_mid, far_extra) {
+						return (dest, mid, far, extra_mid, far_extra);
+					}
+				}
+			}
+		}
+		panic!("rosette has a 2-hop spawn chain with disjoint extras");
+	}
+
+	fn local_claim_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules
+	}
+
+	/// Dest ADD captures the adjacent mid tile; the 2-hop far tile becomes
+	/// overwhelmed and stays on the board under local-claim.
+	fn local_claim_leftover_fixture(game: &mut Game) -> (NodeId, NodeId, NodeId, NodeId, NodeId) {
+		let (dest, mid, far, extra_mid, far_extra) = two_hop_chain(game);
+		put(game, extra_mid, Player::One, TileColor::Orange, 1, 1);
+		put(game, far, Player::Two, TileColor::Green, 1, 1);
+		put_rings(
+			game,
+			far_extra,
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			2,
+		);
+		put(game, mid, Player::Two, TileColor::Green, 1, 1);
+		let incoming = game.alloc_rings(
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			3,
+			1,
+		);
+		let mut p1_bench = vec![incoming];
+		for _ in 0..5 {
+			p1_bench.push(take(game, Player::One, TileColor::Blue, 1, 1));
+		}
+		game.set_bench(Player::One, p1_bench);
+		stock_bench(game, Player::Two, 5);
+		game.set_current(Player::One);
+		(dest, mid, far, far_extra, extra_mid)
+	}
+
+	#[test]
+	fn local_add_captures_neighbor_and_leaves_two_hop_overwhelmed() {
+		let mut game = Game::empty(local_claim_rules());
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		let (dest, mid, far, _, _) = local_claim_leftover_fixture(&mut game);
+		assert!(!game.is_overwhelmed(mid), "mid still has the far match");
+		assert!(!game.is_overwhelmed(far), "far still has the mid match");
+		let outcome = game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.node == mid && r.tile.owner == Player::Two),
+			"immediate neighbor must be captured: {:?}",
+			outcome.removals
+		);
+		assert!(
+			outcome
+				.removals
+				.iter()
+				.all(|r| { r.node == dest || game.board().neighbors(dest).contains(&r.node) }),
+			"only dest and its neighbors: {:?}",
+			outcome.removals
+		);
+		assert!(game.tile_at(mid).is_none());
+		assert!(game.tile_at(far).is_some(), "2-hop tile stays on the board");
+		assert!(game.is_overwhelmed(far), "2-hop tile is leftover overwhelmed");
+		assert!(game.legal_claims().contains(&Action::Claim { node: far }));
+	}
+
+	#[test]
+	fn claim_opponent_overwhelmed_tile_awards_a_spawn_token() {
+		let mut game = Game::empty(local_claim_rules());
+		let (dest, _mid, far, _, _) = local_claim_leftover_fixture(&mut game);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let victim = game.tile_at(far).expect("leftover opponent tile");
+		assert_eq!(victim.owner, Player::Two);
+		let outcome = game.apply(Action::Claim { node: far }).unwrap();
+		assert_eq!(outcome.removals.len(), 1);
+		assert_eq!(outcome.removals[0].node, far);
+		assert_eq!(outcome.removals[0].tile.owner, Player::Two);
+		assert_eq!(outcome.removals[0].dest, CaptureDest::Tokens);
+		assert!(game.tile_at(far).is_none(), "claimed tile is out of play");
+		assert_eq!(game.budget_token_count(Player::One), tokens + 1);
+		assert!(matches!(game.budget_tokens(Player::One).last(), Some(BudgetToken::Captured(_))));
+	}
+
+	#[test]
+	fn claim_own_overwhelmed_tile_awards_a_spawn_token() {
+		let mut rules = RuleSet::default();
+		rules.self_capture_budget = false;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
+		put_rings(
+			&mut game,
+			nbs[0],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put_rings(
+			&mut game,
+			nbs[1],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		assert!(game.is_overwhelmed(spawn));
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let outcome = game.apply(Action::Claim { node: spawn }).unwrap();
+		assert_eq!(outcome.removals.len(), 1);
+		assert_eq!(outcome.removals[0].tile.owner, Player::One);
+		assert_eq!(outcome.removals[0].dest, CaptureDest::Tokens);
+		assert!(game.tile_at(spawn).is_none());
+		assert_eq!(
+			game.budget_token_count(Player::One),
+			tokens + 1,
+			"Claim awards a spawn token even with self_capture_budget off"
+		);
+	}
+
+	#[test]
+	fn claim_does_not_cascade_newly_overwhelmed_neighbors() {
+		let mut game = Game::empty(local_claim_rules());
+		let center = game.board().center();
+		let (claimed, support, pressure, heavy_a, heavy_b) = 'found: {
+			for &claimed in game.board().spawns() {
+				if claimed == center {
+					continue;
+				}
+				let nbs = game.board().neighbors(claimed).to_vec();
+				if nbs.len() < 3 {
+					continue;
+				}
+				for i in 0..nbs.len() {
+					for j in (i + 1)..nbs.len() {
+						let heavy_a = nbs[i];
+						let heavy_b = nbs[j];
+						if heavy_a == center
+							|| heavy_b == center || game
+							.board()
+							.neighbors(heavy_a)
+							.contains(&heavy_b)
+						{
+							continue;
+						}
+						for &support in &nbs {
+							if support == heavy_a
+								|| support == heavy_b || support == center
+								|| game.board().neighbors(heavy_a).contains(&support)
+								|| game.board().neighbors(heavy_b).contains(&support)
+								|| arc_multiplicity(&game, claimed, support) != 1
+							{
+								continue;
+							}
+							if let Some(pressure) =
+								game.board().neighbors(support).iter().copied().find(|&p| {
+									p != claimed
+										&& p != center && p != heavy_a && p != heavy_b
+										&& !game.board().neighbors(claimed).contains(&p)
+										&& !game.board().neighbors(heavy_a).contains(&p)
+										&& !game.board().neighbors(heavy_b).contains(&p)
+										&& arc_multiplicity(&game, support, p) == 1
+								}) {
+								break 'found (claimed, support, pressure, heavy_a, heavy_b);
+							}
+						}
+					}
+				}
+			}
+			panic!("rosette has an isolated claim-no-cascade chain");
+		};
+		put_rings(
+			&mut game,
+			heavy_a,
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put_rings(
+			&mut game,
+			heavy_b,
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put(&mut game, claimed, Player::Two, TileColor::Green, 1, 1);
+		put(&mut game, pressure, Player::One, TileColor::Orange, 1, 1);
+		put(&mut game, support, Player::Two, TileColor::Green, 1, 1);
+		assert!(game.is_overwhelmed(claimed));
+		assert!(!game.is_overwhelmed(support), "support still has the claimed match");
+		game.set_current(Player::One);
+		let outcome = game.apply(Action::Claim { node: claimed }).unwrap();
+		assert_eq!(outcome.removals.len(), 1);
+		assert_eq!(outcome.removals[0].node, claimed);
+		assert!(game.tile_at(support).is_some(), "Claim does not cascade");
+		assert!(game.is_overwhelmed(support), "support is leftover overwhelmed");
+	}
+
+	#[test]
+	fn overwhelmed_tile_can_be_healed_before_claim() {
+		let mut game = Game::empty(local_claim_rules());
+		let (dest, _mid, far, far_extra, _) = local_claim_leftover_fixture(&mut game);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(game.is_overwhelmed(far));
+		let land = *game
+			.destinations(far_extra)
+			.iter()
+			.find(|&&n| n != far && !game.board().neighbors(far).contains(&n))
+			.expect("orange can step off the leftover");
+		game.set_current(Player::One);
+		let outcome = game.apply(Action::Move { from: far_extra, to: land }).unwrap();
+		assert!(
+			outcome.removals.iter().all(|r| r.node != far),
+			"healed far must not be captured: {:?}",
+			outcome.removals
+		);
+		assert!(game.tile_at(far).is_some());
+		assert!(!game.is_overwhelmed(far), "removing the mismatch neighbor heals the leftover");
+		assert!(game.apply(Action::Claim { node: far }).is_err());
+		assert!(!game.legal_claims().contains(&Action::Claim { node: far }));
+	}
+
+	#[test]
+	fn claim_prevents_locked_out() {
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		let mut game = Game::empty(rules);
+		fill_board_all_green(&mut game);
+		let spawn = game.board().spawns()[0];
+		game.clear_tile(spawn);
+		put(&mut game, spawn, Player::Two, TileColor::Orange, 1, 1);
+		assert!(game.is_overwhelmed(spawn));
+		game.set_bench(Player::One, vec![]);
+		game.set_bench(Player::Two, vec![]);
+		game.set_current(Player::One);
+		assert!(game.legal_adds().is_empty());
+		assert!(game.legal_moves().is_empty(), "board is full");
+		assert!(game.legal_claims().contains(&Action::Claim { node: spawn }));
+		assert!(game.has_add_or_move(), "Claim counts as a legal action");
+		assert_eq!(game.status(), GameStatus::InProgress);
+		game.apply(Action::Claim { node: spawn }).unwrap();
+		assert_ne!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::LockedOut }
+		);
+	}
+
+	#[test]
+	fn cascade_mode_sweeps_leftover_overwhelmed_on_the_next_action() {
+		let mut rules = local_claim_rules();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
+		let (dest, mid, far, _, _) = local_claim_leftover_fixture(&mut game);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(game.tile_at(mid).is_none());
+		assert!(game.tile_at(far).is_some(), "simultaneous snapshot leaves the 2-hop tile");
+		assert!(game.is_overwhelmed(far));
+		assert!(game.legal_claims().is_empty(), "Claim is cascade-illegal");
+		let spawn = *game
+			.board()
+			.spawns()
+			.iter()
+			.find(|&&s| game.tile_at(s).is_none() && !game.board().neighbors(far).contains(&s))
+			.expect("empty spawn away from far");
+		let filler = take(&mut game, Player::One, TileColor::Blue, 3, 1);
+		game.set_bench(Player::One, vec![filler]);
+		game.set_current(Player::One);
+		let outcome = game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.node == far),
+			"cascade sweeps the leftover on the next action: {:?}",
+			outcome.removals
+		);
+		assert!(game.tile_at(far).is_none());
 	}
 }

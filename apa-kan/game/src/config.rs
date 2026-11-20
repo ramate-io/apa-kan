@@ -8,8 +8,8 @@ use std::time::Duration;
 use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	BeadScoring, BlockerBlocks, BraidFailMismatch, ChannelMode, EmblemWeights, EndgameRule,
-	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
+	BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode, EmblemWeights,
+	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
 	SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
@@ -370,6 +370,9 @@ where
 		"--channel-mode" => {
 			rules.channel_mode = ChannelMode::parse(&require_value(arg, it.next())?)?;
 		}
+		"--capture-mode" => {
+			rules.capture_mode = CaptureMode::parse(&require_value(arg, it.next())?)?;
+		}
 		"--dot-chance" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n > 100 {
@@ -444,7 +447,7 @@ pub fn usage() -> &'static str {
 	   --from-start                               With --screenshot, capture the opening deal\n\
 	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
 	   --list-scenarios                           Print builtin deck scenarios\n\
-	   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)\n\
+	   --no-moves-loses <on|off>                  No ADD/MOVE/CLAIM loses (default: on)\n\
 	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
 	   --no-same-piece-twice <off|always|when-deck-empty>\n\
@@ -473,6 +476,7 @@ pub fn usage() -> &'static str {
 	   --bead-chance <0..7>                       Additive: 2–3 bead group k/7. Independent-max: bead light weight (default: 1)\n\
 	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (ignored by independent-max)\n\
 	   --channel-mode <independent-max|additive>  Edge combine + generation (default: independent-max)\n\
+	   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim; cascade = PR #70)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
 	                                              Emblem generation weights (default: 200,1,1,1,1)\n\
@@ -675,6 +679,7 @@ mod tests {
 		assert_eq!(cfg.rules.bead_numer, 1);
 		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
 		assert_eq!(cfg.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		assert_eq!(cfg.rules.capture_mode, crate::game::CaptureMode::LocalClaim);
 		assert_eq!(cfg.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.setup.p2_deck, crate::deck::DeckArchetype::Mixed);
 		assert_eq!(cfg.rules.dot_percent, crate::game::DOT_PERCENT_DEFAULT);
@@ -807,6 +812,18 @@ mod tests {
 		assert_eq!(legacy.rules.channel_mode, crate::game::ChannelMode::Additive);
 		let err = GameConfig::parse(["--channel-mode", "average"]).unwrap_err();
 		assert!(err.contains("channel-mode"));
+	}
+
+	#[test]
+	fn parses_capture_mode() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.capture_mode, crate::game::CaptureMode::LocalClaim);
+		let local = GameConfig::parse(["--capture-mode", "local-claim"]).unwrap();
+		assert_eq!(local.rules.capture_mode, crate::game::CaptureMode::LocalClaim);
+		let cascade = GameConfig::parse(["--capture-mode", "cascade"]).unwrap();
+		assert_eq!(cascade.rules.capture_mode, crate::game::CaptureMode::Cascade);
+		let err = GameConfig::parse(["--capture-mode", "explode"]).unwrap_err();
+		assert!(err.contains("capture-mode"));
 	}
 
 	#[test]

@@ -712,6 +712,10 @@ fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
 			_ => {}
 		}
 		if let Some(tile) = play.game.tile_at(node) {
+			if play.game.rules().capture_mode.allows_claim() && play.game.is_overwhelmed(node) {
+				apply_action(play, Action::Claim { node });
+				return;
+			}
 			if tile.owner == current {
 				play.selection = Selection::Piece(node);
 				play.warning.clear();
@@ -1019,6 +1023,8 @@ fn refresh_view(
 
 	for id in 0..board.node_count() as NodeId {
 		if let Some(tile) = play.game.tile_at(id) {
+			let claimable =
+				play.game.rules().capture_mode.allows_claim() && play.game.is_overwhelmed(id);
 			spawn_tile_at(
 				&mut commands,
 				&mut meshes,
@@ -1029,6 +1035,14 @@ fn refresh_view(
 				false,
 				layout.tile_radius,
 			);
+			if claimable {
+				spawn_label(
+					&mut commands,
+					world_v(layout, board.position(id))
+						+ Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
+					"CLAIM",
+				);
+			}
 		} else if board.is_spawn(id) && matches!(play.selection, Selection::Bench(_)) {
 			spawn_label(
 				&mut commands,
