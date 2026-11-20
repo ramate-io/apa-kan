@@ -1,6 +1,6 @@
 //! Heuristic evaluation. Positive is good for `me`.
 
-use crate::game::{Game, GameStatus, LowValueResolution, Player};
+use crate::game::{EndgameRule, Game, GameStatus, Player};
 
 pub const WIN: i32 = 50_000;
 
@@ -12,7 +12,7 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 			} else if game.low_value_applies() {
 				// `finish_turn` already records this; search also sees constructed
 				// leaves where both sides' possible-on-board counts are below 5.
-				Some(low_value_terminal(game, me))
+				Some(endgame_terminal(game, me))
 			} else {
 				None
 			}
@@ -25,8 +25,8 @@ pub fn terminal_score(game: &Game, me: Player) -> Option<i32> {
 				Some(-WIN + ply)
 			}
 		}
-		// Turn-limit and low-value (equal-count full tie) draws are 0 so a
-		// side that is ahead will not turtle into the 200-turn cap.
+		// Turn-limit, low-value, and material-value (full-tie) draws are 0
+		// so a side that is ahead will not turtle into the 200-turn cap.
 		GameStatus::Draw { .. } => Some(0),
 	}
 }
@@ -40,17 +40,21 @@ fn lockout_terminal(game: &Game, me: Player) -> i32 {
 	}
 }
 
-fn low_value_terminal(game: &Game, me: Player) -> i32 {
+fn endgame_terminal(game: &Game, me: Player) -> i32 {
 	let ply = game.turn_count() as i32;
-	match game.low_value_resolution() {
-		LowValueResolution::Draw => 0,
-		LowValueResolution::Win { winner, .. } => {
-			if winner == me {
-				WIN - ply
-			} else {
-				-WIN + ply
-			}
+	match game.rules().endgame_rule {
+		EndgameRule::LowValue => signed_terminal(game.low_value_resolution().winner(), me, ply),
+		EndgameRule::MaterialValue => {
+			signed_terminal(game.material_value_resolution().winner(), me, ply)
 		}
+	}
+}
+
+fn signed_terminal(winner: Option<Player>, me: Player, ply: i32) -> i32 {
+	match winner {
+		None => 0,
+		Some(w) if w == me => WIN - ply,
+		Some(_) => -WIN + ply,
 	}
 }
 
@@ -690,12 +694,13 @@ mod tests {
 
 	#[test]
 	fn pending_low_value_is_a_search_terminal() {
-		use crate::game::{BudgetToken, TileColor};
+		use crate::game::{BudgetToken, EndgameRule, TileColor};
 
 		let mut rules = RuleSet::default();
 		rules.control_win = false;
 		rules.center_hold_win = false;
 		rules.petal_majority_win = false;
+		rules.endgame_rule = EndgameRule::LowValue;
 		let mut game = Game::empty(rules);
 		let p1_node = game.board().spawns()[0];
 		let p2_node = game.board().spawns()[4];
@@ -721,12 +726,13 @@ mod tests {
 
 	#[test]
 	fn low_value_pair_and_piece_count_terminals_match_status() {
-		use crate::game::TileColor;
+		use crate::game::{EndgameRule, TileColor};
 
 		let mut rules = RuleSet::default();
 		rules.control_win = false;
 		rules.center_hold_win = false;
 		rules.petal_majority_win = false;
+		rules.endgame_rule = EndgameRule::LowValue;
 
 		let place = |game: &mut Game, spawn_idx: usize, player: Player, dots: u8| {
 			let spawn = game.board().spawns()[spawn_idx];
@@ -764,6 +770,45 @@ mod tests {
 		let count_p1 = terminal_score(&count, Player::One).unwrap();
 		assert!(count_p1 > WIN / 2);
 		assert_eq!(terminal_score(&count, Player::Two), Some(-count_p1));
+	}
+
+	#[test]
+	fn pending_material_value_prefers_total_material_over_a_lower_piece() {
+		use crate::game::{BudgetToken, EndgameRule, MaterialValueTier, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.endgame_rule = EndgameRule::MaterialValue;
+		let mut game = Game::empty(rules);
+		let p1_node = game.board().spawns()[0];
+		let p2_node = game.board().spawns()[4];
+		let p1 = game.alloc_tile(Player::One, TileColor::Green, 1, 3);
+		let p2 = game.alloc_tile(Player::Two, TileColor::Orange, 1, 1);
+		let p1_a = game.alloc_tile(Player::One, TileColor::Blue, 1, 1);
+		let p1_b = game.alloc_tile(Player::One, TileColor::Orange, 1, 1);
+		game.place_tile(p1_node, p1);
+		game.place_tile(p2_node, p2);
+		game.set_bench(Player::One, vec![p1_a, p1_b]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 2]);
+		game.set_bench(Player::Two, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert!(game.low_value_applies());
+		assert_eq!(game.material_value_resolution().tier(), Some(MaterialValueTier::TotalMaterial));
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s > WIN / 2, "P1's extra usable budget should be a near-mate, got {s}");
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+		assert_eq!(terminal_score(&game, Player::One), Some(WIN));
+	}
+
+	#[test]
+	fn material_value_draw_scores_zero() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Draw { reason: EndReason::MaterialValue });
+		assert_eq!(evaluate(&game, Player::One, 0), 0);
+		assert_eq!(terminal_score(&game, Player::Two), Some(0));
 	}
 
 	#[test]

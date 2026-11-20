@@ -9,7 +9,7 @@ use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode, EmblemWeights,
-	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
+	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
 	SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
@@ -304,6 +304,9 @@ where
 			rules.insufficient_tiles_loss =
 				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
 		}
+		"--endgame-rule" => {
+			rules.endgame_rule = EndgameRule::parse(&require_value(arg, it.next())?)?;
+		}
 		"--starting-bench" | "--starting-tokens" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n == 0 || n > BAG_SIZE as u64 {
@@ -461,6 +464,7 @@ pub fn usage() -> &'static str {
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
+	   --endgame-rule <material-value|low-value>  Both-below-5 comparison (default: material-value)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
 	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
 	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
@@ -638,6 +642,18 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_endgame_rule() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.endgame_rule, crate::game::EndgameRule::MaterialValue);
+		let mv = GameConfig::parse(["--endgame-rule", "material-value"]).unwrap();
+		assert_eq!(mv.rules.endgame_rule, crate::game::EndgameRule::MaterialValue);
+		let lv = GameConfig::parse(["--endgame-rule", "low-value"]).unwrap();
+		assert_eq!(lv.rules.endgame_rule, crate::game::EndgameRule::LowValue);
+		let err = GameConfig::parse(["--endgame-rule", "control"]).unwrap_err();
+		assert!(err.contains("endgame-rule"));
+	}
+
+	#[test]
 	fn stall_rule_defaults_match_ruleset() {
 		let cfg = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(cfg.rules, RuleSet::default());
@@ -653,6 +669,7 @@ mod tests {
 		assert_eq!(cfg.rules.control_n, 5);
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
+		assert_eq!(cfg.rules.endgame_rule, crate::game::EndgameRule::MaterialValue);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);
 		assert_eq!(cfg.rules.deck_size, DECK_SIZE_DEFAULT as u8);
