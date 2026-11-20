@@ -8,9 +8,8 @@ directory.
 
 PR #74's committed [`control_cascade/h2h_shallow.txt`](../control_cascade/h2h_shallow.txt)
 is the previous **live-target** log (`max_mat.min(5)`), not a re-run of the
-ratchet. A later commit on that PR added a separate ratchet re-run
-(`h2h_shallow_ratchet.txt` at `e725097`); this branch is stacked on
-`605267f` and does not include that file.
+ratchet. The ratchet re-run is [`control_cascade/h2h_shallow_ratchet.txt`](../control_cascade/h2h_shallow_ratchet.txt)
+(brought in by forward-merging `e725097`).
 
 ## Package
 
