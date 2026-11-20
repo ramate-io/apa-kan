@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
 	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
-	CaptureMode, ChannelMode, Emblem, EmblemWeights, EndReason, Game, GameStatus, HopWeightCmp,
-	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player,
-	RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	CaptureMode, ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
+	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
+	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
+	DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -323,6 +324,10 @@ pub struct RulesLog {
 	pub control_win: bool,
 	pub control_n: u8,
 	pub control_hold_turns: u8,
+	/// `control-cascade` (live default) or `low-value` (baseline fixed-5).
+	/// Absent on older logs; replay uses `low-value`, which matches those ends.
+	#[serde(default = "default_low_value_endgame")]
+	pub endgame_rule: String,
 	pub insufficient_tiles_loss: String,
 	pub path_constraint: String,
 	pub counted_pass_through: bool,
@@ -377,6 +382,14 @@ pub struct RulesLog {
 	pub blocker_blocks: String,
 }
 
+fn default_low_value_endgame() -> String {
+	EndgameRule::LowValue.name().to_string()
+}
+
+fn default_control_ratchet() -> u8 {
+	5
+}
+
 fn default_blocker_blocks() -> String {
 	BlockerBlocks::default().name().to_string()
 }
@@ -417,6 +430,7 @@ impl RulesLog {
 			control_win: r.control_win,
 			control_n: r.control_n,
 			control_hold_turns: r.control_hold_turns,
+			endgame_rule: r.endgame_rule.name().into(),
 			insufficient_tiles_loss: r.insufficient_tiles_loss.name().into(),
 			path_constraint: r.path_constraint.name().into(),
 			counted_pass_through: r.counted_pass_through,
@@ -464,6 +478,7 @@ impl RulesLog {
 			control_win: self.control_win,
 			control_n: self.control_n,
 			control_hold_turns: self.control_hold_turns,
+			endgame_rule: EndgameRule::parse(&self.endgame_rule)?,
 			insufficient_tiles_loss: InsufficientTilesLoss::parse(&self.insufficient_tiles_loss)?,
 			path_constraint: PathConstraint::parse(&self.path_constraint)?,
 			counted_pass_through: self.counted_pass_through,
@@ -493,6 +508,9 @@ pub struct OpeningLog {
 	pub p2_bag: Vec<TileLog>,
 	pub p1_tokens: usize,
 	pub p2_tokens: usize,
+	/// One-way control-cascade checkpoint at the opening deal.
+	#[serde(default = "default_control_ratchet")]
+	pub control_ratchet: u8,
 }
 
 /// Full collection, revealed 7-picks, and +4 extensions. Absent on logs from
@@ -559,6 +577,7 @@ impl OpeningLog {
 			p2_bag: tiles_to_log(game.bag(Player::Two)),
 			p1_tokens: game.budget_token_count(Player::One),
 			p2_tokens: game.budget_token_count(Player::Two),
+			control_ratchet: game.control_ratchet(),
 		}
 	}
 }
@@ -627,6 +646,9 @@ pub struct ActionLog {
 	/// Overwhelmed tiles remaining on the board after this action.
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub leftover_overwhelmed: u8,
+	/// One-way control-cascade checkpoint after this action.
+	#[serde(default = "default_control_ratchet")]
+	pub control_ratchet: u8,
 }
 
 /// One captured tile: original owner and where it went.
@@ -707,6 +729,7 @@ impl ActionLog {
 			zs_bonuses: outcome.emblem.zs_bonuses,
 			healed: 0,
 			leftover_overwhelmed: game_after.overwhelmed_nodes().len() as u8,
+			control_ratchet: game_after.control_ratchet(),
 		}
 	}
 
@@ -805,26 +828,54 @@ pub struct EndLog {
 	pub winner: Option<u8>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub low_value: Option<LowValueLog>,
+	/// Ratcheted control target at game end (`2..=control_n` under cascade).
+	/// Recorded so control wins are reconstructible by checkpoint.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub control_target: Option<u8>,
+	/// `max(p1, p2)` of board + usable spawn budget at game end.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_mat: Option<u8>,
+	/// Stored one-way ratchet at game end (stays put even if `max_mat <= 1`).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub control_ratchet: Option<u8>,
+	/// `immediate` for a unique-holder drop win, `hold` for `control_hold_turns`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub control_win_kind: Option<String>,
 }
 
 impl EndLog {
 	pub fn from_status(status: GameStatus, low_value: Option<LowValueResolution>) -> Self {
 		let low_value = low_value.map(LowValueLog::from_resolution);
 		match status {
-			GameStatus::InProgress => {
-				Self { status: "in_progress".into(), reason: None, winner: None, low_value }
-			}
+			GameStatus::InProgress => Self {
+				status: "in_progress".into(),
+				reason: None,
+				winner: None,
+				low_value,
+				control_target: None,
+				max_mat: None,
+				control_ratchet: None,
+				control_win_kind: None,
+			},
 			GameStatus::Won { winner, reason } => Self {
 				status: "won".into(),
 				reason: Some(end_reason_name(reason).into()),
 				winner: Some(player_num(winner)),
 				low_value,
+				control_target: None,
+				max_mat: None,
+				control_ratchet: None,
+				control_win_kind: None,
 			},
 			GameStatus::Draw { reason } => Self {
 				status: "draw".into(),
 				reason: Some(end_reason_name(reason).into()),
 				winner: None,
 				low_value,
+				control_target: None,
+				max_mat: None,
+				control_ratchet: None,
+				control_win_kind: None,
 			},
 		}
 	}
@@ -902,6 +953,8 @@ pub struct FinalLog {
 	pub p2_bench: Vec<TileLog>,
 	pub p1_tokens: TokenStackLog,
 	pub p2_tokens: TokenStackLog,
+	#[serde(default = "default_control_ratchet")]
+	pub control_ratchet: u8,
 }
 
 impl FinalLog {
@@ -923,6 +976,7 @@ impl FinalLog {
 			p2_bench: tiles_to_log(game.bench(Player::Two)),
 			p1_tokens: TokenStackLog::from_game(game, Player::One),
 			p2_tokens: TokenStackLog::from_game(game, Player::Two),
+			control_ratchet: game.control_ratchet(),
 		}
 	}
 }
@@ -1074,6 +1128,14 @@ impl GameLog {
 	pub fn finish(&mut self, live: &Game, low_value: Option<LowValueResolution>) {
 		self.turns = live.turn_count();
 		self.end = EndLog::from_status(live.status(), low_value);
+		self.end.control_target = live.cascade_control_target().or(Some(live.control_need()));
+		let max_mat = live.max_material().min(u8::MAX as usize) as u8;
+		self.end.max_mat = Some(max_mat);
+		self.end.control_ratchet = Some(live.control_ratchet());
+		if matches!(live.status(), GameStatus::Won { reason: EndReason::Control, .. }) {
+			self.end.control_win_kind =
+				Some(if live.control_win_immediate() { "immediate".into() } else { "hold".into() });
+		}
 		self.final_state = Some(FinalLog::from_game(live));
 		let mut contrib = 0u32;
 		let mut needed = 0u32;
@@ -1600,6 +1662,70 @@ mod tests {
 	}
 
 	#[test]
+	fn missing_endgame_rule_replays_as_low_value() {
+		let mut r = RuleSet::default();
+		r.endgame_rule = EndgameRule::LowValue;
+		let log = RulesLog::from_rules(r);
+		let mut value: serde_json::Value =
+			serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+		value.as_object_mut().unwrap().remove("endgame_rule");
+		let parsed: RulesLog = serde_json::from_value(value).unwrap();
+		assert_eq!(parsed.endgame_rule, "low-value");
+		assert_eq!(parsed.to_rules().unwrap().endgame_rule, EndgameRule::LowValue);
+		let cascade = RulesLog::from_rules(RuleSet::default());
+		assert_eq!(cascade.endgame_rule, "control-cascade");
+		assert!(serde_json::to_string(&cascade).unwrap().contains("control-cascade"));
+	}
+
+	#[test]
+	fn finish_records_control_target_and_max_mat() {
+		use crate::game::{Game, Player, TileColor};
+
+		let mut game = Game::empty(RuleSet::default());
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(3) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		game.set_budget_tokens(Player::One, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		game.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		let mut log = GameLog::begin(1, "t", "a", "b", 0, "default", &game);
+		log.finish(&game, None);
+		assert_eq!(log.end.control_target, Some(4));
+		assert_eq!(log.end.max_mat, Some(4));
+		assert_eq!(log.end.control_ratchet, Some(4));
+		assert_eq!(log.end.control_win_kind.as_deref(), Some("hold"));
+		assert_eq!(log.end.reason.as_deref(), Some("control"));
+	}
+
+	#[test]
+	fn finish_records_immediate_control_drop_win() {
+		use crate::game::{Action, Game};
+
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(game.control_ratchet(), 5);
+		let mut log = GameLog::begin(1, "t", "a", "b", 0, "default", &game);
+		assert_eq!(log.opening.control_ratchet, 5);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		log.finish(&game, None);
+		assert!(game.control_win_immediate());
+		assert_eq!(log.end.control_target, Some(4));
+		assert_eq!(log.end.control_ratchet, Some(4));
+		assert_eq!(log.end.control_win_kind.as_deref(), Some("immediate"));
+		assert_eq!(log.end.reason.as_deref(), Some("control"));
+		assert_eq!(log.end.winner, Some(1));
+		assert_eq!(log.final_state.as_ref().map(|s| s.control_ratchet), Some(4));
+	}
+
+	#[test]
 	fn missing_capture_mode_replays_as_cascade() {
 		let mut r = RuleSet::default();
 		r.capture_mode = CaptureMode::Cascade;
@@ -1909,6 +2035,27 @@ mod tests {
 	fn committed_local_claim_shallow_replays() {
 		assert_committed_jsonl_gz_replays_n(
 			"benchmark_results/local_claim/h2h_shallow.jsonl.gz",
+			100,
+		);
+	}
+
+	#[test]
+	fn committed_control_cascade_shallow_replays() {
+		// Pre-ratchet live-target log: decode only (ends would diverge).
+		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+			.join("benchmark_results/control_cascade/h2h_shallow.jsonl.gz");
+		if !path.exists() {
+			return;
+		}
+		let bytes = std::fs::read(&path).unwrap();
+		let logs = decode_jsonl_gz(&bytes).expect("decode gzip jsonl");
+		assert_eq!(logs.len(), 100);
+	}
+
+	#[test]
+	fn committed_control_cascade_ratchet_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/control_cascade/h2h_shallow_ratchet.jsonl.gz",
 			100,
 		);
 	}

@@ -1,6 +1,6 @@
 //! Zobrist keys for visible positions: occupancy, kind, owner, benches, capture
-//! budget, side, last-moved / moved-this-turn tile ids, and hold counters
-//! (center, petal, control).
+//! budget, side, last-moved / moved-this-turn tile ids, hold counters
+//! (center, petal, control), and the one-way control-cascade ratchet.
 
 use std::sync::OnceLock;
 
@@ -33,6 +33,7 @@ pub struct Zobrist {
 	center_hold: [[u64; 16]; 2],
 	petal_majority: [[u64; 16]; 2],
 	control_hold: [[u64; 16]; 2],
+	control_ratchet: [u64; 16],
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
 	budget: [[u64; 64]; 2],
@@ -57,6 +58,7 @@ impl Zobrist {
 			center_hold: [[0; 16]; 2],
 			petal_majority: [[0; 16]; 2],
 			control_hold: [[0; 16]; 2],
+			control_ratchet: [0; 16],
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
 			budget: [[0; 64]; 2],
@@ -106,6 +108,9 @@ impl Zobrist {
 			for n in 0..64 {
 				z.budget[player][n] = next();
 			}
+		}
+		for n in 0..16 {
+			z.control_ratchet[n] = next();
 		}
 		z
 	}
@@ -201,6 +206,7 @@ pub fn hash(game: &Game) -> u64 {
 		None => h ^= z.moved_this_turn_none,
 		Some(id) => h ^= z.moved_this_turn_some ^ mix_id(id),
 	}
+	h ^= z.control_ratchet[game.control_ratchet().min(15) as usize];
 	h
 }
 
@@ -359,5 +365,33 @@ mod tests {
 		assert_eq!(placed.center_hold(Player::One), 0);
 		assert_ne!(hash(&placed), hash(&moved));
 		assert_eq!(occupancy_hash(&placed), occupancy_hash(&moved));
+	}
+
+	#[test]
+	fn hash_distinguishes_control_ratchet() {
+		use crate::game::{Game, Player, TileColor};
+
+		let mut low = Game::empty(RuleSet::default());
+		let mut high = Game::empty(RuleSet::default());
+		let center = low.board().center();
+		let inner = low.board().inner_ring().to_vec();
+		for game in [&mut low, &mut high] {
+			let t = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(center, t);
+			for &node in inner.iter().take(3) {
+				let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+				game.place_tile(node, tile);
+			}
+		}
+		low.set_budget_tokens(Player::One, Vec::new());
+		low.set_budget_tokens(Player::Two, Vec::new());
+		high.set_budget_tokens(Player::One, Vec::new());
+		high.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(low.control_ratchet(), 4);
+		high.set_control_ratchet(5);
+		assert_eq!(high.control_ratchet(), 5);
+		assert_eq!(low.max_material(), high.max_material());
+		assert_ne!(hash(&low), hash(&high), "TT key must include the ratcheted control target");
+		assert_eq!(occupancy_hash(&low), occupancy_hash(&high));
 	}
 }

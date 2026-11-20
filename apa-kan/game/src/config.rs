@@ -9,7 +9,7 @@ use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode, EmblemWeights,
-	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
+	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
 	SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
@@ -300,6 +300,9 @@ where
 			}
 			rules.control_hold_turns = n as u8;
 		}
+		"--endgame-rule" => {
+			rules.endgame_rule = EndgameRule::parse(&require_value(arg, it.next())?)?;
+		}
 		"--insufficient-tiles-loss" => {
 			rules.insufficient_tiles_loss =
 				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
@@ -457,8 +460,9 @@ pub fn usage() -> &'static str {
 	   --petal-majority-win <on|off>              Inner-ring majority win (default: off)\n\
 	   --petal-majority-n <1..64>                 Turns to hold majority (default: 1)\n\
 	   --control-win <on|off>                     Center+inner-ring control win (default: on)\n\
-	   --control-n <1..9>                         Control-set occupancy needed (default: 5)\n\
+	   --control-n <1..9>                         Control-set occupancy cap (default: 5)\n\
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
+	   --endgame-rule <control-cascade|low-value>  One-way ratchet 5→2 with max material, then low-value at ≤1 (default: control-cascade)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
@@ -638,6 +642,15 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_endgame_rule() {
+		let cascade = GameConfig::parse(["--endgame-rule", "control-cascade"]).unwrap();
+		assert_eq!(cascade.rules.endgame_rule, crate::game::EndgameRule::ControlCascade);
+		let baseline = GameConfig::parse(["--endgame-rule", "low-value"]).unwrap();
+		assert_eq!(baseline.rules.endgame_rule, crate::game::EndgameRule::LowValue);
+		assert!(GameConfig::parse(["--endgame-rule", "sudden-death"]).is_err());
+	}
+
+	#[test]
 	fn stall_rule_defaults_match_ruleset() {
 		let cfg = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(cfg.rules, RuleSet::default());
@@ -652,6 +665,7 @@ mod tests {
 		assert!(cfg.rules.control_win);
 		assert_eq!(cfg.rules.control_n, 5);
 		assert_eq!(cfg.rules.control_hold_turns, 1);
+		assert_eq!(cfg.rules.endgame_rule, crate::game::EndgameRule::ControlCascade);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);

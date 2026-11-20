@@ -170,7 +170,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Click an overwhelmed tile to CLAIM it (always a spawn token). Win: 5 of 9, or lowest pieces in order if both have board+usable <5.";
+	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Click an overwhelmed tile to CLAIM it (always a spawn token). Win: 5 of 9 ratcheting 4-3-2 with max board+usable (never rises), then lowest pieces if both <=1.";
 
 pub const SETUP_HELP_TEXT: &str =
 	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6). Normal uncapped.";
@@ -2669,17 +2669,23 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 				));
 			}
 			if game.rules().control_win {
-				extra.push_str(&format!(
-					"{HUD_SEP}ctl P1 {}/{} {}/{} P2 {}/{} {}/{}",
-					game.control_count(Player::One),
-					game.control_need(),
-					game.control_hold(Player::One),
-					game.rules().control_hold_turns,
-					game.control_count(Player::Two),
-					game.control_need(),
-					game.control_hold(Player::Two),
-					game.rules().control_hold_turns
-				));
+				if game.rules().endgame_rule.is_control_cascade()
+					&& game.cascade_control_target().is_none()
+				{
+					extra.push_str(&format!("{HUD_SEP}ctl lv"));
+				} else {
+					extra.push_str(&format!(
+						"{HUD_SEP}ctl P1 {}/{} {}/{} P2 {}/{} {}/{}",
+						game.control_count(Player::One),
+						game.control_need(),
+						game.control_hold(Player::One),
+						game.rules().control_hold_turns,
+						game.control_count(Player::Two),
+						game.control_need(),
+						game.control_hold(Player::Two),
+						game.rules().control_hold_turns
+					));
+				}
 			}
 			let hold = extra;
 			format!(
@@ -4474,10 +4480,42 @@ mod tests {
 		assert_eq!(game.bag_len(Player::One), 16);
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("ctl P1 0/5 0/1 P2 0/5 0/1"), "{turn}");
+		assert_eq!(game.control_need(), 5);
+		assert_eq!(game.cascade_control_target(), Some(5));
 		assert!(turn.contains("P1 light 11/11 bud 7"), "{turn}");
 		assert!(turn.contains("P2 dark 11/11 bud 7"), "{turn}");
 		assert!(!turn.contains("hold P1"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
+	}
+
+	#[test]
+	fn hud_shows_the_ratcheted_cascade_control_target() {
+		use crate::game::BudgetToken;
+
+		let mut game = Game::empty(RuleSet::default());
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		let p1 = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, p1);
+		for &node in inner.iter().take(3) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		game.set_budget_tokens(Player::One, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.total_material(Player::One), 4);
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.cascade_control_target(), Some(4));
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("ctl P1 4/4 0/1 P2 0/4 0/1"), "{turn}");
+		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
+		let extra = game.alloc_tile(Player::Two, TileColor::Orange, 1, 1);
+		game.set_bench(Player::Two, vec![extra]);
+		game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank]);
+		assert_eq!(game.max_material(), 4.max(1));
+		assert_eq!(game.control_need(), 4, "HUD target must not rise with recovered material");
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("ctl P1 4/4 0/1 P2 0/4 0/1"), "{turn}");
 	}
 
 	#[test]
