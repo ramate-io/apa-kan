@@ -55,6 +55,9 @@ def walk(game: dict) -> dict:
     inner_caps_holder = 0
     zero_budget_actions = 0
     n_actions = 0
+    swaps = 0
+    center_swaps = 0
+    center_dislodging_swaps = 0
     budget = {1: None, 2: None}
     opening = game.get("opening") or {}
     if "p1_tokens" in opening:
@@ -82,6 +85,18 @@ def walk(game: dict) -> dict:
 
         holder = occ_owner.get(CENTER)
 
+        if kind == "SWAP":
+            swaps += 1
+            if frm == CENTER or to == CENTER:
+                center_swaps += 1
+            partner_owner = act.get("partner_owner")
+            if frm == CENTER and occ_owner.get(CENTER) == player:
+                center_dislodging_swaps += 1
+            elif to == CENTER and (
+                partner_owner not in (None, player) or occ_owner.get(CENTER) not in (None, player)
+            ):
+                center_dislodging_swaps += 1
+
         if kind == "CLAIM" and to == CENTER:
             center_claims += 1
 
@@ -102,18 +117,21 @@ def walk(game: dict) -> dict:
                 else:
                     inner_caps_holder += 1
 
-        if kind == "MOVE" and frm is not None:
+        if kind in ("MOVE", "SWAP") and frm is not None:
             occ_owner.pop(frm, None)
             occ_id.pop(frm, None)
             if frm == CENTER:
                 vacates += 1
+            if kind == "SWAP" and to is not None:
+                occ_owner.pop(to, None)
+                occ_id.pop(to, None)
 
         for cap in captures:
             node = cap.get("node")
             occ_owner.pop(node, None)
             occ_id.pop(node, None)
 
-        entered = kind in ("ADD", "MOVE") and to is not None
+        entered = kind in ("ADD", "MOVE", "SWAP") and to is not None
         if entered and to not in captured_nodes:
             occ_owner[to] = player
             occ_id[to] = pid
@@ -124,6 +142,20 @@ def walk(game: dict) -> dict:
                     first_id = pid
                     first_turn = turn
                     first_kind = kind
+        if kind == "SWAP" and frm is not None and frm not in captured_nodes:
+            partner = act.get("partner") or {}
+            partner_id = partner.get("id")
+            partner_owner = act.get("partner_owner")
+            if partner_id is not None and partner_owner is not None:
+                occ_owner[frm] = partner_owner
+                occ_id[frm] = partner_id
+                if frm == CENTER:
+                    holders += 1
+                    if first_owner is None:
+                        first_owner = partner_owner
+                        first_id = partner_id
+                        first_turn = turn
+                        first_kind = kind
 
     end_owner, end_id = occupant_at_end(game)
     still_first = (
@@ -161,6 +193,9 @@ def walk(game: dict) -> dict:
         "inner_caps_holder": inner_caps_holder,
         "zero_budget_actions": zero_budget_actions,
         "n_actions": n_actions,
+        "swaps": swaps,
+        "center_swaps": center_swaps,
+        "center_dislodging_swaps": center_dislodging_swaps,
         "p1_search": game.get("p1_search", ""),
         "p2_search": game.get("p2_search", ""),
         "claims_total": sum(1 for a in game.get("actions") or [] if a.get("kind") == "CLAIM"),
@@ -243,6 +278,9 @@ def summarize(path: Path) -> dict:
     zb = sum(r["zero_budget_actions"] for r in rows)
     na = sum(r["n_actions"] for r in rows)
     zb_share = zb / na if na else 0.0
+    swaps = mean([r["swaps"] for r in rows])
+    center_swaps = mean([r["center_swaps"] for r in rows])
+    dislodge_swaps = mean([r["center_dislodging_swaps"] for r in rows])
 
     print(f"file {path}")
     print(f"games {n}  mean_turns {mean_turns:.2f}  P1 {wdl(rows)}")
@@ -268,6 +306,10 @@ def summarize(path: Path) -> dict:
         f"while_held inner caps: holder→opp {h_inner:.2f}  opp→holder {i_holder:.2f}"
     )
     print(f"zero_budget_actions {zb}/{na} ({zb_share * 100:.1f}%)")
+    print(
+        f"swaps/game {swaps:.2f}  center_swaps/game {center_swaps:.2f}  "
+        f"center_dislodging_swaps/game {dislodge_swaps:.2f}"
+    )
 
     by_pair: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -282,7 +324,8 @@ def summarize(path: Path) -> dict:
             f"turns {mean([r['turns'] or 0 for r in subset]):5.1f}  "
             f"never_left {pct(len(snever), len(stook))}  "
             f"first_wins {pct(len(swins), len(stook))}  "
-            f"opp_cap {mean([r['center_opp_caps'] for r in subset]):.2f}"
+            f"opp_cap {mean([r['center_opp_caps'] for r in subset]):.2f}  "
+            f"swaps {mean([r['swaps'] for r in subset]):.2f}"
         )
 
     def show(label: str, subset: list[dict], k: int = 5) -> None:
@@ -316,6 +359,7 @@ def summarize(path: Path) -> dict:
     sit_wins = [r for r in never_left if r["first_side_won"]]
     print(
         f"first_take how ADD {add_takes}/{len(took)} MOVE {move_takes}/{len(took)}  "
+        f"SWAP {sum(1 for r in took if r['first_kind'] == 'SWAP')}/{len(took)}  "
         f"contested_center {len(contested)}/{len(took)} ({pct(len(contested), len(took))})"
     )
     print(
@@ -347,6 +391,9 @@ def summarize(path: Path) -> dict:
         "holder_caps_inner": h_inner,
         "inner_caps_holder": i_holder,
         "zb_share": zb_share,
+        "swaps": swaps,
+        "center_swaps": center_swaps,
+        "center_dislodging_swaps": dislodge_swaps,
         "contested": len(contested),
         "sit_and_win": len(sit_wins),
     }
@@ -391,8 +438,10 @@ def walk_ring_lives(game: dict) -> list[dict]:
         opp_caps = sum(1 for c in captures if c.get("owner") != act.get("player"))
         self_caps = sum(1 for c in captures if c.get("owner") == act.get("player"))
 
-        if kind == "MOVE" and frm is not None:
+        if kind in ("MOVE", "SWAP") and frm is not None:
             occ_id.pop(frm, None)
+            if kind == "SWAP" and to is not None:
+                occ_id.pop(to, None)
 
         captured_nodes = {c.get("node") for c in captures}
         for cap in captures:
@@ -404,7 +453,7 @@ def walk_ring_lives(game: dict) -> list[dict]:
                 lives[cap_id]["captured_never_moved"] = lives[cap_id]["moves"] == 0
                 lives[cap_id]["captured_on_control"] = node in CONTROL
 
-        if kind in ("ADD", "MOVE") and pid is not None and to is not None:
+        if kind in ("ADD", "MOVE", "SWAP") and pid is not None and to is not None:
             if pid not in lives:
                 lives[pid] = {
                     "id": pid,
@@ -418,6 +467,7 @@ def walk_ring_lives(game: dict) -> list[dict]:
                     "placed_turn": act.get("turn"),
                     "placed_node": to,
                     "moves": 0,
+                    "swaps": 0,
                     "captures_as_actor": 0,
                     "opp_caps_as_actor": 0,
                     "self_caps_as_actor": 0,
@@ -430,6 +480,9 @@ def walk_ring_lives(game: dict) -> list[dict]:
                 }
             elif kind == "MOVE":
                 lives[pid]["moves"] += 1
+            elif kind == "SWAP":
+                lives[pid]["moves"] += 1
+                lives[pid]["swaps"] += 1
             if to in CONTROL:
                 lives[pid]["control_visits"] += 1
             lives[pid]["captures_as_actor"] += len(captures)
@@ -438,6 +491,13 @@ def walk_ring_lives(game: dict) -> list[dict]:
             lives[pid]["healed"] += int(act.get("healed") or 0)
             if to not in captured_nodes:
                 occ_id[to] = pid
+            if kind == "SWAP" and frm is not None and frm not in captured_nodes:
+                partner = act.get("partner") or {}
+                partner_id = partner.get("id")
+                if partner_id is not None:
+                    occ_id[frm] = partner_id
+                    if partner_id in lives and frm in CONTROL:
+                        lives[partner_id]["control_visits"] += 1
 
     for life in lives.values():
         life["survived"] = (not life["captured"]) and life["id"] in final_ids
@@ -499,6 +559,25 @@ def singles_survey(games: list[dict], path: Path) -> None:
                 f"control {sum(1 for p in never if p['control_visits'] > 0)}  "
                 f"survived {sum(1 for p in never if p['survived'])}"
             )
+            for comp, pred in (
+                ("single-normal", lambda p: (p.get("braid_rings") or 0) == 0 and (p.get("zag_rings") or 0) == 0 and (p.get("bead_rings") or 0) == 0),
+                ("single-braid", lambda p: (p.get("braid_rings") or 0) > 0),
+            ):
+                sub = [p for p in group if pred(p)]
+                if not sub:
+                    print(f"           {comp}: none placed")
+                    continue
+                n = len(sub)
+                moved = sum(1 for p in sub if p["moves"] > 0)
+                survived = sum(1 for p in sub if p["survived"])
+                control = sum(1 for p in sub if p["control_visits"] > 0)
+                swapped = sum(1 for p in sub if (p.get("swaps") or 0) > 0)
+                print(
+                    f"           {comp}: placed {n}  moved_later {moved} ({pct(moved, n)})  "
+                    f"survived {survived} ({pct(survived, n)})  "
+                    f"touched_control {control} ({pct(control, n)})  "
+                    f"swapped {swapped} ({pct(swapped, n)})"
+                )
 
 
 def main() -> None:

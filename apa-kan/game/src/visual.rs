@@ -881,7 +881,7 @@ fn two_ended_with(
 		a.normal_ring_count() > 0 || b.normal_ring_count() > 0
 	};
 	let bead_fires = a.bead_ring_count() > 0 || b.bead_ring_count() > 0;
-	let braid_min = 2u8;
+	let braid_min = braid.min_slots();
 	let body = if !normal_fires {
 		if zag_mid[0].is_some()
 			|| a.braid_ring_count() >= braid_min
@@ -984,7 +984,7 @@ fn one_ended(tile: Tile, on_from: bool) -> ArcPaint {
 	one_ended_with(tile, on_from, true, BraidScoring::Current)
 }
 
-fn one_ended_with(tile: Tile, on_from: bool, fold_beads: bool, _braid: BraidScoring) -> ArcPaint {
+fn one_ended_with(tile: Tile, on_from: bool, fold_beads: bool, braid: BraidScoring) -> ArcPaint {
 	let zags = tile_zag_strokes(tile);
 	let mut normals: Vec<TileColor> = Vec::new();
 	for k in 0..tile.ring_strokes() {
@@ -999,7 +999,7 @@ fn one_ended_with(tile: Tile, on_from: bool, fold_beads: bool, _braid: BraidScor
 		}
 	}
 	let beads = tile_bead_strokes(tile);
-	let braid_min = 2u8;
+	let braid_min = braid.min_slots();
 	let body = match normals.as_slice() {
 		[] if zags[0].is_none() && tile.braid_ring_count() < braid_min && beads[0].is_none() => {
 			ArcBody::Neutral
@@ -3734,6 +3734,21 @@ mod tests {
 		let matched = arc_paint_for_rules(Some(bead), Some(hit), &rules);
 		assert_eq!(matched.bead_match, Some(TileColor::Orange));
 		assert!(matched.has_normal_lane());
+	}
+
+	#[test]
+	fn braid_only_exact_paints_a_one_slot_braid() {
+		let mut rules = RuleSet::additive();
+		rules.braid_scoring = crate::game::BraidScoring::BraidOnlyExact;
+		let a =
+			Tile::with_typed_rings(1, Player::One, &[(TileColor::Orange, RingType::Braid)], 1, 1);
+		let b = Tile::with_rings(2, Player::Two, &[TileColor::Orange], 1, 1);
+		let paint = arc_paint_for_rules(Some(a), Some(b), &rules);
+		assert!(
+			matches!(paint.braid, Some(BraidLane::Weave { .. })),
+			"1-slot exact braid paints a weave: {:?}",
+			paint.braid
+		);
 	}
 
 	#[test]

@@ -116,7 +116,7 @@ fn usage() -> &'static str {
 	   --control-win, --control-n, --control-hold-turns, --endgame-rule, --cascade-turn-gain,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --ring-count-weights, --color-drift, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --braid-scoring, --score-unique-neighbors, --link-once, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --singles-swap, --dot-chance,\n\
+	   --braid-fail-mismatch, --braid-scoring, --braid-exact, --single-braids, --score-unique-neighbors, --link-once, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --singles-swap, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -663,7 +663,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -697,6 +697,7 @@ fn run(cfg: BenchConfig) {
 		rules.channel_mode.name(),
 		rules.capture_mode.name(),
 		rules.swap_mode.name(),
+		on_off(rules.allow_single_braids),
 		rules.dot_percent,
 		rules.emblem_weights.label(),
 		rules.blocker_blocks.name(),
@@ -2456,6 +2457,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut zag_rings = 0u32;
 	let mut braid_rings = 0u32;
 	let mut braid_pieces = 0u32;
+	let mut single_braid_pieces = 0u32;
 	let mut bead_rings = 0u32;
 	let mut bead_pieces = 0u32;
 	let mut bead_any = 0u32;
@@ -2478,8 +2480,11 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 		zag_rings += u32::from(t.zag_ring_count());
 		let b = t.braid_ring_count();
 		braid_rings += u32::from(b);
-		if b >= 2 {
+		if b > 0 {
 			braid_pieces += 1;
+			if b == 1 {
+				single_braid_pieces += 1;
+			}
 		}
 		bead_rings += u32::from(t.bead_ring_count());
 		if t.bead_ring_count() >= 2 {
@@ -2512,8 +2517,9 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			f64::from(zag_rings) / f64::from(rings)
 		));
 		lines.push(format!(
-			"# ring_process_braids  pieces={n} braided={braid_pieces} tile_rate={:.4} rings={rings} braid_rings={braid_rings} ring_rate={:.4}",
+			"# ring_process_braids  pieces={n} braided={braid_pieces} tile_rate={:.4} single_braid={single_braid_pieces} single_rate={:.4} rings={rings} braid_rings={braid_rings} ring_rate={:.4}",
 			f64::from(braid_pieces) / f64::from(n),
+			f64::from(single_braid_pieces) / f64::from(n),
 			f64::from(braid_rings) / f64::from(rings)
 		));
 		lines.push(format!(
@@ -2546,6 +2552,7 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let decks = 2_000u32;
 	let deck_size = usize::from(rules.deck_size.max(1));
 	let mut deck_braid_tiles = 0u32;
+	let mut deck_single_braid_tiles = 0u32;
 	let mut decks_with_braid = 0u32;
 	let mut deck_distinct_sum = 0u32;
 	let mut deck_tile_multi = 0u32;
@@ -2562,9 +2569,13 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 				&mut rng,
 				&mut color_w,
 			);
-			if t.braid_ring_count() >= 2 {
+			let b = t.braid_ring_count();
+			if b > 0 {
 				deck_braid_tiles += 1;
 				has_braid = true;
+				if b == 1 {
+					deck_single_braid_tiles += 1;
+				}
 			}
 			let dc = t.distinct_color_count();
 			deck_tile_distinct += u32::from(dc);
@@ -2582,8 +2593,9 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	}
 	let deck_tiles = decks * deck_size as u32;
 	lines.push(format!(
-		"# ring_process_decks  decks={decks} size={deck_size} braid_tiles={deck_braid_tiles} tile_rate={:.4} decks_with_braid={decks_with_braid} deck_rate={:.4}",
+		"# ring_process_decks  decks={decks} size={deck_size} braid_tiles={deck_braid_tiles} tile_rate={:.4} single_braid={deck_single_braid_tiles} single_rate={:.4} decks_with_braid={decks_with_braid} deck_rate={:.4}",
 		f64::from(deck_braid_tiles) / f64::from(deck_tiles),
+		f64::from(deck_single_braid_tiles) / f64::from(deck_tiles),
 		f64::from(decks_with_braid) / f64::from(decks)
 	));
 	lines.push(format!(

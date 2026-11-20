@@ -443,6 +443,19 @@ where
 		"--braid-scoring" => {
 			rules.braid_scoring = BraidScoring::parse(&require_value(arg, it.next())?)?;
 		}
+		"--braid-exact" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.braid_scoring = if on {
+				BraidScoring::BraidOnlyExact
+			} else if rules.braid_scoring == BraidScoring::BraidOnlyExact {
+				BraidScoring::Current
+			} else {
+				rules.braid_scoring
+			};
+		}
+		"--single-braids" => {
+			rules.allow_single_braids = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--score-unique-neighbors" | "--link-once" => {
 			rules.score_unique_neighbors = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
@@ -528,7 +541,10 @@ pub fn usage() -> &'static str {
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --bead-chance <0..7>                       Bead light-election weight (default: 1; 0 disables)\n\
 	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (default independent = beads separate)\n\
-	   --braid-scoring <current|braid-only-match> Braid match total (default: current; braid-only-match scores only braid matches, still paints others)\n\
+	   --braid-scoring <current|braid-only-match|braid-only-exact>\n\
+	                                              Braid match total (default: current; braid-only-match scores only braid matches, still paints others; braid-only-exact is that plus exact color-count fulfillment and 1-slot braids scoring +1)\n\
+	   --braid-exact <on|off>                     Alias: on = --braid-scoring braid-only-exact\n\
+	   --single-braids <on|off>                   Lone heavies (incl. 1-ring) become 1-slot braids (default: off; same heavy coin, no extra roll)\n\
 	   --score-unique-neighbors <on|off>          Count each unique node pair once (default: off; alias --link-once)\n\
 	   --link-once <on|off>                       Alias for --score-unique-neighbors\n\
 	   --channel-mode <independent-max|additive>  Edge combine only (default: independent-max). Generation is always clustering\n\
@@ -536,7 +552,7 @@ pub fn usage() -> &'static str {
 	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
 	   --color-drift <n>                          RFC ColorPass.drift diagonal (default 0, currently zeroed)\n\
 	   --capture-mode <local-claim|cascade>       Local ADD/MOVE/SWAP captures + Claim (default: local-claim; cascade = PR #70)\n\
-	   --singles-swap <on|off>                    Single-ring tiles swap with an adjacent tile (default: on; alias --swap-mode)\n\
+	   --singles-swap <on|off|normal-only>        Adjacent singles-swap (default: on; normal-only = single normals only; alias --swap-mode)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
 	                                              Emblem generation weights (default: 200,1,1,1,1)\n\
@@ -787,10 +803,15 @@ mod tests {
 		assert!(!def.rules.score_unique_neighbors);
 		let only = GameConfig::parse(["--braid-scoring", "braid-only-match"]).unwrap();
 		assert_eq!(only.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyMatch);
-		let err = GameConfig::parse(["--braid-scoring", "exact"]).unwrap_err();
-		assert!(err.contains("braid-scoring"));
+		let exact = GameConfig::parse(["--braid-scoring", "braid-only-exact"]).unwrap();
+		assert_eq!(exact.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyExact);
+		let alias = GameConfig::parse(["--braid-exact", "on"]).unwrap();
+		assert_eq!(alias.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyExact);
 		let err = GameConfig::parse(["--braid-scoring", "product"]).unwrap_err();
 		assert!(err.contains("braid-scoring"));
+		assert!(!def.rules.allow_single_braids);
+		let singles = GameConfig::parse(["--single-braids", "on"]).unwrap();
+		assert!(singles.rules.allow_single_braids);
 		let once = GameConfig::parse(["--link-once", "on"]).unwrap();
 		assert!(once.rules.score_unique_neighbors);
 		let unique = GameConfig::parse(["--score-unique-neighbors", "on"]).unwrap();
@@ -975,6 +996,8 @@ mod tests {
 		assert_eq!(on.rules.swap_mode, crate::game::SwapMode::On);
 		let adj = GameConfig::parse(["--singles-swap", "adjacent-any"]).unwrap();
 		assert_eq!(adj.rules.swap_mode, crate::game::SwapMode::On);
+		let normal = GameConfig::parse(["--singles-swap", "normal-only"]).unwrap();
+		assert_eq!(normal.rules.swap_mode, crate::game::SwapMode::NormalOnly);
 		let err = GameConfig::parse(["--singles-swap", "any"]).unwrap_err();
 		assert!(err.contains("singles-swap"));
 		let gone = GameConfig::parse(["--swap-no-immediate-back", "on"]).unwrap_err();

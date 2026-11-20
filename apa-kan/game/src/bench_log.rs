@@ -407,6 +407,9 @@ pub struct RulesLog {
 	/// logs; replay uses current.
 	#[serde(default = "default_current_braid", skip_serializing_if = "skip_current_braid")]
 	pub braid_scoring: String,
+	/// Lone-heavy 1-slot braids (`--single-braids`). Absent/false on older logs.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub allow_single_braids: bool,
 	/// Unique node-pair scoring (`--link-once`). Absent/false on older logs
 	/// that scored each generating-circle petal. When `score_incident_arcs`
 	/// is `Some(false)`, replay also treats this as on.
@@ -524,6 +527,7 @@ impl RulesLog {
 			zag_match_non_zag: Some(true),
 			bead_scoring: r.bead_scoring.name().into(),
 			braid_scoring: r.braid_scoring.name().into(),
+			allow_single_braids: r.allow_single_braids,
 			score_unique_neighbors: r.score_unique_neighbors,
 			channel_mode: r.channel_mode.name().into(),
 			capture_mode: r.capture_mode.name().into(),
@@ -582,6 +586,7 @@ impl RulesLog {
 			},
 			braid_scoring: BraidScoring::parse(&self.braid_scoring)
 				.unwrap_or(BraidScoring::Current),
+			allow_single_braids: self.allow_single_braids,
 			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
 			score_unique_neighbors: self.score_unique_neighbors
 				|| self.score_incident_arcs == Some(false),
@@ -1870,6 +1875,7 @@ mod tests {
 		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
 		assert_eq!(log.bead_scoring, "shared");
 		assert_eq!(log.braid_scoring, "braid-only-match");
+		assert!(!log.allow_single_braids);
 		assert!(log.score_unique_neighbors);
 		assert_eq!(log.score_incident_arcs, Some(false));
 	}

@@ -284,14 +284,22 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 				s += 8;
 			}
 			s += center_threat_bonus(game, node, config);
+			let braid_scoring = game.rules().braid_scoring;
+			let braid_min = braid_scoring.min_slots();
 			for nb in game.board().incident_others(node) {
 				if let Some(other) = game.tile_at(nb) {
 					if other.owner == game.current_player() {
 						s += 10;
 					}
-					let braid_hit = view.braid_size >= 2
-						&& (0..6)
-							.all(|i| other.non_zag_colors_multiset()[i] >= view.braid_counts[i]);
+					let have = other.non_zag_colors_multiset();
+					let braid_hit = view.braid_size >= braid_min
+						&& if braid_scoring.exact_match() {
+							(0..6).all(|i| {
+								view.braid_counts[i] == 0 || have[i] == view.braid_counts[i]
+							})
+						} else {
+							(0..6).all(|i| have[i] >= view.braid_counts[i])
+						};
 					let bead_unmatched =
 						view.bead != 0 && (view.bead & other.non_zag_color_mask()) != view.bead;
 					if braid_hit {
@@ -308,9 +316,9 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 							.any(|(i, c)| other.ring_is_zag(i) && add_all & c.bit() != 0)
 					{
 						s += 18;
-					} else if (view.normal != 0 || view.braid_size >= 2 || view.bead != 0)
+					} else if (view.normal != 0 || view.braid_size >= braid_min || view.bead != 0)
 						&& (other.normal_mask() != 0
-							|| other.braid_ring_count() >= 2
+							|| other.braid_ring_count() >= braid_min
 							|| other.bead_ring_count() > 0)
 					{
 						s += 6;
