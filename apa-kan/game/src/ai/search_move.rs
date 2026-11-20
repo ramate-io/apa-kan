@@ -1,18 +1,24 @@
 //! Search-facing actions. ADD is keyed by kind so transpositions are stable.
 
 use crate::board::NodeId;
-use crate::game::{Action, Game, KIND_COUNT, KIND_DOTS};
+use crate::game::{Action, Game, KIND_DOTS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchMove {
-	/// `kind` is [`crate::game::Tile::kind_index`] (color-state × dots).
+	/// Low 16 bits: [`crate::game::Tile::kind_index`] (color-state × dots).
+	/// Bit 16: [`crate::game::CaptureMark::bit`]. Bits 17–19:
+	/// [`crate::game::Emblem::bit`] (0..=4). `KIND_COUNT` is not multiplied
+	/// (it already fills a `u16`).
 	Add {
-		kind: u16,
+		kind: u32,
 		node: NodeId,
 	},
 	Move {
 		from: NodeId,
 		to: NodeId,
+	},
+	Claim {
+		node: NodeId,
 	},
 	Pass,
 }
@@ -24,11 +30,12 @@ impl SearchMove {
 				let kind = game
 					.bench(game.current_player())
 					.get(bench_index)
-					.map(|t| t.kind_index() as u16)
+					.map(|t| search_kind(*t))
 					.unwrap_or(0);
 				SearchMove::Add { kind, node }
 			}
 			Action::Move { from, to } => SearchMove::Move { from, to },
+			Action::Claim { node } => SearchMove::Claim { node },
 			Action::Pass => SearchMove::Pass,
 		}
 	}
@@ -39,24 +46,31 @@ impl SearchMove {
 				let idx = game
 					.bench(game.current_player())
 					.iter()
-					.position(|t| t.kind_index() as u16 == kind)?;
+					.position(|t| search_kind(*t) == kind)?;
 				Some(Action::Add { bench_index: idx, node })
 			}
 			SearchMove::Move { from, to } => Some(Action::Move { from, to }),
+			SearchMove::Claim { node } => Some(Action::Claim { node }),
 			SearchMove::Pass => Some(Action::Pass),
 		}
 	}
 
-	/// Packed TT key: 0 = MOVE, u16::MAX = PASS, 1..=COLOR_STATES = ADD color-state.
+	/// Packed TT key: 0 = MOVE, u16::MAX = PASS, u16::MAX-1 = CLAIM,
+	/// 1..=COLOR_STATES = ADD color-state.
+	/// `b` is `dots | (capture_bit << 2) | (emblem << 3)`.
 	pub fn pack(self) -> (u16, u8, u8) {
 		match self {
 			SearchMove::Add { kind, node } => {
-				let dots_n = KIND_DOTS as u16;
-				let state = kind / dots_n + 1;
-				let dots = (kind % dots_n) as u8;
-				(state, node, dots)
+				let dots_n = KIND_DOTS as u32;
+				let base = kind & 0xFFFF;
+				let capture = ((kind >> 16) as u8) & 1;
+				let emblem = ((kind >> 17) as u8) & 7;
+				let state = (base / dots_n + 1) as u16;
+				let dots = (base % dots_n) as u8;
+				(state, node, dots | (capture << 2) | (emblem << 3))
 			}
 			SearchMove::Move { from, to } => (0, from, to),
+			SearchMove::Claim { node } => (u16::MAX - 1, node, 0),
 			SearchMove::Pass => (u16::MAX, 0, 0),
 		}
 	}
@@ -64,19 +78,41 @@ impl SearchMove {
 	pub fn unpack(kind: u16, a: u8, b: u8) -> Option<Self> {
 		match kind {
 			u16::MAX => Some(SearchMove::Pass),
+			k if k == u16::MAX - 1 => Some(SearchMove::Claim { node: a }),
 			0 => Some(SearchMove::Move { from: a, to: b }),
 			state
 				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
-					&& b < KIND_DOTS as u8 =>
+					&& (b & 3) < KIND_DOTS as u8
+					&& ((b >> 2) & 1) <= 1
+					&& (b >> 3) <= 4 =>
 			{
+				let dots = b & 3;
+				let capture = (b >> 2) & 1;
+				let emblem = b >> 3;
 				Some(SearchMove::Add {
-					kind: (state - 1) * KIND_DOTS as u16 + u16::from(b),
+					kind: u32::from(state - 1) * KIND_DOTS as u32
+						+ u32::from(dots) + (u32::from(capture) << 16)
+						+ (u32::from(emblem) << 17),
 					node: a,
 				})
 			}
 			_ => None,
 		}
 	}
+}
+
+pub fn search_kind(tile: crate::game::Tile) -> u32 {
+	(tile.kind_index() as u32)
+		| (u32::from(tile.capture.bit()) << 16)
+		| (u32::from(tile.emblem.bit()) << 17)
+}
+
+fn kind_index_of(kind: u32) -> usize {
+	(kind & 0xFFFF) as usize
+}
+
+fn capture_bit_of(kind: u32) -> u8 {
+	((kind >> 16) as u8) & 1
 }
 
 /// Legal actions with duplicate ADD kinds collapsed (one index per kind).
@@ -89,7 +125,7 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	let bench = game.bench(current);
 	// `budget()` is usable ADD permission (min(tokens, remaining deck)).
 	if game.budget(current) > 0 && !bench.is_empty() {
-		let mut seen = [false; KIND_COUNT];
+		let mut seen = std::collections::HashSet::<u32>::new();
 		let dests: Vec<NodeId> = if game.rules().add_only_on_spawns {
 			game.board()
 				.spawns()
@@ -103,18 +139,20 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 				.collect()
 		};
 		for tile in bench {
-			let k = tile.kind_index();
-			if seen[k] {
+			let k = search_kind(*tile);
+			if !seen.insert(k) {
 				continue;
 			}
-			seen[k] = true;
 			for &node in &dests {
-				out.push(SearchMove::Add { kind: k as u16, node });
+				out.push(SearchMove::Add { kind: k, node });
 			}
 		}
 	}
 	for mv in game.legal_moves() {
 		out.push(SearchMove::from_action(game, mv));
+	}
+	for claim in game.legal_claims() {
+		out.push(SearchMove::from_action(game, claim));
 	}
 	if out.is_empty() && !game.rules().no_moves_loses {
 		out.push(SearchMove::Pass);
@@ -128,7 +166,7 @@ pub fn apply_move(game: &mut Game, mv: SearchMove) -> Result<crate::game::Action
 }
 
 /// True when the action removed at least one tile (capture / overwhelm).
-/// Own-tile removals count: they earn capture budget the same as opponent tiles.
+/// Own-tile removals count: they follow the acting tile's capture mark.
 pub fn is_capture(outcome: &crate::game::ActionOutcome, _mover: crate::game::Player) -> bool {
 	!outcome.removals.is_empty() || outcome.draws > 0
 }
@@ -168,22 +206,57 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 						}
 					}
 				}
+				if tile.capture.is_dot() {
+					if game.bench(tile.owner).len() < 4 {
+						s += 10;
+					}
+				} else if game.budget_token_count(tile.owner) < 3 {
+					s += 10;
+				}
+			}
+			s
+		}
+		SearchMove::Claim { node } => {
+			let mut s = 280;
+			if let Some(tile) = game.tile_at(node) {
+				if tile.owner != game.current_player() {
+					s += 160;
+				} else {
+					s += 40;
+				}
+				s += 12 * i32::from(tile.weight);
+			}
+			if game.budget_token_count(game.current_player()) < 3 {
+				s += 30;
 			}
 			s
 		}
 		SearchMove::Add { kind, node } => {
 			let mut s = 12;
-			let view = crate::game::decode_color_state((kind / KIND_DOTS as u16) as usize);
-			let add_all = view.normal | view.zag | view.braid;
+			let view = crate::game::decode_color_state(kind_index_of(kind) / KIND_DOTS);
+			let add_all = view.normal | view.zag | view.braid | view.bead;
+			let me = game.current_player();
+			if capture_bit_of(kind) == 1 {
+				if game.bench(me).len() < 4 {
+					s += 8;
+				}
+			} else if game.budget_token_count(me) < 3 {
+				s += 8;
+			}
 			for nb in game.board().incident_others(node) {
 				if let Some(other) = game.tile_at(nb) {
 					if other.owner == game.current_player() {
 						s += 10;
 					}
 					let braid_hit = view.braid_size >= 2
-						&& (0..6).all(|i| other.color_counts()[i] >= view.braid_counts[i]);
+						&& (0..6)
+							.all(|i| other.non_zag_colors_multiset()[i] >= view.braid_counts[i]);
+					let bead_unmatched =
+						view.bead != 0 && (view.bead & other.non_zag_color_mask()) != view.bead;
 					if braid_hit {
 						s += 14 + i32::from(view.braid_size);
+					} else if bead_unmatched {
+						s += 20;
 					} else if other.normal_mask() & view.normal != 0 {
 						s += 16;
 					} else if other.color_mask() & view.zag != 0
@@ -194,8 +267,10 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 							.any(|(i, c)| other.ring_is_zag(i) && add_all & c.bit() != 0)
 					{
 						s += 18;
-					} else if (view.normal != 0 || view.braid_size >= 2)
-						&& (other.normal_mask() != 0 || other.braid_ring_count() >= 2)
+					} else if (view.normal != 0 || view.braid_size >= 2 || view.bead != 0)
+						&& (other.normal_mask() != 0
+							|| other.braid_ring_count() >= 2
+							|| other.bead_ring_count() > 0)
 					{
 						s += 6;
 					}
@@ -212,7 +287,7 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
-	use crate::game::{Game, RuleSet};
+	use crate::game::{CaptureMark, Game, RuleSet};
 
 	#[test]
 	fn collapsed_adds_are_no_more_than_full_legal() {
@@ -233,10 +308,10 @@ mod tests {
 
 	#[test]
 	fn pack_round_trip_add_and_move() {
-		let add = SearchMove::Add { kind: KIND_DOTS as u16 + 1, node: 3 };
+		let add = SearchMove::Add { kind: KIND_DOTS as u32 + 1, node: 3 };
 		let (k, a, b) = add.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(add));
-		let zag_add = SearchMove::Add { kind: 20 * KIND_DOTS as u16 + 2, node: 5 };
+		let zag_add = SearchMove::Add { kind: 20 * KIND_DOTS as u32 + 2, node: 5 };
 		let packed = zag_add.pack();
 		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(zag_add));
 		let braid = crate::game::Tile::with_typed_rings(
@@ -249,12 +324,34 @@ mod tests {
 			1,
 			1,
 		);
-		let braid_add = SearchMove::Add { kind: braid.kind_index() as u16, node: 4 };
+		let braid_add = SearchMove::Add { kind: search_kind(braid), node: 4 };
 		let packed = braid_add.pack();
 		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(braid_add));
+		let dotted = braid.with_capture(CaptureMark::Dot);
+		let dotted_add = SearchMove::Add { kind: search_kind(dotted), node: 4 };
+		let packed = dotted_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(dotted_add));
+		assert_ne!(braid_add, dotted_add);
+		let moon = dotted.with_emblem(crate::game::Emblem::CrescentMoon);
+		let moon_add = SearchMove::Add { kind: search_kind(moon), node: 4 };
+		let packed = moon_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(moon_add));
+		assert_ne!(dotted_add, moon_add);
+		let wall = dotted.with_emblem(crate::game::Emblem::Blocker);
+		let wall_add = SearchMove::Add { kind: search_kind(wall), node: 4 };
+		let packed = wall_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(wall_add));
+		let rose = dotted.with_emblem(crate::game::Emblem::Rosette);
+		let rose_add = SearchMove::Add { kind: search_kind(rose), node: 4 };
+		let packed = rose_add.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(rose_add));
+		assert_ne!(wall_add, rose_add);
 		let mv = SearchMove::Move { from: 2, to: 7 };
 		let (k, a, b) = mv.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));
+		let claim = SearchMove::Claim { node: 9 };
+		let packed = claim.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(claim));
 	}
 
 	#[test]
@@ -286,8 +383,8 @@ mod tests {
 			1,
 			1,
 		);
-		let hit = SearchMove::Add { kind: braid.kind_index() as u16, node: spawn };
-		let miss_mv = SearchMove::Add { kind: miss.kind_index() as u16, node: spawn };
+		let hit = SearchMove::Add { kind: search_kind(braid), node: spawn };
+		let miss_mv = SearchMove::Add { kind: search_kind(miss), node: spawn };
 		assert!(cheap_order(&game, hit) > cheap_order(&game, miss_mv));
 	}
 
@@ -304,5 +401,39 @@ mod tests {
 		rules.no_moves_loses = false;
 		let game = Game::empty(rules);
 		assert_eq!(legal_search_moves(&game), vec![SearchMove::Pass]);
+	}
+
+	#[test]
+	fn apply_move_dot_capture_flips_opponent_onto_mover_bench() {
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let opp = game.alloc_tile(crate::game::Player::Two, crate::game::TileColor::Green, 2, 1);
+		let opp_id = opp.id;
+		game.place_tile(spawn, opp);
+		let holder =
+			game.alloc_tile(crate::game::Player::One, crate::game::TileColor::Orange, 1, 1);
+		game.place_tile(nbs[1], holder);
+		let mover = game
+			.alloc_tile(crate::game::Player::One, crate::game::TileColor::Blue, 3, 1)
+			.with_capture(CaptureMark::Dot);
+		game.place_tile(from, mover);
+		game.set_current(crate::game::Player::One);
+		let outcome = apply_move(&mut game, SearchMove::Move { from, to: land }).unwrap();
+		assert!(outcome.removals.iter().any(|r| r.tile.id == opp_id));
+		assert!(game
+			.bench(crate::game::Player::One)
+			.iter()
+			.any(|t| t.id == opp_id && t.owner == crate::game::Player::One));
+		assert!(game.deck_slots(crate::game::Player::One).iter().any(|s| s
+			.tile()
+			.is_some_and(|t| t.id == opp_id && t.owner == crate::game::Player::One)));
 	}
 }

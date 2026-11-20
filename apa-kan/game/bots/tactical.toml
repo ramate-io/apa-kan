@@ -1,0 +1,11 @@
+# Aggressive / tactical personality.
+# Deeper quiescence, heavier capture/center ordering, short MCTS playouts.
+# Missing keys take the `enhanced` defaults (LMR on, PVS on, PW off).
+name = "tactical"
+description = "Aggressive / tactical"
+q_depth = 8
+order_capture_scale = 160
+order_center_bonus = 20000
+playout_cutoff = 6
+puct = 1.125
+playout_epsilon = 0.125

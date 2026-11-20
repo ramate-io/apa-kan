@@ -3,7 +3,9 @@
 pub mod ai;
 pub mod bench_log;
 pub mod board;
+pub mod characters;
 pub mod config;
+pub mod deck;
 pub mod game;
 pub mod render;
 pub mod scenario;

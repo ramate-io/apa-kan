@@ -2,10 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
-	Action, ActionOutcome, BraidFailMismatch, BudgetToken, EndReason, Game, GameStatus,
+	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
+	CaptureMode, ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
 	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
-	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
+	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, TurnGainKind, ZagMismatchCount,
+	DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -22,8 +25,84 @@ fn skip_zero_u8(v: &u8) -> bool {
 	*v == 0
 }
 
+fn skip_zero_u16(v: &u16) -> bool {
+	*v == 0
+}
+
 fn skip_zero_usize(v: &usize) -> bool {
 	*v == 0
+}
+
+fn skip_zero_u32(v: &u32) -> bool {
+	*v == 0
+}
+
+fn skip_zero_f32(v: &f32) -> bool {
+	*v == 0.0
+}
+
+fn skip_zero_f64(v: &f64) -> bool {
+	*v == 0.0
+}
+
+fn default_independent() -> String {
+	BeadScoring::Independent.name().to_string()
+}
+
+fn skip_independent(v: &String) -> bool {
+	v == BeadScoring::Independent.name()
+}
+
+fn default_additive_channel_mode() -> String {
+	ChannelMode::Additive.name().to_string()
+}
+
+fn skip_additive_channel_mode(v: &String) -> bool {
+	v == ChannelMode::Additive.name()
+}
+
+fn default_cascade_capture_mode() -> String {
+	CaptureMode::Cascade.name().to_string()
+}
+
+fn skip_cascade_capture_mode(v: &String) -> bool {
+	v == CaptureMode::Cascade.name()
+}
+
+fn default_mixed() -> String {
+	DeckArchetype::Mixed.name().to_string()
+}
+
+fn skip_mixed(v: &String) -> bool {
+	v == DeckArchetype::Mixed.name()
+}
+
+fn default_triangle() -> String {
+	CaptureMark::Triangle.name().to_string()
+}
+
+fn skip_triangle(v: &String) -> bool {
+	v == "triangle"
+}
+
+fn default_none() -> String {
+	Emblem::None.name().to_string()
+}
+
+fn skip_none(v: &String) -> bool {
+	v == "none"
+}
+
+fn default_emblem_weights() -> String {
+	EmblemWeights::default().label()
+}
+
+fn skip_default_emblem_weights(v: &String) -> bool {
+	*v == EmblemWeights::default().label()
+}
+
+fn default_dot_percent() -> u8 {
+	DOT_PERCENT_DEFAULT
 }
 
 fn player_num(p: Player) -> u8 {
@@ -78,6 +157,9 @@ pub struct RingLog {
 	pub z: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub b: bool,
+	/// Bead ring. Absent/false on logs from before beads.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub e: bool,
 }
 
 /// Full tile identity: ids, owner, dots, weight (= ring-slot count), rings.
@@ -92,6 +174,15 @@ pub struct TileLog {
 	pub zag_rings: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub braid_rings: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub bead_rings: u8,
+	/// Capture mark. Absent on logs from before capture modifiers; those
+	/// replay as triangle (spawn-token dest).
+	#[serde(default = "default_triangle")]
+	pub capture: String,
+	/// Emblem slot. Absent on logs from before emblems; those replay as none.
+	#[serde(default = "default_none", skip_serializing_if = "skip_none")]
+	pub emblem: String,
 	pub rings: Vec<RingLog>,
 }
 
@@ -105,6 +196,7 @@ impl TileLog {
 				c: c.tag().to_string(),
 				z: tile.ring_is_zag(i),
 				b: tile.ring_is_braid(i),
+				e: tile.ring_is_bead(i),
 			})
 			.collect();
 		Self {
@@ -116,6 +208,9 @@ impl TileLog {
 			normal_rings: tile.normal_ring_count(),
 			zag_rings: tile.zag_ring_count(),
 			braid_rings: tile.braid_ring_count(),
+			bead_rings: tile.bead_ring_count(),
+			capture: tile.capture.name().to_string(),
+			emblem: tile.emblem.name().to_string(),
 			rings,
 		}
 	}
@@ -130,13 +225,17 @@ impl TileLog {
 					RingType::Braid
 				} else if r.z {
 					RingType::Zag
+				} else if r.e {
+					RingType::Bead
 				} else {
 					RingType::Normal
 				};
 				Ok((TileColor::parse(&r.c)?, typ))
 			})
 			.collect();
-		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.n_rings, self.dots);
+		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.n_rings, self.dots)
+			.with_capture(CaptureMark::parse(&self.capture).unwrap_or(CaptureMark::Triangle))
+			.with_emblem(Emblem::parse(&self.emblem).unwrap_or(Emblem::None));
 		tile.id = self.id;
 		debug_assert_eq!(tile.weight, tile.n_rings);
 		Ok(tile)
@@ -151,7 +250,7 @@ fn tiles_to_log(tiles: &[Tile]) -> Vec<TileLog> {
 	tiles.iter().copied().map(TileLog::from_tile).collect()
 }
 
-/// Piece identity on an action: dots plus normal/zag/braid ring counts.
+/// Piece identity on an action: dots plus normal/zag/braid/bead ring counts.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PieceRef {
 	pub id: u32,
@@ -161,6 +260,12 @@ pub struct PieceRef {
 	pub zag_rings: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub braid_rings: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub bead_rings: u8,
+	#[serde(default = "default_triangle", skip_serializing_if = "skip_triangle")]
+	pub capture: String,
+	#[serde(default = "default_none", skip_serializing_if = "skip_none")]
+	pub emblem: String,
 }
 
 impl PieceRef {
@@ -172,6 +277,9 @@ impl PieceRef {
 			normal_rings: tile.normal_ring_count(),
 			zag_rings: tile.zag_ring_count(),
 			braid_rings: tile.braid_ring_count(),
+			bead_rings: tile.bead_ring_count(),
+			capture: tile.capture.name().to_string(),
+			emblem: tile.emblem.name().to_string(),
 		}
 	}
 }
@@ -181,6 +289,10 @@ impl PieceRef {
 pub struct RulesLog {
 	pub starting_bench: u8,
 	pub bag_size: u8,
+	/// Full collection size. Absent/0 on logs from before deck-building;
+	/// replay then uses `bag_size`.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub deck_size: u8,
 	pub self_capture_budget: bool,
 	pub identical_bags: bool,
 	pub bag_one_of_each_kind: bool,
@@ -188,6 +300,12 @@ pub struct RulesLog {
 	pub zag_numer: u8,
 	#[serde(default)]
 	pub braid_numer: u8,
+	/// Absent/0 on logs from before beads; replay then uses 0 (beads off).
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub bead_numer: u8,
+	/// Absent on logs from before capture modifiers; replay uses 50.
+	#[serde(default = "default_dot_percent")]
+	pub dot_percent: u8,
 	pub capture_draw_on_move: bool,
 	pub mismatch_uses_neighbor_weight: bool,
 	pub actions_per_turn: u8,
@@ -206,6 +324,14 @@ pub struct RulesLog {
 	pub control_win: bool,
 	pub control_n: u8,
 	pub control_hold_turns: u8,
+	/// `control-cascade` (live default) or `low-value` (baseline fixed-5).
+	/// Absent on older logs; replay uses `low-value`, which matches those ends.
+	#[serde(default = "default_low_value_endgame")]
+	pub endgame_rule: String,
+	/// Extra turn for the material leader on a non-winning cascade drop.
+	/// Absent on older logs; replay uses off (PR #74).
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub cascade_turn_gain: bool,
 	pub insufficient_tiles_loss: String,
 	pub path_constraint: String,
 	pub counted_pass_through: bool,
@@ -220,6 +346,60 @@ pub struct RulesLog {
 	/// omit it (unique-neighbor scoring); full replay of those is skipped.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub score_incident_arcs: Option<bool>,
+	/// Present (`true`) once normal/bead/braid matches ignore zag colors.
+	/// Older logs omit it (zag colors counted as matches); full replay of
+	/// those is skipped because capture outcomes differ.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub zag_match_non_zag: Option<bool>,
+	/// `shared` (rule B, live default for additive) or `independent` (rule A).
+	/// Absent on older logs; replay uses independent, which matches those captures.
+	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
+	pub bead_scoring: String,
+	/// `independent-max` (live default) or `additive` (RFC 001-001-002).
+	/// Absent on older logs; replay uses additive, which matches those captures.
+	#[serde(
+		default = "default_additive_channel_mode",
+		skip_serializing_if = "skip_additive_channel_mode"
+	)]
+	pub channel_mode: String,
+	/// `local-claim` (live default) or `cascade` (PR #70 full-board sweep).
+	/// Absent on older logs; replay uses cascade, matching those captures.
+	#[serde(
+		default = "default_cascade_capture_mode",
+		skip_serializing_if = "skip_cascade_capture_mode"
+	)]
+	pub capture_mode: String,
+	/// `none,crescent,zs[,blocker,rosette]` generation weights. Absent on
+	/// older logs; replay uses the live default only for new deals, not
+	/// historical tiles (those already store `emblem` per tile).
+	#[serde(
+		default = "default_emblem_weights",
+		skip_serializing_if = "skip_default_emblem_weights"
+	)]
+	pub emblem_weights: String,
+	/// What Blocker stops as a MOVE intermediate. Absent on older logs;
+	/// replay uses `traversal`.
+	#[serde(
+		default = "default_blocker_blocks",
+		skip_serializing_if = "skip_default_blocker_blocks"
+	)]
+	pub blocker_blocks: String,
+}
+
+fn default_low_value_endgame() -> String {
+	EndgameRule::LowValue.name().to_string()
+}
+
+fn default_control_ratchet() -> u8 {
+	5
+}
+
+fn default_blocker_blocks() -> String {
+	BlockerBlocks::default().name().to_string()
+}
+
+fn skip_default_blocker_blocks(v: &String) -> bool {
+	*v == BlockerBlocks::default().name()
 }
 
 impl RulesLog {
@@ -227,12 +407,15 @@ impl RulesLog {
 		Self {
 			starting_bench: r.starting_bench_size,
 			bag_size: r.bag_size,
+			deck_size: r.deck_size,
 			self_capture_budget: r.self_capture_budget,
 			identical_bags: r.identical_bags,
 			bag_one_of_each_kind: r.bag_one_of_each_kind,
 			max_rings: r.max_rings,
 			zag_numer: r.zag_numer,
 			braid_numer: r.braid_numer,
+			bead_numer: r.bead_numer,
+			dot_percent: r.dot_percent,
 			capture_draw_on_move: r.capture_draw_on_move,
 			mismatch_uses_neighbor_weight: r.mismatch_uses_neighbor_weight,
 			actions_per_turn: r.actions_per_turn,
@@ -251,6 +434,8 @@ impl RulesLog {
 			control_win: r.control_win,
 			control_n: r.control_n,
 			control_hold_turns: r.control_hold_turns,
+			endgame_rule: r.endgame_rule.name().into(),
+			cascade_turn_gain: r.cascade_turn_gain,
 			insufficient_tiles_loss: r.insufficient_tiles_loss.name().into(),
 			path_constraint: r.path_constraint.name().into(),
 			counted_pass_through: r.counted_pass_through,
@@ -258,6 +443,12 @@ impl RulesLog {
 			zag_mismatch: r.zag_mismatch.name().into(),
 			braid_fail_mismatch: Some(r.braid_fail_mismatch.name().into()),
 			score_incident_arcs: Some(true),
+			zag_match_non_zag: Some(true),
+			bead_scoring: r.bead_scoring.name().into(),
+			channel_mode: r.channel_mode.name().into(),
+			capture_mode: r.capture_mode.name().into(),
+			emblem_weights: r.emblem_weights.label(),
+			blocker_blocks: r.blocker_blocks.name().into(),
 		}
 	}
 
@@ -265,12 +456,15 @@ impl RulesLog {
 		Ok(RuleSet {
 			starting_bench_size: self.starting_bench,
 			bag_size: self.bag_size,
+			deck_size: if self.deck_size == 0 { self.bag_size } else { self.deck_size },
 			self_capture_budget: self.self_capture_budget,
 			identical_bags: self.identical_bags,
 			bag_one_of_each_kind: self.bag_one_of_each_kind,
 			max_rings: self.max_rings,
 			zag_numer: self.zag_numer,
 			braid_numer: self.braid_numer,
+			bead_numer: self.bead_numer,
+			dot_percent: self.dot_percent,
 			capture_draw_on_move: self.capture_draw_on_move,
 			mismatch_uses_neighbor_weight: self.mismatch_uses_neighbor_weight,
 			actions_per_turn: self.actions_per_turn,
@@ -289,6 +483,8 @@ impl RulesLog {
 			control_win: self.control_win,
 			control_n: self.control_n,
 			control_hold_turns: self.control_hold_turns,
+			endgame_rule: EndgameRule::parse(&self.endgame_rule)?,
+			cascade_turn_gain: self.cascade_turn_gain,
 			insufficient_tiles_loss: InsufficientTilesLoss::parse(&self.insufficient_tiles_loss)?,
 			path_constraint: PathConstraint::parse(&self.path_constraint)?,
 			counted_pass_through: self.counted_pass_through,
@@ -298,12 +494,18 @@ impl RulesLog {
 				Some(s) => BraidFailMismatch::parse(s)?,
 				None => BraidFailMismatch::One,
 			},
+			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
+			channel_mode: ChannelMode::parse(&self.channel_mode)?,
+			capture_mode: CaptureMode::parse(&self.capture_mode)?,
+			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
+				.unwrap_or_else(|_| EmblemWeights::default()),
+			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
 		})
 	}
 }
 
-/// Opening deal: the public remaining deck (`p*_bench`), leftover hidden bag
-/// (empty on new games; kept so historical JSONL replays), and spawn tokens.
+/// Opening deal: the public 11-tile bench (`p*_bench`), leftover **reserves**
+/// (`p*_bag`; never usable in play), and spawn tokens.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpeningLog {
 	pub p1_bench: Vec<TileLog>,
@@ -312,6 +514,68 @@ pub struct OpeningLog {
 	pub p2_bag: Vec<TileLog>,
 	pub p1_tokens: usize,
 	pub p2_tokens: usize,
+	/// One-way control-cascade checkpoint at the opening deal.
+	#[serde(default = "default_control_ratchet")]
+	pub control_ratchet: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p1: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p2: u8,
+}
+
+/// Full collection, revealed 7-picks, and +4 extensions. Absent on logs from
+/// before deck-building; those games already stored the public bench in
+/// [`OpeningLog`].
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetupLog {
+	pub deck_seed: u64,
+	pub deck_noise: u8,
+	pub pick: String,
+	pub p1_deck: Vec<TileLog>,
+	pub p2_deck: Vec<TileLog>,
+	pub p1_pick7: Vec<TileLog>,
+	pub p2_pick7: Vec<TileLog>,
+	pub p1_extend: Vec<TileLog>,
+	pub p2_extend: Vec<TileLog>,
+	#[serde(default = "default_mixed", skip_serializing_if = "skip_mixed")]
+	pub p1_arch: String,
+	#[serde(default = "default_mixed", skip_serializing_if = "skip_mixed")]
+	pub p2_arch: String,
+}
+
+impl SetupLog {
+	pub fn from_record(rec: &crate::deck::SetupRecord) -> Self {
+		Self {
+			deck_seed: rec.deck_seed,
+			deck_noise: rec.deck_noise,
+			pick: rec.strategy.name().into(),
+			p1_deck: tiles_to_log(&rec.decks[0]),
+			p2_deck: tiles_to_log(&rec.decks[1]),
+			p1_pick7: tiles_to_log(&rec.pick7[0]),
+			p2_pick7: tiles_to_log(&rec.pick7[1]),
+			p1_extend: tiles_to_log(&rec.extend[0]),
+			p2_extend: tiles_to_log(&rec.extend[1]),
+			p1_arch: rec.p1_deck.name().into(),
+			p2_arch: rec.p2_deck.name().into(),
+		}
+	}
+
+	pub fn from_game(game: &Game) -> Option<Self> {
+		game.setup_record().map(Self::from_record)
+	}
+
+	pub fn to_record(&self) -> Result<crate::deck::SetupRecord, String> {
+		Ok(crate::deck::SetupRecord {
+			decks: [tiles_from_log(&self.p1_deck)?, tiles_from_log(&self.p2_deck)?],
+			pick7: [tiles_from_log(&self.p1_pick7)?, tiles_from_log(&self.p2_pick7)?],
+			extend: [tiles_from_log(&self.p1_extend)?, tiles_from_log(&self.p2_extend)?],
+			strategy: PickStrategy::parse(&self.pick).unwrap_or(PickStrategy::Heuristic),
+			deck_seed: self.deck_seed,
+			deck_noise: self.deck_noise,
+			p1_deck: DeckArchetype::parse(&self.p1_arch).unwrap_or(DeckArchetype::Mixed),
+			p2_deck: DeckArchetype::parse(&self.p2_arch).unwrap_or(DeckArchetype::Mixed),
+		})
+	}
 }
 
 impl OpeningLog {
@@ -323,12 +587,15 @@ impl OpeningLog {
 			p2_bag: tiles_to_log(game.bag(Player::Two)),
 			p1_tokens: game.budget_token_count(Player::One),
 			p2_tokens: game.budget_token_count(Player::Two),
+			control_ratchet: game.control_ratchet(),
+			extra_turns_p1: game.extra_turns(Player::One),
+			extra_turns_p2: game.extra_turns(Player::Two),
 		}
 	}
 }
 
-/// One applied action. `kind` is ADD/MOVE/PASS; capture flags are outcomes.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// One applied action. `kind` is ADD/MOVE/CLAIM/PASS; capture flags are outcomes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ActionLog {
 	pub turn: u32,
 	pub player: u8,
@@ -345,12 +612,81 @@ pub struct ActionLog {
 	pub self_capture: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub draws: u8,
+	/// `bench` or `tokens`. Absent when the action captured nothing.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub capture_dest: Option<String>,
+	/// One entry per simultaneous removal. Same dest on every entry.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub captures: Vec<CaptureEventLog>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub piece: Option<PieceRef>,
 	pub tokens: usize,
 	pub budget: usize,
 	#[serde(default, skip_serializing_if = "skip_zero_usize")]
 	pub surplus: usize,
+	/// Minimax completed iterative-deepening depth this move. Absent for MCTS.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mm_depth: u8,
+	/// MCTS tree max depth this move (root = 0). Absent for minimax.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mcts_max_depth: u8,
+	/// Visit-weighted mean MCTS node depth this move, excluding the root.
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub mcts_avg_depth: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_entropy: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_eff_branch: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_top1_share: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_u16")]
+	pub root_near_best_q: u16,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_q_spread_top10: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_f32")]
+	pub root_best_stability: f32,
+	#[serde(default, skip_serializing_if = "skip_zero_u16")]
+	pub root_legal: u16,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub crescent_saves: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub zs_bonuses: u8,
+	/// Tiles that were overwhelmed before this action and are still on the
+	/// board, no longer overwhelmed, afterwards.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub healed: u8,
+	/// Overwhelmed tiles remaining on the board after this action.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub leftover_overwhelmed: u8,
+	/// One-way control-cascade checkpoint after this action.
+	#[serde(default = "default_control_ratchet")]
+	pub control_ratchet: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p1: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p2: u8,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub extra_turn_active: bool,
+	/// `mover` or `opponent` when this action awarded cascade turn gain.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub turn_gain: Option<String>,
+}
+
+/// One captured tile: original owner and where it went.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CaptureEventLog {
+	pub node: u8,
+	pub owner: u8,
+	pub dest: String,
+	/// Some incident edge had a non-zero bead match or bead mismatch.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub bead_contrib: bool,
+	/// Would not have been overwhelmed with the bead channel zeroed.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub bead_needed: bool,
+	/// Fresh 2-ring ADD popped; a 1-bead neighbor was decisive.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub spawn_two_ring_single_bead: bool,
 }
 
 impl ActionLog {
@@ -366,10 +702,24 @@ impl ActionLog {
 				("ADD".to_string(), None, Some(node), Some(bench_index))
 			}
 			Action::Move { from, to } => ("MOVE".to_string(), Some(from), Some(to), None),
+			Action::Claim { node } => ("CLAIM".to_string(), None, Some(node), None),
 			Action::Pass => ("PASS".to_string(), None, None, None),
 		};
 		let capture = outcome.removals.iter().filter(|r| r.tile.owner != player).count() as u8;
 		let self_capture = outcome.removals.iter().filter(|r| r.tile.owner == player).count() as u8;
+		let captures: Vec<CaptureEventLog> = outcome
+			.removals
+			.iter()
+			.map(|r| CaptureEventLog {
+				node: r.node,
+				owner: player_num(r.tile.owner),
+				dest: r.dest.name().to_string(),
+				bead_contrib: r.bead_contrib,
+				bead_needed: r.bead_needed,
+				spawn_two_ring_single_bead: r.spawn_two_ring_single_bead,
+			})
+			.collect();
+		let capture_dest = captures.first().map(|c| c.dest.clone());
 		Self {
 			turn: game_after.turn_count(),
 			player: player_num(player),
@@ -380,11 +730,51 @@ impl ActionLog {
 			capture,
 			self_capture,
 			draws: outcome.draws,
+			capture_dest,
+			captures,
 			piece: piece.map(PieceRef::from_tile),
 			tokens: game_after.budget_token_count(player),
 			budget: game_after.budget(player),
 			surplus: game_after.budget_surplus(player),
+			mm_depth: 0,
+			mcts_max_depth: 0,
+			mcts_avg_depth: 0.0,
+			root_entropy: 0.0,
+			root_eff_branch: 0.0,
+			root_top1_share: 0.0,
+			root_near_best_q: 0,
+			root_q_spread_top10: 0.0,
+			root_best_stability: 0.0,
+			root_legal: 0,
+			crescent_saves: outcome.emblem.crescent_saves,
+			zs_bonuses: outcome.emblem.zs_bonuses,
+			healed: 0,
+			leftover_overwhelmed: game_after.overwhelmed_nodes().len() as u8,
+			control_ratchet: game_after.control_ratchet(),
+			extra_turns_p1: game_after.extra_turns(Player::One),
+			extra_turns_p2: game_after.extra_turns(Player::Two),
+			extra_turn_active: game_after.extra_turn_active(),
+			turn_gain: game_after.last_turn_gain().map(TurnGainKind::name).map(str::to_string),
 		}
+	}
+
+	pub fn with_overwhelm_delta(mut self, healed: u8) -> Self {
+		self.healed = healed;
+		self
+	}
+
+	pub fn with_search(mut self, stats: crate::ai::SearchStats) -> Self {
+		self.mm_depth = stats.depth;
+		self.mcts_max_depth = stats.mcts_max_depth;
+		self.mcts_avg_depth = stats.mcts_avg_depth;
+		self.root_entropy = stats.root_entropy;
+		self.root_eff_branch = stats.root_eff_branch;
+		self.root_top1_share = stats.root_top1_share;
+		self.root_near_best_q = stats.root_near_best_q;
+		self.root_q_spread_top10 = stats.root_q_spread_top10;
+		self.root_best_stability = stats.root_best_stability;
+		self.root_legal = stats.root_legal;
+		self
 	}
 
 	pub fn to_action(&self) -> Result<Action, String> {
@@ -399,6 +789,10 @@ impl ActionLog {
 				let to = self.to.ok_or("MOVE missing to")?;
 				Ok(Action::Move { from, to })
 			}
+			"CLAIM" => {
+				let node = self.to.ok_or("CLAIM missing to")?;
+				Ok(Action::Claim { node })
+			}
 			"PASS" => Ok(Action::Pass),
 			other => Err(format!("unknown action kind '{other}'")),
 		}
@@ -409,6 +803,7 @@ impl ActionLog {
 		match self.kind.as_str() {
 			"ADD" => tags.push("ADD"),
 			"MOVE" => tags.push("MOVE"),
+			"CLAIM" => tags.push("CLAIM"),
 			"PASS" => tags.push("PASS"),
 			_ => {}
 		}
@@ -458,26 +853,84 @@ pub struct EndLog {
 	pub winner: Option<u8>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub low_value: Option<LowValueLog>,
+	/// Ratcheted control target at game end (`2..=control_n` under cascade).
+	/// Recorded so control wins are reconstructible by checkpoint.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub control_target: Option<u8>,
+	/// `max(p1, p2)` of board + usable spawn budget at game end.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_mat: Option<u8>,
+	/// Stored one-way ratchet at game end (stays put even if `max_mat <= 1`).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub control_ratchet: Option<u8>,
+	/// `immediate` for a unique-holder drop win, `hold` for `control_hold_turns`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub control_win_kind: Option<String>,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub turn_gain_awarded: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub turn_gain_mover: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub turn_gain_opponent: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub extra_turns_played: u32,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub ended_on_extra: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub ended_after_extra: bool,
 }
 
 impl EndLog {
 	pub fn from_status(status: GameStatus, low_value: Option<LowValueResolution>) -> Self {
 		let low_value = low_value.map(LowValueLog::from_resolution);
 		match status {
-			GameStatus::InProgress => {
-				Self { status: "in_progress".into(), reason: None, winner: None, low_value }
-			}
+			GameStatus::InProgress => Self {
+				status: "in_progress".into(),
+				reason: None,
+				winner: None,
+				low_value,
+				control_target: None,
+				max_mat: None,
+				control_ratchet: None,
+				control_win_kind: None,
+				turn_gain_awarded: 0,
+				turn_gain_mover: 0,
+				turn_gain_opponent: 0,
+				extra_turns_played: 0,
+				ended_on_extra: false,
+				ended_after_extra: false,
+			},
 			GameStatus::Won { winner, reason } => Self {
 				status: "won".into(),
 				reason: Some(end_reason_name(reason).into()),
 				winner: Some(player_num(winner)),
 				low_value,
+				control_target: None,
+				max_mat: None,
+				control_ratchet: None,
+				control_win_kind: None,
+				turn_gain_awarded: 0,
+				turn_gain_mover: 0,
+				turn_gain_opponent: 0,
+				extra_turns_played: 0,
+				ended_on_extra: false,
+				ended_after_extra: false,
 			},
 			GameStatus::Draw { reason } => Self {
 				status: "draw".into(),
 				reason: Some(end_reason_name(reason).into()),
 				winner: None,
 				low_value,
+				control_target: None,
+				max_mat: None,
+				control_ratchet: None,
+				control_win_kind: None,
+				turn_gain_awarded: 0,
+				turn_gain_mover: 0,
+				turn_gain_opponent: 0,
+				extra_turns_played: 0,
+				ended_on_extra: false,
+				ended_after_extra: false,
 			},
 		}
 	}
@@ -511,6 +964,8 @@ pub struct BoardPieceLog {
 	pub zag_rings: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub braid_rings: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub bead_rings: u8,
 }
 
 impl BoardPieceLog {
@@ -523,6 +978,7 @@ impl BoardPieceLog {
 			normal_rings: tile.normal_ring_count(),
 			zag_rings: tile.zag_ring_count(),
 			braid_rings: tile.braid_ring_count(),
+			bead_rings: tile.bead_ring_count(),
 		}
 	}
 }
@@ -552,6 +1008,14 @@ pub struct FinalLog {
 	pub p2_bench: Vec<TileLog>,
 	pub p1_tokens: TokenStackLog,
 	pub p2_tokens: TokenStackLog,
+	#[serde(default = "default_control_ratchet")]
+	pub control_ratchet: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p1: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p2: u8,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub extra_turn_active: bool,
 }
 
 impl FinalLog {
@@ -573,6 +1037,10 @@ impl FinalLog {
 			p2_bench: tiles_to_log(game.bench(Player::Two)),
 			p1_tokens: TokenStackLog::from_game(game, Player::One),
 			p2_tokens: TokenStackLog::from_game(game, Player::Two),
+			control_ratchet: game.control_ratchet(),
+			extra_turns_p1: game.extra_turns(Player::One),
+			extra_turns_p2: game.extra_turns(Player::Two),
+			extra_turn_active: game.extra_turn_active(),
 		}
 	}
 }
@@ -595,11 +1063,55 @@ pub struct GameLog {
 	pub scenario: String,
 	pub rules: RulesLog,
 	pub opening: OpeningLog,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub setup: Option<SetupLog>,
 	pub turns: u32,
 	pub end: EndLog,
 	pub actions: Vec<ActionLog>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub final_state: Option<FinalLog>,
+	/// `braid vs bead`, `mixed vs mixed`, …
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deck_matchup: Option<String>,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub bead_contrib_captures: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub bead_needed_captures: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub spawn_two_ring_single_bead: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub crescent_saves: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub zs_bonuses: u32,
+	/// Mean minimax completed-ID depth over minimax moves in this game.
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub mm_depth_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mm_depth_max: u8,
+	/// Mean visit-weighted MCTS tree depth over MCTS moves in this game.
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub mcts_depth_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub mcts_depth_max: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_entropy_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_eff_branch_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_top1_share_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_near_best_q_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_q_spread_top10_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_best_stability_avg: f64,
+	#[serde(default, skip_serializing_if = "skip_zero_f64")]
+	pub root_legal_avg: f64,
+	/// Search-lever label for P1 (empty on logs from before search profiles).
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub p1_search: String,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub p2_search: String,
 }
 
 impl GameLog {
@@ -626,10 +1138,32 @@ impl GameLog {
 			scenario: scenario.into(),
 			rules: RulesLog::from_rules(*live.rules()),
 			opening: OpeningLog::from_game(live),
+			setup: SetupLog::from_game(live),
 			turns: 0,
 			end: EndLog::from_status(GameStatus::InProgress, None),
 			actions: Vec::new(),
 			final_state: None,
+			deck_matchup: live
+				.setup_record()
+				.map(|r| format!("{} vs {}", r.p1_deck.name(), r.p2_deck.name())),
+			bead_contrib_captures: 0,
+			bead_needed_captures: 0,
+			spawn_two_ring_single_bead: 0,
+			crescent_saves: 0,
+			zs_bonuses: 0,
+			mm_depth_avg: 0.0,
+			mm_depth_max: 0,
+			mcts_depth_avg: 0.0,
+			mcts_depth_max: 0,
+			root_entropy_avg: 0.0,
+			root_eff_branch_avg: 0.0,
+			root_top1_share_avg: 0.0,
+			root_near_best_q_avg: 0.0,
+			root_q_spread_top10_avg: 0.0,
+			root_best_stability_avg: 0.0,
+			root_legal_avg: 0.0,
+			p1_search: String::new(),
+			p2_search: String::new(),
 		}
 	}
 
@@ -643,10 +1177,115 @@ impl GameLog {
 		self.actions.push(ActionLog::record(action, piece, outcome, game_after));
 	}
 
+	pub fn push_action_with_search(
+		&mut self,
+		action: Action,
+		piece: Option<Tile>,
+		outcome: &ActionOutcome,
+		game_after: &Game,
+		stats: crate::ai::SearchStats,
+	) {
+		self.actions
+			.push(ActionLog::record(action, piece, outcome, game_after).with_search(stats));
+	}
+
 	pub fn finish(&mut self, live: &Game, low_value: Option<LowValueResolution>) {
 		self.turns = live.turn_count();
 		self.end = EndLog::from_status(live.status(), low_value);
+		self.end.control_target = live.cascade_control_target().or(Some(live.control_need()));
+		let max_mat = live.max_material().min(u8::MAX as usize) as u8;
+		self.end.max_mat = Some(max_mat);
+		self.end.control_ratchet = Some(live.control_ratchet());
+		if matches!(live.status(), GameStatus::Won { reason: EndReason::Control, .. }) {
+			self.end.control_win_kind =
+				Some(if live.control_win_immediate() { "immediate".into() } else { "hold".into() });
+		}
+		self.end.turn_gain_awarded = live.turn_gain_awarded();
+		self.end.turn_gain_mover = live.turn_gain_mover();
+		self.end.turn_gain_opponent = live.turn_gain_opponent();
+		self.end.extra_turns_played = live.extra_turns_played();
+		self.end.ended_on_extra = live.ended_on_extra_turn();
+		self.end.ended_after_extra = live.ended_after_extra_turn();
 		self.final_state = Some(FinalLog::from_game(live));
+		let mut contrib = 0u32;
+		let mut needed = 0u32;
+		let mut spawn = 0u32;
+		for act in &self.actions {
+			for cap in &act.captures {
+				if cap.bead_contrib {
+					contrib += 1;
+				}
+				if cap.bead_needed {
+					needed += 1;
+				}
+				if cap.spawn_two_ring_single_bead {
+					spawn += 1;
+				}
+			}
+		}
+		self.bead_contrib_captures = contrib;
+		self.bead_needed_captures = needed;
+		self.spawn_two_ring_single_bead = spawn;
+		self.crescent_saves = self.actions.iter().map(|a| u32::from(a.crescent_saves)).sum();
+		self.zs_bonuses = self.actions.iter().map(|a| u32::from(a.zs_bonuses)).sum();
+		let mut mm_sum = 0.0f64;
+		let mut mm_n = 0u32;
+		let mut mm_max = 0u8;
+		let mut mcts_sum = 0.0f64;
+		let mut mcts_n = 0u32;
+		let mut mcts_max = 0u8;
+		let mut ent = 0.0f64;
+		let mut eff = 0.0f64;
+		let mut top1 = 0.0f64;
+		let mut near = 0.0f64;
+		let mut qspread = 0.0f64;
+		let mut stab = 0.0f64;
+		let mut legal = 0.0f64;
+		let mut spread_n = 0u32;
+		for act in &self.actions {
+			if act.mm_depth > 0 {
+				mm_sum += f64::from(act.mm_depth);
+				mm_n += 1;
+				mm_max = mm_max.max(act.mm_depth);
+			}
+			if act.mcts_max_depth > 0 || act.mcts_avg_depth > 0.0 {
+				mcts_sum += f64::from(act.mcts_avg_depth);
+				mcts_n += 1;
+				mcts_max = mcts_max.max(act.mcts_max_depth);
+			}
+			if act.root_legal > 0 || act.root_eff_branch > 0.0 {
+				ent += f64::from(act.root_entropy);
+				eff += f64::from(act.root_eff_branch);
+				top1 += f64::from(act.root_top1_share);
+				near += f64::from(act.root_near_best_q);
+				qspread += f64::from(act.root_q_spread_top10);
+				stab += f64::from(act.root_best_stability);
+				legal += f64::from(act.root_legal);
+				spread_n += 1;
+			}
+		}
+		self.mm_depth_avg = if mm_n == 0 { 0.0 } else { mm_sum / f64::from(mm_n) };
+		self.mm_depth_max = mm_max;
+		self.mcts_depth_avg = if mcts_n == 0 { 0.0 } else { mcts_sum / f64::from(mcts_n) };
+		self.mcts_depth_max = mcts_max;
+		if spread_n == 0 {
+			self.root_entropy_avg = 0.0;
+			self.root_eff_branch_avg = 0.0;
+			self.root_top1_share_avg = 0.0;
+			self.root_near_best_q_avg = 0.0;
+			self.root_q_spread_top10_avg = 0.0;
+			self.root_best_stability_avg = 0.0;
+			self.root_legal_avg = 0.0;
+		} else {
+			let n = f64::from(spread_n);
+			self.root_entropy_avg = ent / n;
+			self.root_eff_branch_avg = eff / n;
+			self.root_top1_share_avg = top1 / n;
+			self.root_near_best_q_avg = near / n;
+			self.root_q_spread_top10_avg = qspread / n;
+			self.root_best_stability_avg = stab / n;
+			self.root_legal_avg = legal / n;
+		}
 	}
 }
 
@@ -672,11 +1311,16 @@ pub fn replay_center_captures(log: &GameLog) -> Result<(Game, u32, u32), String>
 		return Err(format!("unsupported log schema v={}", log.v));
 	}
 	let rules = log.rules.to_rules()?;
-	let mut game = Game::empty(rules);
-	game.set_bag(Player::One, tiles_from_log(&log.opening.p1_bag)?);
-	game.set_bag(Player::Two, tiles_from_log(&log.opening.p2_bag)?);
-	game.set_bench(Player::One, tiles_from_log(&log.opening.p1_bench)?);
-	game.set_bench(Player::Two, tiles_from_log(&log.opening.p2_bench)?);
+	let mut game = if let Some(setup) = &log.setup {
+		Game::from_setup_record(rules, log.seed, setup.to_record()?)
+	} else {
+		let mut game = Game::empty(rules);
+		game.set_bag(Player::One, tiles_from_log(&log.opening.p1_bag)?);
+		game.set_bag(Player::Two, tiles_from_log(&log.opening.p2_bag)?);
+		game.set_bench(Player::One, tiles_from_log(&log.opening.p1_bench)?);
+		game.set_bench(Player::Two, tiles_from_log(&log.opening.p2_bench)?);
+		game
+	};
 	game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; log.opening.p1_tokens]);
 	game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; log.opening.p2_tokens]);
 	game.set_current(Player::One);
@@ -792,6 +1436,7 @@ pub fn piece_for_action(game: &Game, action: Action) -> Option<Tile> {
 			game.bench(game.current_player()).get(bench_index).copied()
 		}
 		Action::Move { from, .. } => game.tile_at(from),
+		Action::Claim { node } => game.tile_at(node),
 		Action::Pass => None,
 	}
 }
@@ -877,6 +1522,7 @@ mod tests {
 			"scenario",
 			"rules",
 			"opening",
+			"setup",
 			"turns",
 			"end",
 			"actions",
@@ -900,11 +1546,16 @@ mod tests {
 		assert_eq!(parsed[0], log);
 		assert_eq!(parsed[0].v, SCHEMA_VERSION);
 		assert_eq!(parsed[0].rules.bag_size, 11);
+		assert_eq!(parsed[0].rules.deck_size, crate::game::BAG_SIZE as u8);
 		assert!(!parsed[0].rules.capture_draw_on_move);
-		assert!(!parsed[0].opening.p1_bench.is_empty());
+		assert_eq!(parsed[0].opening.p1_bench.len(), 11);
 		assert_eq!(parsed[0].opening.p1_bench.len(), parsed[0].opening.p2_bench.len());
-		assert!(parsed[0].opening.p1_bag.is_empty());
-		assert!(parsed[0].opening.p2_bag.is_empty());
+		assert_eq!(parsed[0].opening.p1_bag.len(), 16);
+		assert_eq!(parsed[0].opening.p2_bag.len(), 16);
+		let setup = parsed[0].setup.as_ref().expect("setup log");
+		assert_eq!(setup.p1_deck.len(), 27);
+		assert_eq!(setup.p1_pick7.len(), 7);
+		assert_eq!(setup.p1_extend.len(), 4);
 		assert!(!parsed[0].actions.is_empty() || parsed[0].turns == 0);
 	}
 
@@ -934,7 +1585,7 @@ mod tests {
 					let piece = act.piece.as_ref().unwrap();
 					assert_eq!(
 						piece.n_rings,
-						piece.normal_rings + piece.zag_rings + piece.braid_rings
+						piece.normal_rings + piece.zag_rings + piece.braid_rings + piece.bead_rings
 					);
 				}
 				"PASS" => {
@@ -1049,8 +1700,239 @@ mod tests {
 		r.pass_through_ring_cmp = PassThroughRingCmp::Gt;
 		r.turn_limit = 50;
 		r.braid_fail_mismatch = BraidFailMismatch::Sum;
+		r.bead_scoring = BeadScoring::SharedChannel;
 		let log = RulesLog::from_rules(r);
 		assert_eq!(log.to_rules().unwrap(), r);
+		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
+		assert_eq!(log.bead_scoring, "shared");
+	}
+
+	#[test]
+	fn missing_bead_scoring_replays_as_independent() {
+		let mut r = RuleSet::default();
+		r.bead_scoring = BeadScoring::Independent;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("bead_scoring"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.bead_scoring, "independent");
+		assert_eq!(parsed.to_rules().unwrap().bead_scoring, BeadScoring::Independent);
+	}
+
+	#[test]
+	fn missing_channel_mode_replays_as_additive() {
+		let mut r = RuleSet::additive();
+		r.bead_scoring = BeadScoring::Independent;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("channel_mode"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.channel_mode, "additive");
+		assert_eq!(parsed.to_rules().unwrap().channel_mode, ChannelMode::Additive);
+	}
+
+	#[test]
+	fn missing_cascade_turn_gain_replays_as_off() {
+		let mut r = RuleSet::default();
+		r.cascade_turn_gain = false;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("cascade_turn_gain"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert!(!parsed.cascade_turn_gain);
+		assert!(!parsed.to_rules().unwrap().cascade_turn_gain);
+		let on = RulesLog::from_rules(RuleSet::default());
+		assert!(on.cascade_turn_gain);
+		assert!(serde_json::to_string(&on).unwrap().contains("cascade_turn_gain"));
+	}
+
+	#[test]
+	fn finish_records_cascade_turn_gain() {
+		use crate::game::{Action, Game};
+
+		let (mut game, dest) = Game::cascade_turn_gain_mover_add_drop();
+		let mut log = GameLog::begin(1, "t", "a", "b", 0, "default", &game);
+		assert!(log.rules.cascade_turn_gain);
+		let action = Action::Add { bench_index: 0, node: dest };
+		let outcome = game.apply(action).unwrap();
+		log.push_action(action, None, &outcome, &game);
+		log.finish(&game, None);
+		assert_eq!(log.actions[0].turn_gain.as_deref(), Some("mover"));
+		assert!(log.actions[0].extra_turn_active);
+		assert_eq!(log.end.turn_gain_awarded, 1);
+		assert_eq!(log.end.turn_gain_mover, 1);
+		assert_eq!(log.end.turn_gain_opponent, 0);
+		assert_eq!(log.end.extra_turns_played, 1);
+		assert_eq!(log.final_state.as_ref().map(|s| s.extra_turn_active), Some(true));
+	}
+
+	#[test]
+	fn missing_endgame_rule_replays_as_low_value() {
+		let mut r = RuleSet::default();
+		r.endgame_rule = EndgameRule::LowValue;
+		let log = RulesLog::from_rules(r);
+		let mut value: serde_json::Value =
+			serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+		value.as_object_mut().unwrap().remove("endgame_rule");
+		let parsed: RulesLog = serde_json::from_value(value).unwrap();
+		assert_eq!(parsed.endgame_rule, "low-value");
+		assert_eq!(parsed.to_rules().unwrap().endgame_rule, EndgameRule::LowValue);
+		let cascade = RulesLog::from_rules(RuleSet::default());
+		assert_eq!(cascade.endgame_rule, "control-cascade");
+		assert!(serde_json::to_string(&cascade).unwrap().contains("control-cascade"));
+	}
+
+	#[test]
+	fn finish_records_control_target_and_max_mat() {
+		use crate::game::{Game, Player, TileColor};
+
+		let mut game = Game::empty(RuleSet::default());
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(3) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		game.set_budget_tokens(Player::One, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		game.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		let mut log = GameLog::begin(1, "t", "a", "b", 0, "default", &game);
+		log.finish(&game, None);
+		assert_eq!(log.end.control_target, Some(4));
+		assert_eq!(log.end.max_mat, Some(4));
+		assert_eq!(log.end.control_ratchet, Some(4));
+		assert_eq!(log.end.control_win_kind.as_deref(), Some("hold"));
+		assert_eq!(log.end.reason.as_deref(), Some("control"));
+	}
+
+	#[test]
+	fn finish_records_immediate_control_drop_win() {
+		use crate::game::{Action, Game};
+
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(game.control_ratchet(), 5);
+		let mut log = GameLog::begin(1, "t", "a", "b", 0, "default", &game);
+		assert_eq!(log.opening.control_ratchet, 5);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		log.finish(&game, None);
+		assert!(game.control_win_immediate());
+		assert_eq!(log.end.control_target, Some(4));
+		assert_eq!(log.end.control_ratchet, Some(4));
+		assert_eq!(log.end.control_win_kind.as_deref(), Some("immediate"));
+		assert_eq!(log.end.reason.as_deref(), Some("control"));
+		assert_eq!(log.end.winner, Some(1));
+		assert_eq!(log.final_state.as_ref().map(|s| s.control_ratchet), Some(4));
+	}
+
+	#[test]
+	fn missing_capture_mode_replays_as_cascade() {
+		let mut r = RuleSet::default();
+		r.capture_mode = CaptureMode::Cascade;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("capture_mode"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.capture_mode, "cascade");
+		assert_eq!(parsed.to_rules().unwrap().capture_mode, CaptureMode::Cascade);
+	}
+
+	#[test]
+	fn jsonl_records_capture_dest_per_removal() {
+		use crate::game::{Action, CaptureDest, CaptureMark, Game, Player, TileColor};
+
+		let mut game = Game::empty(RuleSet::default());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let victim = game.alloc_tile(Player::Two, TileColor::Green, 1, 1);
+		game.place_tile(spawn, victim);
+		let helper = game.alloc_rings(
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			3,
+			1,
+		);
+		game.place_tile(nbs[1], helper);
+		let mover = game
+			.alloc_tile(Player::One, TileColor::Blue, 3, 1)
+			.with_capture(CaptureMark::Dot);
+		game.place_tile(from, mover);
+		game.set_current(Player::One);
+		let mut log = GameLog::begin(1, "t", "g", "g", 0, "default", &game);
+		let action = Action::Move { from, to: land };
+		let piece = piece_for_action(&game, action);
+		let outcome = game.apply(action).unwrap();
+		log.push_action(action, piece, &outcome, &game);
+		log.finish(&game, None);
+		let act = log.actions.last().unwrap();
+		assert_eq!(act.capture_dest.as_deref(), Some("bench"));
+		assert!(!act.captures.is_empty());
+		assert!(act.captures.iter().all(|c| c.dest == "bench"));
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
+	}
+
+	#[test]
+	fn jsonl_records_and_replays_a_claim() {
+		use crate::game::{Action, CaptureDest, Game, Player, TileColor};
+
+		let mut game = Game::empty(RuleSet::default());
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let victim = game.alloc_tile(Player::Two, TileColor::Green, 1, 1);
+		game.place_tile(spawn, victim);
+		let heavy = game.alloc_rings(
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+			1,
+		);
+		game.place_tile(nbs[0], heavy);
+		let heavy2 = game.alloc_rings(
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+			1,
+		);
+		game.place_tile(nbs[1], heavy2);
+		assert!(game.is_overwhelmed(spawn));
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let mut log = GameLog::begin(1, "t", "g", "g", 0, "default", &game);
+		let action = Action::Claim { node: spawn };
+		let piece = piece_for_action(&game, action);
+		let outcome = game.apply(action).unwrap();
+		log.push_action(action, piece, &outcome, &game);
+		log.finish(&game, None);
+		let act = log.actions.last().unwrap();
+		assert_eq!(act.kind, "CLAIM");
+		assert_eq!(act.to, Some(spawn));
+		assert_eq!(act.capture_dest.as_deref(), Some("tokens"));
+		assert_eq!(act.captures.len(), 1);
+		assert_eq!(act.captures[0].dest, "tokens");
+		assert_eq!(outcome.removals[0].dest, CaptureDest::Tokens);
+		assert_eq!(game.budget_token_count(Player::One), tokens + 1);
+		assert_eq!(log.rules.capture_mode, "local-claim");
+		let json = encode_jsonl(std::slice::from_ref(&log)).unwrap();
+		assert!(json.contains("\"kind\":\"CLAIM\""), "{json}");
+		assert!(json.contains("\"capture_mode\":\"local-claim\""), "{json}");
+		let parsed = decode_jsonl(&json).unwrap();
+		assert_eq!(parsed.len(), 1);
+		assert_eq!(parsed[0].actions[0].kind, "CLAIM");
+		assert_eq!(parsed[0].actions[0].to_action().unwrap(), Action::Claim { node: spawn });
+		assert_eq!(parsed[0].rules.to_rules().unwrap().capture_mode, CaptureMode::LocalClaim);
 	}
 
 	fn opening_weight_equals_rings(log: &GameLog) -> bool {
@@ -1064,17 +1946,22 @@ mod tests {
 	}
 
 	fn assert_committed_jsonl_gz_replays(rel: &str) {
+		assert_committed_jsonl_gz_replays_n(rel, 108);
+	}
+
+	fn assert_committed_jsonl_gz_replays_n(rel: &str, expected: usize) {
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
 		if !path.exists() {
 			return;
 		}
 		let bytes = std::fs::read(&path).unwrap();
 		let logs = decode_jsonl_gz(&bytes).expect("decode gzip jsonl");
-		assert_eq!(logs.len(), 108, "standard H2H is 9 pairings × 12 games");
+		assert_eq!(logs.len(), expected, "{rel} expected {expected} games");
 		let derived_weight = logs.iter().all(opening_weight_equals_rings);
 		let independent_channels = logs.iter().all(|log| log.rules.braid_fail_mismatch.is_some());
 		let incident_arc_scoring =
 			logs.iter().all(|log| log.rules.score_incident_arcs == Some(true));
+		let zag_match_non_zag = logs.iter().all(|log| log.rules.zag_match_non_zag == Some(true));
 		for (i, log) in logs.iter().enumerate() {
 			assert_eq!(log.v, SCHEMA_VERSION);
 			assert_eq!(log.rules.bag_size, 11, "{rel}");
@@ -1082,7 +1969,11 @@ mod tests {
 			assert_eq!(log.search_rng_seed, search_rng_seed(log.seed));
 			assert!(!log.opening.p1_bench.is_empty());
 			assert!(!log.actions.is_empty() || log.turns == 0);
-			if !derived_weight || !independent_channels || !incident_arc_scoring {
+			if !derived_weight
+				|| !independent_channels
+				|| !incident_arc_scoring
+				|| !zag_match_non_zag
+			{
 				continue;
 			}
 			let replayed =
@@ -1181,9 +2072,104 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_capture_modifiers_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/capture_modifiers/h2h.jsonl.gz");
+	}
+
+	#[test]
+	fn committed_zag_color_exclusion_jsonl_gz_replays_all_games() {
+		assert_committed_jsonl_gz_replays("benchmark_results/zag_color_exclusion/h2h.jsonl.gz");
+	}
+
+	#[test]
 	fn committed_work_budget_doubles_disallowed_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays(
 			"benchmark_results/work_budget_doubles_disallowed/h2h.jsonl.gz",
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_independent_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/independent_shallow.jsonl.gz",
+			50,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_independent_deep_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/independent_deep.jsonl.gz",
+			10,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_shared_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/shared_shallow.jsonl.gz",
+			50,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_shared_deep_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/shared_deep.jsonl.gz",
+			10,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_groups_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/groups/groups_shallow.jsonl.gz",
+			50,
+		);
+	}
+
+	#[test]
+	fn committed_bead_shared_channel_groups_deep_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/bead_shared_channel/groups/groups_deep.jsonl.gz",
+			10,
+		);
+	}
+
+	#[test]
+	fn committed_local_claim_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/local_claim/h2h_shallow.jsonl.gz",
+			100,
+		);
+	}
+
+	#[test]
+	fn committed_control_cascade_shallow_replays() {
+		// Pre-ratchet live-target log: decode only (ends would diverge).
+		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+			.join("benchmark_results/control_cascade/h2h_shallow.jsonl.gz");
+		if !path.exists() {
+			return;
+		}
+		let bytes = std::fs::read(&path).unwrap();
+		let logs = decode_jsonl_gz(&bytes).expect("decode gzip jsonl");
+		assert_eq!(logs.len(), 100);
+	}
+
+	#[test]
+	fn committed_control_cascade_ratchet_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/control_cascade/h2h_shallow_ratchet.jsonl.gz",
+			100,
+		);
+	}
+
+	#[test]
+	fn committed_control_cascade_turn_gain_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/control_cascade_turn_gain/h2h_shallow.jsonl.gz",
+			100,
 		);
 	}
 

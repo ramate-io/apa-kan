@@ -5,10 +5,12 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 
-use crate::ai::Actor;
+use crate::ai::{Actor, SearchConfig};
+use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	BraidFailMismatch, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint,
-	RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE, BAG_SIZE_DEFAULT,
+	BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode, EmblemWeights,
+	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
+	SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -27,6 +29,8 @@ pub struct GameConfig {
 	pub height: u32,
 	pub rules: RuleSet,
 	pub scenario: Option<Scenario>,
+	pub setup: SetupConfig,
+	pub search: SearchConfig,
 }
 
 impl Default for GameConfig {
@@ -43,6 +47,8 @@ impl Default for GameConfig {
 			height: 900,
 			rules: RuleSet::default(),
 			scenario: None,
+			setup: SetupConfig::default(),
+			search: SearchConfig::default(),
 		}
 	}
 }
@@ -88,6 +94,28 @@ impl GameConfig {
 				"--seed" => {
 					cfg.seed = parse_u64("--seed", &require_value("--seed", it.next())?)?;
 				}
+				"--deck-seed" => {
+					cfg.setup.deck_seed =
+						Some(parse_u64("--deck-seed", &require_value("--deck-seed", it.next())?)?);
+				}
+				"--deck-noise" => {
+					let n = parse_u64("--deck-noise", &require_value("--deck-noise", it.next())?)?;
+					if n > 100 {
+						return Err("invalid --deck-noise (expected 0..100 percent)".into());
+					}
+					cfg.setup.deck_noise = n as u8;
+				}
+				"--pick" => {
+					cfg.setup.pick = PickStrategy::parse(&require_value("--pick", it.next())?)?;
+				}
+				"--p1-deck" => {
+					cfg.setup.p1_deck =
+						DeckArchetype::parse(&require_value("--p1-deck", it.next())?)?;
+				}
+				"--p2-deck" => {
+					cfg.setup.p2_deck =
+						DeckArchetype::parse(&require_value("--p2-deck", it.next())?)?;
+				}
 				"--think-ms" => {
 					let ms = parse_u64("--think-ms", &require_value("--think-ms", it.next())?)?;
 					cfg.think = Duration::from_millis(ms);
@@ -115,6 +143,33 @@ impl GameConfig {
 				"--height" => {
 					cfg.height = parse_u32("--height", &require_value("--height", it.next())?)?;
 				}
+				"--search-profile" => {
+					cfg.search = SearchConfig::parse_profile(&require_value(
+						"--search-profile",
+						it.next(),
+					)?)?;
+				}
+				"--bot-config" => {
+					let path = PathBuf::from(require_value("--bot-config", it.next())?);
+					cfg.search = SearchConfig::load_path(&path)?;
+				}
+				"--list-search-profiles" => {
+					print!("{}", SearchConfig::list_text());
+					process::exit(0);
+				}
+				"--search" => {
+					cfg.search = cfg.search.with_spec(&require_value("--search", it.next())?)?;
+				}
+				"--search-threads" => {
+					let n = parse_u64(
+						"--search-threads",
+						&require_value("--search-threads", it.next())?,
+					)?;
+					if n == 0 || n > 32 {
+						return Err("invalid --search-threads (expected 1..32)".into());
+					}
+					cfg.search = cfg.search.with_threads(n as u8);
+				}
 				"--actions" => {
 					let n = parse_u64("--actions", &require_value("--actions", it.next())?)?;
 					if n == 0 || n > 8 {
@@ -138,6 +193,9 @@ impl GameConfig {
 			}
 		}
 		validate_rule_flags(&cfg.rules)?;
+		if cfg.setup.deck_seed.is_none() {
+			cfg.setup.deck_seed = Some(cfg.seed);
+		}
 		Ok(cfg)
 	}
 
@@ -242,6 +300,12 @@ where
 			}
 			rules.control_hold_turns = n as u8;
 		}
+		"--endgame-rule" => {
+			rules.endgame_rule = EndgameRule::parse(&require_value(arg, it.next())?)?;
+		}
+		"--cascade-turn-gain" => {
+			rules.cascade_turn_gain = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--insufficient-tiles-loss" => {
 			rules.insufficient_tiles_loss =
 				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
@@ -257,12 +321,12 @@ where
 		}
 		"--bag-size" | "--deck-size" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
-			if n == 0 || n > BAG_SIZE as u64 {
+			if n == 0 || n > DECK_SIZE_MAX as u64 {
 				return Err(format!(
-					"invalid {arg} (expected 1..{BAG_SIZE}, default {BAG_SIZE_DEFAULT})"
+					"invalid {arg} (expected 1..{DECK_SIZE_MAX} collection tiles, default {DECK_SIZE_DEFAULT})"
 				));
 			}
-			rules.bag_size = n as u8;
+			rules.deck_size = n as u8;
 		}
 		"--self-capture-budget" => {
 			rules.self_capture_budget = parse_bool(arg, &require_value(arg, it.next())?)?;
@@ -295,6 +359,39 @@ where
 		"--braids" => {
 			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
 			rules.braid_numer = if on { crate::game::BRAID_NUMER_DEFAULT } else { 0 };
+		}
+		"--bead-chance" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n > 7 {
+				return Err("invalid --bead-chance (expected 0..7, k/7)".into());
+			}
+			rules.bead_numer = n as u8;
+		}
+		"--bead-scoring" => {
+			rules.bead_scoring = BeadScoring::parse(&require_value(arg, it.next())?)?;
+		}
+		"--channel-mode" => {
+			rules.channel_mode = ChannelMode::parse(&require_value(arg, it.next())?)?;
+		}
+		"--capture-mode" => {
+			rules.capture_mode = CaptureMode::parse(&require_value(arg, it.next())?)?;
+		}
+		"--dot-chance" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n > 100 {
+				return Err("invalid --dot-chance (expected 0..100 percent)".into());
+			}
+			rules.dot_percent = n as u8;
+		}
+		"--emblem-weights" => {
+			rules.emblem_weights = EmblemWeights::parse(&require_value(arg, it.next())?)?;
+		}
+		"--emblems" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.emblem_weights = if on { EmblemWeights::default() } else { EmblemWeights::off() };
+		}
+		"--blocker-blocks" => {
+			rules.blocker_blocks = BlockerBlocks::parse(&require_value(arg, it.next())?)?;
 		}
 		"--zag-mismatch" => {
 			rules.zag_mismatch = ZagMismatchCount::parse(&require_value(arg, it.next())?)?;
@@ -330,7 +427,19 @@ pub fn usage() -> &'static str {
 	 Options:\n\
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts>\n\
+	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused)\n\
+	   --bot-config <path.toml>                   Load a SearchConfig TOML (overlays missing keys with enhanced defaults)\n\
+	   --list-search-profiles                     Print named presets and their labels\n\
+	   --search <k=v,...>                         Overlay any knob: ordering, tt, lmr, pvs, q-depth, pw, puct,\n\
+	                                              priors, pw-order, reuse, mcts-tt, factored, leaf, solver, threads, ...\n\
+	   --search-threads <1..32>                   MCTS root-parallel trees (default: 1; 1 keeps benches deterministic)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
+	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
+	   --deck-noise <0..100>                      Resample that percent of a mirrored collection (default: 0)\n\
+	   --pick <heuristic|search|greedy>           Bench 7+4 picker (default: heuristic)\n\
+	   --p1-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P1 collection archetype (default: mixed)\n\
+	   --p2-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P2 collection archetype (default: mixed)\n\
 	   --think-ms <n>                             Bot think time in ms (default: 80)\n\
 	   --delay-ms <n>                             Delay between bot moves (default: 350)\n\
 	   --actions <1..8>                           Actions per turn (default: 1)\n\
@@ -341,7 +450,7 @@ pub fn usage() -> &'static str {
 	   --from-start                               With --screenshot, capture the opening deal\n\
 	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
 	   --list-scenarios                           Print builtin deck scenarios\n\
-	   --no-moves-loses <on|off>                  No ADD/MOVE loses (default: on)\n\
+	   --no-moves-loses <on|off>                  No ADD/MOVE/CLAIM loses (default: on)\n\
 	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
 	   --no-same-piece-twice <off|always|when-deck-empty>\n\
@@ -354,18 +463,29 @@ pub fn usage() -> &'static str {
 	   --petal-majority-win <on|off>              Inner-ring majority win (default: off)\n\
 	   --petal-majority-n <1..64>                 Turns to hold majority (default: 1)\n\
 	   --control-win <on|off>                     Center+inner-ring control win (default: on)\n\
-	   --control-n <1..9>                         Control-set occupancy needed (default: 5)\n\
+	   --control-n <1..9>                         Control-set occupancy cap (default: 5)\n\
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
+	   --endgame-rule <control-cascade|low-value>  One-way ratchet 5→2 with max material, then low-value at ≤1 (default: control-cascade)\n\
+	   --cascade-turn-gain <on|off>               Extra turn for the material leader on a non-winning cascade drop (default: on)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
-	   --deck-size <1..27>                        Public deck size per player (default: 11; alias --bag-size)\n\
+	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
 	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
 	   --max-rings <1..3>                         Distinct rings per tile (default: 3)\n\
 	   --zag-chance <0..7>                        Each ring is a zag with k/7 chance (default: 1)\n\
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
+	   --bead-chance <0..7>                       Additive: 2–3 bead group k/7. Independent-max: bead light weight (default: 1)\n\
+	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (ignored by independent-max)\n\
+	   --channel-mode <independent-max|additive>  Edge combine + generation (default: independent-max)\n\
+	   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim; cascade = PR #70)\n\
+	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
+	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
+	                                              Emblem generation weights (default: 200,1,1,1,1)\n\
+	   --emblems <on|off>                         Alias for default weights or 1,0,0,0,0 (skip RNG)\n\
+	   --blocker-blocks <traversal|pass|hop|off>  What Blocker stops as a MOVE intermediate (default: traversal)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
 	   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
@@ -379,6 +499,7 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
+	use crate::game::BAG_SIZE_DEFAULT;
 
 	#[test]
 	fn parses_bot_flags() {
@@ -387,6 +508,53 @@ mod tests {
 		assert_eq!(cfg.bot1, Actor::Mcts);
 		assert_eq!(cfg.bot2, Actor::Minimax);
 		assert_eq!(cfg.seed, 42);
+		assert_eq!(cfg.search, SearchConfig::enhanced());
+	}
+
+	#[test]
+	fn parses_search_profile_and_spec() {
+		let cfg = GameConfig::parse([
+			"--search-profile",
+			"classic",
+			"--search",
+			"lmr=on,pvs=on",
+			"--search-threads",
+			"4",
+		])
+		.unwrap();
+		assert!(cfg.search.transposition);
+		assert!(cfg.search.lmr && cfg.search.pvs);
+		assert_eq!(cfg.search.mcts_root_threads, 4);
+		// classic + LMR + PVS is the enhanced preset (PW stays off). Threads
+		// are ignored when naming the profile.
+		assert_eq!(cfg.search.profile_name(), "enhanced");
+		let custom =
+			GameConfig::parse(["--search-profile", "classic", "--search", "pw=on"]).unwrap();
+		assert_eq!(custom.search.profile_name(), "custom");
+	}
+
+	#[test]
+	fn parses_personality_profiles() {
+		let cfg = GameConfig::parse(["--search-profile", "tactical"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::tactical());
+		let cfg = GameConfig::parse(["--search-profile", "aggressive"]).unwrap();
+		assert_eq!(cfg.search.profile_name(), "tactical");
+		let cfg = GameConfig::parse(["--search-profile", "positional"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::positional());
+		let cfg = GameConfig::parse(["--search-profile", "explorative"]).unwrap();
+		assert!(cfg.search.mcts_progressive_widening);
+		assert_eq!(cfg.search.profile_name(), "explorative");
+		let cfg = GameConfig::parse(["--search-profile", "deep"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::deep_mcts());
+		assert_eq!(cfg.search.profile_name(), "deep_mcts");
+	}
+
+	#[test]
+	fn parses_bot_config_toml() {
+		let path = format!("{}/bots/tactical.toml", env!("CARGO_MANIFEST_DIR"));
+		let cfg = GameConfig::parse(["--bot-config", &path]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::tactical());
+		assert_eq!(cfg.search.profile_name(), "tactical");
 	}
 
 	#[test]
@@ -478,6 +646,24 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_endgame_rule() {
+		let cascade = GameConfig::parse(["--endgame-rule", "control-cascade"]).unwrap();
+		assert_eq!(cascade.rules.endgame_rule, crate::game::EndgameRule::ControlCascade);
+		let baseline = GameConfig::parse(["--endgame-rule", "low-value"]).unwrap();
+		assert_eq!(baseline.rules.endgame_rule, crate::game::EndgameRule::LowValue);
+		assert!(GameConfig::parse(["--endgame-rule", "sudden-death"]).is_err());
+	}
+
+	#[test]
+	fn parses_cascade_turn_gain() {
+		let on = GameConfig::parse(["--cascade-turn-gain", "on"]).unwrap();
+		assert!(on.rules.cascade_turn_gain);
+		let off = GameConfig::parse(["--cascade-turn-gain", "off"]).unwrap();
+		assert!(!off.rules.cascade_turn_gain);
+		assert!(GameConfig::parse(["--cascade-turn-gain", "maybe"]).is_err());
+	}
+
+	#[test]
 	fn stall_rule_defaults_match_ruleset() {
 		let cfg = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(cfg.rules, RuleSet::default());
@@ -492,13 +678,26 @@ mod tests {
 		assert!(cfg.rules.control_win);
 		assert_eq!(cfg.rules.control_n, 5);
 		assert_eq!(cfg.rules.control_hold_turns, 1);
+		assert_eq!(cfg.rules.endgame_rule, crate::game::EndgameRule::ControlCascade);
+		assert!(cfg.rules.cascade_turn_gain);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);
+		assert_eq!(cfg.rules.deck_size, DECK_SIZE_DEFAULT as u8);
+		assert_eq!(cfg.setup.pick, PickStrategy::Heuristic);
+		assert_eq!(cfg.setup.deck_noise, 0);
 		assert!(cfg.rules.self_capture_budget);
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
 		assert_eq!(cfg.rules.braid_numer, 1);
+		assert_eq!(cfg.rules.bead_numer, 1);
+		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
+		assert_eq!(cfg.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		assert_eq!(cfg.rules.capture_mode, crate::game::CaptureMode::LocalClaim);
+		assert_eq!(cfg.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
+		assert_eq!(cfg.setup.p2_deck, crate::deck::DeckArchetype::Mixed);
+		assert_eq!(cfg.rules.dot_percent, crate::game::DOT_PERCENT_DEFAULT);
+		assert_eq!(cfg.rules.emblem_weights, crate::game::EmblemWeights::default());
 		assert_eq!(cfg.rules.path_constraint, PathConstraint::NoEdgeRevisit);
 		assert!(cfg.rules.counted_pass_through);
 		assert_eq!(cfg.rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
@@ -591,6 +790,57 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_bead_flags() {
+		let chance = GameConfig::parse(["--bead-chance", "0"]).unwrap();
+		assert_eq!(chance.rules.bead_numer, 0);
+		let three = GameConfig::parse(["--bead-chance", "3"]).unwrap();
+		assert_eq!(three.rules.bead_numer, 3);
+		let err = GameConfig::parse(["--bead-chance", "8"]).unwrap_err();
+		assert!(err.contains("bead-chance"));
+		let gone = GameConfig::parse(["--beads", "off"]).unwrap_err();
+		assert!(gone.contains("--beads") || gone.contains("unknown"), "{gone}");
+	}
+
+	#[test]
+	fn parses_bead_scoring_and_deck_archetypes() {
+		let shared = GameConfig::parse(["--bead-scoring", "shared"]).unwrap();
+		assert_eq!(shared.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
+		let ind = GameConfig::parse(["--bead-scoring", "independent"]).unwrap();
+		assert_eq!(ind.rules.bead_scoring, crate::game::BeadScoring::Independent);
+		let err = GameConfig::parse(["--bead-scoring", "average"]).unwrap_err();
+		assert!(err.contains("bead-scoring"));
+		let decks = GameConfig::parse(["--p1-deck", "braid", "--p2-deck", "bead"]).unwrap();
+		assert_eq!(decks.setup.p1_deck, crate::deck::DeckArchetype::BraidHeavy);
+		assert_eq!(decks.setup.p2_deck, crate::deck::DeckArchetype::BeadHeavy);
+	}
+
+	#[test]
+	fn parses_channel_mode() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		let max = GameConfig::parse(["--channel-mode", "independent-max"]).unwrap();
+		assert_eq!(max.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		let add = GameConfig::parse(["--channel-mode", "additive"]).unwrap();
+		assert_eq!(add.rules.channel_mode, crate::game::ChannelMode::Additive);
+		let legacy = GameConfig::parse(["--channel-mode", "legacy"]).unwrap();
+		assert_eq!(legacy.rules.channel_mode, crate::game::ChannelMode::Additive);
+		let err = GameConfig::parse(["--channel-mode", "average"]).unwrap_err();
+		assert!(err.contains("channel-mode"));
+	}
+
+	#[test]
+	fn parses_capture_mode() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.capture_mode, crate::game::CaptureMode::LocalClaim);
+		let local = GameConfig::parse(["--capture-mode", "local-claim"]).unwrap();
+		assert_eq!(local.rules.capture_mode, crate::game::CaptureMode::LocalClaim);
+		let cascade = GameConfig::parse(["--capture-mode", "cascade"]).unwrap();
+		assert_eq!(cascade.rules.capture_mode, crate::game::CaptureMode::Cascade);
+		let err = GameConfig::parse(["--capture-mode", "explode"]).unwrap_err();
+		assert!(err.contains("capture-mode"));
+	}
+
+	#[test]
 	fn parses_starting_bench() {
 		let cfg = GameConfig::parse(["--starting-bench", "5"]).unwrap();
 		assert_eq!(cfg.rules.starting_bench_size, 5);
@@ -602,14 +852,17 @@ mod tests {
 	fn parses_bag_size() {
 		let default = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(default.rules.bag_size, BAG_SIZE_DEFAULT as u8);
+		assert_eq!(default.rules.deck_size, DECK_SIZE_DEFAULT as u8);
 		let eleven = GameConfig::parse(["--bag-size", "11"]).unwrap();
-		assert_eq!(eleven.rules.bag_size, 11);
+		assert_eq!(eleven.rules.deck_size, 11);
+		assert_eq!(eleven.rules.bag_size, BAG_SIZE_DEFAULT as u8);
 		assert_eq!(eleven.rules.starting_bench_size, 7);
 		let full = GameConfig::parse(["--bag-size", "27"]).unwrap();
-		assert_eq!(full.rules.bag_size, BAG_SIZE as u8);
+		assert_eq!(full.rules.deck_size, BAG_SIZE as u8);
+		assert_eq!(full.rules.bag_size, BAG_SIZE_DEFAULT as u8);
 		let err = GameConfig::parse(["--bag-size", "28"]).unwrap_err();
 		assert!(err.contains("bag-size"));
-		assert!(err.contains("default 11"), "{err}");
+		assert!(err.contains("default 27"), "{err}");
 		let err = GameConfig::parse(["--bag-size", "0"]).unwrap_err();
 		assert!(err.contains("bag-size"));
 	}
@@ -617,16 +870,16 @@ mod tests {
 	#[test]
 	fn tokens_are_independent_of_deck_size() {
 		let small = GameConfig::parse(["--bag-size", "5"]).unwrap();
-		assert_eq!(small.rules.bag_size, 5);
+		assert_eq!(small.rules.deck_size, 5);
 		assert_eq!(small.rules.starting_bench_size, 7);
 		let extra = GameConfig::parse(["--deck-size", "11", "--starting-tokens", "12"]).unwrap();
-		assert_eq!(extra.rules.bag_size, 11);
+		assert_eq!(extra.rules.deck_size, 11);
 		assert_eq!(extra.rules.starting_bench_size, 12);
 		let ok = GameConfig::parse(["--bag-size", "11", "--starting-bench", "7"]).unwrap();
-		assert_eq!(ok.rules.bag_size, 11);
+		assert_eq!(ok.rules.deck_size, 11);
 		assert_eq!(ok.rules.starting_bench_size, 7);
 		let dealt = GameConfig::parse(["--bag-size", "7", "--starting-bench", "7"]).unwrap();
-		assert_eq!(dealt.rules.bag_size, 7);
+		assert_eq!(dealt.rules.deck_size, 7);
 	}
 
 	#[test]
@@ -634,7 +887,33 @@ mod tests {
 		let tokens = GameConfig::parse(["--starting-tokens", "5"]).unwrap();
 		assert_eq!(tokens.rules.starting_bench_size, 5);
 		let deck = GameConfig::parse(["--deck-size", "13"]).unwrap();
-		assert_eq!(deck.rules.bag_size, 13);
+		assert_eq!(deck.rules.deck_size, 13);
+		assert_eq!(deck.rules.bag_size, BAG_SIZE_DEFAULT as u8);
+	}
+
+	#[test]
+	fn parses_deck_seed_noise_and_pick() {
+		let cfg = GameConfig::parse([
+			"--seed",
+			"3",
+			"--deck-seed",
+			"99",
+			"--deck-noise",
+			"40",
+			"--pick",
+			"search",
+		])
+		.unwrap();
+		assert_eq!(cfg.seed, 3);
+		assert_eq!(cfg.setup.deck_seed, Some(99));
+		assert_eq!(cfg.setup.deck_noise, 40);
+		assert_eq!(cfg.setup.pick, PickStrategy::Search);
+		let inherit = GameConfig::parse(["--seed", "8"]).unwrap();
+		assert_eq!(inherit.setup.deck_seed, Some(8));
+		let err = GameConfig::parse(["--pick", "random"]).unwrap_err();
+		assert!(err.contains("--pick") || err.contains("unknown"));
+		let err = GameConfig::parse(["--deck-noise", "101"]).unwrap_err();
+		assert!(err.contains("deck-noise"));
 	}
 
 	#[test]
@@ -643,6 +922,41 @@ mod tests {
 		assert!(on.rules.self_capture_budget);
 		let off = GameConfig::parse(["--self-capture-budget", "off"]).unwrap();
 		assert!(!off.rules.self_capture_budget);
+	}
+
+	#[test]
+	fn parses_dot_chance() {
+		let cfg = GameConfig::parse(["--dot-chance", "0"]).unwrap();
+		assert_eq!(cfg.rules.dot_percent, 0);
+		let cfg = GameConfig::parse(["--dot-chance", "100"]).unwrap();
+		assert_eq!(cfg.rules.dot_percent, 100);
+		let err = GameConfig::parse(["--dot-chance", "101"]).unwrap_err();
+		assert!(err.contains("dot-chance"));
+	}
+
+	#[test]
+	fn parses_emblem_weights() {
+		let cfg = GameConfig::parse(["--emblem-weights", "1,20,0"]).unwrap();
+		assert_eq!(cfg.rules.emblem_weights.none, 1);
+		assert_eq!(cfg.rules.emblem_weights.crescent, 20);
+		assert_eq!(cfg.rules.emblem_weights.zs, 0);
+		assert_eq!(cfg.rules.emblem_weights.blocker, 0);
+		assert_eq!(cfg.rules.emblem_weights.rosette, 0);
+		let five = GameConfig::parse(["--emblem-weights", "200,1,1,1,1"]).unwrap();
+		assert_eq!(five.rules.emblem_weights, crate::game::EmblemWeights::default());
+		let off = GameConfig::parse(["--emblems", "off"]).unwrap();
+		assert_eq!(off.rules.emblem_weights, crate::game::EmblemWeights::off());
+		let on = GameConfig::parse(["--emblems", "on"]).unwrap();
+		assert_eq!(on.rules.emblem_weights, crate::game::EmblemWeights::default());
+		let err = GameConfig::parse(["--emblem-weights", "0,0,0"]).unwrap_err();
+		assert!(err.contains("emblem-weights"));
+		let err = GameConfig::parse(["--emblem-weights", "0,0,0,0,0"]).unwrap_err();
+		assert!(err.contains("emblem-weights"));
+		let decks = GameConfig::parse(["--p1-deck", "blocker", "--p2-deck", "rosette"]).unwrap();
+		assert_eq!(decks.setup.p1_deck, crate::deck::DeckArchetype::Blocker);
+		assert_eq!(decks.setup.p2_deck, crate::deck::DeckArchetype::Rosette);
+		let blocks = GameConfig::parse(["--blocker-blocks", "off"]).unwrap();
+		assert_eq!(blocks.rules.blocker_blocks, crate::game::BlockerBlocks::Off);
 	}
 
 	#[test]

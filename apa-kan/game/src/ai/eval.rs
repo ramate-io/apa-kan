@@ -76,7 +76,11 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	let mut contact_pairs = 0i32;
 	for (node, tile) in game.tiles() {
 		let sign = if tile.owner == me { 1 } else { -1 };
-		material += sign * (48 + 24 * i32::from(tile.weight) + 6 * i32::from(tile.dots));
+		material += sign
+			* (48
+				+ 24 * i32::from(tile.weight)
+				+ 6 * i32::from(tile.dots)
+				+ 10 * i32::from(tile.emblem.cost())); // +1 emblems; Rosette is −1
 		if let Some((matches, mismatches)) = game.tile_score(node) {
 			margin += sign * 8 * (matches - mismatches);
 			if mismatches >= matches - 1 {
@@ -141,11 +145,12 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 
 	let mut bench_score = 0i32;
 	for tile in game.bench(me) {
-		bench_score += 28 + 10 * i32::from(tile.weight);
+		bench_score += 28 + 10 * i32::from(tile.weight) + 8 * i32::from(tile.emblem.cost());
 	}
 	for tile in game.bench(opp) {
-		bench_score -= 28 + 10 * i32::from(tile.weight);
+		bench_score -= 28 + 10 * i32::from(tile.weight) + 8 * i32::from(tile.emblem.cost());
 	}
+	bench_score += capture_mix_score(game, me) - capture_mix_score(game, opp);
 	let presence = 32 * (my_board - opp_board);
 
 	let mobility = 3 * (mobility_of(game, me) - mobility_of(game, opp));
@@ -206,7 +211,11 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	let mut contact_pairs = 0i32;
 	for (node, tile) in game.tiles() {
 		let sign = if tile.owner == me { 1 } else { -1 };
-		material += sign * (48 + 24 * i32::from(tile.weight) + 6 * i32::from(tile.dots));
+		material += sign
+			* (48
+				+ 24 * i32::from(tile.weight)
+				+ 6 * i32::from(tile.dots)
+				+ 10 * i32::from(tile.emblem.cost())); // +1 emblems; Rosette is −1
 		if let Some((matches, mismatches)) = game.tile_score(node) {
 			margin += sign * 8 * (matches - mismatches);
 			if mismatches >= matches - 1 {
@@ -282,15 +291,30 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 
 	let mut bench_score = 0i32;
 	for tile in game.bench(me) {
-		bench_score += 28 + 10 * i32::from(tile.weight);
+		bench_score += 28 + 10 * i32::from(tile.weight) + 8 * i32::from(tile.emblem.cost());
 	}
 	for tile in game.bench(opp) {
-		bench_score -= 28 + 10 * i32::from(tile.weight);
+		bench_score -= 28 + 10 * i32::from(tile.weight) + 8 * i32::from(tile.emblem.cost());
 	}
+	bench_score += capture_mix_score(game, me) - capture_mix_score(game, opp);
 	// Usable budget only (min(tokens, remaining deck)); surplus tokens are not ADD permission.
 	let budget = 90 * (game.budget(me) as i32 - game.budget(opp) as i32);
 	let presence = 32 * (my_board - opp_board);
 	let mobility = 4 * (mobility_of(game, me) - mobility_of(game, opp));
+
+	let mut claimable = 0i32;
+	if game.rules().capture_mode.is_local_claim() {
+		for node in game.overwhelmed_nodes() {
+			if let Some(tile) = game.tile_at(node) {
+				let v = 48 + 10 * i32::from(tile.weight);
+				if tile.owner == me {
+					claimable -= v;
+				} else {
+					claimable += v;
+				}
+			}
+		}
+	}
 
 	let mut score =
 		material
@@ -300,6 +324,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 			+ geometry
 			+ spawn_control
 			+ mobility
+			+ claimable
 			- 22 * at_risk;
 
 	score += race_score(game, me, opp);
@@ -396,10 +421,27 @@ fn race_score(game: &Game, me: Player, opp: Player) -> i32 {
 		if opp_ctl >= need {
 			s -= 1_100;
 		}
+		if game.rules().endgame_rule.is_control_cascade() {
+			if let Some(target) = game.cascade_control_target() {
+				let target = i32::from(target);
+				let my_mat = game.total_material(me) as i32;
+				let opp_mat = game.total_material(opp) as i32;
+				// Lower checkpoints are closer to a win; weight occupancy
+				// against the ratcheted threshold, not the opening 5.
+				if target < i32::from(game.control_cap()) {
+					s += 120 * my_ctl.min(target) - 140 * opp_ctl.min(target);
+				}
+				if my_mat >= target && opp_mat < target {
+					s += 500;
+				} else if opp_mat >= target && my_mat < target {
+					s -= 600;
+				}
+			}
+		}
 	}
 
 	if game.rules().insufficient_tiles_loss.is_on() {
-		let need = i32::from(game.control_need());
+		let need = i32::from(game.control_cap());
 		let my_r = game.reachable_tiles(me) as i32;
 		let opp_r = game.reachable_tiles(opp) as i32;
 		s += 350 * (my_r.min(need) - opp_r.min(need));
@@ -418,19 +460,39 @@ fn can_reach_center(game: &Game, player: Player) -> bool {
 	if game.tile_at(center).is_some() {
 		return false;
 	}
-	if player != game.current_player() {
-		// Approximate: an inner-ring tile with a vacant center is a 1-step
-		// threat on the next turn if it is not same-piece-restricted.
-		return game
-			.board()
-			.inner_ring()
-			.iter()
-			.any(|&n| game.tile_at(n).map(|t| t.owner == player).unwrap_or(false));
+	// Inner-ring occupant + vacant center is a 1-step threat. Skip
+	// `legal_destinations` (path search) so eval stays cheap in the leaves.
+	game.board()
+		.inner_ring()
+		.iter()
+		.any(|&n| game.tile_at(n).map(|t| t.owner == player).unwrap_or(false))
+}
+
+/// Prefer a mixed capture-mark bench. All dots starve spawn tokens; all
+/// triangles starve later ADDs once the opening bench is spent.
+fn capture_mix_score(game: &Game, player: Player) -> i32 {
+	let bench = game.bench(player);
+	let n = bench.len() as i32;
+	if n == 0 {
+		return 0;
 	}
-	game.board().inner_ring().iter().any(|&n| {
-		game.tile_at(n).map(|t| t.owner == player).unwrap_or(false)
-			&& game.legal_destinations(n).contains(&center)
-	})
+	let dots = bench.iter().filter(|t| t.capture.is_dot()).count() as i32;
+	let tris = n - dots;
+	let mut s = 0i32;
+	if dots > 0 && tris > 0 {
+		s += 12;
+	} else if dots == n {
+		s -= 50;
+	} else {
+		s -= 20;
+	}
+	if tris == 0 && game.budget_token_count(player) as i32 <= 2 {
+		s -= 40;
+	}
+	if dots == 0 && n <= 3 {
+		s -= 24;
+	}
+	s
 }
 
 /// Cheap mobility: empty adjacent nodes + empty spawns if the bench can ADD.
@@ -448,6 +510,9 @@ fn mobility_of(game: &Game, player: Player) -> i32 {
 	}
 	if game.budget(player) > 0 && !game.bench(player).is_empty() {
 		m += game.board().spawns().iter().filter(|&&s| game.tile_at(s).is_none()).count() as i32;
+	}
+	if game.rules().capture_mode.allows_claim() && game.current_player() == player {
+		m += game.overwhelmed_nodes().len() as i32;
 	}
 	m
 }
@@ -611,6 +676,137 @@ mod tests {
 	}
 
 	#[test]
+	fn cascade_control_at_target_four_is_a_search_terminal() {
+		use crate::game::{EndgameRule, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.center_hold_win = false;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(3) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		game.set_budget_tokens(Player::One, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.control_need(), 4);
+		assert!(!game.low_value_applies());
+		assert_eq!(terminal_score(&game, Player::One), None);
+		game.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		let s = terminal_score(&game, Player::One).unwrap();
+		assert!(s > WIN / 2);
+		assert_eq!(terminal_score(&game, Player::Two), Some(-s));
+	}
+
+	#[test]
+	fn cascade_does_not_treat_both_below_five_as_low_value() {
+		use crate::game::{EndgameRule, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.control_win = false;
+		let mut game = Game::empty(rules);
+		let spawns = game.board().spawns().to_vec();
+		let t0 = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		let t1 = game.alloc_tile(Player::One, TileColor::Blue, 1, 1);
+		let t4 = game.alloc_tile(Player::Two, TileColor::Orange, 1, 2);
+		let t5 = game.alloc_tile(Player::Two, TileColor::Green, 1, 2);
+		game.place_tile(spawns[0], t0);
+		game.place_tile(spawns[1], t1);
+		game.place_tile(spawns[4], t4);
+		game.place_tile(spawns[5], t5);
+		game.set_budget_tokens(Player::One, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.max_material(), 2);
+		assert!(!game.low_value_applies());
+		assert_eq!(terminal_score(&game, Player::One), None);
+	}
+
+	#[test]
+	fn cascade_low_value_at_max_mat_one_is_a_search_terminal() {
+		use crate::game::{EndgameRule, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.control_win = false;
+		let mut game = Game::empty(rules);
+		let spawns = game.board().spawns().to_vec();
+		let t0 = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		let t4 = game.alloc_tile(Player::Two, TileColor::Orange, 1, 2);
+		game.place_tile(spawns[0], t0);
+		game.place_tile(spawns[4], t4);
+		game.set_budget_tokens(Player::One, Vec::new());
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.max_material(), 1);
+		assert!(game.low_value_applies());
+		let s = terminal_score(&game, Player::One).unwrap();
+		assert!(s > WIN / 2, "P1's lower piece is a cascade low-value near-mate, got {s}");
+	}
+
+	#[test]
+	fn cascade_immediate_drop_win_is_a_search_terminal() {
+		use crate::game::{Action, EndReason, GameStatus, Player};
+
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(terminal_score(&game, Player::One), None);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(game.control_win_immediate());
+		let s = terminal_score(&game, Player::One).unwrap();
+		assert!(s > WIN / 2);
+		assert_eq!(terminal_score(&game, Player::Two), Some(-s));
+	}
+
+	#[test]
+	fn cascade_eval_prefers_meeting_the_ratcheted_target() {
+		use crate::game::{BudgetToken, EndgameRule, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.center_hold_win = false;
+		let mut under = Game::empty(rules);
+		let mut at = Game::empty(rules);
+		let inner = under.board().inner_ring().to_vec();
+		let center = under.board().center();
+		let under_c = under.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		under.place_tile(center, under_c);
+		let at_c = at.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		at.place_tile(center, at_c);
+		for &node in inner.iter().take(2) {
+			let u = under.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			under.place_tile(node, u);
+			let a = at.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			at.place_tile(node, a);
+		}
+		let fourth = at.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		at.place_tile(inner[2], fourth);
+		let extra = under.alloc_tile(Player::One, TileColor::Blue, 1, 1);
+		under.set_bench(Player::One, vec![extra]);
+		under.set_budget_tokens(Player::One, vec![BudgetToken::Blank]);
+		under.set_budget_tokens(Player::Two, Vec::new());
+		at.set_budget_tokens(Player::One, Vec::new());
+		at.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(under.max_material(), 4);
+		assert_eq!(at.max_material(), 4);
+		assert_eq!(under.control_need(), 4);
+		assert_eq!(at.control_need(), 4);
+		assert_eq!(under.control_count(Player::One), 3);
+		assert_eq!(at.control_count(Player::One), 4);
+		assert!(evaluate(&at, Player::One, 0) > evaluate(&under, Player::One, 0) + 400);
+	}
+
+	#[test]
 	fn insufficient_tiles_loss_is_near_mate() {
 		let mut game = Game::empty(RuleSet::default());
 		game.set_status(GameStatus::Won {
@@ -642,12 +838,13 @@ mod tests {
 
 	#[test]
 	fn pending_low_value_is_a_search_terminal() {
-		use crate::game::{BudgetToken, TileColor};
+		use crate::game::{BudgetToken, EndgameRule, TileColor};
 
 		let mut rules = RuleSet::default();
 		rules.control_win = false;
 		rules.center_hold_win = false;
 		rules.petal_majority_win = false;
+		rules.endgame_rule = EndgameRule::LowValue;
 		let mut game = Game::empty(rules);
 		let p1_node = game.board().spawns()[0];
 		let p2_node = game.board().spawns()[4];
@@ -673,12 +870,13 @@ mod tests {
 
 	#[test]
 	fn low_value_pair_and_piece_count_terminals_match_status() {
-		use crate::game::TileColor;
+		use crate::game::{EndgameRule, TileColor};
 
 		let mut rules = RuleSet::default();
 		rules.control_win = false;
 		rules.center_hold_win = false;
 		rules.petal_majority_win = false;
+		rules.endgame_rule = EndgameRule::LowValue;
 
 		let place = |game: &mut Game, spawn_idx: usize, player: Player, dots: u8| {
 			let spawn = game.board().spawns()[spawn_idx];
@@ -761,5 +959,29 @@ mod tests {
 		off.pad_above_low_value();
 		on.pad_above_low_value();
 		assert!(evaluate(&on, Player::One, 0) > evaluate(&off, Player::One, 0));
+	}
+
+	#[test]
+	fn emblem_cost_shifts_board_material() {
+		use crate::game::{Emblem, TileColor};
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		let mut none = Game::empty(rules);
+		let mut rose = Game::empty(rules);
+		let mut wall = Game::empty(rules);
+		let spawn = none.board().spawns()[0];
+		let base = none.alloc_tile(Player::One, TileColor::Green, 2, 1);
+		none.place_tile(spawn, base);
+		rose.place_tile(spawn, base.with_emblem(Emblem::Rosette));
+		wall.place_tile(spawn, base.with_emblem(Emblem::Blocker));
+		none.pad_above_low_value();
+		rose.pad_above_low_value();
+		wall.pad_above_low_value();
+		let n = evaluate(&none, Player::One, 0);
+		let r = evaluate(&rose, Player::One, 0);
+		let w = evaluate(&wall, Player::One, 0);
+		assert!(r < n, "Rosette −1 cost lowers in-play material, r={r} n={n}");
+		assert!(w > n, "Blocker +1 cost raises in-play material, w={w} n={n}");
 	}
 }

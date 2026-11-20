@@ -3,9 +3,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng};
+use rand::Rng;
 
 use crate::board::{Board, NodeId};
 
@@ -76,22 +75,58 @@ pub const ZAG_NUMER_DEFAULT: u8 = 1;
 /// A piece forms a braid with probability `braid_numer / BRAID_DENOM`.
 pub const BRAID_DENOM: u8 = 7;
 pub const BRAID_NUMER_DEFAULT: u8 = 1;
-/// Maximum sampled deck size (the old 27 unique 3-color kinds). CLI `--bag-size`
-/// / `--deck-size` accept `1..=BAG_SIZE`. The default deck is [`BAG_SIZE_DEFAULT`].
+/// A piece forms a 2–3 bead group with probability `bead_numer / BEAD_DENOM`.
+/// Rolled after braid and zag. `bead_numer == 0` (`--bead-chance 0`) skips the
+/// RNG and matches the pre-bead deal. Used under [`ChannelMode::Additive`].
+/// [`ChannelMode::IndependentMax`] elects beads per light slot instead.
+pub const BEAD_DENOM: u8 = 7;
+pub const BEAD_NUMER_DEFAULT: u8 = 1;
+/// Light-slot election under [`ChannelMode::IndependentMax`]:
+/// `normal : zag : bead = 5 : 3 : 1`.
+pub const LIGHT_NORMAL_WEIGHT: u32 = 5;
+pub const LIGHT_ZAG_WEIGHT: u32 = 3;
+pub const LIGHT_BEAD_WEIGHT: u32 = 1;
+pub const LIGHT_WEIGHT_TOTAL: u32 = LIGHT_NORMAL_WEIGHT + LIGHT_ZAG_WEIGHT + LIGHT_BEAD_WEIGHT;
+/// Maximum collection size (the old 27 unique 3-color kinds). CLI `--deck-size`
+/// / `--bag-size` accept `1..=BAG_SIZE`. The default collection is [`BAG_SIZE`].
 pub const BAG_SIZE: usize = 27;
-/// Default `--bag-size` / `--deck-size` / [`RuleSet::bag_size`]. All 11 tiles
-/// start public on the bench; spawn tokens default separately to 7.
+/// Public in-game bench after the 7+4 draft ([`crate::deck::BENCH_SIZE`]).
+/// Spawn tokens default separately to 7. CLI `--deck-size` is the 27-tile
+/// collection, not this field.
 pub const BAG_SIZE_DEFAULT: usize = 11;
 /// Default opening spawn-token stack. Independent of [`BAG_SIZE_DEFAULT`].
 pub const STARTING_TOKENS_DEFAULT: u8 = 7;
 pub const MAX_COLOR_RINGS: u8 = 3;
-/// Per live slot: empty + (6 colors × 3 types). Kind space is this cubed.
-pub const RING_TYPE_COUNT: usize = 3;
+/// Generated tiles are dots with this percent chance; the rest are triangles.
+/// CLI `--dot-chance 0..100`. Default 50/50.
+pub const DOT_PERCENT_DEFAULT: u8 = 50;
+/// Generation weight for no emblem. CLI `--emblem-weights`. Default 200.
+pub const EMBLEM_NONE_WEIGHT_DEFAULT: u16 = 200;
+/// Generation weight for Crescent Moon. Default 1 (1/202 with the others).
+pub const EMBLEM_CRESCENT_WEIGHT_DEFAULT: u16 = 1;
+/// Generation weight for Two Zag Zs. Default 1.
+pub const EMBLEM_ZS_WEIGHT_DEFAULT: u16 = 1;
+/// Generation weight for Blocker. Default 1 (assumption: user did not give
+/// a separate weight).
+pub const EMBLEM_BLOCKER_WEIGHT_DEFAULT: u16 = 1;
+/// Generation weight for Rosette. Default 1 (same assumption).
+pub const EMBLEM_ROSETTE_WEIGHT_DEFAULT: u16 = 1;
+/// Extra deck cost paid by a non-empty emblem except Rosette. Overwhelm still
+/// uses [`Tile::weight`] (`n_rings`); see [`Tile::cost`].
+pub const EMBLEM_COST: u8 = 1;
+/// Rosette's deck-cost delta: the opposite of [`EMBLEM_COST`].
+pub const EMBLEM_ROSETTE_COST: i8 = -1;
+/// Floor for [`Tile::cost`]. `u8` saturating arithmetic already cannot go
+/// below 0; 1-ring Rosette tiles land on this floor.
+pub const TILE_COST_MIN: u8 = 0;
+/// Per live slot: empty + (6 colors × 4 types). Kind space is this cubed.
+pub const RING_TYPE_COUNT: usize = 4;
 pub const SLOT_KINDS: usize = 1 + 6 * RING_TYPE_COUNT;
 pub const COLOR_STATES: usize = SLOT_KINDS * SLOT_KINDS * SLOT_KINDS;
 
 /// Ring kind is independent of color: a slot is a normal match, a zag (jag),
-/// or part of one braid group occupying 2–3 slots.
+/// part of one braid group occupying 2–3 slots, or a bead (a bomb against
+/// non-matching colors on the bead channel).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum RingType {
@@ -99,6 +134,7 @@ pub enum RingType {
 	Normal = 0,
 	Zag = 1,
 	Braid = 2,
+	Bead = 3,
 }
 
 impl RingType {
@@ -107,6 +143,7 @@ impl RingType {
 			Self::Normal => "normal",
 			Self::Zag => "zag",
 			Self::Braid => "braid",
+			Self::Bead => "bead",
 		}
 	}
 
@@ -120,6 +157,10 @@ impl RingType {
 
 	pub fn is_braid(self) -> bool {
 		matches!(self, Self::Braid)
+	}
+
+	pub fn is_bead(self) -> bool {
+		matches!(self, Self::Bead)
 	}
 
 	pub fn from_zag(zag: bool) -> Self {
@@ -252,6 +293,91 @@ pub fn sample_braid(
 	types
 }
 
+/// Per-slot heavy coin (`braid_numer / 7`) for [`ChannelMode::IndependentMax`].
+/// `braid_numer == 0` skips the RNG so `--braids off` matches the no-braid deal.
+pub fn sample_heavy_slots(rng: &mut impl Rng, n_rings: u8, braid_numer: u8) -> [bool; 3] {
+	let mut heavy = [false; 3];
+	if braid_numer == 0 {
+		return heavy;
+	}
+	let numer = u32::from(braid_numer.min(BRAID_DENOM));
+	for flag in heavy.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+		*flag = rng.gen_range(0..u32::from(BRAID_DENOM)) < numer;
+	}
+	heavy
+}
+
+/// Two or more **consecutive** heavies become a braid. A lone or gapped heavy
+/// stays [`RingType::Normal`] so the 5:3:1 light election can turn it into a
+/// single bead. 1-ring tiles never braid (a lone heavy always falls through).
+pub fn cluster_consecutive_heavies(heavy: [bool; 3], n_rings: u8) -> [RingType; 3] {
+	let n = n_rings.clamp(1, MAX_COLOR_RINGS) as usize;
+	let idx: Vec<usize> = (0..n).filter(|&i| heavy[i]).collect();
+	let mut types = [RingType::Normal; 3];
+	if idx.len() >= 2 && idx.windows(2).all(|w| w[1] == w[0] + 1) {
+		for i in idx {
+			types[i] = RingType::Braid;
+		}
+	}
+	types
+}
+
+/// Light-election weights for remaining normal slots under
+/// [`ChannelMode::IndependentMax`]. Base chart is normal:zag:bead = 5:3:1.
+/// A zero numerator drops that type (no RNG for it). A non-default numerator
+/// (collectors / `--zag-chance` / `--bead-chance`) replaces that type's weight
+/// so stuffing stays a single knob.
+pub fn light_election_weights(zag_numer: u8, bead_numer: u8) -> [u32; 3] {
+	let zag = if zag_numer == 0 {
+		0
+	} else if zag_numer == ZAG_NUMER_DEFAULT {
+		LIGHT_ZAG_WEIGHT
+	} else {
+		u32::from(zag_numer)
+	};
+	let bead = if bead_numer == 0 {
+		0
+	} else if bead_numer == BEAD_NUMER_DEFAULT {
+		LIGHT_BEAD_WEIGHT
+	} else {
+		u32::from(bead_numer)
+	};
+	[LIGHT_NORMAL_WEIGHT, zag, bead]
+}
+
+/// Per remaining **normal** slot, elect normal / zag / bead with
+/// [`light_election_weights`]. Braid slots stay braid. Single-bead tiles are
+/// allowed. If zag and bead weights are both 0, slots stay normal and no RNG
+/// is consumed (`--zags off` and `--bead-chance 0` after heavy clustering).
+pub fn sample_light_types(
+	rng: &mut impl Rng,
+	n_rings: u8,
+	types: &mut [RingType; 3],
+	zag_numer: u8,
+	bead_numer: u8,
+) {
+	let [normal_w, zag_w, bead_w] = light_election_weights(zag_numer, bead_numer);
+	let total = normal_w + zag_w + bead_w;
+	if total == 0 || (zag_w == 0 && bead_w == 0) {
+		return;
+	}
+	for slot in types.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+		if *slot != RingType::Normal {
+			continue;
+		}
+		let mut roll = rng.gen_range(0..total);
+		if roll < normal_w {
+			continue;
+		}
+		roll -= normal_w;
+		if roll < zag_w {
+			*slot = RingType::Zag;
+		} else {
+			*slot = RingType::Bead;
+		}
+	}
+}
+
 /// Independent zag rolls on remaining **normal** slots. Braid slots stay braid.
 pub fn sample_zag_types(rng: &mut impl Rng, n_rings: u8, types: &mut [RingType; 3], zag_numer: u8) {
 	if zag_numer == 0 {
@@ -262,6 +388,57 @@ pub fn sample_zag_types(rng: &mut impl Rng, n_rings: u8, types: &mut [RingType; 
 		if *slot == RingType::Normal && rng.gen_range(0..u32::from(ZAG_DENOM)) < numer {
 			*slot = RingType::Zag;
 		}
+	}
+}
+
+/// Piece-level bead group (`bead_numer / 7`). Occupies 2 or 3 remaining
+/// **normal** slots (padding a short tile by repeating its last color, like
+/// [`sample_braid`]). Never leaves a 1-bead tile. Zag and braid stay put.
+/// `bead_numer == 0` skips the RNG so `--bead-chance 0` matches the pre-bead deal.
+pub fn sample_bead_types(
+	rng: &mut impl Rng,
+	rings: &mut [TileColor; 3],
+	n_rings: &mut u8,
+	max_rings: u8,
+	types: &mut [RingType; 3],
+	bead_numer: u8,
+) {
+	if bead_numer == 0 {
+		return;
+	}
+	let n = (*n_rings).clamp(1, MAX_COLOR_RINGS) as usize;
+	let max = max_rings.clamp(1, MAX_COLOR_RINGS) as usize;
+	let n_normal = types.iter().take(n).filter(|t| t.is_normal()).count();
+	let capacity = n_normal + max.saturating_sub(n);
+	if capacity < 2 {
+		return;
+	}
+	let numer = u32::from(bead_numer.min(BEAD_DENOM));
+	if rng.gen_range(0..u32::from(BEAD_DENOM)) >= numer {
+		return;
+	}
+	let size = if capacity >= 3 && rng.gen_range(0..2u32) == 0 { 3usize } else { 2usize };
+	let size = size.min(capacity);
+	if size < 2 {
+		return;
+	}
+	let mut need = size;
+	for slot in types.iter_mut().take(n) {
+		if need == 0 {
+			break;
+		}
+		if slot.is_normal() {
+			*slot = RingType::Bead;
+			need -= 1;
+		}
+	}
+	while need > 0 {
+		let i = *n_rings as usize;
+		let last = rings[i - 1];
+		rings[i] = last;
+		types[i] = RingType::Bead;
+		*n_rings += 1;
+		need -= 1;
 	}
 }
 
@@ -292,6 +469,310 @@ pub fn sample_rings(rng: &mut impl Rng, max_rings: u8) -> ([TileColor; 3], u8) {
 	(rings, n)
 }
 
+/// Capture destination encoded by the marks drawn in place of move-length
+/// dots. Every tile has one: there is no unmarked tile. The **number** of
+/// marks is [`Tile::dots`] (MOVE length 1–3); the **shape** is this mark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+pub enum CaptureMark {
+	/// Captures on a move/ADD made with this tile become spawn tokens (+1
+	/// each). Today's pre-modifier behavior.
+	#[default]
+	Triangle = 0,
+	/// Captures join the mover's bench as unplaced tiles they now own.
+	Dot = 1,
+}
+
+impl CaptureMark {
+	pub fn is_dot(self) -> bool {
+		matches!(self, Self::Dot)
+	}
+
+	pub fn is_triangle(self) -> bool {
+		matches!(self, Self::Triangle)
+	}
+
+	pub fn dest(self) -> CaptureDest {
+		match self {
+			Self::Dot => CaptureDest::Bench,
+			Self::Triangle => CaptureDest::Tokens,
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Dot => "dot",
+			Self::Triangle => "triangle",
+		}
+	}
+
+	/// Compact kind-tag suffix: `o` (circle) vs `^` (triangle).
+	pub fn tag(self) -> &'static str {
+		match self {
+			Self::Dot => "o",
+			Self::Triangle => "^",
+		}
+	}
+
+	pub fn bit(self) -> u8 {
+		self as u8
+	}
+
+	pub fn from_bit(bit: u8) -> Self {
+		if bit == 0 {
+			Self::Triangle
+		} else {
+			Self::Dot
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"dot" | "dots" | "o" | "circle" | "bench" => Ok(Self::Dot),
+			"triangle" | "tri" | "t" | "^" | "tokens" | "token" => Ok(Self::Triangle),
+			other => Err(format!("unknown capture mark '{other}' (expected dot|triangle)")),
+		}
+	}
+}
+
+/// Where a single move's captures go. One destination for the whole
+/// simultaneous snapshot; the acting tile's [`CaptureMark`] picks it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CaptureDest {
+	Tokens,
+	Bench,
+}
+
+impl CaptureDest {
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Tokens => "tokens",
+			Self::Bench => "bench",
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"tokens" | "token" | "triangle" => Ok(Self::Tokens),
+			"bench" | "dot" => Ok(Self::Bench),
+			other => Err(format!("unknown capture dest '{other}' (expected bench|tokens)")),
+		}
+	}
+}
+
+/// One optional glyph in the tile's emblem slot (top of the face).
+///
+/// Generation weights default to None 200 / Crescent 1 / Zs 1 / Blocker 1 /
+/// Rosette 1. Non-empty emblems other than Rosette add [`EMBLEM_COST`] to
+/// [`Tile::cost`]. Rosette subtracts 1, floored at [`TILE_COST_MIN`].
+/// Overwhelm still compares against [`Tile::weight`] (`n_rings`); Crescent
+/// Moon changes that comparison when the piece has one adjacency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+pub enum Emblem {
+	#[default]
+	None = 0,
+	/// Mismatches equal to the tile's rings do not overwhelm it when it has
+	/// exactly one occupied neighbor. Strictly greater still overwhelms.
+	CrescentMoon = 1,
+	/// Each incident edge that already has a zag mismatch scores +1 more on
+	/// this tile's zag channel.
+	TwoZagZs = 2,
+	/// Other tiles cannot traverse this tile as a MOVE intermediate
+	/// (counted pass-through and hop flood). See [`BlockerBlocks`].
+	Blocker = 3,
+	/// No rule effect except deck cost: −1, opposite of the other emblems.
+	Rosette = 4,
+}
+
+impl Emblem {
+	pub const COUNT: usize = 5;
+
+	pub fn is_none(self) -> bool {
+		matches!(self, Self::None)
+	}
+
+	pub fn is_crescent(self) -> bool {
+		matches!(self, Self::CrescentMoon)
+	}
+
+	pub fn is_two_zag_zs(self) -> bool {
+		matches!(self, Self::TwoZagZs)
+	}
+
+	pub fn is_blocker(self) -> bool {
+		matches!(self, Self::Blocker)
+	}
+
+	pub fn is_rosette(self) -> bool {
+		matches!(self, Self::Rosette)
+	}
+
+	/// Extra deck cost. Zero for [`Self::None`], [`EMBLEM_ROSETTE_COST`] for
+	/// Rosette, [`EMBLEM_COST`] otherwise.
+	pub fn cost(self) -> i8 {
+		match self {
+			Self::None => 0,
+			Self::Rosette => EMBLEM_ROSETTE_COST,
+			_ => EMBLEM_COST as i8,
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::None => "none",
+			Self::CrescentMoon => "crescent",
+			Self::TwoZagZs => "zs",
+			Self::Blocker => "blocker",
+			Self::Rosette => "rosette",
+		}
+	}
+
+	pub fn tag(self) -> &'static str {
+		match self {
+			Self::None => "",
+			Self::CrescentMoon => "m",
+			Self::TwoZagZs => "zz",
+			Self::Blocker => "bk",
+			Self::Rosette => "ro",
+		}
+	}
+
+	pub fn bit(self) -> u8 {
+		self as u8
+	}
+
+	pub fn from_bit(bit: u8) -> Self {
+		match bit {
+			1 => Self::CrescentMoon,
+			2 => Self::TwoZagZs,
+			3 => Self::Blocker,
+			4 => Self::Rosette,
+			_ => Self::None,
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().replace('_', "-").as_str() {
+			"none" | "off" | "empty" | "0" => Ok(Self::None),
+			"crescent" | "crescent-moon" | "moon" | "m" => Ok(Self::CrescentMoon),
+			"zs" | "zz" | "two-zag-zs" | "two-zs" | "zags" | "zag-zs" => Ok(Self::TwoZagZs),
+			"blocker" | "block" | "diamond" | "bk" => Ok(Self::Blocker),
+			"rosette" | "rose" | "flower" | "ro" => Ok(Self::Rosette),
+			other => {
+				Err(format!("unknown emblem '{other}' (expected none|crescent|zs|blocker|rosette)"))
+			}
+		}
+	}
+}
+
+/// Independent generation weights for the emblem slot. Ability weights of 0
+/// skip the RNG so `--emblems off` matches the pre-emblem deal for the same
+/// seed. Three-part `none,crescent,zs` strings (older logs / CLI) pad
+/// Blocker and Rosette as 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EmblemWeights {
+	pub none: u16,
+	pub crescent: u16,
+	pub zs: u16,
+	pub blocker: u16,
+	pub rosette: u16,
+}
+
+impl Default for EmblemWeights {
+	fn default() -> Self {
+		Self {
+			none: EMBLEM_NONE_WEIGHT_DEFAULT,
+			crescent: EMBLEM_CRESCENT_WEIGHT_DEFAULT,
+			zs: EMBLEM_ZS_WEIGHT_DEFAULT,
+			blocker: EMBLEM_BLOCKER_WEIGHT_DEFAULT,
+			rosette: EMBLEM_ROSETTE_WEIGHT_DEFAULT,
+		}
+	}
+}
+
+impl EmblemWeights {
+	pub fn off() -> Self {
+		Self { none: 1, crescent: 0, zs: 0, blocker: 0, rosette: 0 }
+	}
+
+	pub fn abilities_on(self) -> bool {
+		self.crescent > 0 || self.zs > 0 || self.blocker > 0 || self.rosette > 0
+	}
+
+	pub fn total(self) -> u32 {
+		u32::from(self.none)
+			+ u32::from(self.crescent)
+			+ u32::from(self.zs)
+			+ u32::from(self.blocker)
+			+ u32::from(self.rosette)
+	}
+
+	/// `none,crescent,zs[,blocker,rosette]` (e.g. `200,1,1,1,1`).
+	pub fn parse(s: &str) -> Result<Self, String> {
+		let mut parts = s.split(',');
+		let none = parse_weight_part(parts.next(), "none")?;
+		let crescent = parse_weight_part(parts.next(), "crescent")?;
+		let zs = parse_weight_part(parts.next(), "zs")?;
+		let (blocker, rosette) = match parts.next() {
+			None => (0, 0),
+			Some(raw) => {
+				let blocker = parse_weight_part(Some(raw), "blocker")?;
+				let rosette = parse_weight_part(parts.next(), "rosette")?;
+				if parts.next().is_some() {
+					return Err(
+						"invalid --emblem-weights (expected none,crescent,zs[,blocker,rosette])"
+							.into(),
+					);
+				}
+				(blocker, rosette)
+			}
+		};
+		let w = Self { none, crescent, zs, blocker, rosette };
+		if w.total() == 0 {
+			return Err("invalid --emblem-weights (at least one weight must be > 0)".into());
+		}
+		Ok(w)
+	}
+
+	pub fn label(self) -> String {
+		format!("{},{},{},{},{}", self.none, self.crescent, self.zs, self.blocker, self.rosette)
+	}
+}
+
+fn parse_weight_part(part: Option<&str>, name: &str) -> Result<u16, String> {
+	let raw = part.ok_or_else(|| format!("invalid --emblem-weights (missing {name})"))?;
+	raw.trim()
+		.parse::<u16>()
+		.map_err(|_| format!("invalid --emblem-weights {name} '{raw}'"))
+}
+
+/// Draw one emblem from [`EmblemWeights`]. Ability weights of 0 skip the
+/// RNG so `--emblems off` matches the pre-emblem deal for the same seed.
+pub fn sample_emblem(rng: &mut impl Rng, weights: EmblemWeights) -> Emblem {
+	if !weights.abilities_on() {
+		return Emblem::None;
+	}
+	let total = weights.total().max(1);
+	let mut roll = rng.gen_range(0..total);
+	if roll < u32::from(weights.none) {
+		return Emblem::None;
+	}
+	roll -= u32::from(weights.none);
+	if roll < u32::from(weights.crescent) {
+		return Emblem::CrescentMoon;
+	}
+	roll -= u32::from(weights.crescent);
+	if roll < u32::from(weights.zs) {
+		return Emblem::TwoZagZs;
+	}
+	roll -= u32::from(weights.zs);
+	if roll < u32::from(weights.blocker) {
+		return Emblem::Blocker;
+	}
+	Emblem::Rosette
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Tile {
 	pub id: u32,
@@ -300,13 +781,20 @@ pub struct Tile {
 	/// a braid may repeat a color (orange+orange). First [`Self::n_rings`] live.
 	pub rings: [TileColor; 3],
 	pub n_rings: u8,
-	/// Parallel to [`Self::rings`]: normal, zag (jag), or braid. At most one
-	/// braid group per tile, occupying 2 or 3 slots.
+	/// Parallel to [`Self::rings`]: normal, zag (jag), braid, or bead. At most
+	/// one braid group per tile, occupying 2 or 3 slots.
 	pub ring_type: [RingType; 3],
 	/// Overwhelm match base and hop compare. Always equal to [`Self::n_rings`]
 	/// (braid slots count). Constructor `weight` arguments are ignored.
 	pub weight: u8,
+	/// Exact MOVE length (1–3). Drawn as that many capture marks.
 	pub dots: u8,
+	/// Dot → captured tiles join the mover's bench. Triangle → spawn tokens.
+	pub capture: CaptureMark,
+	/// Optional emblem in the single top-of-tile slot. [`Emblem::None`] is
+	/// the empty slot. [`Self::cost`] is `n_rings` plus [`Emblem::cost`],
+	/// floored at [`TILE_COST_MIN`].
+	pub emblem: Emblem,
 }
 
 /// Kind space: color-state × dots. Weight is the ring-slot count, already
@@ -367,7 +855,37 @@ impl Tile {
 			n = 1;
 		}
 		let _ = weight;
-		Self { id, owner, rings, n_rings: n, ring_type, weight: n, dots }
+		Self {
+			id,
+			owner,
+			rings,
+			n_rings: n,
+			ring_type,
+			weight: n,
+			dots,
+			capture: CaptureMark::Triangle,
+			emblem: Emblem::None,
+		}
+	}
+
+	/// Fixtures and constructors default to triangle (spawn-token captures).
+	pub fn with_capture(mut self, capture: CaptureMark) -> Self {
+		self.capture = capture;
+		self
+	}
+
+	/// Fixtures and constructors default to [`Emblem::None`].
+	pub fn with_emblem(mut self, emblem: Emblem) -> Self {
+		self.emblem = emblem;
+		self
+	}
+
+	/// Deck-building cost: ring-slot count plus the emblem surcharge (Rosette
+	/// is −1). Floored at [`TILE_COST_MIN`] (0). Overwhelm still uses
+	/// [`Self::weight`] (`n_rings`).
+	pub fn cost(self) -> u8 {
+		let v = i16::from(self.n_rings) + i16::from(self.emblem.cost());
+		v.max(i16::from(TILE_COST_MIN)) as u8
 	}
 
 	pub fn ring_colors(&self) -> &[TileColor] {
@@ -388,6 +906,10 @@ impl Tile {
 
 	pub fn ring_is_braid(self, index: usize) -> bool {
 		self.ring_type_at(index).is_braid()
+	}
+
+	pub fn ring_is_bead(self, index: usize) -> bool {
+		self.ring_type_at(index).is_bead()
 	}
 
 	/// Zag flags in slot order, for call sites that still compare a `[bool; 3]`.
@@ -441,6 +963,10 @@ impl Tile {
 		self.stroke_type(k).is_braid()
 	}
 
+	pub fn stroke_is_bead(self, k: u8) -> bool {
+		self.stroke_type(k).is_bead()
+	}
+
 	pub fn color_mask(self) -> u8 {
 		let mut m = 0u8;
 		for &c in self.ring_colors() {
@@ -466,11 +992,44 @@ impl Tile {
 	}
 
 	pub fn color_counts(self) -> [u8; 6] {
+		self.colors_multiset()
+	}
+
+	/// All live ring colors as a multiset, including zags. Zag hits use this.
+	pub fn colors_multiset(self) -> [u8; 6] {
 		let mut c = [0u8; 6];
 		for &col in self.ring_colors() {
 			c[col as usize] += 1;
 		}
 		c
+	}
+
+	/// Live ring colors excluding zag rings. Normal, bead, and braid matches
+	/// use this so a zag never counts as a match for those channels.
+	pub fn non_zag_colors_multiset(self) -> [u8; 6] {
+		let mut c = [0u8; 6];
+		for (i, &col) in self.ring_colors().iter().enumerate() {
+			if !self.ring_type[i].is_zag() {
+				c[col as usize] += 1;
+			}
+		}
+		c
+	}
+
+	/// Presence of `color` among non-zag rings (normal, braid, or bead).
+	pub fn has_non_zag_color(self, color: TileColor) -> bool {
+		self.non_zag_colors_multiset()[color as usize] > 0
+	}
+
+	/// Bit mask of non-zag ring colors.
+	pub fn non_zag_color_mask(self) -> u8 {
+		let mut m = 0u8;
+		for (i, &c) in self.ring_colors().iter().enumerate() {
+			if !self.ring_type[i].is_zag() {
+				m |= c.bit();
+			}
+		}
+		m
 	}
 
 	pub fn braid_color_counts(self) -> [u8; 6] {
@@ -495,7 +1054,7 @@ impl Tile {
 		out
 	}
 
-	/// Any ring color, normal, zag, or braid.
+	/// Any ring color, normal, zag, braid, or bead.
 	pub fn shares_color(self, other: Tile) -> bool {
 		(self.color_mask() & other.color_mask()) != 0
 	}
@@ -509,16 +1068,16 @@ impl Tile {
 	}
 
 	/// True if some **normal**-ring color of this tile appears among `other`'s
-	/// colors (any ring type: normal, zag, or braid).
+	/// non-zag colors (normal, braid, or bead). Zag rings never count.
 	pub fn normal_color_in(self, other: Tile) -> bool {
 		self.ring_colors()
 			.iter()
 			.enumerate()
-			.any(|(i, &c)| self.ring_type[i].is_normal() && other.has_color(c))
+			.any(|(i, &c)| self.ring_type[i].is_normal() && other.has_non_zag_color(c))
 	}
 
 	/// Independent normal channel: a match when some normal-ring color of
-	/// either tile is in the other tile's color multiset.
+	/// either tile is in the other tile's [`Self::non_zag_colors_multiset`].
 	pub fn normal_channel_matches(self, other: Tile) -> bool {
 		self.normal_color_in(other) || other.normal_color_in(self)
 	}
@@ -535,24 +1094,57 @@ impl Tile {
 	}
 
 	/// How many of this tile's zag **rings** have their color on `target`
-	/// (normal, zag, or braid). Counts live ring slots only. Own zags do not
+	/// (normal, zag, braid, or bead). Counts live ring slots only. Own zags do not
 	/// mismatch their owner. A zag whose color `target` lacks is absent (not
 	/// a hit).
 	pub fn zag_hits_on(self, target: Tile) -> i32 {
 		TileColor::ALL.iter().map(|&c| self.zag_hits_of_color(target, c)).sum()
 	}
 
-	/// This tile's braid is satisfied when `other`'s facing **ring** color
-	/// counts (any ring types) cover every color in the braid. Each ring
-	/// counts as 1. Size is the braid's slot count (2 or 3). An orange+orange
-	/// braid needs two orange rings on the neighbor.
+	/// A bead ring of color `C` is **matched** by `other` iff `C` appears in
+	/// `other`'s [`Self::non_zag_colors_multiset`]. Zag rings never count.
+	/// This is the same presence test [`Self::normal_color_in`] uses for a
+	/// normal ring. It is **not** multiset coverage (three orange beads vs
+	/// one orange = all three matched) and not the edge-level OR of the
+	/// normal channel (a bead does not become matched just because some
+	/// other normal ring on the edge matches).
+	pub fn bead_matched_on(self, other: Tile) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&k| self.stroke_is_bead(k) && other.has_non_zag_color(self.stroke_color(k)))
+			.count() as u8
+	}
+
+	/// Bead rings on this tile whose color `other` does not hold.
+	pub fn bead_unmatched_on(self, other: Tile) -> u8 {
+		self.bead_ring_count().saturating_sub(self.bead_matched_on(other))
+	}
+
+	/// Bead-channel scores on the undirected edge `self`–`other`.
+	///
+	/// Mismatch is +1 per unmatched bead ring on **either** tile (count the
+	/// rings, not each mismatching color pair). If any bead ring on either
+	/// side is matched, the channel also scores a single match of 1 (one −1
+	/// at most per edge, like the normal channel — not per bead). Both can
+	/// fire together when some beads match and others do not.
+	pub fn bead_channel(self, other: Tile) -> (i32, i32) {
+		let unmatched =
+			i32::from(self.bead_unmatched_on(other)) + i32::from(other.bead_unmatched_on(self));
+		let matched = self.bead_matched_on(other) > 0 || other.bead_matched_on(self) > 0;
+		(if matched { 1 } else { 0 }, unmatched)
+	}
+
+	/// This tile's braid is satisfied when `other`'s
+	/// [`Self::non_zag_colors_multiset`] covers every color in the braid.
+	/// Zag rings never count. Each non-zag ring counts as 1. Size is the
+	/// braid's slot count (2 or 3). An orange+orange braid needs two orange
+	/// non-zag rings on the neighbor.
 	pub fn braid_fulfilled_by(self, other: Tile) -> Option<u8> {
 		let size = self.braid_ring_count();
 		if size < 2 {
 			return None;
 		}
 		let need = self.braid_color_counts();
-		let have = other.color_counts();
+		let have = other.non_zag_colors_multiset();
 		if (0..6).all(|i| have[i] >= need[i]) {
 			Some(size)
 		} else {
@@ -561,10 +1153,14 @@ impl Tile {
 	}
 
 	/// True if this tile has a real presence toward `dst`: a normal ring, a
-	/// braid (2–3 slots), or a zag whose color `dst` holds. Non-matching zags
-	/// are treated as empty.
+	/// braid (2–3 slots), a zag whose color `dst` holds, or any bead (beads
+	/// always fire: matched or unmatched). Non-matching zags are treated as
+	/// empty.
 	pub fn present_toward(self, dst: Tile) -> bool {
-		self.normal_mask() != 0 || self.braid_ring_count() >= 2 || self.zag_hits_on(dst) > 0
+		self.normal_mask() != 0
+			|| self.braid_ring_count() >= 2
+			|| self.zag_hits_on(dst) > 0
+			|| self.bead_ring_count() > 0
 	}
 
 	pub fn kind_label(self) -> String {
@@ -575,11 +1171,14 @@ impl Tile {
 			.map(|(i, c)| match self.ring_type[i] {
 				RingType::Zag => format!("{}-zag", c.name()),
 				RingType::Braid => format!("{}-braid", c.name()),
+				RingType::Bead => format!("{}-bead", c.name()),
 				RingType::Normal => c.name().to_string(),
 			})
 			.collect::<Vec<_>>()
 			.join("+");
-		format!("{rings} w{} d{}", self.weight, self.dots)
+		let emblem =
+			if self.emblem.is_none() { String::new() } else { format!(" {}", self.emblem.name()) };
+		format!("{rings} w{} d{} {}{emblem}", self.weight, self.dots, self.capture.name())
 	}
 
 	/// Slot-coded color state: empty / (color × type) per live ring.
@@ -607,7 +1206,14 @@ impl Tile {
 			.count() as u8
 	}
 
-	/// How many of this tile's live rings are normal (not zag, not braid).
+	/// How many of this tile's live rings are beads.
+	pub fn bead_ring_count(self) -> u8 {
+		(0..self.n_rings.min(MAX_COLOR_RINGS))
+			.filter(|&i| self.ring_type[i as usize].is_bead())
+			.count() as u8
+	}
+
+	/// How many of this tile's live rings are normal (not zag, braid, or bead).
 	pub fn normal_ring_count(self) -> u8 {
 		(0..self.n_rings.min(MAX_COLOR_RINGS))
 			.filter(|&i| self.ring_type[i as usize].is_normal())
@@ -615,13 +1221,18 @@ impl Tile {
 	}
 
 	/// Piece value under `weights`: `dots * w.dots + normal_rings * w.normal_ring
-	/// + zag_rings * w.zag_ring + braid_rings * w.braid_ring`. Used by the
-	/// low-value end condition.
+	/// + zag_rings * w.zag_ring + braid_rings * w.braid_ring + bead_rings *
+	/// w.bead_ring + emblem_cost * w.emblem`. Used by the low-value end
+	/// condition. PRIMARY counts emblems as 0 so the first pass is still
+	/// dots+rings; TIEBREAK counts the emblem deck-cost delta (+1, or −1
+	/// for Rosette).
 	pub fn piece_value(self, weights: PieceValueWeights) -> i32 {
 		weights.dots * i32::from(self.dots)
 			+ weights.normal_ring * i32::from(self.normal_ring_count())
 			+ weights.zag_ring * i32::from(self.zag_ring_count())
 			+ weights.braid_ring * i32::from(self.braid_ring_count())
+			+ weights.bead_ring * i32::from(self.bead_ring_count())
+			+ weights.emblem * i32::from(self.emblem.cost())
 	}
 }
 
@@ -650,20 +1261,26 @@ pub fn selected_braid(a: Tile, b: Tile) -> Option<(Tile, u8)> {
 
 /// Tunable weights for [`Tile::piece_value`]. Low-value resolution uses
 /// [`Self::PRIMARY`] first (every ring counts 1), then [`Self::TIEBREAK`]
-/// (zag and braid rings count 2). Add fields here as new ring types appear.
+/// (zag, braid, and bead rings count 2). Add fields here as new ring types appear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PieceValueWeights {
 	pub dots: i32,
 	pub normal_ring: i32,
 	pub zag_ring: i32,
 	pub braid_ring: i32,
+	pub bead_ring: i32,
+	pub emblem: i32,
 }
 
 impl PieceValueWeights {
 	/// Step 1: value = dots + rings (every ring 1). Lower wins.
-	pub const PRIMARY: Self = Self { dots: 1, normal_ring: 1, zag_ring: 1, braid_ring: 1 };
-	/// Step 2 on a primary tie: zag and braid rings are worth 2. Lower wins.
-	pub const TIEBREAK: Self = Self { dots: 1, normal_ring: 1, zag_ring: 2, braid_ring: 2 };
+	pub const PRIMARY: Self =
+		Self { dots: 1, normal_ring: 1, zag_ring: 1, braid_ring: 1, bead_ring: 1, emblem: 0 };
+	/// Step 2 on a primary tie: zag, braid, and bead rings are worth 2, and
+	/// an emblem counts its deck-cost delta (+1, or −1 for Rosette). Lower
+	/// wins.
+	pub const TIEBREAK: Self =
+		Self { dots: 1, normal_ring: 1, zag_ring: 2, braid_ring: 2, bead_ring: 2, emblem: 1 };
 }
 
 /// A missing piece in a low-value pair. Treated as maximum value so the
@@ -697,11 +1314,11 @@ pub enum BudgetToken {
 	Captured(Tile),
 }
 
-/// One slot in the visual deck row. Every unplaced deck tile is [`Self::Live`]
-/// and selectable. [`Game::deck_slots`] returns only live tiles, so a placed
-/// tile leaves the row (opening deals still show all [`RuleSet::bag_size`]
-/// tiles, default 11). [`Self::Spent`] / [`Self::Empty`] remain for fixtures
-/// and historical classification.
+/// One slot in the visual deck row. Every unplaced bench tile is [`Self::Live`]
+/// and selectable, including tiles captured onto the bench (opponent dots that
+/// flipped ownership, and the mover's own self-captures). [`Game::deck_slots`]
+/// returns only live tiles, so a placed tile leaves the row. [`Self::Spent`] /
+/// [`Self::Empty`] remain for fixtures and historical classification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeckSlot {
 	Empty,
@@ -730,14 +1347,10 @@ fn blank_budget(n: u8) -> Vec<BudgetToken> {
 	vec![BudgetToken::Blank; n as usize]
 }
 
-/// Visual deck order: unplaced tiles left-to-right, then remaining bag in
-/// draw order (next draw first). New games deal the whole bag onto the bench,
-/// so the bag tail is empty. The bag is a pop-stack, so draw order is reverse.
-fn visual_deck_order(bench: &[Tile], bag: &[Tile]) -> Vec<Tile> {
-	let mut deck = Vec::with_capacity(bench.len() + bag.len());
-	deck.extend_from_slice(bench);
-	deck.extend(bag.iter().rev().copied());
-	deck
+/// Visual deck order: unplaced **bench** tiles left-to-right. Reserves (the
+/// leftover collection) never appear in the row and are never usable in play.
+fn visual_deck_order(bench: &[Tile], _bag: &[Tile]) -> Vec<Tile> {
+	bench.to_vec()
 }
 
 pub fn slot_code(color: TileColor, typ: RingType) -> usize {
@@ -762,6 +1375,7 @@ pub struct ColorStateView {
 	pub normal: u8,
 	pub zag: u8,
 	pub braid: u8,
+	pub bead: u8,
 	pub counts: [u8; 6],
 	pub braid_counts: [u8; 6],
 	pub braid_size: u8,
@@ -786,11 +1400,12 @@ pub fn decode_color_state(mut state: usize) -> ColorStateView {
 		match typ {
 			0 => view.normal |= bit,
 			1 => view.zag |= bit,
-			_ => {
+			2 => {
 				view.braid |= bit;
 				view.braid_counts[color] += 1;
 				view.braid_size += 1;
 			}
+			_ => view.bead |= bit,
 		}
 	}
 	view
@@ -813,16 +1428,24 @@ pub enum EndReason {
 	CenterHold,
 	/// Held a majority of inner-ring (petal) nodes for N consecutive own turns.
 	PetalMajority,
-	/// Occupied at least `control_n` of the 9-node control set (center + inner
-	/// ring) for `control_hold_turns` consecutive own turns.
+	/// Occupied at least the control target of the 9-node control set
+	/// (center + inner ring). Under [`EndgameRule::LowValue`] that is the
+	/// fixed `control_n` (default 5) held for `control_hold_turns` own turns.
+	/// Under [`EndgameRule::ControlCascade`] it is the one-way ratcheted
+	/// checkpoint (5→4→3→2): either an immediate unique-holder win when the
+	/// ratchet drops, or the usual `control_hold_turns` hold. A non-winning
+	/// drop may also award a cascade turn-gain extra turn.
 	Control,
 	/// Could no longer occupy 5 control-set nodes (`insufficient_tiles_loss`).
 	InsufficientTiles,
-	/// Both players have `board tiles + usable budget` strictly below
-	/// [`LOW_VALUE_BOARD_LT`] (usable = min(tokens, unplaced deck tiles)).
 	/// Sorted lowest-tile pairs decide (primary, then zag/braid-weighted
 	/// tiebreak). A missing piece is maximum value, so more surviving tiles
 	/// win; a draw only if the counts match and every pair ties on both passes.
+	///
+	/// Under [`EndgameRule::LowValue`] this fires when both players have
+	/// `board tiles + usable budget` strictly below [`LOW_VALUE_BOARD_LT`].
+	/// Under [`EndgameRule::ControlCascade`] it is the final tie-breaker once
+	/// `max_mat <= 1` (both sides have at most one total material).
 	LowValue,
 }
 
@@ -970,6 +1593,56 @@ impl PassThroughRingCmp {
 	}
 }
 
+/// What a Blocker emblem stops. The only implemented "count through" in this
+/// ruleset is MOVE traversal: counted pass-through and hop flooding both
+/// treat an occupied tile as an intermediate. Overwhelm, control, and petal
+/// majority never walk a third tile, so they are unchanged.
+///
+/// CLI `--blocker-blocks`. Default [`Self::Traversal`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum BlockerBlocks {
+	/// Counted pass-through **and** hop flood cannot traverse a Blocker.
+	#[default]
+	Traversal,
+	/// Only counted pass-through. Hops (when `--graph-hops on`) still flood.
+	PassThrough,
+	/// Only hop flooding. Counted pass-through still pays a step through.
+	Hop,
+	/// Glyph and cost only; other tiles may still traverse the Blocker.
+	Off,
+}
+
+impl BlockerBlocks {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().replace('_', "-").as_str() {
+			"traversal" | "pass-hop" | "both" | "on" | "default" => Ok(Self::Traversal),
+			"pass" | "pass-through" | "passthrough" => Ok(Self::PassThrough),
+			"hop" | "hops" => Ok(Self::Hop),
+			"off" | "none" | "0" => Ok(Self::Off),
+			other => {
+				Err(format!("unknown --blocker-blocks '{other}' (expected traversal|pass|hop|off)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Traversal => "traversal",
+			Self::PassThrough => "pass",
+			Self::Hop => "hop",
+			Self::Off => "off",
+		}
+	}
+
+	pub fn stops_pass_through(self) -> bool {
+		matches!(self, Self::Traversal | Self::PassThrough)
+	}
+
+	pub fn stops_hop(self) -> bool {
+		matches!(self, Self::Traversal | Self::Hop)
+	}
+}
+
 /// How zag mismatches are counted on an occupied edge.
 ///
 /// A hitting zag on either tile is an **edge** event; both tiles take the
@@ -1059,6 +1732,139 @@ impl BraidFailMismatch {
 	}
 }
 
+/// How the normal and bead channels combine on an edge.
+///
+/// Channel *components* ([`EdgeChannels::bead_match`], etc.) are always the
+/// independent per-type scores. This flag only changes how they are **summed**
+/// into the edge total used for overwhelm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum BeadScoring {
+	/// Rule A (`--bead-scoring independent`): normal and bead add. Unmatched
+	/// beads +1 each; a matched bead is −1 at most once, like normals.
+	Independent,
+	/// Rule B (default): beads and normals share one channel. The normal/bead
+	/// contribution is `max(normal, bead)` per match and per mismatch instead
+	/// of their sum, so beads act like countable normals and cannot double up
+	/// with a normal hitch. Matching is still at most 1. Zag and braid add
+	/// unchanged.
+	#[default]
+	SharedChannel,
+}
+
+impl BeadScoring {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"independent" | "a" | "add" | "sum" => Ok(Self::Independent),
+			"shared" | "shared-channel" | "shared_channel" | "b" | "max" => Ok(Self::SharedChannel),
+			other => Err(format!("unknown bead-scoring '{other}' (expected independent|shared)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Independent => "independent",
+			Self::SharedChannel => "shared",
+		}
+	}
+}
+
+/// How per-channel match/mismatch combine into the edge totals used for
+/// overwhelm, HUD `tile_score`, and search.
+///
+/// Channel *components* ([`EdgeChannels`]) are always independent. This flag
+/// only changes aggregation, and (for generation) whether beads are a light
+/// per-slot election or a 2–3 heavy group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ChannelMode {
+	/// Independent channels; the edge takes the **maximum** match and the
+	/// **maximum** mismatch of any single channel. Beads are light
+	/// (normal:zag:bead = 5:3:1). Per-slot heavies cluster: consecutive ≥2
+	/// become a braid; a lone or gapped heavy falls through to the light
+	/// election. CLI: `--channel-mode independent-max` (this branch's default).
+	#[default]
+	IndependentMax,
+	/// RFC 001-001-002 additive stacking: `--bead-scoring` combines normal
+	/// and bead, then zag and braid add. Beads generate as 2–3 groups.
+	/// CLI: `--channel-mode additive` (legacy comparison).
+	Additive,
+}
+
+impl ChannelMode {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"independent-max" | "independent_max" | "max" | "indep-max" => Ok(Self::IndependentMax),
+			"additive" | "legacy" | "sum" | "shared-sum" | "add" => Ok(Self::Additive),
+			other => {
+				Err(format!("unknown channel-mode '{other}' (expected independent-max|additive)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::IndependentMax => "independent-max",
+			Self::Additive => "additive",
+		}
+	}
+
+	pub fn is_independent_max(self) -> bool {
+		matches!(self, Self::IndependentMax)
+	}
+}
+
+/// How overwhelmed tiles leave the board after an action.
+///
+/// CLI: `--capture-mode local-claim` (this branch's default) or
+/// `--capture-mode cascade` (PR #70 simultaneous full-board sweep).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum CaptureMode {
+	/// After ADD/MOVE, remove only the placed/moved tile (if self-overwhelmed)
+	/// and tiles on its immediate destination neighbors. Leftover overwhelmed
+	/// tiles stay on the board until healed or [`Action::Claim`]ed. Claim
+	/// itself does not cascade. CLI: `--capture-mode local-claim`.
+	#[default]
+	LocalClaim,
+	/// After ADD/MOVE, remove every currently overwhelmed tile (PR #70).
+	/// Claim is not a legal action. CLI: `--capture-mode cascade`.
+	Cascade,
+}
+
+impl CaptureMode {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"local-claim" | "local_claim" | "local" | "claim" => Ok(Self::LocalClaim),
+			"cascade" | "full" | "sweep" | "global" => Ok(Self::Cascade),
+			other => Err(format!("unknown capture-mode '{other}' (expected local-claim|cascade)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::LocalClaim => "local-claim",
+			Self::Cascade => "cascade",
+		}
+	}
+
+	pub fn is_local_claim(self) -> bool {
+		matches!(self, Self::LocalClaim)
+	}
+
+	pub fn allows_claim(self) -> bool {
+		self.is_local_claim()
+	}
+}
+
+/// Which independent channel won an edge's max match or max mismatch.
+/// Tie-break for HUD: match order normal → bead → braid; mismatch order
+/// normal → zag → bead → braid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelKind {
+	Normal,
+	Zag,
+	Braid,
+	Bead,
+}
+
 /// Independent per-type edge channels. Match weights are positive here; the
 /// signed edge total is [`Self::effective`] (`mismatch − match`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1068,21 +1874,178 @@ pub struct EdgeChannels {
 	pub zag_mismatch: i32,
 	pub braid_match: i32,
 	pub braid_mismatch: i32,
+	pub bead_match: i32,
+	pub bead_mismatch: i32,
 }
 
 impl EdgeChannels {
+	/// Raw independent-channel match sum (rule A). Prefer
+	/// [`Self::match_weight_for`] when a [`BeadScoring`] flag is in play.
 	pub fn match_weight(self) -> i32 {
-		self.normal_match + self.braid_match
+		self.match_weight_for(BeadScoring::Independent)
 	}
 
 	pub fn mismatch_weight(self) -> i32 {
-		self.normal_mismatch + self.zag_mismatch + self.braid_mismatch
+		self.mismatch_weight_for(BeadScoring::Independent)
 	}
 
 	/// Per-edge `mismatch_weight − match_weight`. Summed over a tile's edges
 	/// and compared with `ring_weight` (`n_rings`).
 	pub fn effective(self) -> i32 {
-		self.mismatch_weight() - self.match_weight()
+		self.effective_for(BeadScoring::Independent)
+	}
+
+	/// Zero the bead channel so a capture can be tested without it.
+	pub fn without_beads(self) -> Self {
+		Self { bead_match: 0, bead_mismatch: 0, ..self }
+	}
+
+	pub fn match_weight_for(self, scoring: BeadScoring) -> i32 {
+		let normal_bead = match scoring {
+			BeadScoring::Independent => self.normal_match + self.bead_match,
+			BeadScoring::SharedChannel => self.normal_match.max(self.bead_match),
+		};
+		normal_bead + self.braid_match
+	}
+
+	pub fn mismatch_weight_for(self, scoring: BeadScoring) -> i32 {
+		let normal_bead = match scoring {
+			BeadScoring::Independent => self.normal_mismatch + self.bead_mismatch,
+			BeadScoring::SharedChannel => self.normal_mismatch.max(self.bead_mismatch),
+		};
+		normal_bead + self.zag_mismatch + self.braid_mismatch
+	}
+
+	pub fn effective_for(self, scoring: BeadScoring) -> i32 {
+		self.mismatch_weight_for(scoring) - self.match_weight_for(scoring)
+	}
+
+	pub fn score_for(self, scoring: BeadScoring) -> (i32, i32) {
+		(self.match_weight_for(scoring), self.mismatch_weight_for(scoring))
+	}
+
+	/// Match total under [`ChannelMode`]: max of any channel, or additive
+	/// stacking with [`BeadScoring`].
+	pub fn match_weight_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> i32 {
+		match mode {
+			ChannelMode::IndependentMax => {
+				self.normal_match.max(self.bead_match).max(self.braid_match)
+			}
+			ChannelMode::Additive => self.match_weight_for(scoring),
+		}
+	}
+
+	pub fn mismatch_weight_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> i32 {
+		match mode {
+			ChannelMode::IndependentMax => self
+				.normal_mismatch
+				.max(self.bead_mismatch)
+				.max(self.zag_mismatch)
+				.max(self.braid_mismatch),
+			ChannelMode::Additive => self.mismatch_weight_for(scoring),
+		}
+	}
+
+	pub fn effective_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> i32 {
+		self.mismatch_weight_for_mode(mode, scoring) - self.match_weight_for_mode(mode, scoring)
+	}
+
+	pub fn score_for_mode(self, mode: ChannelMode, scoring: BeadScoring) -> (i32, i32) {
+		(self.match_weight_for_mode(mode, scoring), self.mismatch_weight_for_mode(mode, scoring))
+	}
+
+	pub fn score_for_rules(self, rules: &RuleSet) -> (i32, i32) {
+		self.score_for_mode(rules.channel_mode, rules.bead_scoring)
+	}
+
+	pub fn effective_for_rules(self, rules: &RuleSet) -> i32 {
+		self.effective_for_mode(rules.channel_mode, rules.bead_scoring)
+	}
+
+	/// Per-type channels on the directed edge `tile` → `other` under `rules`
+	/// (Two Zag Zs bonus applies only on `tile`).
+	pub fn between(tile: Tile, other: Tile, rules: &RuleSet) -> Self {
+		let mut ch = Self::default();
+		if tile.normal_ring_count() > 0 || other.normal_ring_count() > 0 {
+			if tile.normal_channel_matches(other) {
+				ch.normal_match = 1;
+			} else if rules.mismatch_uses_neighbor_weight {
+				ch.normal_mismatch = i32::from(other.weight);
+			} else {
+				ch.normal_mismatch = 1;
+			}
+		}
+		if tile.zag_ring_count() > 0 || other.zag_ring_count() > 0 {
+			ch.zag_mismatch = rules.zag_mismatch.count(tile, other);
+		}
+		if tile.emblem.is_two_zag_zs() && ch.zag_mismatch > 0 {
+			ch.zag_mismatch += 1;
+		}
+		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
+			if let Some((_, n)) = selected_braid(tile, other) {
+				ch.braid_match = i32::from(n);
+			} else {
+				ch.braid_mismatch = rules.braid_fail_mismatch.cost(tile, other);
+			}
+		}
+		if tile.bead_ring_count() > 0 || other.bead_ring_count() > 0 {
+			let (m, x) = tile.bead_channel(other);
+			ch.bead_match = m;
+			ch.bead_mismatch = x;
+		}
+		ch
+	}
+
+	/// Max of each component from both directions (HUD / undirected edge).
+	pub fn undirected(a: Tile, b: Tile, rules: &RuleSet) -> Self {
+		let ab = Self::between(a, b, rules);
+		let ba = Self::between(b, a, rules);
+		Self {
+			normal_match: ab.normal_match.max(ba.normal_match),
+			normal_mismatch: ab.normal_mismatch.max(ba.normal_mismatch),
+			zag_mismatch: ab.zag_mismatch.max(ba.zag_mismatch),
+			braid_match: ab.braid_match.max(ba.braid_match),
+			braid_mismatch: ab.braid_mismatch.max(ba.braid_mismatch),
+			bead_match: ab.bead_match.max(ba.bead_match),
+			bead_mismatch: ab.bead_mismatch.max(ba.bead_mismatch),
+		}
+	}
+
+	/// Channel that supplies the independent-max match. `None` if match is 0.
+	pub fn max_match_kind(self) -> Option<ChannelKind> {
+		let n = self.normal_match;
+		let bead = self.bead_match;
+		let braid = self.braid_match;
+		let m = n.max(bead).max(braid);
+		if m <= 0 {
+			None
+		} else if n == m {
+			Some(ChannelKind::Normal)
+		} else if bead == m {
+			Some(ChannelKind::Bead)
+		} else {
+			Some(ChannelKind::Braid)
+		}
+	}
+
+	/// Channel that supplies the independent-max mismatch. `None` if 0.
+	pub fn max_mismatch_kind(self) -> Option<ChannelKind> {
+		let n = self.normal_mismatch;
+		let zag = self.zag_mismatch;
+		let bead = self.bead_mismatch;
+		let braid = self.braid_mismatch;
+		let m = n.max(zag).max(bead).max(braid);
+		if m <= 0 {
+			None
+		} else if n == m {
+			Some(ChannelKind::Normal)
+		} else if zag == m {
+			Some(ChannelKind::Zag)
+		} else if bead == m {
+			Some(ChannelKind::Bead)
+		} else {
+			Some(ChannelKind::Braid)
+		}
 	}
 }
 
@@ -1129,6 +2092,85 @@ impl InsufficientTilesLoss {
 	}
 }
 
+/// How the two-tier endgame (control, then low-value) scales with remaining
+/// material. CLI: `--endgame-rule`.
+///
+/// [`Self::ControlCascade`] (this branch's default) lowers the 9-node
+/// control target through a **one-way ratchet** 5 → 4 → 3 → 2 from
+/// `max_mat = max(p1, p2)` of `board_tiles + usable_spawn_tokens`, then
+/// fires low-value at `max_mat <= 1`. Recaptures that restore material
+/// never raise the target. A drop onto a checkpoint held by exactly one
+/// player is an immediate [`EndReason::Control`] (no `control_hold_turns`).
+/// If both already hold the new checkpoint, play continues under the
+/// turn-boundary hold. When nobody wins immediately on a drop and
+/// [`RuleSet::cascade_turn_gain`] is on, the strict material leader
+/// receives one extra turn (mover goes again, or the opponent banks a
+/// consecutive turn). [`Self::LowValue`] restores the baseline fixed-5
+/// control target plus low-value when both sides are strictly below 5.
+///
+/// Material uses [`Game::budget`] (`min(spawn_tokens, unplaced_bench)`),
+/// matching the low-value budget. Surplus tokens on an empty bench do
+/// not count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum EndgameRule {
+	#[default]
+	ControlCascade,
+	LowValue,
+}
+
+impl EndgameRule {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"control-cascade" | "control_cascade" | "cascade" => Ok(Self::ControlCascade),
+			"low-value" | "low_value" | "lowvalue" | "baseline" => Ok(Self::LowValue),
+			other => {
+				Err(format!("unknown endgame-rule '{other}' (expected control-cascade|low-value)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::ControlCascade => "control-cascade",
+			Self::LowValue => "low-value",
+		}
+	}
+
+	pub fn is_control_cascade(self) -> bool {
+		matches!(self, Self::ControlCascade)
+	}
+}
+
+/// Who received the extra turn when a cascade checkpoint dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TurnGainKind {
+	/// The player who just moved leads in material and goes again immediately.
+	Mover,
+	/// The opponent leads; they take their normal turn and then one extra.
+	Opponent,
+}
+
+impl TurnGainKind {
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Mover => "mover",
+			Self::Opponent => "opponent",
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"mover" => Ok(Self::Mover),
+			"opponent" => Ok(Self::Opponent),
+			other => Err(format!("unknown turn-gain kind '{other}' (expected mover|opponent)")),
+		}
+	}
+}
+
+fn initial_control_ratchet(rules: &RuleSet) -> u8 {
+	rules.control_n.max(1).min(9)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GameStatus {
 	InProgress,
@@ -1147,36 +2189,58 @@ impl GameStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
 	/// Opening spawn-token stack (that many blank tokens). Default 7.
-	/// Independent of [`Self::bag_size`] (the public deck). CLI:
-	/// `--starting-tokens` / `--starting-bench`. ADD spends 1 token; each
-	/// opponent capture earns 1. Own-tile captures earn 1 iff
-	/// [`Self::self_capture_budget`]. Usable budget is min(tokens, unplaced
-	/// deck tiles).
+	/// Independent of [`Self::bag_size`] (the public 11-tile bench). CLI:
+	/// `--starting-tokens` / `--starting-bench`. ADD spends 1 token. Triangle
+	/// captures earn 1 (own-tile iff [`Self::self_capture_budget`]); dot
+	/// captures join the bench. Usable budget is min(tokens, unplaced bench
+	/// tiles).
 	pub starting_bench_size: u8,
-	/// Public deck size per player. Default [`BAG_SIZE_DEFAULT`] (11). CLI:
-	/// `--bag-size` / `--deck-size` (`1..=`[`BAG_SIZE`]). Every sampled tile
-	/// starts unplaced and selectable; there is no hidden remainder.
+	/// Public in-game bench size (unplaced tiles that can be ADDed). Default
+	/// [`BAG_SIZE_DEFAULT`] (11): the 7+4 draft. Reserves are not this field.
 	pub bag_size: u8,
-	/// If true (default), capturing your own tile on your turn earns +1
-	/// budget the same as capturing an opponent tile. False still removes
-	/// the tile (overwhelm is unchanged) but does not refund a token.
-	/// CLI: `--self-capture-budget on|off`.
+	/// Full collection size per player. Default [`BAG_SIZE`] (27). CLI:
+	/// `--deck-size` / `--bag-size` (`1..=`[`BAG_SIZE`]). Each player drafts
+	/// a 7-tile bench then 4 more from reserves; leftover tiles stay in
+	/// reserve and are never usable in play.
+	pub deck_size: u8,
+	/// Triangle dest only: if true (default), capturing your own tile on
+	/// your turn earns +1 token. False still removes the tile but does not
+	/// refund. Dot dest always benches self-captures. CLI:
+	/// `--self-capture-budget on|off`.
 	pub self_capture_budget: bool,
-	/// Both players receive the same shuffled [`Self::bag_size`]-tile deck. Default true.
+	/// Both players receive the same shuffled [`Self::deck_size`]-tile collection. Default true.
 	pub identical_bags: bool,
-	/// Fill the deck by sampling [`Self::bag_size`] tiles (historical name: one-of-each
-	/// 27-kind). Default true. False leaves an empty deck.
+	/// Fill the collection by sampling [`Self::deck_size`] tiles (historical name: one-of-each
+	/// 27-kind). Default true. False leaves an empty collection.
 	pub bag_one_of_each_kind: bool,
 	/// Max distinct rings per tile (1–3). Default 3. `1` is the
 	/// single-ring baseline (still the six-color tree).
 	pub max_rings: u8,
-	/// Each ring is a zag with probability `zag_numer / 7`. Default 1 (1/7).
-	/// `0` disables zags (`--zags off` / `--zag-chance 0`).
+	/// Each ring is a zag with probability `zag_numer / 7` under
+	/// [`ChannelMode::Additive`]. Under [`ChannelMode::IndependentMax`],
+	/// default `1` is the zag weight 3 in the 5:3:1 light election; `0`
+	/// disables zags (`--zags off` / `--zag-chance 0`).
 	pub zag_numer: u8,
 	/// A piece forms a braid with probability `braid_numer / 7`. Default 1
 	/// (1/7, same rate as zags). `0` disables braids (`--braids off` /
-	/// `--braid-chance 0`).
+	/// `--braid-chance 0`). Braids are the only heavy group in both modes.
 	pub braid_numer: u8,
+	/// Under [`ChannelMode::Additive`]: a piece forms a 2–3 bead group with
+	/// probability `bead_numer / 7`. Under [`ChannelMode::IndependentMax`]:
+	/// default `1` is the bead weight 1 in the 5:3:1 light election (singles
+	/// allowed); a stuffed numerator (collectors) replaces that weight.
+	/// `0` disables beads (`--bead-chance 0`).
+	pub bead_numer: u8,
+	/// Percent of generated tiles that carry a **dot** capture mark (rest
+	/// triangles). Default [`DOT_PERCENT_DEFAULT`] (50). CLI `--dot-chance`.
+	pub dot_percent: u8,
+	/// Emblem-slot generation weights. Default None 200 / Crescent 1 /
+	/// Two Zag Zs 1. CLI `--emblem-weights`. Ability weights of 0 skip the
+	/// RNG (`--emblems off`).
+	pub emblem_weights: EmblemWeights,
+	/// What a Blocker tile stops as a MOVE intermediate. Default
+	/// [`BlockerBlocks::Traversal`]. CLI `--blocker-blocks`.
+	pub blocker_blocks: BlockerBlocks,
 	/// Legacy: on a MOVE, each removed opponent tile draws one hidden bag tile
 	/// onto the bench. Default **false** (the whole deck is public; captures
 	/// earn tokens only). Kept so historical JSONL logs replay.
@@ -1194,9 +2258,10 @@ pub struct RuleSet {
 	/// Hopped tiles must have ring count >= the mover. Default true.
 	/// Ignored when [`Self::color_restricted_hops`] is on.
 	pub hop_requires_ge_weight: bool,
-	/// If the player to move has no legal ADD or MOVE, they lose immediately
-	/// instead of passing. Default true. Double-pass draws are disabled while
-	/// this is on (a pass is never legal).
+	/// If the player to move has no legal ADD, MOVE, or (under
+	/// [`CaptureMode::LocalClaim`]) CLAIM, they lose immediately instead of
+	/// passing. Default true. Double-pass draws are disabled while this is
+	/// on (a pass is never legal).
 	pub no_moves_loses: bool,
 	/// Win by occupying the center at the end of `center_hold_n` consecutive
 	/// own turns. Default false (optional; N = [`Self::center_hold_n`]).
@@ -1229,6 +2294,14 @@ pub struct RuleSet {
 	pub control_n: u8,
 	/// Consecutive own turns holding `control_n` control-set nodes. Default 1.
 	pub control_hold_turns: u8,
+	/// Control-then-low-value scaling. Default [`EndgameRule::ControlCascade`].
+	/// `--endgame-rule low-value` restores fixed-`control_n` plus both-below-5.
+	pub endgame_rule: EndgameRule,
+	/// Extra turn for the strict material leader when a cascade checkpoint
+	/// drops and nobody wins immediately. Default true. `--cascade-turn-gain
+	/// off` restores PR #74 (ratchet + immediate unique-holder wins only).
+	/// Missing JSONL `cascade_turn_gain` replays as off.
+	pub cascade_turn_gain: bool,
 	/// Lose when board + remaining deck cannot reach 5 tiles (see
 	/// [`InsufficientTilesLoss`]). Default off.
 	pub insufficient_tiles_loss: InsufficientTilesLoss,
@@ -1256,6 +2329,22 @@ pub struct RuleSet {
 	/// [`BraidFailMismatch::Weight`] / [`BraidFailMismatch::Sum`] are
 	/// research variants (issue #39).
 	pub braid_fail_mismatch: BraidFailMismatch,
+	/// How normal and bead channels combine under [`ChannelMode::Additive`].
+	/// Default [`BeadScoring::SharedChannel`] (rule B): `max` instead of sum.
+	/// [`BeadScoring::Independent`] is rule A (`--bead-scoring independent`).
+	/// Ignored under [`ChannelMode::IndependentMax`] (all four channels are
+	/// independent, then the edge takes max match and max mismatch).
+	pub bead_scoring: BeadScoring,
+	/// How channel totals combine, and how beads generate. Default
+	/// [`ChannelMode::IndependentMax`]. `--channel-mode additive` restores
+	/// RFC 001-001-002 additive stacking and 2–3 bead groups.
+	pub channel_mode: ChannelMode,
+	/// How overwhelmed tiles leave the board. Default
+	/// [`CaptureMode::LocalClaim`]: ADD/MOVE capture only the placed/moved
+	/// tile and its destination neighbors; leftover overwhelmed tiles stay
+	/// until healed or [`Action::Claim`]ed. `--capture-mode cascade`
+	/// restores PR #70's full-board simultaneous sweep.
+	pub capture_mode: CaptureMode,
 }
 
 impl Default for RuleSet {
@@ -1263,12 +2352,17 @@ impl Default for RuleSet {
 		Self {
 			starting_bench_size: STARTING_TOKENS_DEFAULT,
 			bag_size: BAG_SIZE_DEFAULT as u8,
+			deck_size: BAG_SIZE as u8,
 			self_capture_budget: true,
 			identical_bags: true,
 			bag_one_of_each_kind: true,
 			max_rings: MAX_COLOR_RINGS,
 			zag_numer: ZAG_NUMER_DEFAULT,
 			braid_numer: BRAID_NUMER_DEFAULT,
+			bead_numer: BEAD_NUMER_DEFAULT,
+			dot_percent: DOT_PERCENT_DEFAULT,
+			emblem_weights: EmblemWeights::default(),
+			blocker_blocks: BlockerBlocks::default(),
 			capture_draw_on_move: false,
 			mismatch_uses_neighbor_weight: false,
 			actions_per_turn: 1,
@@ -1287,12 +2381,17 @@ impl Default for RuleSet {
 			control_win: true,
 			control_n: 5,
 			control_hold_turns: 1,
+			endgame_rule: EndgameRule::ControlCascade,
+			cascade_turn_gain: true,
 			insufficient_tiles_loss: InsufficientTilesLoss::Off,
 			path_constraint: PathConstraint::NoEdgeRevisit,
 			counted_pass_through: true,
 			pass_through_ring_cmp: PassThroughRingCmp::Ge,
 			zag_mismatch: ZagMismatchCount::Sum,
 			braid_fail_mismatch: BraidFailMismatch::One,
+			bead_scoring: BeadScoring::SharedChannel,
+			channel_mode: ChannelMode::IndependentMax,
+			capture_mode: CaptureMode::LocalClaim,
 		}
 	}
 }
@@ -1301,12 +2400,33 @@ impl RuleSet {
 	pub fn default_rules() -> Self {
 		Self::default()
 	}
+
+	/// RFC 001-001-002 additive stacking with shared-channel beads and 2–3
+	/// bead groups. Used by `--channel-mode additive` and by tests that lock
+	/// the previous default.
+	pub fn additive() -> Self {
+		let mut rules = Self::default();
+		rules.channel_mode = ChannelMode::Additive;
+		rules
+	}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
-	Add { bench_index: usize, node: NodeId },
-	Move { from: NodeId, to: NodeId },
+	Add {
+		bench_index: usize,
+		node: NodeId,
+	},
+	Move {
+		from: NodeId,
+		to: NodeId,
+	},
+	/// Remove one currently overwhelmed tile (own or opponent). Legal only
+	/// under [`CaptureMode::LocalClaim`]. Always awards a spawn token; does
+	/// not spend a token and does not cascade.
+	Claim {
+		node: NodeId,
+	},
 	Pass,
 }
 
@@ -1322,6 +2442,28 @@ pub struct Removal {
 	pub tile: Tile,
 	pub matches: i32,
 	pub mismatches: i32,
+	/// Where this removal went. Same for every removal of one action.
+	pub dest: CaptureDest,
+	/// Some incident edge had a non-zero bead match or bead mismatch.
+	pub bead_contrib: bool,
+	/// The tile would not have been overwhelmed with the bead channel zeroed.
+	pub bead_needed: bool,
+	/// A 2-ring tile just ADDed this action popped, and a single-bead neighbor
+	/// was decisive (needed the bead channel).
+	pub spawn_two_ring_single_bead: bool,
+}
+
+/// How often emblem abilities fired on one action. Counted on the live
+/// board after the ADD/MOVE lands and before removals, so search clones
+/// do not accumulate them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EmblemTrigger {
+	/// Crescent tiles that would have been overwhelmed under the ordinary
+	/// `eff >= weight` test but were saved by the 1-adjacency exception.
+	pub crescent_saves: u8,
+	/// Two Zag Zs +1 applications: one per incident edge of a Zs tile
+	/// whose zag-mismatch (before the bonus) was already > 0.
+	pub zs_bonuses: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1331,6 +2473,7 @@ pub struct ActionOutcome {
 	pub removals: Vec<Removal>,
 	pub draws: u8,
 	pub log_line: String,
+	pub emblem: EmblemTrigger,
 }
 
 #[derive(Clone, Debug)]
@@ -1355,8 +2498,31 @@ pub struct Game {
 	center_hold: [u8; 2],
 	/// Consecutive own turns holding a majority of inner-ring (petal) nodes.
 	petal_majority: [u8; 2],
-	/// Consecutive own turns occupying at least `control_n` control-set nodes.
+	/// Consecutive own turns occupying at least the current control target.
 	control_hold: [u8; 2],
+	/// One-way cascade checkpoint, initialized to `control_n`. Only lowered
+	/// via [`Self::sync_control_ratchet`] while `max_mat >= 2`.
+	control_ratchet: u8,
+	/// Set when the last [`EndReason::Control`] was an immediate drop win
+	/// rather than a `control_hold_turns` hold.
+	control_win_immediate: bool,
+	/// Banked extra consecutive turns per player, awarded by cascade turn
+	/// gain. Consumed in [`Self::finish_turn`] instead of passing the side.
+	extra_turns: [u8; 2],
+	/// The player to move is taking a consumed extra turn (HUD + JSONL).
+	playing_extra_turn: bool,
+	/// The turn that just passed was an extra turn. Used to flag games that
+	/// ended on the following action.
+	prev_finished_extra: bool,
+	/// Last drop's turn-gain award, if any. Reset at the start of [`Self::apply`].
+	last_turn_gain: Option<TurnGainKind>,
+	/// Lifetime counters for reconstructible logs and bench summaries.
+	turn_gain_awarded: u32,
+	turn_gain_mover: u32,
+	turn_gain_opponent: u32,
+	extra_turns_played: u32,
+	ended_on_extra: bool,
+	ended_after_extra: bool,
 	/// Spawn-token stack. Tokens are earned and spent here; usable ADD
 	/// permission is [`Self::budget`] = min(stack length, remaining deck).
 	budget_tokens: [Vec<BudgetToken>; 2],
@@ -1364,11 +2530,18 @@ pub struct Game {
 	/// The UI shows this many slots for the whole game; used tiles stay here
 	/// even after they leave the remaining deck.
 	opening_deck: [Vec<Tile>; 2],
+	/// Reconstructible 27-tile collections and 7+4 picks. `None` on
+	/// constructed [`Self::empty`] fixtures.
+	setup: Option<crate::deck::SetupRecord>,
 }
 
 impl Game {
 	pub fn new(rules: RuleSet, seed: u64) -> Self {
-		Self::new_on(Arc::new(Board::rosette_8()), rules, seed)
+		Self::new_with_setup(rules, seed, crate::deck::SetupConfig::for_seed(seed))
+	}
+
+	pub fn new_with_setup(rules: RuleSet, seed: u64, setup: crate::deck::SetupConfig) -> Self {
+		Self::new_on(Arc::new(Board::rosette_8()), rules, seed, setup)
 	}
 
 	pub fn start(
@@ -1376,9 +2549,18 @@ impl Game {
 		seed: u64,
 		scenario: Option<&crate::scenario::Scenario>,
 	) -> Result<Self, String> {
+		Self::start_with(rules, seed, scenario, crate::deck::SetupConfig::for_seed(seed))
+	}
+
+	pub fn start_with(
+		rules: RuleSet,
+		seed: u64,
+		scenario: Option<&crate::scenario::Scenario>,
+		setup: crate::deck::SetupConfig,
+	) -> Result<Self, String> {
 		match scenario {
-			Some(s) => Self::from_scenario(rules, seed, s),
-			None => Ok(Self::new(rules, seed)),
+			Some(s) => Self::from_scenario_with(rules, seed, s, setup),
+			None => Ok(Self::new_with_setup(rules, seed, setup)),
 		}
 	}
 
@@ -1388,10 +2570,19 @@ impl Game {
 		seed: u64,
 		scenario: &crate::scenario::Scenario,
 	) -> Result<Self, String> {
+		Self::from_scenario_with(rules, seed, scenario, crate::deck::SetupConfig::for_seed(seed))
+	}
+
+	pub fn from_scenario_with(
+		rules: RuleSet,
+		seed: u64,
+		scenario: &crate::scenario::Scenario,
+		setup: crate::deck::SetupConfig,
+	) -> Result<Self, String> {
 		if scenario.generative {
 			let mut rules = rules;
 			rules.identical_bags = scenario.mirror;
-			return Ok(Self::new(rules, seed));
+			return Ok(Self::new_with_setup(rules, seed, setup));
 		}
 		let board = Arc::new(Board::rosette_8());
 		let n = board.node_count();
@@ -1404,6 +2595,8 @@ impl Game {
 					let id = *next_id;
 					*next_id += 1;
 					Tile::with_typed_rings(id, owner, &spec.parts(), spec.weight, spec.dots)
+						.with_capture(spec.capture)
+						.with_emblem(spec.emblem)
 				})
 				.collect::<Vec<_>>()
 		};
@@ -1411,12 +2604,20 @@ impl Game {
 		let p2_bag = to_tiles(Player::Two, bags[1].clone(), &mut next_tile_id);
 		let p1_bench = to_tiles(Player::One, benches[0].clone(), &mut next_tile_id);
 		let p2_bench = to_tiles(Player::Two, benches[1].clone(), &mut next_tile_id);
+		let mut p1_col = p1_bench;
+		p1_col.extend(p1_bag);
+		let mut p2_col = p2_bench;
+		p2_col.extend(p2_bag);
+		if p1_col.is_empty() || p2_col.is_empty() {
+			return Err("scenario produced an empty collection".into());
+		}
+		let record = crate::deck::pick_from_collections([p1_col, p2_col], &rules, &setup, seed);
 		let mut game = Self {
 			board,
 			rules,
 			tiles: vec![None; n],
-			benches: [p1_bench, p2_bench],
-			bags: [p1_bag, p2_bag],
+			benches: [record.bench(Player::One), record.bench(Player::Two)],
+			bags: [record.reserves(Player::One), record.reserves(Player::Two)],
 			current: Player::One,
 			status: GameStatus::InProgress,
 			turn_count: 0,
@@ -1429,58 +2630,58 @@ impl Game {
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
 			control_hold: [0, 0],
+			control_ratchet: initial_control_ratchet(&rules),
+			control_win_immediate: false,
+			extra_turns: [0, 0],
+			playing_extra_turn: false,
+			prev_finished_extra: false,
+			last_turn_gain: None,
+			turn_gain_awarded: 0,
+			turn_gain_mover: 0,
+			turn_gain_opponent: 0,
+			extra_turns_played: 0,
+			ended_on_extra: false,
+			ended_after_extra: false,
 			budget_tokens: [
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
 			],
 			opening_deck: [Vec::new(), Vec::new()],
+			setup: Some(record),
 		};
-		game.deal_opening();
+		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
 		Ok(game)
 	}
 
-	pub fn new_on(board: Arc<Board>, rules: RuleSet, seed: u64) -> Self {
+	pub fn new_on(
+		board: Arc<Board>,
+		rules: RuleSet,
+		seed: u64,
+		setup: crate::deck::SetupConfig,
+	) -> Self {
 		let n = board.node_count();
 		let mut next_tile_id = 1u32;
-		let mut rng = StdRng::seed_from_u64(seed);
-		let p1_bag = build_bag(
-			Player::One,
-			rules.bag_one_of_each_kind,
-			rules.bag_size as usize,
-			rules.max_rings,
-			rules.zag_numer,
-			rules.braid_numer,
-			&mut next_tile_id,
-			&mut rng,
-		);
-		let p2_bag = if rules.identical_bags {
-			p1_bag
-				.iter()
-				.map(|t| {
-					let id = next_tile_id;
-					next_tile_id += 1;
-					Tile { id, owner: Player::Two, ..*t }
-				})
-				.collect()
+		let record = if rules.bag_one_of_each_kind {
+			crate::deck::deal_and_pick(&rules, &setup, seed, &mut next_tile_id)
 		} else {
-			build_bag(
-				Player::Two,
-				rules.bag_one_of_each_kind,
-				rules.bag_size as usize,
-				rules.max_rings,
-				rules.zag_numer,
-				rules.braid_numer,
-				&mut next_tile_id,
-				&mut rng,
-			)
+			crate::deck::SetupRecord {
+				decks: [Vec::new(), Vec::new()],
+				pick7: [Vec::new(), Vec::new()],
+				extend: [Vec::new(), Vec::new()],
+				strategy: setup.pick,
+				deck_seed: setup.deck_seed(seed),
+				deck_noise: setup.deck_noise,
+				p1_deck: setup.p1_deck,
+				p2_deck: setup.p2_deck,
+			}
 		};
 		let mut game = Self {
 			board,
 			rules,
 			tiles: vec![None; n],
-			benches: [Vec::new(), Vec::new()],
-			bags: [p1_bag, p2_bag],
+			benches: [record.bench(Player::One), record.bench(Player::Two)],
+			bags: [record.reserves(Player::One), record.reserves(Player::Two)],
 			current: Player::One,
 			status: GameStatus::InProgress,
 			turn_count: 0,
@@ -1493,13 +2694,26 @@ impl Game {
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
 			control_hold: [0, 0],
+			control_ratchet: initial_control_ratchet(&rules),
+			control_win_immediate: false,
+			extra_turns: [0, 0],
+			playing_extra_turn: false,
+			prev_finished_extra: false,
+			last_turn_gain: None,
+			turn_gain_awarded: 0,
+			turn_gain_mover: 0,
+			turn_gain_opponent: 0,
+			extra_turns_played: 0,
+			ended_on_extra: false,
+			ended_after_extra: false,
 			budget_tokens: [
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
 			],
 			opening_deck: [Vec::new(), Vec::new()],
+			setup: Some(record),
 		};
-		game.deal_opening();
+		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
 		game
 	}
@@ -1507,6 +2721,23 @@ impl Game {
 	/// Empty board, empty decks. For constructed test positions.
 	pub fn empty(rules: RuleSet) -> Self {
 		Self::empty_on(Arc::new(Board::rosette_8()), rules)
+	}
+
+	/// Install a completed 7+4 draft. Reserves stay in `bags` and are never usable.
+	pub fn from_setup_record(rules: RuleSet, seed: u64, record: crate::deck::SetupRecord) -> Self {
+		let mut game = Self::empty(rules);
+		game.seed = seed;
+		let mut max_id = 0u32;
+		for t in record.decks[0].iter().chain(record.decks[1].iter()) {
+			max_id = max_id.max(t.id);
+		}
+		game.next_tile_id = max_id.saturating_add(1).max(1);
+		game.benches = [record.bench(Player::One), record.bench(Player::Two)];
+		game.bags = [record.reserves(Player::One), record.reserves(Player::Two)];
+		game.setup = Some(record);
+		game.sync_public_bench_size();
+		game.snapshot_opening_decks();
+		game
 	}
 
 	pub fn empty_on(board: Arc<Board>, rules: RuleSet) -> Self {
@@ -1529,11 +2760,31 @@ impl Game {
 			center_hold: [0, 0],
 			petal_majority: [0, 0],
 			control_hold: [0, 0],
+			control_ratchet: initial_control_ratchet(&rules),
+			control_win_immediate: false,
+			extra_turns: [0, 0],
+			playing_extra_turn: false,
+			prev_finished_extra: false,
+			last_turn_gain: None,
+			turn_gain_awarded: 0,
+			turn_gain_mover: 0,
+			turn_gain_opponent: 0,
+			extra_turns_played: 0,
+			ended_on_extra: false,
+			ended_after_extra: false,
 			budget_tokens: [
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
 			],
 			opening_deck: [Vec::new(), Vec::new()],
+			setup: None,
+		}
+	}
+
+	fn sync_public_bench_size(&mut self) {
+		let n = self.benches[0].len().max(self.benches[1].len());
+		if n > 0 {
+			self.rules.bag_size = n as u8;
 		}
 	}
 
@@ -1556,15 +2807,6 @@ impl Game {
 			}
 			deck.truncate(n);
 			self.opening_deck[player.index()] = deck;
-		}
-	}
-
-	/// Move every remaining bag tile onto the public bench. New games sample
-	/// the full deck into the bag, then this empties it; scenarios that already
-	/// placed a fixed bench still receive the leftover as live tiles.
-	fn deal_opening(&mut self) {
-		for p in [Player::One, Player::Two] {
-			while self.draw_from_bag(p).is_some() {}
 		}
 	}
 
@@ -1649,11 +2891,117 @@ impl Game {
 		n
 	}
 
-	/// Occupancy needed to start a control hold (`control_n`, capped at the
-	/// 9-node set).
-	pub fn control_need(&self) -> u8 {
+	/// Size of the control set (center + inner ring) and the configured cap
+	/// (`control_n`). Independent of the ratcheted cascade checkpoint.
+	pub fn control_cap(&self) -> u8 {
 		let set = 1u8 + self.board.inner_ring().len() as u8;
 		self.rules.control_n.max(1).min(set)
+	}
+
+	/// Occupancy needed to start a control hold. Under
+	/// [`EndgameRule::LowValue`] this is [`Self::control_cap`]. Under
+	/// [`EndgameRule::ControlCascade`] it is the one-way ratchet while
+	/// `max_mat >= 2`, and the cap (control inactive) once `max_mat <= 1`.
+	pub fn control_need(&self) -> u8 {
+		let cap = self.control_cap();
+		match self.cascade_control_target() {
+			Some(target) => target.min(cap),
+			None => cap,
+		}
+	}
+
+	/// Stored one-way cascade checkpoint (`control_n` down through 2).
+	/// Independent of whether control is currently active (`max_mat >= 2`).
+	pub fn control_ratchet(&self) -> u8 {
+		self.control_ratchet
+	}
+
+	/// True when the current [`EndReason::Control`] win (if any) was awarded
+	/// immediately on a unique-holder ratchet drop.
+	pub fn control_win_immediate(&self) -> bool {
+		self.control_win_immediate
+	}
+
+	/// Banked extra consecutive turns remaining for `player`.
+	pub fn extra_turns(&self, player: Player) -> u8 {
+		self.extra_turns[player.index()]
+	}
+
+	/// True when the side to move is taking a consumed cascade extra turn.
+	pub fn extra_turn_active(&self) -> bool {
+		self.playing_extra_turn
+	}
+
+	/// Who was awarded turn gain on the last applied action, if anyone.
+	pub fn last_turn_gain(&self) -> Option<TurnGainKind> {
+		self.last_turn_gain
+	}
+
+	pub fn turn_gain_awarded(&self) -> u32 {
+		self.turn_gain_awarded
+	}
+
+	pub fn turn_gain_mover(&self) -> u32 {
+		self.turn_gain_mover
+	}
+
+	pub fn turn_gain_opponent(&self) -> u32 {
+		self.turn_gain_opponent
+	}
+
+	pub fn extra_turns_played(&self) -> u32 {
+		self.extra_turns_played
+	}
+
+	pub fn ended_on_extra_turn(&self) -> bool {
+		self.ended_on_extra
+	}
+
+	pub fn ended_after_extra_turn(&self) -> bool {
+		self.ended_after_extra
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_extra_turns(&mut self, player: Player, n: u8) {
+		self.extra_turns[player.index()] = n;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_extra_turn_active(&mut self, active: bool) {
+		self.playing_extra_turn = active;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_cascade_turn_gain(&mut self, on: bool) {
+		self.rules.cascade_turn_gain = on;
+	}
+
+	/// Ratcheted cascade checkpoint (`2..=control_n`) when
+	/// [`EndgameRule::ControlCascade`] is on and `max_mat >= 2`. `None` when
+	/// the cascade is off, or when `max_mat <= 1` (low-value is the
+	/// tie-breaker and control cannot fire). Never rises after it has
+	/// lowered.
+	pub fn cascade_control_target(&self) -> Option<u8> {
+		if !self.rules.endgame_rule.is_control_cascade() {
+			return None;
+		}
+		if self.max_material() <= 1 {
+			return None;
+		}
+		Some(self.control_ratchet.min(self.control_cap()).max(2))
+	}
+
+	/// Board tiles + usable spawn budget (`min(tokens, unplaced bench)`).
+	/// Surplus tokens on an empty remaining deck do not count. Same as
+	/// [`Self::possible_board_tiles`].
+	pub fn total_material(&self, player: Player) -> usize {
+		self.possible_board_tiles(player)
+	}
+
+	/// `max(p1, p2)` of [`Self::total_material`]. The cascade ratchet lowers
+	/// via `target.min(max_mat)` while this is at least 2.
+	pub fn max_material(&self) -> usize {
+		self.total_material(Player::One).max(self.total_material(Player::Two))
 	}
 
 	/// Board tiles + remaining (unplaced) deck tiles.
@@ -1664,6 +3012,283 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn set_control_hold(&mut self, player: Player, n: u8) {
 		self.control_hold[player.index()] = n;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_control_ratchet(&mut self, target: u8) {
+		self.control_ratchet = target.max(1).min(self.control_cap().max(2));
+	}
+
+	/// P1 occupies 4 of 9, P2 has one claimable leftover so `max_mat` stays 5
+	/// and the ratchet is still 5. Claiming the leftover drops 5→4.
+	#[cfg(test)]
+	pub(crate) fn cascade_unique_holder_drop_position(hold_turns: u8) -> (Self, NodeId) {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = hold_turns.max(1);
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		let mut game = Self::empty(rules);
+		let center = game.board.center();
+		let inner = game.board.inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(3) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		let control: std::collections::HashSet<_> =
+			std::iter::once(center).chain(inner.iter().copied()).collect();
+		let extra =
+			game.board
+				.spawns()
+				.iter()
+				.copied()
+				.find(|&s| {
+					!control.contains(&s)
+						&& game.tile_at(s).is_none()
+						&& game.board.neighbors(s).iter().any(|&n| {
+							game.tile_at(n).map(|t| t.owner == Player::One).unwrap_or(false)
+						})
+				})
+				.expect("a spawn neighbors a P1 control tile");
+		let victim = game.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
+		game.place_tile(extra, victim);
+		assert!(game.is_overwhelmed(extra), "P2 extra at {extra} should be claimable");
+		game.pin_total_material(Player::Two, 5);
+		game.pin_total_material(Player::One, 4);
+		assert_eq!(game.control_ratchet(), 5);
+		assert_eq!(game.control_count(Player::One), 4);
+		assert!(game.control_count(Player::Two) < 4);
+		game.set_current(Player::One);
+		(game, extra)
+	}
+
+	/// P1 occupies 3 of 9. Claiming `extra` drops 5→4 with no unique holder.
+	/// `p1_mat` / `p2_mat` are totals before the claim; afterwards P2 is
+	/// `p2_mat - 1` and P1 stays `p1_mat` (the claim token is surplus).
+	#[cfg(test)]
+	pub(crate) fn cascade_turn_gain_drop_position(p1_mat: usize, p2_mat: usize) -> (Self, NodeId) {
+		let mut game = Self::cascade_turn_gain_base(3);
+		let extra = Self::overwhelmed_p2_spawn_for(&game);
+		let victim = game.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
+		game.place_tile(extra, victim);
+		assert!(game.is_overwhelmed(extra), "P2 extra at {extra} should be claimable");
+		game.pin_total_material(Player::Two, p2_mat);
+		game.pin_total_material(Player::One, p1_mat);
+		assert_eq!(game.control_ratchet(), 5);
+		assert_eq!(game.control_count(Player::One), 3);
+		assert!(game.control_count(Player::Two) < 4);
+		game.set_current(Player::One);
+		(game, extra)
+	}
+
+	#[cfg(test)]
+	fn cascade_turn_gain_base(p1_control: usize) -> Self {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 1;
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.cascade_turn_gain = true;
+		let mut game = Self::empty(rules);
+		let center = game.board.center();
+		let inner = game.board.inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(p1_control.saturating_sub(1)) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		game
+	}
+
+	#[cfg(test)]
+	fn overwhelmed_p2_spawn_for(game: &Self) -> NodeId {
+		let control: std::collections::HashSet<_> = std::iter::once(game.board.center())
+			.chain(game.board.inner_ring().iter().copied())
+			.collect();
+		game.board
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| {
+				!control.contains(&s)
+					&& game.tile_at(s).is_none()
+					&& game
+						.board
+						.neighbors(s)
+						.iter()
+						.any(|&n| game.tile_at(n).map(|t| t.owner == Player::One).unwrap_or(false))
+			})
+			.expect("a spawn neighbors a P1 control tile")
+	}
+
+	/// ADD onto `dest` captures two weak P2 neighbors, dropping 5→4 with P1
+	/// strictly leading (4 vs 3). No unique holder of 4.
+	#[cfg(test)]
+	pub(crate) fn cascade_turn_gain_mover_add_drop() -> (Self, NodeId) {
+		let (game, dest, _) = Self::cascade_turn_gain_mover_add_drop_inner(false);
+		(game, dest)
+	}
+
+	#[cfg(test)]
+	fn touches_player(game: &Self, node: NodeId, player: Player) -> bool {
+		game.board
+			.neighbors(node)
+			.iter()
+			.any(|&n| game.tile_at(n).map(|t| t.owner == player).unwrap_or(false))
+	}
+
+	/// Isolated empty spawn (no occupied neighbor). Used so a follow-up ADD
+	/// cannot self-capture next to P1 and drop the ratchet into a unique hold.
+	#[cfg(test)]
+	pub(crate) fn isolated_empty_spawn(&self) -> NodeId {
+		self.board
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| self.tile_at(s).is_none() && self.occupied_adjacency_count(s) == 0)
+			.expect("an empty spawn with no occupied neighbors")
+	}
+
+	#[cfg(test)]
+	fn cascade_turn_gain_mover_add_drop_inner(need_land: bool) -> (Self, NodeId, NodeId) {
+		// Center stays empty so dest's two inner-ring neighbors are not
+		// pre-overwhelmed by a P1 origin. Those two inners are not adjacent
+		// (unlike a spawn's outer pair), so same-color 1-rings stay unclaimable
+		// until the ADD, then both fall.
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 1;
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.cascade_turn_gain = true;
+		let mut game = Self::empty(rules);
+		let inners = game.board.inner_ring().to_vec();
+		assert_eq!(inners.len(), 8);
+		let dest = game.board.spawns()[4];
+		let dest_inners: Vec<_> = inners
+			.iter()
+			.copied()
+			.filter(|&n| game.board.neighbors(dest).contains(&n))
+			.collect();
+		assert_eq!(dest_inners.len(), 2, "spawn {dest} should sit between two inners");
+		let land = dest_inners[0];
+		let p1_homes: Vec<_> =
+			inners.iter().copied().filter(|n| !dest_inners.contains(n)).take(3).collect();
+		assert_eq!(p1_homes.len(), 3);
+		for &node in &p1_homes {
+			// 2 dots: cannot step to the adjacent empty center, so the ADD
+			// plus extra-turn MOVE dest→land is the unique 2-ply win.
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 1, 2);
+			game.place_tile(node, tile);
+		}
+		assert!(!Self::touches_player(&game, dest, Player::One));
+		let neigh = dest_inners;
+		assert!(neigh.contains(&land));
+		for &n in &neigh {
+			let v = game.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
+			game.place_tile(n, v);
+			assert!(
+				!game.is_overwhelmed(n),
+				"P2 victim at {n} must not be claimable before the ADD"
+			);
+		}
+		let far: Vec<_> = (0..game.board.node_count() as NodeId)
+			.filter(|&s| {
+				s != dest
+					&& game.tile_at(s).is_none()
+					&& s != game.board.center()
+					&& !inners.contains(&s)
+					&& !game.board.neighbors(dest).contains(&s)
+					&& !Self::touches_player(&game, s, Player::One)
+					&& neigh.iter().all(|&v| !game.board.neighbors(v).contains(&s))
+			})
+			.take(3)
+			.collect();
+		assert_eq!(far.len(), 3, "need three distant P2 tiles");
+		for &s in &far {
+			let t = game.alloc_rings(
+				Player::Two,
+				&[TileColor::Orange, TileColor::LavenderPink, TileColor::Blue],
+				3,
+				1,
+			);
+			game.place_tile(s, t);
+			assert!(!game.is_overwhelmed(s), "far P2 at {s} must not be claimable");
+		}
+		game.pin_total_material(Player::Two, 5);
+		game.pin_total_material(Player::One, 4);
+		let incoming = game.alloc_rings(
+			Player::One,
+			&[TileColor::Green, TileColor::Teal, TileColor::Maroon],
+			3,
+			1,
+		);
+		let mut bench = game.bench(Player::One).to_vec();
+		assert!(!bench.is_empty());
+		bench[0] = incoming;
+		game.set_bench(Player::One, bench);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank]);
+		assert_eq!(game.total_material(Player::One), 4);
+		assert_eq!(game.max_material(), 5);
+		assert_eq!(game.control_ratchet(), 5);
+		assert_eq!(game.control_count(Player::One), 3);
+		assert!(!game.would_overwhelm_add(incoming, dest), "ADD dest {dest} must survive");
+		game.set_current(Player::One);
+		{
+			let mut probe = game.clone();
+			let outcome = probe.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+			let p2_caps = outcome.removals.iter().filter(|r| r.tile.owner == Player::Two).count();
+			assert_eq!(p2_caps, 2, "ADD must capture both weak neighbors: {:?}", outcome.removals);
+			assert!(
+				!outcome.removals.iter().any(|r| r.node == dest),
+				"ADD dest must not self-capture: {:?}",
+				outcome.removals
+			);
+			assert_eq!(probe.status(), GameStatus::InProgress);
+			assert_eq!(probe.control_ratchet(), 4);
+			assert!(probe.total_material(Player::One) > probe.total_material(Player::Two));
+			assert_eq!(probe.current_player(), Player::One);
+			if need_land {
+				probe.apply(Action::Move { from: dest, to: land }).unwrap();
+				assert_eq!(
+					probe.status(),
+					GameStatus::Won { winner: Player::One, reason: EndReason::Control },
+					"extra-turn MOVE dest→land must win"
+				);
+			}
+		}
+		(game, dest, land)
+	}
+
+	/// ADD drops 5→4 and awards P1 an extra turn; MOVE dest→land then occupies
+	/// the 4th control node and wins. Catches search sign-flip bugs.
+	#[cfg(test)]
+	pub(crate) fn cascade_turn_gain_forced_extra_win() -> (Self, NodeId, NodeId, NodeId) {
+		let (game, dest, land) = Self::cascade_turn_gain_mover_add_drop_inner(true);
+		(game, dest, dest, land)
+	}
+
+	#[cfg(test)]
+	fn pin_total_material(&mut self, player: Player, total: usize) {
+		let board = self.board_count(player);
+		assert!(board <= total, "{player:?} board {board} exceeds material {total}");
+		let need = total - board;
+		let mut bench = Vec::with_capacity(need);
+		for i in 0..need {
+			bench.push(self.alloc_tile(player, TileColor::Blue, 1, 1 + (i % 3) as u8));
+		}
+		self.set_bench(player, bench);
+		self.set_budget_tokens(player, vec![BudgetToken::Blank; need]);
+		assert_eq!(self.total_material(player), total);
 	}
 
 	/// Tile moved on `player`'s previous completed turn, if any.
@@ -1688,6 +3313,16 @@ impl Game {
 
 	pub fn bench(&self, player: Player) -> &[Tile] {
 		&self.benches[player.index()]
+	}
+
+	/// Original 27-tile (or scenario) collection. Empty on constructed fixtures.
+	pub fn collection(&self, player: Player) -> &[Tile] {
+		self.setup.as_ref().map(|s| s.decks[player.index()].as_slice()).unwrap_or(&[])
+	}
+
+	/// Reconstructible 7+4 draft. `None` on constructed [`Self::empty`] fixtures.
+	pub fn setup_record(&self) -> Option<&crate::deck::SetupRecord> {
+		self.setup.as_ref()
 	}
 
 	/// Usable spawn budget: `min(tokens in the stack, unplaced deck tiles)`.
@@ -1715,33 +3350,30 @@ impl Game {
 
 	pub fn set_budget_tokens(&mut self, player: Player, tokens: Vec<BudgetToken>) {
 		self.budget_tokens[player.index()] = tokens;
+		self.sync_control_ratchet();
 	}
 
-	/// Unplaced deck tiles in opening order. Placed tiles leave the row;
-	/// the opening deal still shows all [`RuleSet::bag_size`] tiles (default 11).
+	/// Unplaced bench tiles: remaining opening-deal tiles in deal order,
+	/// then any tiles captured onto this bench (opponent dots that flipped
+	/// to the mover, self-captures, extras past [`RuleSet::bag_size`]).
+	/// Uses the live bench copies so ownership and capture marks are current.
 	pub fn deck_slots(&self, player: Player) -> Vec<DeckSlot> {
-		let n = self.rules.bag_size.max(1) as usize;
-		let source = if self.opening_deck[player.index()].is_empty() {
-			self.inferred_opening_deck(player)
-		} else {
-			self.opening_deck[player.index()].clone()
-		};
-		source
-			.into_iter()
-			.take(n)
-			.filter_map(|tile| match self.classify_deck_tile(player, tile) {
-				DeckSlot::Live(tile) => Some(DeckSlot::Live(tile)),
-				DeckSlot::Spent(_) | DeckSlot::Empty => None,
-			})
-			.collect()
-	}
-
-	fn classify_deck_tile(&self, player: Player, tile: Tile) -> DeckSlot {
-		if self.bench(player).iter().any(|t| t.id == tile.id) {
-			DeckSlot::Live(tile)
-		} else {
-			DeckSlot::Spent(tile)
+		let bench = self.bench(player);
+		let opening = &self.opening_deck[player.index()];
+		let mut out = Vec::with_capacity(bench.len());
+		let mut seen: Vec<u32> = Vec::with_capacity(bench.len());
+		for orig in opening {
+			if let Some(live) = bench.iter().copied().find(|t| t.id == orig.id) {
+				out.push(DeckSlot::Live(live));
+				seen.push(orig.id);
+			}
 		}
+		for live in bench {
+			if !seen.contains(&live.id) {
+				out.push(DeckSlot::Live(*live));
+			}
+		}
+		out
 	}
 
 	fn inferred_opening_deck(&self, player: Player) -> Vec<Tile> {
@@ -1784,9 +3416,9 @@ impl Game {
 		&self.bags[player.index()]
 	}
 
-	/// Reorder remaining bag tiles. New games have empty bags (the whole deck
-	/// is public). Kept so MCTS can determinize legacy `capture_draw_on_move`
-	/// positions and historical JSONL replays.
+	/// Reorder remaining reserve tiles. New games keep reserves unusable;
+	/// they are never drawn. Kept so MCTS can determinize legacy
+	/// `capture_draw_on_move` positions and historical JSONL replays.
 	pub fn shuffle_bags(&mut self, rng: &mut impl rand::Rng) {
 		self.bags[0].shuffle(rng);
 		self.bags[1].shuffle(rng);
@@ -1806,11 +3438,21 @@ impl Game {
 		self.board_count(player) + self.budget(player)
 	}
 
-	/// True when both players have [`Self::possible_board_tiles`] strictly
-	/// below [`LOW_VALUE_BOARD_LT`]. Does not require usable budget to be 0.
+	/// True when the low-value pair check should resolve the game.
+	///
+	/// [`EndgameRule::LowValue`]: both players have [`Self::possible_board_tiles`]
+	/// strictly below [`LOW_VALUE_BOARD_LT`].
+	/// [`EndgameRule::ControlCascade`]: `max_mat <= 1` (both sides have at
+	/// most one total material). Does not require usable budget to be 0.
 	pub fn low_value_applies(&self) -> bool {
-		let cap = usize::from(LOW_VALUE_BOARD_LT);
-		self.possible_board_tiles(Player::One) < cap && self.possible_board_tiles(Player::Two) < cap
+		match self.rules.endgame_rule {
+			EndgameRule::ControlCascade => self.max_material() <= 1,
+			EndgameRule::LowValue => {
+				let cap = usize::from(LOW_VALUE_BOARD_LT);
+				self.possible_board_tiles(Player::One) < cap
+					&& self.possible_board_tiles(Player::Two) < cap
+			}
+		}
 	}
 
 	/// Give each side enough remaining pieces that low-value does not already
@@ -1905,6 +3547,7 @@ impl Game {
 			}
 		}
 		self.benches[player.index()] = tiles;
+		self.sync_control_ratchet();
 	}
 
 	pub fn set_bag(&mut self, player: Player, tiles: Vec<Tile>) {
@@ -1959,49 +3602,40 @@ impl Game {
 	/// Independent per-type channels on the undirected edge `tile`–`other`.
 	///
 	/// A channel contributes only if at least one of the two tiles has a ring
-	/// of that type. Channels never override each other: a zag vs a same-color
-	/// normal nets 0, and a fulfilled braid stacks with a normal match.
+	/// of that type. Zag and braid never override other types. Zag colors are
+	/// excluded from every match except zag-on-zag: a zag vs a same-color
+	/// normal is a hitch plus a zag hit. Aggregation into edge totals is
+	/// [`RuleSet::channel_mode`]: [`ChannelMode::IndependentMax`] (default)
+	/// takes max match and max mismatch of any one channel;
+	/// [`ChannelMode::Additive`] stacks with [`BeadScoring`].
 	///
 	/// - **Normal:** match 1 if some normal-ring color of either tile is in
-	///   the other tile's color multiset; otherwise mismatch 1 (or the
-	///   neighbor's ring count when `mismatch_uses_neighbor_weight`).
-	/// - **Zag:** [`RuleSet::zag_mismatch`] hitting-zag count. Never a match.
+	///   the other tile's [`Tile::non_zag_colors_multiset`]; otherwise
+	///   mismatch 1 (or the neighbor's ring count when
+	///   `mismatch_uses_neighbor_weight`).
+	/// - **Zag:** [`RuleSet::zag_mismatch`] hitting-zag count against the
+	///   full [`Tile::colors_multiset`]. Never a match.
 	/// - **Braid:** the single largest fulfilled braid (match = its slot
-	///   count). If none is fulfilled, one mismatch of
-	///   [`RuleSet::braid_fail_mismatch`] (default 1).
+	///   count), covering from the neighbor's non-zag colors. If none is
+	///   fulfilled, one mismatch of [`RuleSet::braid_fail_mismatch`]
+	///   (default 1).
+	/// - **Bead:** +1 mismatch per unmatched bead ring on either tile (count
+	///   the rings, not color-pairs). If any bead is matched — same presence
+	///   test as the normal channel, `other.has_non_zag_color(bead_color)` —
+	///   a single match of 1 (one −1 at most per edge). Mixed edges can
+	///   score both.
 	pub fn edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
-		let mut ch = EdgeChannels::default();
-		if tile.normal_ring_count() > 0 || other.normal_ring_count() > 0 {
-			if tile.normal_channel_matches(other) {
-				ch.normal_match = 1;
-			} else if self.rules.mismatch_uses_neighbor_weight {
-				ch.normal_mismatch = i32::from(other.weight);
-			} else {
-				ch.normal_mismatch = 1;
-			}
-		}
-		if tile.zag_ring_count() > 0 || other.zag_ring_count() > 0 {
-			ch.zag_mismatch = self.rules.zag_mismatch.count(tile, other);
-		}
-		if tile.braid_ring_count() >= 2 || other.braid_ring_count() >= 2 {
-			if let Some((_, n)) = selected_braid(tile, other) {
-				ch.braid_match = i32::from(n);
-			} else {
-				ch.braid_mismatch = self.rules.braid_fail_mismatch.cost(tile, other);
-			}
-		}
-		ch
+		EdgeChannels::between(tile, other, &self.rules)
 	}
 
 	/// Match/mismatch this `tile` receives from neighbor `other`.
 	///
-	/// Returns `(match_weight, mismatch_weight)` summed across independent
-	/// channels. The signed edge total is `mismatch − match`
-	/// ([`EdgeChannels::effective`]). A tile is overwhelmed when the sum of
-	/// those edge totals is `>=` its ring count.
+	/// Returns `(match_weight, mismatch_weight)` combined across channels
+	/// under [`RuleSet::channel_mode`]. The signed edge total is
+	/// `mismatch − match`. A tile is overwhelmed when the sum of those edge
+	/// totals is `>=` its ring count.
 	pub fn edge_score(&self, tile: Tile, other: Tile) -> (i32, i32) {
-		let ch = self.edge_channels(tile, other);
-		(ch.match_weight(), ch.mismatch_weight())
+		self.edge_channels(tile, other).score_for_rules(&self.rules)
 	}
 
 	/// Sum of per-edge `mismatch − match` against every incident
@@ -2010,13 +3644,72 @@ impl Game {
 	/// each petal (not +1 per side of one collapsed pair).
 	pub fn tile_effective_weight(&self, node: NodeId) -> Option<i32> {
 		let tile = self.tile_at(node)?;
+		Some(self.effective_for_tile(node, tile))
+	}
+
+	/// Unique occupied neighbors of `node` (inner↔center is one neighbor
+	/// even though scoring walks two petals). Used by Crescent Moon.
+	pub fn occupied_adjacency_count(&self, node: NodeId) -> u8 {
+		let mut seen = [false; 32];
+		let mut n = 0u8;
+		for nb in self.board.incident_others(node) {
+			let i = nb as usize;
+			if i >= seen.len() || seen[i] {
+				continue;
+			}
+			if self.tile_at(nb).is_some() {
+				seen[i] = true;
+				n = n.saturating_add(1);
+			}
+		}
+		n
+	}
+
+	fn effective_for_tile(&self, node: NodeId, tile: Tile) -> i32 {
 		let mut effective = 0i32;
 		for nb in self.board.incident_others(node) {
 			if let Some(other) = self.tile_at(nb) {
-				effective += self.edge_channels(tile, other).effective();
+				effective += self.edge_channels(tile, other).effective_for_rules(&self.rules);
 			}
 		}
-		Some(effective)
+		effective
+	}
+
+	/// Two Zag Zs +1 count for `tile` at `node`: incident edges whose
+	/// pre-bonus zag mismatch is already > 0.
+	pub fn zs_bonus_count(&self, node: NodeId, tile: Tile) -> u8 {
+		if !tile.emblem.is_two_zag_zs() {
+			return 0;
+		}
+		let mut n = 0u8;
+		for nb in self.board.incident_others(node) {
+			let Some(other) = self.tile_at(nb) else {
+				continue;
+			};
+			let mut probe = tile;
+			probe.emblem = Emblem::None;
+			if self.edge_channels(probe, other).zag_mismatch > 0 {
+				n = n.saturating_add(1);
+			}
+		}
+		n
+	}
+
+	/// Overwhelm using the live capture threshold (`eff` vs `n_rings` /
+	/// `weight`). Crescent Moon with exactly one occupied neighbor needs
+	/// `eff > n_rings`; every other case stays `eff >= weight`.
+	pub fn overwhelms(tile: Tile, occupied_adj: u8, effective: i32) -> bool {
+		if tile.emblem.is_crescent() && occupied_adj == 1 {
+			effective > i32::from(tile.n_rings.max(1))
+		} else {
+			effective >= i32::from(tile.weight)
+		}
+	}
+
+	/// Ordinary `eff >= weight` test, ignoring Crescent Moon. Used to count
+	/// crescent saves.
+	pub fn overwhelms_without_crescent(tile: Tile, effective: i32) -> bool {
+		effective >= i32::from(tile.weight)
 	}
 
 	/// Occupied-edge braid stats: `(edges with a braid, satisfied of those)`.
@@ -2057,10 +3750,14 @@ impl Game {
 	}
 
 	pub fn is_overwhelmed(&self, node: NodeId) -> bool {
-		match (self.tile_at(node), self.tile_effective_weight(node)) {
-			(Some(tile), Some(eff)) => eff >= i32::from(tile.weight),
-			_ => false,
-		}
+		let Some(tile) = self.tile_at(node) else {
+			return false;
+		};
+		Self::overwhelms(
+			tile,
+			self.occupied_adjacency_count(node),
+			self.effective_for_tile(node, tile),
+		)
 	}
 
 	/// Would `tile` be overwhelmed if placed at `node` (other tiles unchanged)?
@@ -2068,26 +3765,147 @@ impl Game {
 		if self.tile_at(node).is_some() {
 			return false;
 		}
-		let mut effective = 0i32;
+		Self::overwhelms(
+			tile,
+			self.occupied_adjacency_count(node),
+			self.effective_for_tile(node, tile),
+		)
+	}
+
+	/// Bead-channel role in an overwhelm of `tile` at `node`.
+	///
+	/// `just_added` is the node of this action's ADD, if any. A spawn
+	/// two-ring single-bead capture is a 2-ring that was just placed, popped,
+	/// needed the bead channel, and had a 1-bead neighbor.
+	pub fn classify_bead_capture(
+		&self,
+		node: NodeId,
+		tile: Tile,
+		just_added: Option<NodeId>,
+	) -> (bool, bool, bool) {
+		let mut contrib = false;
+		let mut with = 0i32;
+		let mut without = 0i32;
+		let mut single_bead_neighbor = false;
 		for nb in self.board.incident_others(node) {
-			if let Some(other) = self.tile_at(nb) {
-				effective += self.edge_channels(tile, other).effective();
+			let Some(other) = self.tile_at(nb) else {
+				continue;
+			};
+			let ch = self.edge_channels(tile, other);
+			if ch.bead_match > 0 || ch.bead_mismatch > 0 {
+				contrib = true;
 			}
+			if other.bead_ring_count() == 1 {
+				single_bead_neighbor = true;
+			}
+			with += ch.effective_for_rules(&self.rules);
+			without += ch.without_beads().effective_for_rules(&self.rules);
 		}
-		effective >= i32::from(tile.weight)
+		let adj = self.occupied_adjacency_count(node);
+		let needed = Self::overwhelms(tile, adj, with) && !Self::overwhelms(tile, adj, without);
+		let spawn = just_added == Some(node) && tile.n_rings == 2 && needed && single_bead_neighbor;
+		(contrib, needed, spawn)
 	}
 
 	pub fn collect_removals(&self) -> Vec<Removal> {
 		let mut out = Vec::new();
-		for (node, tile) in self.tiles() {
-			if let Some((matches, mismatches)) = self.tile_score(node) {
-				if mismatches >= matches {
-					out.push(Removal { node, tile, matches, mismatches });
-				}
+		for (node, _) in self.tiles() {
+			if let Some(rem) = self.removal_at(node) {
+				out.push(rem);
 			}
 		}
 		out.sort_by_key(|r| r.node);
 		out
+	}
+
+	fn removal_at(&self, node: NodeId) -> Option<Removal> {
+		if !self.is_overwhelmed(node) {
+			return None;
+		}
+		let tile = self.tile_at(node)?;
+		let (matches, mismatches) = self.tile_score(node)?;
+		Some(Removal {
+			node,
+			tile,
+			matches,
+			mismatches,
+			dest: CaptureDest::Tokens,
+			bead_contrib: false,
+			bead_needed: false,
+			spawn_two_ring_single_bead: false,
+		})
+	}
+
+	/// Overwhelmed tiles on `focus` and its unique adjacent nodes.
+	pub fn collect_local_removals(&self, focus: NodeId) -> Vec<Removal> {
+		let mut nodes = Vec::with_capacity(8);
+		nodes.push(focus);
+		nodes.extend(self.board.neighbors(focus).iter().copied());
+		nodes.sort_unstable();
+		nodes.dedup();
+		let mut out = Vec::new();
+		for node in nodes {
+			if let Some(rem) = self.removal_at(node) {
+				out.push(rem);
+			}
+		}
+		out
+	}
+
+	/// Removals that this action actually applies. Cascade sweeps the whole
+	/// board; local-claim keeps only the destination (or claimed node) and,
+	/// for ADD/MOVE, that node's immediate neighbors. Claim never cascades.
+	pub fn collect_captures_for(&self, action: Action) -> Vec<Removal> {
+		match action {
+			Action::Pass => Vec::new(),
+			Action::Claim { node } => self.claim_removal(node).into_iter().collect(),
+			Action::Add { node, .. } | Action::Move { to: node, .. } => {
+				match self.rules.capture_mode {
+					CaptureMode::Cascade => self.collect_removals(),
+					CaptureMode::LocalClaim => self.collect_local_removals(node),
+				}
+			}
+		}
+	}
+
+	fn claim_removal(&self, node: NodeId) -> Option<Removal> {
+		let tile = self.tile_at(node)?;
+		let (matches, mismatches) = self.tile_score(node).unwrap_or((i32::from(tile.weight), 0));
+		Some(Removal {
+			node,
+			tile,
+			matches,
+			mismatches,
+			dest: CaptureDest::Tokens,
+			bead_contrib: false,
+			bead_needed: false,
+			spawn_two_ring_single_bead: false,
+		})
+	}
+
+	/// Nodes that currently host an overwhelmed tile.
+	pub fn overwhelmed_nodes(&self) -> Vec<NodeId> {
+		self.tiles()
+			.filter(|(node, _)| self.is_overwhelmed(*node))
+			.map(|(node, _)| node)
+			.collect()
+	}
+
+	/// Crescent saves and Two Zag Zs bonuses on the live board.
+	pub fn emblem_triggers(&self) -> EmblemTrigger {
+		let mut trigger = EmblemTrigger::default();
+		for (node, tile) in self.tiles() {
+			if tile.emblem.is_crescent() {
+				let eff = self.effective_for_tile(node, tile);
+				if Self::overwhelms_without_crescent(tile, eff)
+					&& !Self::overwhelms(tile, self.occupied_adjacency_count(node), eff)
+				{
+					trigger.crescent_saves = trigger.crescent_saves.saturating_add(1);
+				}
+			}
+			trigger.zs_bonuses = trigger.zs_bonuses.saturating_add(self.zs_bonus_count(node, tile));
+		}
+		trigger
 	}
 
 	pub fn legal_actions(&self) -> Vec<Action> {
@@ -2097,8 +3915,24 @@ impl Game {
 		let mut acts = Vec::new();
 		acts.extend(self.legal_adds());
 		acts.extend(self.legal_moves());
+		acts.extend(self.legal_claims());
 		if acts.is_empty() && !self.rules.no_moves_loses {
 			acts.push(Action::Pass);
+		}
+		acts
+	}
+
+	/// Claim any one currently overwhelmed tile. Own and opponent tiles are
+	/// both legal. Empty under [`CaptureMode::Cascade`].
+	pub fn legal_claims(&self) -> Vec<Action> {
+		if self.status.is_over() || !self.rules.capture_mode.allows_claim() {
+			return Vec::new();
+		}
+		let mut acts = Vec::new();
+		for (node, _) in self.tiles() {
+			if self.is_overwhelmed(node) {
+				acts.push(Action::Claim { node });
+			}
 		}
 		acts
 	}
@@ -2198,7 +4032,7 @@ impl Game {
 	}
 
 	fn is_insufficient(&self, player: Player) -> bool {
-		let need = usize::from(self.control_need());
+		let need = usize::from(self.control_cap());
 		if self.reachable_tiles(player) >= need {
 			return false;
 		}
@@ -2219,11 +4053,16 @@ impl Game {
 		preview.tiles[from as usize] = None;
 		preview.tiles[to as usize] = Some(tile);
 		let opponent = tile.owner.other();
-		preview.collect_removals().iter().any(|r| r.tile.owner == opponent)
+		preview
+			.collect_captures_for(Action::Move { from, to })
+			.iter()
+			.any(|r| r.tile.owner == opponent)
 	}
 
 	pub fn has_add_or_move(&self) -> bool {
-		!self.legal_adds().is_empty() || !self.legal_moves().is_empty()
+		!self.legal_adds().is_empty()
+			|| !self.legal_moves().is_empty()
+			|| !self.legal_claims().is_empty()
 	}
 
 	/// Destinations that are legal for the tile at `from` under path rules
@@ -2287,6 +4126,9 @@ impl Game {
 						let Some(occupant) = occupancy[next as usize] else {
 							continue;
 						};
+						if self.blocks_pass_through(occupant) {
+							continue;
+						}
 						if !self.pass_through_ok(occupant, tile) {
 							continue;
 						}
@@ -2332,7 +4174,18 @@ impl Game {
 			&& self.rules.pass_through_ring_cmp.allows(occupant.n_rings, mover.n_rings)
 	}
 
+	fn blocks_pass_through(&self, occupant: Tile) -> bool {
+		occupant.emblem.is_blocker() && self.rules.blocker_blocks.stops_pass_through()
+	}
+
+	fn blocks_hop(&self, occupant: Tile) -> bool {
+		occupant.emblem.is_blocker() && self.rules.blocker_blocks.stops_hop()
+	}
+
 	fn hop_occupant_ok(&self, occupant: Tile, mover: Tile) -> bool {
+		if self.blocks_hop(occupant) {
+			return false;
+		}
 		if self.rules.color_restricted_hops {
 			occupant.shares_normal(mover)
 				&& self.rules.hop_weight_cmp.allows(occupant.weight, mover.weight)
@@ -2422,13 +4275,15 @@ impl Game {
 		if self.status.is_over() {
 			return Err("game is over".into());
 		}
+		self.last_turn_gain = None;
 		let player = self.current;
 		match action {
 			Action::Add { bench_index, node } => self.apply_add(bench_index, node)?,
 			Action::Move { from, to } => self.apply_move(from, to)?,
+			Action::Claim { node } => self.apply_claim(node)?,
 			Action::Pass => {
 				if self.has_add_or_move() {
-					return Err("pass is only legal when no ADD or MOVE exists".into());
+					return Err("pass is only legal when no ADD, MOVE, or CLAIM exists".into());
 				}
 				if self.rules.no_moves_loses {
 					self.status =
@@ -2443,17 +4298,44 @@ impl Game {
 			self.consecutive_passes = 0;
 		}
 
-		let removals = self.collect_removals();
+		let dest = match action {
+			Action::Claim { .. } => CaptureDest::Tokens,
+			_ => self.acting_capture(action).dest(),
+		};
+		let just_added = match action {
+			Action::Add { node, .. } => Some(node),
+			_ => None,
+		};
+		let mut removals = self.collect_captures_for(action);
+		let emblem = self.emblem_triggers();
+		for rem in &mut removals {
+			rem.dest = dest;
+			let (contrib, needed, spawn) =
+				self.classify_bead_capture(rem.node, rem.tile, just_added);
+			rem.bead_contrib = contrib;
+			rem.bead_needed = needed;
+			rem.spawn_two_ring_single_bead = spawn;
+		}
 		let opponent = player.other();
 		let mut draws = 0u8;
 		let is_move = matches!(action, Action::Move { .. });
 		for rem in &removals {
 			self.tiles[rem.node as usize] = None;
-			// Opponent tiles always earn +1. Own-tile removals (self-capture
-			// via simultaneous overwhelm) earn +1 only when
-			// `self_capture_budget` is on (default).
-			if rem.tile.owner != player || self.rules.self_capture_budget {
-				self.earn_budget(player, rem.tile);
+			match dest {
+				CaptureDest::Bench => {
+					let mut tile = rem.tile;
+					tile.owner = player;
+					self.benches[player.index()].push(tile);
+				}
+				CaptureDest::Tokens => {
+					// Claim always awards a spawn token, even for the
+					// mover's own tile and even when `self_capture_budget`
+					// is off. ADD/MOVE self-captures still honor that flag.
+					let award_claim = matches!(action, Action::Claim { .. });
+					if award_claim || rem.tile.owner != player || self.rules.self_capture_budget {
+						self.earn_budget(player, rem.tile);
+					}
+				}
 			}
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
 				if self.draw_from_bag(player).is_some() {
@@ -2465,6 +4347,9 @@ impl Game {
 		let log_line = format_log(player, action, &removals, draws, self.board.as_ref());
 
 		self.check_elimination();
+		if !self.status.is_over() {
+			self.check_immediate_control_drop();
+		}
 		if self.status == GameStatus::InProgress
 			&& !self.rules.no_moves_loses
 			&& self.consecutive_passes >= 2
@@ -2481,8 +4366,11 @@ impl Game {
 		if turn_done && !self.status.is_over() {
 			self.finish_turn(player);
 		}
+		if self.status.is_over() {
+			self.mark_end_timing();
+		}
 
-		Ok(ActionOutcome { action, player, removals, draws, log_line })
+		Ok(ActionOutcome { action, player, removals, draws, log_line, emblem })
 	}
 
 	fn finish_turn(&mut self, who: Player) {
@@ -2506,12 +4394,30 @@ impl Game {
 			self.status = GameStatus::Draw { reason: EndReason::TurnLimit };
 			return;
 		}
-		self.current = who.other();
+		if self.extra_turns[who.index()] > 0 {
+			self.extra_turns[who.index()] -= 1;
+			self.playing_extra_turn = true;
+			self.extra_turns_played = self.extra_turns_played.saturating_add(1);
+			self.current = who;
+		} else {
+			self.prev_finished_extra = self.playing_extra_turn;
+			self.playing_extra_turn = false;
+			self.current = who.other();
+		}
 		if self.rules.no_moves_loses && !self.has_add_or_move() {
-			self.status = GameStatus::Won { winner: who, reason: EndReason::LockedOut };
+			self.status =
+				GameStatus::Won { winner: self.current.other(), reason: EndReason::LockedOut };
 		}
 		if !self.status.is_over() {
 			self.check_low_value();
+		}
+	}
+
+	fn mark_end_timing(&mut self) {
+		if self.playing_extra_turn {
+			self.ended_on_extra = true;
+		} else if self.prev_finished_extra {
+			self.ended_after_extra = true;
 		}
 	}
 
@@ -2562,11 +4468,17 @@ impl Game {
 			self.control_hold = [0, 0];
 			return;
 		}
+		self.sync_control_ratchet();
+		if self.rules.endgame_rule.is_control_cascade() && self.cascade_control_target().is_none() {
+			// max_mat <= 1: control is inactive; low-value is the tie-breaker.
+			self.control_hold = [0, 0];
+			return;
+		}
 		let need = self.control_need();
 		if self.control_count(who) >= need {
 			self.control_hold[who.index()] = self.control_hold[who.index()].saturating_add(1);
 			if self.control_hold[who.index()] >= self.rules.control_hold_turns.max(1) {
-				self.status = GameStatus::Won { winner: who, reason: EndReason::Control };
+				self.award_control(who, false);
 			}
 		} else {
 			self.control_hold[who.index()] = 0;
@@ -2575,6 +4487,78 @@ impl Game {
 		if self.control_count(opp) < need {
 			self.control_hold[opp.index()] = 0;
 		}
+	}
+
+	/// Lower `control_ratchet` to `min(stored, max_mat, cap)` while
+	/// `max_mat >= 2`. Returns true when the stored checkpoint dropped.
+	fn sync_control_ratchet(&mut self) -> bool {
+		if !self.rules.endgame_rule.is_control_cascade() {
+			return false;
+		}
+		let max_mat = self.max_material();
+		if max_mat <= 1 {
+			return false;
+		}
+		let cap = self.control_cap();
+		let floor = 2u8.min(cap);
+		let new = self.control_ratchet.min(max_mat as u8).min(cap).max(floor);
+		let dropped = new < self.control_ratchet;
+		self.control_ratchet = new;
+		dropped
+	}
+
+	/// If the ratchet just dropped and exactly one player already holds the
+	/// new checkpoint, they win immediately (no `control_hold_turns`).
+	/// Otherwise, if [`RuleSet::cascade_turn_gain`] is on, the strict
+	/// material leader receives one extra turn.
+	fn check_immediate_control_drop(&mut self) {
+		if self.status.is_over() || !self.rules.control_win {
+			return;
+		}
+		if !self.sync_control_ratchet() {
+			return;
+		}
+		let Some(need) = self.cascade_control_target() else {
+			return;
+		};
+		let p1 = self.control_count(Player::One) >= need;
+		let p2 = self.control_count(Player::Two) >= need;
+		match (p1, p2) {
+			(true, false) => self.award_control(Player::One, true),
+			(false, true) => self.award_control(Player::Two, true),
+			_ => self.award_cascade_turn_gain(),
+		}
+	}
+
+	/// One extra turn for the strict material leader after a non-winning
+	/// checkpoint drop. Multi-step drops (5→3) still award at most one.
+	fn award_cascade_turn_gain(&mut self) {
+		if !self.rules.cascade_turn_gain || self.status.is_over() {
+			return;
+		}
+		let p1 = self.total_material(Player::One);
+		let p2 = self.total_material(Player::Two);
+		let leader = if p1 > p2 {
+			Player::One
+		} else if p2 > p1 {
+			Player::Two
+		} else {
+			return;
+		};
+		self.extra_turns[leader.index()] = self.extra_turns[leader.index()].saturating_add(1);
+		self.turn_gain_awarded = self.turn_gain_awarded.saturating_add(1);
+		if leader == self.current {
+			self.last_turn_gain = Some(TurnGainKind::Mover);
+			self.turn_gain_mover = self.turn_gain_mover.saturating_add(1);
+		} else {
+			self.last_turn_gain = Some(TurnGainKind::Opponent);
+			self.turn_gain_opponent = self.turn_gain_opponent.saturating_add(1);
+		}
+	}
+
+	fn award_control(&mut self, winner: Player, immediate: bool) {
+		self.control_win_immediate = immediate;
+		self.status = GameStatus::Won { winner, reason: EndReason::Control };
 	}
 
 	/// Both players are checked at the turn boundary. If both are insufficient
@@ -2606,12 +4590,12 @@ impl Game {
 		self.check_insufficient_tiles();
 	}
 
-	/// Both players have `board + usable budget` strictly below [`LOW_VALUE_BOARD_LT`].
-	/// Usable budget need not be 0: a side with 1 on the board and 3 unplaced
-	/// tiles (usable 3) is already below 5. Surplus tokens on an empty
-	/// remaining deck do not count toward possible pieces. Compared after
-	/// lockout: a player who cannot act still loses by lockout even if they
-	/// hold the lowest piece.
+	/// Resolve low-value when [`Self::low_value_applies`]. Under the baseline
+	/// [`EndgameRule::LowValue`] that is both sides below [`LOW_VALUE_BOARD_LT`];
+	/// under [`EndgameRule::ControlCascade`] it is `max_mat <= 1`. Surplus
+	/// tokens on an empty remaining deck do not count toward possible pieces.
+	/// Compared after lockout: a player who cannot act still loses by lockout
+	/// even if they hold the lowest piece.
 	fn check_low_value(&mut self) {
 		if self.status.is_over() {
 			return;
@@ -2630,6 +4614,16 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn evaluate_low_value_for_test(&mut self) {
 		self.check_low_value();
+	}
+
+	#[cfg(test)]
+	pub(crate) fn evaluate_control_for_test(&mut self, who: Player) {
+		self.update_control(who);
+	}
+
+	#[cfg(test)]
+	pub(crate) fn evaluate_turn_end_for_test(&mut self, who: Player) {
+		self.finish_turn(who);
 	}
 
 	/// Sorted `(primary, tiebreak)` keys of `player`'s on-board pieces,
@@ -2693,6 +4687,26 @@ impl Game {
 
 	fn earn_budget(&mut self, player: Player, tile: Tile) {
 		self.budget_tokens[player.index()].push(BudgetToken::Captured(tile));
+	}
+
+	/// Capture mark of the tile that was MOVEd or ADDed this action.
+	fn acting_capture(&self, action: Action) -> CaptureMark {
+		let node = match action {
+			Action::Add { node, .. } | Action::Move { to: node, .. } => node,
+			Action::Claim { .. } | Action::Pass => return CaptureMark::Triangle,
+		};
+		self.tile_at(node).map(|t| t.capture).unwrap_or(CaptureMark::Triangle)
+	}
+
+	fn apply_claim(&self, node: NodeId) -> Result<(), String> {
+		if !self.rules.capture_mode.allows_claim() {
+			return Err("CLAIM is only legal under local-claim capture mode".into());
+		}
+		let _tile = self.tile_at(node).ok_or_else(|| "no tile to claim".to_string())?;
+		if !self.is_overwhelmed(node) {
+			return Err("can only claim an overwhelmed tile".into());
+		}
+		Ok(())
 	}
 
 	fn apply_add(&mut self, bench_index: usize, node: NodeId) -> Result<(), String> {
@@ -2771,38 +4785,87 @@ pub fn sample_tile(
 	max_rings: u8,
 	zag_numer: u8,
 	braid_numer: u8,
+	bead_numer: u8,
+	dot_percent: u8,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+) -> Tile {
+	sample_tile_with(
+		owner,
+		max_rings,
+		zag_numer,
+		braid_numer,
+		bead_numer,
+		dot_percent,
+		EmblemWeights::default(),
+		ChannelMode::IndependentMax,
+		next_id,
+		rng,
+	)
+}
+
+pub fn sample_tile_from_rules(
+	owner: Player,
+	rules: &RuleSet,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+) -> Tile {
+	sample_tile_with(
+		owner,
+		rules.max_rings,
+		rules.zag_numer,
+		rules.braid_numer,
+		rules.bead_numer,
+		rules.dot_percent,
+		rules.emblem_weights,
+		rules.channel_mode,
+		next_id,
+		rng,
+	)
+}
+
+pub fn sample_tile_with(
+	owner: Player,
+	max_rings: u8,
+	zag_numer: u8,
+	braid_numer: u8,
+	bead_numer: u8,
+	dot_percent: u8,
+	emblem_weights: EmblemWeights,
+	channel_mode: ChannelMode,
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
 	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
-	let mut ring_type = sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer);
-	sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
+	let mut ring_type = match channel_mode {
+		ChannelMode::IndependentMax => {
+			let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
+			cluster_consecutive_heavies(heavy, n_rings)
+		}
+		ChannelMode::Additive => {
+			sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer)
+		}
+	};
+	match channel_mode {
+		ChannelMode::IndependentMax => {
+			sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
+		}
+		ChannelMode::Additive => {
+			sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
+			sample_bead_types(rng, &mut rings, &mut n_rings, max_rings, &mut ring_type, bead_numer);
+		}
+	}
 	let weight = n_rings.max(1);
 	let dots = rng.gen_range(1..=3);
+	let capture = if rng.gen_range(0..100u8) < dot_percent.min(100) {
+		CaptureMark::Dot
+	} else {
+		CaptureMark::Triangle
+	};
+	let emblem = sample_emblem(rng, emblem_weights);
 	let id = *next_id;
 	*next_id += 1;
-	Tile { id, owner, rings, n_rings, ring_type, weight, dots }
-}
-
-fn build_bag(
-	owner: Player,
-	fill: bool,
-	size: usize,
-	max_rings: u8,
-	zag_numer: u8,
-	braid_numer: u8,
-	next_id: &mut u32,
-	rng: &mut StdRng,
-) -> Vec<Tile> {
-	if !fill {
-		return Vec::new();
-	}
-	let mut bag = Vec::with_capacity(size);
-	for _ in 0..size {
-		bag.push(sample_tile(owner, max_rings, zag_numer, braid_numer, next_id, rng));
-	}
-	bag.shuffle(rng);
-	bag
+	Tile { id, owner, rings, n_rings, ring_type, weight, dots, capture, emblem }
 }
 
 fn format_log(
@@ -2817,6 +4880,7 @@ fn format_log(
 			format!("ADD bench[{bench_index}] to {}{}", node_tag(board, node), node)
 		}
 		Action::Move { from, to } => format!("MOVE {} -> {}", from, to),
+		Action::Claim { node } => format!("CLAIM {}{}", node_tag(board, node), node),
 		Action::Pass => "PASS".to_string(),
 	};
 	let mut line = format!("{} ({}) {}", player.label(), player.shade(), act);
@@ -2825,10 +4889,11 @@ fn format_log(
 			.iter()
 			.map(|r| {
 				format!(
-					"{} {} at {} (matches={}, mismatches={})",
+					"{} {} at {} ->{} (matches={}, mismatches={})",
 					r.tile.owner.label(),
 					r.tile.kind_label(),
 					r.node,
+					r.dest.name(),
 					r.matches,
 					r.mismatches
 				)
@@ -2891,12 +4956,38 @@ mod tests {
 	/// Center + 4 inner-ring tiles, all the same color so the center is not
 	/// overwhelmed by four mismatch neighbors.
 	fn occupy_control_five(game: &mut Game, player: Player) {
+		occupy_control_n(game, player, 5);
+	}
+
+	/// `n` control-set nodes (center first, then inner ring), same-color so
+	/// the center is not overwhelmed by mismatch neighbors.
+	fn occupy_control_n(game: &mut Game, player: Player, n: usize) {
+		assert!((1..=9).contains(&n), "control occupancy {n} out of 1..=9");
 		let center = game.board().center();
 		let inner = game.board().inner_ring().to_vec();
 		put(game, center, player, TileColor::Green, 3, 1);
-		for &node in inner.iter().take(4) {
+		for &node in inner.iter().take(n.saturating_sub(1)) {
 			put(game, node, player, TileColor::Green, 3, 1);
 		}
+	}
+
+	/// Pin `player`'s total material (`board + usable budget`) to `total` by
+	/// setting bench length and token count to `total - board`.
+	fn pin_material(game: &mut Game, player: Player, total: usize) {
+		let board = game.board_count(player);
+		assert!(board <= total, "{player:?} board {board} exceeds material {total}");
+		let need = total - board;
+		let mut bench = game.bench(player).to_vec();
+		while bench.len() < need {
+			let i = bench.len();
+			bench.push(take(game, player, TileColor::Blue, 1, 1 + (i % 3) as u8));
+		}
+		if bench.len() > need {
+			bench.truncate(need);
+		}
+		game.set_bench(player, bench);
+		game.set_budget_tokens(player, vec![BudgetToken::Blank; need]);
+		assert_eq!(game.total_material(player), total);
 	}
 
 	#[test]
@@ -2908,8 +4999,9 @@ mod tests {
 		assert_eq!(a.budget(Player::One), 7);
 		assert_eq!(a.budget(Player::Two), 7);
 		assert!(a.budget_tokens(Player::One).iter().all(|t| matches!(t, BudgetToken::Blank)));
-		assert_eq!(a.bag_len(Player::One), 0);
-		assert_eq!(a.bag_len(Player::Two), 0);
+		assert_eq!(a.collection(Player::One).len(), BAG_SIZE);
+		assert_eq!(a.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
+		assert_eq!(a.bag_len(Player::Two), BAG_SIZE - BAG_SIZE_DEFAULT);
 		let kinds = |g: &Game, p: Player| {
 			g.bench(p)
 				.iter()
@@ -2920,6 +5012,7 @@ mod tests {
 		assert_eq!(kinds(&a, Player::One), kinds(&a, Player::Two));
 		assert!(a.bench(Player::One).iter().all(|t| t.owner == Player::One));
 		assert!(a.bench(Player::Two).iter().all(|t| t.owner == Player::Two));
+		assert!(crate::deck::respects_type_cap(a.bench(Player::One)));
 	}
 
 	#[test]
@@ -2931,8 +5024,8 @@ mod tests {
 		assert_eq!(game.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 5);
 		assert_eq!(game.budget(Player::Two), 5);
-		assert_eq!(game.bag_len(Player::One), 0);
-		assert_eq!(game.bag_len(Player::Two), 0);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::Two), BAG_SIZE - BAG_SIZE_DEFAULT);
 		assert_eq!(game.legal_adds().len(), BAG_SIZE_DEFAULT * 8);
 	}
 
@@ -2961,40 +5054,44 @@ mod tests {
 	fn opening_deal_respects_bag_size_eleven() {
 		let game = Game::new(RuleSet::default(), 1);
 		assert_eq!(game.rules().bag_size, BAG_SIZE_DEFAULT as u8);
+		assert_eq!(game.rules().deck_size, BAG_SIZE as u8);
 		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 7);
-		assert_eq!(game.bag_len(Player::One), 0);
-		assert_eq!(game.bag_len(Player::Two), 0);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::Two), BAG_SIZE - BAG_SIZE_DEFAULT);
 		assert_eq!(game.legal_adds().len(), BAG_SIZE_DEFAULT * 8);
 	}
 
 	#[test]
-	fn opening_deal_respects_bag_size_twenty_seven() {
+	fn opening_deal_respects_deck_size_twenty_seven() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = BAG_SIZE as u8;
+		rules.deck_size = BAG_SIZE as u8;
 		let game = Game::new(rules, 1);
-		assert_eq!(game.bench(Player::One).len(), BAG_SIZE);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.collection(Player::One).len(), BAG_SIZE);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 7);
 	}
 
 	#[test]
-	fn opening_deal_respects_bag_size_thirteen() {
+	fn opening_deal_respects_deck_size_thirteen() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 13;
+		rules.deck_size = 13;
 		let game = Game::new(rules, 2);
-		assert_eq!(game.bench(Player::One).len(), 13);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.collection(Player::One).len(), 13);
+		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
+		assert_eq!(game.bag_len(Player::One), 2);
 		assert_eq!(game.budget(Player::One), 7);
 	}
 
 	#[test]
 	fn tokens_can_exceed_a_small_deck() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 7;
+		rules.deck_size = 7;
 		rules.starting_bench_size = 7;
 		let game = Game::new(rules, 3);
+		assert_eq!(game.collection(Player::One).len(), 7);
 		assert_eq!(game.bench(Player::One).len(), 7);
 		assert_eq!(game.bag_len(Player::One), 0);
 		assert_eq!(game.budget(Player::One), 7);
@@ -3007,32 +5104,71 @@ mod tests {
 		assert!(rules.control_win);
 		assert_eq!(rules.control_n, 5);
 		assert_eq!(rules.control_hold_turns, 1);
+		assert_eq!(rules.endgame_rule, EndgameRule::ControlCascade);
+		assert!(rules.cascade_turn_gain);
 		assert_eq!(rules.starting_bench_size, 7);
 		assert_eq!(rules.bag_size, BAG_SIZE_DEFAULT as u8);
+		assert_eq!(rules.deck_size, BAG_SIZE as u8);
 		assert!(!rules.capture_draw_on_move);
 		assert!(rules.self_capture_budget);
 		assert_eq!(rules.max_rings, 3);
 		assert_eq!(rules.zag_numer, ZAG_NUMER_DEFAULT);
 		assert_eq!(rules.braid_numer, BRAID_NUMER_DEFAULT);
+		assert_eq!(rules.bead_numer, BEAD_NUMER_DEFAULT);
 		assert!(!rules.petal_majority_win);
 		assert_eq!(rules.insufficient_tiles_loss, InsufficientTilesLoss::Off);
 		assert!(rules.counted_pass_through);
 		assert_eq!(rules.pass_through_ring_cmp, PassThroughRingCmp::Ge);
 		assert_eq!(rules.zag_mismatch, ZagMismatchCount::Sum);
 		assert_eq!(rules.braid_fail_mismatch, BraidFailMismatch::One);
+		assert_eq!(rules.capture_mode, CaptureMode::LocalClaim);
+		assert_eq!(rules.bead_scoring, BeadScoring::SharedChannel);
+		assert_eq!(rules.channel_mode, ChannelMode::IndependentMax);
+		assert_eq!(rules.emblem_weights, EmblemWeights::default());
 		assert_eq!(rules.no_same_piece_twice, SamePieceTwice::Off);
 		assert!(rules.no_moves_loses);
 		let game = Game::new(rules, 1);
 		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.bench(Player::Two).len(), BAG_SIZE_DEFAULT);
 		assert_eq!(game.budget(Player::One), 7);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 		assert_eq!(game.legal_adds().len(), BAG_SIZE_DEFAULT * 8);
 	}
 
 	#[test]
+	fn reserves_are_never_legal_adds() {
+		let game = Game::new(RuleSet::default(), 4);
+		let reserve_ids: Vec<u32> = game.bag(Player::One).iter().map(|t| t.id).collect();
+		assert_eq!(reserve_ids.len(), BAG_SIZE - BAG_SIZE_DEFAULT);
+		for action in game.legal_adds() {
+			let Action::Add { bench_index, .. } = action else {
+				panic!("expected ADD");
+			};
+			let id = game.bench(Player::One)[bench_index].id;
+			assert!(!reserve_ids.contains(&id), "reserve {id} must not be ADD-able");
+		}
+		assert!(crate::deck::respects_type_cap(game.bench(Player::One)));
+		assert!(crate::deck::respects_type_cap(game.setup_record().unwrap().pick7[0].as_slice()));
+	}
+
+	#[test]
+	fn from_setup_record_installs_the_draft() {
+		let rec = crate::deck::deal_and_pick(
+			&RuleSet::default(),
+			&crate::deck::SetupConfig::for_seed(11),
+			11,
+			&mut 1u32,
+		);
+		let game = Game::from_setup_record(RuleSet::default(), 11, rec.clone());
+		assert_eq!(game.bench(Player::One), rec.bench(Player::One));
+		assert_eq!(game.bag(Player::One), rec.reserves(Player::One));
+		assert_eq!(game.collection(Player::One).len(), BAG_SIZE);
+		assert_eq!(game.deck_slots(Player::One).len(), BAG_SIZE_DEFAULT);
+	}
+
+	#[test]
 	fn double_green_overwhelmed_by_two_oranges_survives_with_green_neighbor() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		assert!(nbs.len() >= 3);
@@ -3057,7 +5193,7 @@ mod tests {
 
 	#[test]
 	fn overwhelm_is_by_color_not_owner() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[1];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
@@ -3091,7 +5227,9 @@ mod tests {
 
 	#[test]
 	fn simultaneous_removal_logs_owner_node_and_counts() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut rules = RuleSet::additive();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
 		let s0 = game.board().spawns()[0];
 		let s1 = game.board().spawns()[1];
 		let n0 = game.board().neighbors(s0).to_vec();
@@ -3127,7 +5265,7 @@ mod tests {
 
 	#[test]
 	fn move_is_exactly_d_steps_not_up_to_d() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let from = game.board().spawns()[0];
 		let mut step1 = 0u8;
 		let mut step2 = 0u8;
@@ -3168,7 +5306,7 @@ mod tests {
 
 	#[test]
 	fn move_cannot_revisit_a_node() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let from = game.board().spawns()[3];
 		put(&mut game, from, Player::One, TileColor::Blue, 1, 2);
 		game.set_current(Player::One);
@@ -3306,7 +5444,7 @@ mod tests {
 	}
 
 	fn pass_through_game() -> Game {
-		Game::empty(RuleSet::default())
+		Game::empty(RuleSet::additive())
 	}
 
 	fn pass_through_with(cmp: PassThroughRingCmp) -> Game {
@@ -3518,7 +5656,7 @@ mod tests {
 
 	#[test]
 	fn add_only_on_empty_spawns_and_suicidal_add_is_legal() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
@@ -3534,7 +5672,7 @@ mod tests {
 
 	#[test]
 	fn capture_does_not_draw_on_add_or_move() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
@@ -3561,7 +5699,7 @@ mod tests {
 
 	#[test]
 	fn move_capture_earns_a_token_and_does_not_draw() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		assert!(nbs.len() >= 3);
@@ -3603,7 +5741,7 @@ mod tests {
 
 	#[test]
 	fn win_when_opponent_has_empty_board_and_empty_bench() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
 		{
@@ -3625,7 +5763,7 @@ mod tests {
 
 	#[test]
 	fn hidden_bag_does_not_keep_a_player_alive() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		{
 			let _t = take(&mut game, Player::Two, TileColor::Orange, 1, 1);
 			game.set_bag(Player::Two, vec![_t]);
@@ -3693,7 +5831,7 @@ mod tests {
 
 	#[test]
 	fn pass_rejected_when_add_exists() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		{
 			let _t = take(&mut game, Player::One, TileColor::Green, 1, 1);
 			game.set_bench(Player::One, vec![_t]);
@@ -4145,13 +6283,390 @@ mod tests {
 		);
 	}
 
+	fn cascade_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 1;
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules
+	}
+
+	#[test]
+	fn control_cascade_lowers_target_through_five_four_three_two() {
+		for target in [5u8, 4, 3, 2] {
+			let mut game = Game::empty(cascade_rules());
+			occupy_control_n(&mut game, Player::One, target as usize);
+			pin_material(&mut game, Player::One, target as usize);
+			pin_material(&mut game, Player::Two, 0);
+			assert_eq!(game.max_material(), target as usize, "target {target}");
+			assert_eq!(game.cascade_control_target(), Some(target), "target {target}");
+			assert_eq!(game.control_need(), target, "target {target}");
+			assert_eq!(game.control_count(Player::One), target, "target {target}");
+			game.evaluate_turn_end_for_test(Player::One);
+			assert_eq!(
+				game.status(),
+				GameStatus::Won { winner: Player::One, reason: EndReason::Control },
+				"holding {target} of 9 should win when max_mat={target}"
+			);
+		}
+	}
+
+	#[test]
+	fn control_cascade_is_leader_only_at_asymmetric_checkpoint() {
+		let mut game = Game::empty(cascade_rules());
+		occupy_control_n(&mut game, Player::One, 4);
+		let inner = game.board().inner_ring().to_vec();
+		// P1 took center + inner[0..3]; P2 takes three leftover inners.
+		for &node in inner.iter().skip(3).take(3) {
+			put(&mut game, node, Player::Two, TileColor::Orange, 3, 1);
+		}
+		pin_material(&mut game, Player::One, 4);
+		pin_material(&mut game, Player::Two, 3);
+		assert_eq!(game.max_material(), 4);
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_count(Player::One), 4);
+		assert_eq!(game.control_count(Player::Two), 3);
+		game.evaluate_control_for_test(Player::Two);
+		assert_eq!(game.status(), GameStatus::InProgress, "P2 holds 3 < ratchet target 4");
+		game.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	#[test]
+	fn control_cascade_ratchet_does_not_rise_when_material_recovers() {
+		let mut game = Game::empty(cascade_rules());
+		occupy_control_n(&mut game, Player::One, 4);
+		pin_material(&mut game, Player::One, 4);
+		pin_material(&mut game, Player::Two, 4);
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.control_need(), 4);
+		pin_material(&mut game, Player::Two, 5);
+		assert_eq!(game.max_material(), 5);
+		assert_eq!(game.control_ratchet(), 4, "recapture must not raise the checkpoint");
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_count(Player::One), 4);
+		game.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(!game.control_win_immediate(), "this was a turn-boundary hold");
+	}
+
+	#[test]
+	fn control_cascade_defers_low_value_until_max_mat_is_one() {
+		let mut still_control = Game::empty(cascade_rules());
+		let s0 = still_control.board().spawns()[0];
+		let s4 = still_control.board().spawns()[4];
+		put(&mut still_control, s0, Player::One, TileColor::Green, 1, 1);
+		put(&mut still_control, s4, Player::Two, TileColor::Orange, 1, 2);
+		pin_material(&mut still_control, Player::One, 2);
+		pin_material(&mut still_control, Player::Two, 1);
+		assert_eq!(still_control.max_material(), 2);
+		assert_eq!(still_control.cascade_control_target(), Some(2));
+		assert!(!still_control.low_value_applies());
+		still_control.evaluate_low_value_for_test();
+		assert_eq!(still_control.status(), GameStatus::InProgress);
+
+		let mut lv = Game::empty(cascade_rules());
+		let s0 = lv.board().spawns()[0];
+		let s4 = lv.board().spawns()[4];
+		put(&mut lv, s0, Player::One, TileColor::Green, 1, 1);
+		put(&mut lv, s4, Player::Two, TileColor::Orange, 1, 2);
+		pin_material(&mut lv, Player::One, 1);
+		pin_material(&mut lv, Player::Two, 1);
+		assert_eq!(lv.max_material(), 1);
+		assert_eq!(lv.cascade_control_target(), None);
+		assert!(lv.low_value_applies());
+		lv.evaluate_turn_end_for_test(Player::One);
+		assert_eq!(
+			lv.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+
+		let mut baseline = Game::empty({
+			let mut rules = cascade_rules();
+			rules.endgame_rule = EndgameRule::LowValue;
+			rules
+		});
+		let s0 = baseline.board().spawns()[0];
+		let s4 = baseline.board().spawns()[4];
+		put(&mut baseline, s0, Player::One, TileColor::Green, 1, 1);
+		put(&mut baseline, s4, Player::Two, TileColor::Orange, 1, 2);
+		pin_material(&mut baseline, Player::One, 2);
+		pin_material(&mut baseline, Player::Two, 2);
+		assert!(baseline.low_value_applies());
+		baseline.evaluate_low_value_for_test();
+		assert_eq!(
+			baseline.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::LowValue }
+		);
+	}
+
+	#[test]
+	fn control_cascade_claim_of_leftover_lowers_ratchet_and_does_not_rise() {
+		let mut game = Game::empty(cascade_rules());
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		let (dest, _mid, far, _, _) = local_claim_leftover_fixture(&mut game);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(game.tile_at(far).is_some(), "leftover occupies the board");
+		assert_eq!(game.tile_at(far).unwrap().owner, Player::Two);
+		pin_material(&mut game, Player::Two, 5);
+		pin_material(&mut game, Player::One, 4);
+		assert_eq!(game.max_material(), 5);
+		assert_eq!(game.control_need(), 5);
+		assert_eq!(game.control_ratchet(), 5);
+		game.set_current(Player::One);
+		game.apply(Action::Claim { node: far }).unwrap();
+		assert!(game.tile_at(far).is_none());
+		assert_eq!(game.total_material(Player::Two), 4, "leftover no longer counts");
+		assert_eq!(
+			game.total_material(Player::One),
+			4,
+			"claim token is unusable without extra bench"
+		);
+		assert_eq!(game.max_material(), 4);
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.cascade_control_target(), Some(4));
+		pin_material(&mut game, Player::Two, 5);
+		assert_eq!(game.max_material(), 5);
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.control_need(), 4);
+	}
+
+	/// Spawn adjacent to a P1 control tile, occupied by a weak P2 piece that
+	/// `put` leaves overwhelmed (local-claim does not sweep on `put`).
+	fn overwhelmed_p2_spawn(game: &Game) -> NodeId {
+		let control: std::collections::HashSet<_> = std::iter::once(game.board().center())
+			.chain(game.board().inner_ring().iter().copied())
+			.collect();
+		for &spawn in game.board().spawns() {
+			if control.contains(&spawn) || game.tile_at(spawn).is_some() {
+				continue;
+			}
+			if game
+				.board()
+				.neighbors(spawn)
+				.iter()
+				.any(|&n| game.tile_at(n).map(|t| t.owner == Player::One).unwrap_or(false))
+			{
+				return spawn;
+			}
+		}
+		panic!("a spawn neighbors a P1 control tile");
+	}
+
+	fn place_overwhelmed_p2_extra(game: &mut Game) -> NodeId {
+		let spawn = overwhelmed_p2_spawn(game);
+		put(game, spawn, Player::Two, TileColor::Blue, 1, 1);
+		assert!(game.is_overwhelmed(spawn), "P2 extra at {spawn} should be claimable");
+		spawn
+	}
+
+	#[test]
+	fn control_cascade_immediate_win_on_drop_when_one_player_holds() {
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		assert_eq!(game.control_need(), 5);
+		let cloned = game.clone();
+		assert_eq!(cloned.control_ratchet(), game.control_ratchet());
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(game.control_win_immediate(), "unique holder wins without control_hold_turns");
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.control_hold(Player::One), 0);
+		assert_eq!(cloned.control_ratchet(), 5, "clone must keep the pre-drop ratchet");
+	}
+
+	#[test]
+	fn control_cascade_no_immediate_win_when_both_hold_on_drop() {
+		let mut rules = cascade_rules();
+		rules.control_hold_turns = 3;
+		let mut game = Game::empty(rules);
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		occupy_control_n(&mut game, Player::One, 4);
+		let inner = game.board().inner_ring().to_vec();
+		for &node in inner.iter().skip(3).take(4) {
+			put(&mut game, node, Player::Two, TileColor::Orange, 3, 1);
+		}
+		assert_eq!(game.control_count(Player::Two), 4);
+		let extra = place_overwhelmed_p2_extra(&mut game);
+		pin_material(&mut game, Player::Two, 5);
+		pin_material(&mut game, Player::One, 4);
+		assert_eq!(game.control_ratchet(), 5);
+		game.set_current(Player::One);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress, "both hold: no immediate win");
+		assert!(!game.control_win_immediate());
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_hold(Player::One), 1, "actor still ticks the turn-boundary hold");
+		assert_eq!(game.control_hold(Player::Two), 0);
+	}
+
+	#[test]
+	fn cascade_turn_gain_mover_leads_goes_again() {
+		let (mut game, dest) = Game::cascade_turn_gain_mover_add_drop();
+		assert_eq!(game.current_player(), Player::One);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.control_ratchet(), 4);
+		assert!(game.total_material(Player::One) > game.total_material(Player::Two));
+		assert_eq!(game.last_turn_gain(), Some(TurnGainKind::Mover));
+		assert_eq!(game.turn_gain_awarded(), 1);
+		assert_eq!(game.turn_gain_mover(), 1);
+		assert_eq!(game.extra_turns(Player::One), 0, "mover extra is consumed at finish_turn");
+		assert_eq!(game.current_player(), Player::One, "mover goes again immediately");
+		assert!(game.extra_turn_active());
+		assert_eq!(game.extra_turns_played(), 1);
+	}
+
+	#[test]
+	fn cascade_turn_gain_opponent_leads_banks_consecutive_turn() {
+		let (mut game, extra) = Game::cascade_turn_gain_drop_position(3, 5);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.total_material(Player::One), 3);
+		assert_eq!(game.total_material(Player::Two), 4);
+		assert_eq!(game.last_turn_gain(), Some(TurnGainKind::Opponent));
+		assert_eq!(game.turn_gain_opponent(), 1);
+		assert_eq!(game.current_player(), Player::Two);
+		assert_eq!(game.extra_turns(Player::Two), 1, "opponent extra is banked");
+		assert!(!game.extra_turn_active());
+		let dest = game.isolated_empty_spawn();
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.current_player(), Player::Two, "after the normal turn it stays P2");
+		assert_eq!(game.extra_turns(Player::Two), 0);
+		assert!(game.extra_turn_active());
+		assert_eq!(game.extra_turns_played(), 1);
+	}
+
+	#[test]
+	fn cascade_turn_gain_tied_material_awards_nothing() {
+		let (mut game, extra) = Game::cascade_turn_gain_drop_position(4, 5);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.total_material(Player::One), 4);
+		assert_eq!(game.total_material(Player::Two), 4);
+		assert_eq!(game.last_turn_gain(), None);
+		assert_eq!(game.turn_gain_awarded(), 0);
+		assert_eq!(game.current_player(), Player::Two);
+		assert!(!game.extra_turn_active());
+		assert_eq!(game.extra_turns(Player::One), 0);
+		assert_eq!(game.extra_turns(Player::Two), 0);
+	}
+
+	#[test]
+	fn cascade_turn_gain_immediate_unique_holder_overrides() {
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(game.control_count(Player::One), 4);
+		assert!(game.rules().cascade_turn_gain);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(game.control_win_immediate());
+		assert_eq!(game.last_turn_gain(), None);
+		assert_eq!(game.turn_gain_awarded(), 0);
+		assert_eq!(game.extra_turns_played(), 0);
+		assert!(!game.extra_turn_active());
+		assert_eq!(game.current_player(), Player::One, "game ended before any extra turn");
+	}
+
+	#[test]
+	fn cascade_turn_gain_off_restores_pr74() {
+		let (mut game, dest) = Game::cascade_turn_gain_mover_add_drop();
+		game.set_cascade_turn_gain(false);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.current_player(), Player::Two);
+		assert_eq!(game.turn_gain_awarded(), 0);
+		assert!(!game.extra_turn_active());
+		assert_eq!(game.last_turn_gain(), None);
+	}
+
+	#[test]
+	fn cascade_turn_gain_multi_step_drop_awards_at_most_one() {
+		let mut rules = cascade_rules();
+		rules.cascade_turn_gain = true;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let neighbors: Vec<_> = game.board().neighbors(spawn).iter().copied().collect();
+		assert!(neighbors.len() >= 2, "spawn should have two neighbors");
+		put(&mut game, neighbors[0], Player::Two, TileColor::Blue, 1, 1);
+		put(&mut game, neighbors[1], Player::Two, TileColor::Blue, 1, 1);
+		// Three more P2 tiles off the capture so max_mat starts at 5 and the
+		// two local captures drop 5→3.
+		let far: Vec<_> = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.filter(|&s| s != spawn && game.tile_at(s).is_none())
+			.take(3)
+			.collect();
+		assert_eq!(far.len(), 3);
+		for &s in &far {
+			put(&mut game, s, Player::Two, TileColor::Orange, 3, 1);
+		}
+		let p1_home = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| s != spawn && game.tile_at(s).is_none())
+			.expect("empty spawn for P1");
+		put(&mut game, p1_home, Player::One, TileColor::Green, 3, 1);
+		pin_material(&mut game, Player::Two, 5);
+		pin_material(&mut game, Player::One, 2);
+		assert_eq!(game.control_ratchet(), 5);
+		assert_eq!(game.max_material(), 5);
+		let incoming = take(&mut game, Player::One, TileColor::Green, 3, 1);
+		let mut bench = game.bench(Player::One).to_vec();
+		bench.insert(0, incoming);
+		game.set_bench(Player::One, bench);
+		// Keep P1 material at 2 so max_mat after the captures is P2's 3.
+		pin_material(&mut game, Player::One, 2);
+		game.set_current(Player::One);
+		let before = game.control_ratchet();
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert!(
+			game.control_ratchet() + 1 < before,
+			"must skip at least one checkpoint, {before} → {}",
+			game.control_ratchet()
+		);
+		assert!(
+			game.control_ratchet() <= 3,
+			"5→3-or-lower in one action, got {}",
+			game.control_ratchet()
+		);
+		assert_eq!(game.status(), GameStatus::InProgress, "no unique-holder drop win");
+		assert_eq!(game.turn_gain_awarded(), 1, "multi-step drop still awards at most 1");
+		assert_eq!(game.turn_gain_mover() + game.turn_gain_opponent(), 1);
+		assert!(game.last_turn_gain().is_some());
+	}
+
 	#[test]
 	fn small_deck_opening_stays_above_insufficient_floor() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 11;
+		rules.deck_size = 11;
 		rules.insufficient_tiles_loss = InsufficientTilesLoss::Strict;
 		let game = Game::new(rules, 1);
 		assert_eq!(game.reachable_tiles(Player::One), 11);
+		assert_eq!(game.bench(Player::One).len(), 11);
 		assert_eq!(game.bag_len(Player::One), 0);
 		assert_eq!(game.status(), GameStatus::InProgress);
 	}
@@ -4365,7 +6880,7 @@ mod tests {
 	#[test]
 	fn no_same_piece_twice_defaults_to_off() {
 		assert_eq!(RuleSet::default().no_same_piece_twice, SamePieceTwice::Off);
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let inner = inner_ring(&game);
 		let a = inner[0];
 		let center = game.board().center();
@@ -4640,7 +7155,7 @@ mod tests {
 		assert!(
 			via_edge.contains(&{
 				// spawn neighbor of start; identified inside dests() but recompute
-				let game = Game::empty(RuleSet::default());
+				let game = Game::empty(RuleSet::additive());
 				let inner = inner_ring(&game);
 				let start = inner[0];
 				*game
@@ -4653,7 +7168,7 @@ mod tests {
 			"NoEdgeRevisit may return through the second center-arc and land on the spawn, got {via_edge:?}"
 		);
 		let spawn = {
-			let game = Game::empty(RuleSet::default());
+			let game = Game::empty(RuleSet::additive());
 			let inner = inner_ring(&game);
 			let start = inner[0];
 			*game
@@ -4759,11 +7274,23 @@ mod tests {
 		);
 		assert!(zag.kind_index() < KIND_COUNT);
 		assert!(seen.insert(zag.kind_index()), "zag vs normal of same colors is a distinct kind");
+		let bead = Tile::with_typed_rings(
+			0,
+			Player::One,
+			&[(TileColor::Green, RingType::Normal), (TileColor::Teal, RingType::Bead)],
+			2,
+			1,
+		);
+		assert!(bead.kind_index() < KIND_COUNT);
+		assert!(seen.insert(bead.kind_index()), "bead vs zag/normal of same colors is distinct");
+		let view = decode_color_state(bead.color_state());
+		assert_ne!(view.bead, 0);
+		assert_eq!(view.zag, 0);
 	}
 
 	#[test]
 	fn multi_color_tiles_match_on_any_shared_ring() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		let a = game.alloc_rings(Player::One, &[TileColor::Green, TileColor::Teal], 1, 1);
@@ -4842,8 +7369,9 @@ mod tests {
 	fn sampled_decks_are_mirrored_and_size_11() {
 		let game = Game::new(RuleSet::default(), 11);
 		assert_eq!(game.rules().bag_size as usize, BAG_SIZE_DEFAULT);
+		assert_eq!(game.collection(Player::One).len(), BAG_SIZE);
 		assert_eq!(game.bench(Player::One).len(), BAG_SIZE_DEFAULT);
-		assert_eq!(game.bag_len(Player::One), 0);
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 		let p1: Vec<_> = game
 			.bench(Player::One)
 			.iter()
@@ -4872,14 +7400,14 @@ mod tests {
 	}
 
 	fn rules_with_zag_mismatch(mode: ZagMismatchCount) -> RuleSet {
-		let mut rules = RuleSet::default();
+		let mut rules = RuleSet::additive();
 		rules.zag_mismatch = mode;
 		rules
 	}
 
 	#[test]
 	fn zag_blue_normal_orange_zag_sums_both_hitting_zags() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let a = game.alloc_ring_kinds(
@@ -4905,7 +7433,7 @@ mod tests {
 
 	#[test]
 	fn double_orange_zag_counts_two_mismatches() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let t = game.alloc_ring_kinds(
@@ -4924,18 +7452,18 @@ mod tests {
 		game.place_tile(nb, u);
 		assert_eq!(
 			game.edge_score(t, u),
-			(1, 2),
-			"normal match (T's orange is in U) stacks with two zag hits"
+			(0, 3),
+			"U's zags do not credit T's orange as a match; hitch 1 + two zag hits"
 		);
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!(m, 3, "ring count 2 + normal match");
-		assert_eq!(x, 2, "two orange zags on U whose color T has");
+		assert_eq!(m, 2, "ring count 2 + no normal match");
+		assert_eq!(x, 3, "hitch plus two orange zags on U whose color T has");
 		assert_eq!(game.edge_score(t, u), game.edge_score(u, t), "SUM is symmetric");
 	}
 
 	#[test]
 	fn one_ring_zag_nets_zero_against_same_color_normal() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
@@ -4945,21 +7473,21 @@ mod tests {
 		game.place_tile(nb, normal);
 		assert_eq!(
 			game.edge_score(zag, normal),
-			(1, 1),
-			"normal match −1 and zag mismatch +1 net 0"
+			(0, 2),
+			"zag color is not a match for the normal; hitch 1 + zag hit 1"
 		);
 		let (m, x) = game.tile_score(spawn).unwrap();
-		assert_eq!((m, x), (2, 1), "ring count 1 + normal match vs one zag hit");
-		assert!(!game.is_overwhelmed(spawn), "effective 0 < ring_weight 1");
+		assert_eq!((m, x), (1, 2), "ring count 1, no match credit, hitch + zag hit");
+		assert!(game.is_overwhelmed(spawn), "effective +2 >= ring_weight 1");
 		let (om, ox) = game.tile_score(nb).unwrap();
-		assert_eq!((om, ox), (2, 1));
-		assert!(!game.is_overwhelmed(nb));
-		assert_eq!(game.tile_effective_weight(spawn).unwrap(), 0);
+		assert_eq!((om, ox), (1, 2));
+		assert!(game.is_overwhelmed(nb));
+		assert_eq!(game.tile_effective_weight(spawn).unwrap(), 2);
 	}
 
 	#[test]
 	fn one_ring_zag_dies_against_heavier_color_carrier() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
@@ -4972,14 +7500,18 @@ mod tests {
 		game.place_tile(spawn, zag);
 		game.place_tile(nb, heavy);
 		assert_eq!(heavy.weight, 3);
-		assert_eq!(game.edge_score(zag, heavy), (1, 1), "same-color zag vs normal nets 0");
-		assert!(!game.is_overwhelmed(spawn), "net 0 does not overwhelm the zag");
-		assert!(!game.is_overwhelmed(nb), "3-ring carrier takes net 0 and lives");
+		assert_eq!(
+			game.edge_score(zag, heavy),
+			(0, 2),
+			"zag color is not a match for the normals; hitch 1 + zag hit 1"
+		);
+		assert!(game.is_overwhelmed(spawn), "1-ring zag takes +2 and dies");
+		assert!(!game.is_overwhelmed(nb), "3-ring carrier takes +2 and lives");
 	}
 
 	#[test]
 	fn zag_mismatches_zag_of_the_same_color() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
@@ -4996,7 +7528,7 @@ mod tests {
 
 	#[test]
 	fn three_blue_zags_vs_three_blue_zags_is_six_under_sum() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let rings = [(TileColor::Blue, true), (TileColor::Blue, true), (TileColor::Blue, true)];
@@ -5014,7 +7546,7 @@ mod tests {
 
 	#[test]
 	fn one_ring_zag_counts_one_zag_stroke() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 3, 1);
@@ -5073,7 +7605,7 @@ mod tests {
 
 	#[test]
 	fn one_zag_vs_one_zag_of_the_same_color_is_captured() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
@@ -5089,23 +7621,229 @@ mod tests {
 	}
 
 	#[test]
+	fn zag_vs_same_color_normal_gets_no_match_credit() {
+		let mut game = Game::empty(RuleSet::additive());
+		let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		let normal =
+			game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Normal)], 1, 1);
+		assert_eq!(zag.non_zag_colors_multiset(), [0; 6]);
+		assert_eq!(normal.non_zag_colors_multiset()[TileColor::Orange as usize], 1);
+		assert!(!zag.normal_channel_matches(normal));
+		assert_eq!(zag.zag_hits_on(normal), 1, "zag still sees the full color multiset");
+		let ch = game.edge_channels(zag, normal);
+		assert_eq!(ch.normal_match, 0, "the normal gets no match credit from a zag");
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(ch.zag_mismatch, 1);
+		assert_eq!(game.edge_score(zag, normal), (0, 2));
+		assert_eq!(game.edge_score(normal, zag), (0, 2));
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		game.place_tile(spawn, zag);
+		game.place_tile(nb, normal);
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
+		let mut preview = Game::empty(RuleSet::additive());
+		let holder =
+			preview.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Normal)], 1, 1);
+		let incoming =
+			preview.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		preview.place_tile(nb, holder);
+		assert!(
+			preview.would_overwhelm_add(incoming, spawn),
+			"ADD preview uses the same zag-exclusion scoring"
+		);
+	}
+
+	#[test]
+	fn zag_vs_same_color_bead_gets_no_match_credit() {
+		let mut game = Game::empty(RuleSet::additive());
+		let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		let bead =
+			game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Bead)], 1, 1);
+		assert_eq!(bead.bead_matched_on(zag), 0);
+		assert_eq!(bead.bead_unmatched_on(zag), 1);
+		assert_eq!(zag.zag_hits_on(bead), 1);
+		let ch = game.edge_channels(zag, bead);
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.bead_mismatch, 1);
+		assert_eq!(ch.zag_mismatch, 1);
+		assert_eq!(ch.normal_match, 0);
+		assert_eq!(ch.normal_mismatch, 0);
+		assert_eq!(game.edge_score(zag, bead), (0, 2));
+		assert_eq!(game.edge_score(bead, zag), (0, 2));
+	}
+
+	/// Screenshot pairing: dark 1-ring blue bead vs cream teal+orange normals
+	/// plus an inner blue zag. Under zag-color exclusion the blue zag is not
+	/// a bead match, so the edge is unmatched bead + hitch + zag hit.
+	#[test]
+	fn one_blue_bead_vs_teal_orange_and_blue_zag() {
+		let mut game = empty_independent();
+		let bead = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Bead)], 1, 1);
+		let cream = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Teal, RingType::Normal),
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Blue, RingType::Zag),
+			],
+			3,
+			1,
+		);
+		assert_eq!(bead.bead_matched_on(cream), 0, "blue zag is not a bead match");
+		assert_eq!(bead.bead_unmatched_on(cream), 1);
+		let ch = game.edge_channels(bead, cream);
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.bead_mismatch, 1);
+		assert_eq!(ch.normal_match, 0);
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(ch.zag_mismatch, 1);
+		assert_eq!(game.edge_score(bead, cream), (0, 3));
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		game.place_tile(spawn, bead);
+		game.place_tile(nb, cream);
+		assert_eq!(game.tile_score(spawn), Some((1, 3)));
+		assert_eq!(game.tile_score(nb), Some((3, 3)));
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
+		assert_eq!(game.collect_removals().len(), 2);
+	}
+
+	#[test]
+	fn two_blue_beads_vs_teal_orange_and_blue_zag() {
+		let mut game = empty_independent();
+		let beads = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Bead), (TileColor::Blue, RingType::Bead)],
+			1,
+			1,
+		);
+		let cream = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Teal, RingType::Normal),
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Blue, RingType::Zag),
+			],
+			3,
+			1,
+		);
+		assert_eq!(beads.weight, 2, "weight follows live ring count");
+		assert_eq!(beads.bead_unmatched_on(cream), 2);
+		assert_eq!(game.edge_score(beads, cream), (0, 4));
+		let spawn = game.board().spawns()[0];
+		let nb = game.board().neighbors(spawn)[0];
+		game.place_tile(spawn, beads);
+		game.place_tile(nb, cream);
+		assert_eq!(game.tile_score(spawn), Some((2, 4)));
+		assert_eq!(game.tile_score(nb), Some((3, 4)));
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(nb));
+	}
+
+	#[test]
+	fn non_adjacent_tiles_do_not_score_or_capture_each_other() {
+		let mut game = Game::empty(RuleSet::additive());
+		let a = game.board().spawns()[0];
+		let b = game.board().spawns()[4];
+		assert!(!game.board().neighbors(a).contains(&b), "opposite spawns must not share an edge");
+		let bead = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Bead)], 1, 1);
+		let cream = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Teal, RingType::Normal),
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Blue, RingType::Zag),
+			],
+			3,
+			1,
+		);
+		game.place_tile(a, bead);
+		game.place_tile(b, cream);
+		assert_eq!(game.tile_score(a), Some((1, 0)), "no incident edge, only ring weight");
+		assert_eq!(game.tile_score(b), Some((3, 0)));
+		assert!(game.collect_removals().is_empty());
+		assert!(!game.is_overwhelmed(a));
+		assert!(!game.is_overwhelmed(b));
+	}
+
+	#[test]
+	fn zag_vs_zag_still_hits_on_the_full_color_multiset() {
+		let mut game = Game::empty(RuleSet::additive());
+		let a = game.alloc_typed_rings(Player::One, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		let b = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		assert_eq!(a.colors_multiset()[TileColor::Blue as usize], 1);
+		assert_eq!(a.non_zag_colors_multiset(), [0; 6]);
+		assert_eq!(a.zag_hits_on(b), 1);
+		assert_eq!(b.zag_hits_on(a), 1);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.normal_match, 0);
+		assert_eq!(ch.normal_mismatch, 0);
+		assert_eq!(ch.zag_mismatch, 2);
+		assert_eq!(game.edge_score(a, b), (0, 2));
+		assert_eq!(game.edge_score(b, a), (0, 2));
+	}
+
+	#[test]
+	fn center_double_zag_vs_same_color_normal() {
+		let mut game = Game::empty(RuleSet::additive());
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		let normal =
+			game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Normal)], 1, 1);
+		assert_eq!(game.edge_score(zag, normal), (0, 2));
+		game.place_tile(center, zag);
+		game.place_tile(inner, normal);
+		assert_eq!(game.tile_effective_weight(center), Some(4), "two petals of hitch+zag");
+		assert_eq!(game.tile_effective_weight(inner), Some(4));
+		assert_eq!(game.tile_score(center), Some((1, 4)));
+		assert_eq!(game.tile_score(inner), Some((1, 4)));
+		assert!(game.is_overwhelmed(center));
+		assert!(game.is_overwhelmed(inner));
+	}
+
+	#[test]
+	fn center_double_zag_vs_zag_still_hits() {
+		let mut game = Game::empty(RuleSet::additive());
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		let a = game.alloc_typed_rings(Player::One, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		let b = game.alloc_typed_rings(Player::Two, &[(TileColor::Blue, RingType::Zag)], 1, 1);
+		assert_eq!(game.edge_score(a, b), (0, 2));
+		game.place_tile(center, a);
+		game.place_tile(inner, b);
+		assert_eq!(game.tile_effective_weight(center), Some(4), "two petals of SUM 2");
+		assert_eq!(game.tile_effective_weight(inner), Some(4));
+		assert_eq!(game.tile_score(center), Some((1, 4)));
+		assert!(game.is_overwhelmed(center));
+		assert!(game.is_overwhelmed(inner));
+	}
+
+	#[test]
 	fn zag_color_alone_never_counts_as_a_zag_match() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let a = game.alloc_ring_kinds(Player::One, &[(TileColor::Blue, true)], 1, 1);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
 		assert!(!a.shares_normal(b));
-		assert!(a.normal_channel_matches(b), "B's blue normal is in A's colors");
+		assert!(!a.normal_channel_matches(b), "zag blue is not a match for B's blue normal");
 		let ch = game.edge_channels(a, b);
-		assert_eq!(ch.normal_match, 1);
+		assert_eq!(ch.normal_match, 0);
+		assert_eq!(ch.normal_mismatch, 1);
 		assert_eq!(ch.zag_mismatch, 1);
 		assert_eq!(ch.braid_match, 0);
-		assert_eq!(game.edge_score(a, b), (1, 1), "zags never give a match; normal still can");
-		assert_eq!(game.edge_score(b, a), (1, 1));
+		assert_eq!(
+			game.edge_score(a, b),
+			(0, 2),
+			"zags never give a match and do not credit the normal either"
+		);
+		assert_eq!(game.edge_score(b, a), (0, 2));
 	}
 
 	#[test]
 	fn zag_only_vs_other_color_normal_is_a_normal_mismatch() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1);
@@ -5127,7 +7865,7 @@ mod tests {
 
 	#[test]
 	fn blue_normal_plus_orange_zag_vs_blue_is_one_match_zero_mismatches() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let mixed = game.alloc_ring_kinds(
 			Player::One,
 			&[(TileColor::Blue, false), (TileColor::Orange, true)],
@@ -5149,7 +7887,7 @@ mod tests {
 
 	#[test]
 	fn non_matching_zag_does_not_hide_a_normal_conflict() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let mixed = game.alloc_ring_kinds(
 			Player::One,
 			&[(TileColor::Blue, false), (TileColor::Orange, true)],
@@ -5163,7 +7901,7 @@ mod tests {
 
 	#[test]
 	fn blue_vs_orange_plus_green_zag_is_a_normal_mismatch() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let blue = game.alloc_rings(Player::One, &[TileColor::Blue], 1, 1);
 		let orange_green_zag = game.alloc_ring_kinds(
 			Player::Two,
@@ -5184,7 +7922,7 @@ mod tests {
 
 	#[test]
 	fn green_zag_vs_orange_plus_two_greens_is_a_zag_hit() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let zag = game.alloc_ring_kinds(Player::One, &[(TileColor::Green, true)], 1, 1);
 		let holder = game.alloc_rings(
 			Player::Two,
@@ -5194,18 +7932,18 @@ mod tests {
 		);
 		assert_eq!(zag.zag_hits_on(holder), 1);
 		assert!(!zag.shares_normal(holder));
-		assert!(holder.normal_color_in(zag), "holder's green normal is in the zag tile");
+		assert!(!holder.normal_color_in(zag), "holder's green normal does not match a green zag");
 		assert_eq!(
 			game.edge_score(zag, holder),
-			(1, 1),
-			"green zag +1 stacks with the holder's green normal match"
+			(0, 2),
+			"green zag +1 plus a hitch; the zag color is not a match"
 		);
-		assert_eq!(game.edge_score(holder, zag), (1, 1));
+		assert_eq!(game.edge_score(holder, zag), (0, 2));
 	}
 
 	#[test]
 	fn own_zag_does_not_mismatch_self() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nb = game.board().neighbors(spawn)[0];
 		let t = game.alloc_ring_kinds(
@@ -5255,24 +7993,24 @@ mod tests {
 			let mut game = Game::empty(rules_with_zag_mismatch(mode));
 			let zag = game.alloc_ring_kinds(Player::One, &zag_kinds, 1, 1);
 			let holder = game.alloc_ring_kinds(Player::Two, &holder_kinds, 1, 1);
-			assert_eq!(game.edge_score(zag, holder), (1, 1), "{mode:?} zag side");
-			assert_eq!(game.edge_score(holder, zag), (1, 1), "{mode:?} holder side");
+			assert_eq!(game.edge_score(zag, holder), (0, 2), "{mode:?} zag side");
+			assert_eq!(game.edge_score(holder, zag), (0, 2), "{mode:?} holder side");
 			let spawn = game.board().spawns()[0];
 			let nb = game.board().neighbors(spawn)[0];
 			game.place_tile(spawn, zag);
 			game.place_tile(nb, holder);
-			assert_eq!(game.tile_score(spawn).unwrap(), (2, 1));
-			assert_eq!(game.tile_score(nb).unwrap(), (2, 1));
-			assert!(!game.is_overwhelmed(spawn));
-			assert!(!game.is_overwhelmed(nb));
+			assert_eq!(game.tile_score(spawn).unwrap(), (1, 2));
+			assert_eq!(game.tile_score(nb).unwrap(), (1, 2));
+			assert!(game.is_overwhelmed(spawn));
+			assert!(game.is_overwhelmed(nb));
 		}
 	}
 
 	#[test]
 	fn zag_and_normal_channels_stack_on_the_same_edge() {
 		// Blue-normal + orange-zag vs green-normal + orange-normal: the orange
-		// zag hits, and the other tile's orange *normal* is in the zag tile's
-		// colors, so the normal channel matches rather than hitching.
+		// zag hits, but the other tile's orange *normal* does not match the
+		// zag, so the normal channel hitches.
 		let mixed_kinds = [(TileColor::Blue, false), (TileColor::Orange, true)];
 		let other_kinds = [(TileColor::Green, false), (TileColor::Orange, false)];
 		for mode in every_zag_mismatch() {
@@ -5280,18 +8018,18 @@ mod tests {
 			let mixed = game.alloc_ring_kinds(Player::One, &mixed_kinds, 2, 1);
 			let other = game.alloc_ring_kinds(Player::Two, &other_kinds, 2, 1);
 			assert!(!mixed.shares_normal(other));
-			assert!(other.normal_color_in(mixed));
+			assert!(!other.normal_color_in(mixed));
 			assert_eq!(mixed.zag_hits_on(other), 1);
 			assert_eq!(other.zag_hits_on(mixed), 0);
-			assert_eq!(game.edge_score(mixed, other), (1, 1), "{mode:?}");
-			assert_eq!(game.edge_score(other, mixed), (1, 1), "{mode:?} same edge count");
+			assert_eq!(game.edge_score(mixed, other), (0, 2), "{mode:?}");
+			assert_eq!(game.edge_score(other, mixed), (0, 2), "{mode:?} same edge count");
 			let spawn = game.board().spawns()[0];
 			let nb = game.board().neighbors(spawn)[0];
 			game.place_tile(spawn, mixed);
 			game.place_tile(nb, other);
-			assert_eq!(game.tile_score(spawn).unwrap(), (3, 1));
-			assert_eq!(game.tile_score(nb).unwrap(), (3, 1));
-			assert!(!game.is_overwhelmed(spawn));
+			assert_eq!(game.tile_score(spawn).unwrap(), (2, 2));
+			assert_eq!(game.tile_score(nb).unwrap(), (2, 2));
+			assert!(game.is_overwhelmed(spawn));
 		}
 
 		// Mutual orange zags plus unmatched leftover normals: zag SUM 2 /
@@ -5362,19 +8100,19 @@ mod tests {
 		let b = max.alloc_ring_kinds(Player::Two, &b_kinds, 2, 1);
 		assert_eq!(
 			max.edge_score(a, b),
-			(1, 3),
-			"normal match plus max(2,0) orange + max(0,1) green"
+			(0, 4),
+			"hitch plus max(2,0) orange + max(0,1) green; zag colors are not a match"
 		);
-		assert_eq!(max.edge_score(b, a), (1, 3));
+		assert_eq!(max.edge_score(b, a), (0, 4));
 		let a = sum.alloc_ring_kinds(Player::One, &a_kinds, 3, 1);
 		let b = sum.alloc_ring_kinds(Player::Two, &b_kinds, 2, 1);
-		assert_eq!(sum.edge_score(a, b), (1, 3), "SUM also 2 orange + 1 green, plus the match");
+		assert_eq!(sum.edge_score(a, b), (0, 4), "SUM 2 orange + 1 green plus hitch");
 
-		// Two orange zags vs an orange holder: normal match stacks with zag MAX 2.
+		// Two orange zags vs an orange holder: hitch stacks with zag MAX 2.
 		let a = max.alloc_ring_kinds(Player::One, &two_orange, 2, 1);
 		let holder = max.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
-		assert_eq!(max.edge_score(a, holder), (1, 2));
-		assert_eq!(max.edge_score(holder, a), (1, 2));
+		assert_eq!(max.edge_score(a, holder), (0, 3));
+		assert_eq!(max.edge_score(holder, a), (0, 3));
 	}
 
 	#[test]
@@ -5452,7 +8190,18 @@ mod tests {
 		let mut rings = 0u32;
 		let mut braid_rings = 0u32;
 		for _ in 0..n {
-			let t = sample_tile(Player::One, 3, 0, BRAID_NUMER_DEFAULT, &mut next_id, &mut rng);
+			let t = sample_tile_with(
+				Player::One,
+				3,
+				0,
+				BRAID_NUMER_DEFAULT,
+				0,
+				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::Additive,
+				&mut next_id,
+				&mut rng,
+			);
 			let k = t.n_rings.clamp(1, 3);
 			rings += u32::from(k);
 			let b = t.braid_ring_count();
@@ -5506,21 +8255,21 @@ mod tests {
 	}
 
 	#[test]
-	fn shuffle_bags_is_a_noop_on_the_public_deck() {
+	fn shuffle_bags_does_not_touch_the_public_bench() {
 		let mut game = Game::new(RuleSet::default(), 12);
-		assert!(game.bag(Player::One).is_empty());
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 		let snapshot =
 			|g: &Game, p: Player| g.bench(p).iter().map(|t| t.kind_index()).collect::<Vec<_>>();
 		let before = snapshot(&game, Player::One);
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, snapshot(&game, Player::One));
-		assert!(game.bag(Player::One).is_empty());
+		assert_eq!(game.bag_len(Player::One), BAG_SIZE - BAG_SIZE_DEFAULT);
 	}
 
 	#[test]
 	fn shuffle_bags_determinizes_a_legacy_hidden_remainder() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let leftovers: Vec<_> =
 			(0..4).map(|_| game.alloc_tile(Player::One, TileColor::Orange, 1, 1)).collect();
 		game.set_bag(Player::One, leftovers);
@@ -5546,6 +8295,7 @@ mod tests {
 		rules.control_win = false;
 		rules.center_hold_win = false;
 		rules.petal_majority_win = false;
+		rules.endgame_rule = EndgameRule::LowValue;
 		rules
 	}
 
@@ -5563,7 +8313,7 @@ mod tests {
 
 	#[test]
 	fn add_is_legal_from_any_bench_index() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		stock_bench(&mut game, Player::One, 3);
 		game.set_current(Player::One);
 		let adds = game.legal_adds();
@@ -5582,7 +8332,7 @@ mod tests {
 
 	#[test]
 	fn zero_budget_blocks_add_even_with_bench_tiles() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		stock_bench(&mut game, Player::One, 3);
 		game.set_budget_tokens(Player::One, Vec::new());
 		game.set_current(Player::One);
@@ -5593,7 +8343,7 @@ mod tests {
 
 	#[test]
 	fn opponent_capture_earns_budget() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		assert!(nbs.len() >= 3);
@@ -5624,9 +8374,11 @@ mod tests {
 	#[test]
 	fn self_capture_on_own_turn_earns_budget() {
 		// Overwhelm already removes own tiles. A MOVE that leaves an existing
-		// own tile overwhelmed is a self-capture; it must earn +1 without a
-		// new capture rule.
-		let mut game = Game::empty(RuleSet::default());
+		// own tile overwhelmed is a self-capture under cascade sweep; it must
+		// earn +1 without a new capture rule.
+		let mut rules = RuleSet::additive();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
@@ -5676,7 +8428,7 @@ mod tests {
 
 	#[test]
 	fn suicidal_add_is_self_capture_and_nets_zero_budget() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let nbs = game.board().neighbors(spawn).to_vec();
 		put_rings(
@@ -5710,6 +8462,8 @@ mod tests {
 	fn self_capture_rules(refund: bool) -> RuleSet {
 		let mut rules = RuleSet::default();
 		rules.self_capture_budget = refund;
+		// Distant MOVE sweeping a pre-overwhelmed own tile is cascade behavior.
+		rules.capture_mode = CaptureMode::Cascade;
 		rules
 	}
 
@@ -5852,7 +8606,7 @@ mod tests {
 
 	#[test]
 	fn piece_value_weights_are_dots_plus_rings() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let normal = game.alloc_rings(Player::One, &[TileColor::Green], 1, 1);
 		assert_eq!(normal.piece_value(PieceValueWeights::PRIMARY), 2);
 		assert_eq!(normal.piece_value(PieceValueWeights::TIEBREAK), 2);
@@ -5919,7 +8673,7 @@ mod tests {
 
 	#[test]
 	fn braid_satisfied_when_neighbor_covers_color_counts() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let a = orange_green_braid(&mut game, Player::One);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
 		assert_eq!(
@@ -5932,7 +8686,7 @@ mod tests {
 
 	#[test]
 	fn braid_unsatisfied_is_a_braid_mismatch() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let a = orange_green_braid(&mut game, Player::One);
 		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
 		let ch = game.edge_channels(a, b);
@@ -5944,7 +8698,7 @@ mod tests {
 
 	#[test]
 	fn single_color_braid_needs_two_of_that_color() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let braid = game.alloc_typed_rings(
 			Player::One,
 			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
@@ -5976,8 +8730,8 @@ mod tests {
 		);
 		assert_eq!(
 			game.edge_score(braid, normal_and_zag),
-			(3, 1),
-			"zag orange still counts toward the braid; the jag also mismatches"
+			(1, 2),
+			"zag orange does not cover the braid; leftover orange still matches; jag +1"
 		);
 		let one_orange_heavy_arg = game.alloc_rings(Player::Two, &[TileColor::Orange], 3, 1);
 		assert_eq!(one_orange_heavy_arg.n_rings, 1);
@@ -5993,7 +8747,7 @@ mod tests {
 
 	#[test]
 	fn failed_braid_still_allows_a_leftover_normal_match() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let mixed = game.alloc_typed_rings(
 			Player::One,
 			&[
@@ -6021,7 +8775,7 @@ mod tests {
 
 	#[test]
 	fn largest_fulfilled_braid_wins_the_edge() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let size3 = game.alloc_typed_rings(
 			Player::One,
 			&[
@@ -6062,7 +8816,7 @@ mod tests {
 
 	#[test]
 	fn braid_and_jag_scores_sum() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let braid_plus_zag = game.alloc_typed_rings(
 			Player::One,
 			&[
@@ -6106,10 +8860,10 @@ mod tests {
 				name: "zag vs normal same color",
 				a: &[(TileColor::Orange, RingType::Zag)],
 				b: &[(TileColor::Orange, RingType::Normal)],
-				want_match: 1,
-				want_mismatch: 1,
-				normal_match: 1,
-				normal_mismatch: 0,
+				want_match: 0,
+				want_mismatch: 2,
+				normal_match: 0,
+				normal_mismatch: 1,
 				zag: 1,
 				braid_match: 0,
 				braid_mismatch: 0,
@@ -6188,7 +8942,7 @@ mod tests {
 			},
 		];
 		for row in rows {
-			let mut game = Game::empty(RuleSet::default());
+			let mut game = Game::empty(RuleSet::additive());
 			let a = game.alloc_typed_rings(Player::One, row.a, 1, 1);
 			let b = game.alloc_typed_rings(Player::Two, row.b, 1, 1);
 			let ch = game.edge_channels(a, b);
@@ -6226,7 +8980,7 @@ mod tests {
 
 	#[test]
 	fn center_inner_failed_braid_scores_plus_two_on_each_side() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let board = game.board();
 		let center = board.center();
 		assert_eq!(board.neighbors(center).len(), 8);
@@ -6271,7 +9025,7 @@ mod tests {
 
 	#[test]
 	fn center_inner_normal_match_scores_minus_two_on_each_side() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let center = game.board().center();
 		let inner = game.board().inner_ring()[0];
 		let a = game.alloc_rings(Player::One, &[TileColor::Orange], 1, 1);
@@ -6362,7 +9116,7 @@ mod tests {
 
 	#[test]
 	fn spawn_inner_is_still_one_scoring_edge() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let spawn = game.board().spawns()[0];
 		let inner = *game
 			.board()
@@ -6430,7 +9184,7 @@ mod tests {
 
 	#[test]
 	fn failed_braid_weight_variant_uses_the_braid_slot_count() {
-		let mut rules = RuleSet::default();
+		let mut rules = RuleSet::additive();
 		rules.braid_fail_mismatch = BraidFailMismatch::Weight;
 		let mut game = Game::empty(rules);
 		let a = orange_green_braid(&mut game, Player::One);
@@ -6498,7 +9252,7 @@ mod tests {
 
 	#[test]
 	fn ring_weight_is_the_live_ring_count() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		let mixed = game.alloc_typed_rings(
 			Player::One,
 			&[
@@ -6512,8 +9266,757 @@ mod tests {
 		assert_eq!(mixed.weight, mixed.n_rings);
 		assert_eq!(mixed.weight, 3);
 		assert_eq!(
-			mixed.braid_ring_count() + mixed.zag_ring_count() + mixed.normal_ring_count(),
+			mixed.braid_ring_count()
+				+ mixed.zag_ring_count()
+				+ mixed.normal_ring_count()
+				+ mixed.bead_ring_count(),
 			3
+		);
+	}
+
+	fn beads(game: &mut Game, owner: Player, colors: &[TileColor]) -> Tile {
+		let parts: Vec<(TileColor, RingType)> =
+			colors.iter().copied().map(|c| (c, RingType::Bead)).collect();
+		game.alloc_typed_rings(owner, &parts, 1, 1)
+	}
+
+	fn empty_independent() -> Game {
+		let mut rules = RuleSet::additive();
+		rules.bead_scoring = BeadScoring::Independent;
+		Game::empty(rules)
+	}
+
+	#[test]
+	fn bead_unmatched_counts_rings_not_color_pairs() {
+		let mut game = empty_independent();
+		let three = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let miss = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		let ch = game.edge_channels(three, miss);
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.bead_mismatch, 3, "three unmatched orange beads, not 3×1 color pairs");
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(game.edge_score(three, miss), (0, 4));
+		assert_eq!(game.edge_score(miss, three), (0, 4));
+	}
+
+	#[test]
+	fn bead_match_is_capped_at_one_per_edge() {
+		let mut game = empty_independent();
+		let three = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(three, hit);
+		assert_eq!(ch.bead_match, 1, "one −1 for the edge, not per bead");
+		assert_eq!(
+			ch.bead_mismatch, 0,
+			"presence, not coverage: 3 orange vs 1 orange are all matched"
+		);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(game.edge_score(three, hit), (2, 0));
+	}
+
+	#[test]
+	fn bead_matching_uses_normal_channel_presence() {
+		let mut game = Game::empty(RuleSet::additive());
+		let bead = beads(&mut game, Player::One, &[TileColor::Orange]);
+		let zag = game.alloc_typed_rings(Player::Two, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		let braid = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			1,
+		);
+		let other_bead = beads(&mut game, Player::Two, &[TileColor::Orange]);
+		assert_eq!(bead.bead_matched_on(zag), 0, "zag orange is not a bead match");
+		assert_eq!(bead.bead_matched_on(braid), 1, "braid orange is in non-zag Colors_B");
+		assert_eq!(bead.bead_matched_on(other_bead), 1, "bead orange is in non-zag Colors_B");
+		assert_eq!(game.edge_channels(bead, zag).bead_match, 0);
+		assert_eq!(game.edge_channels(bead, zag).bead_mismatch, 1);
+		assert_eq!(game.edge_channels(bead, zag).zag_mismatch, 1);
+		assert_eq!(game.edge_score(bead, zag), (0, 2), "same-color bead vs zag is hitch + zag hit");
+	}
+
+	#[test]
+	fn mixed_beads_score_unmatched_plus_single_match() {
+		let mut game = empty_independent();
+		let mixed = beads(&mut game, Player::One, &[TileColor::Orange, TileColor::Green]);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(mixed, hit);
+		assert_eq!(ch.bead_match, 1);
+		assert_eq!(ch.bead_mismatch, 1, "green unmatched; orange matched");
+		assert_eq!(game.edge_score(mixed, hit), (2, 1));
+	}
+
+	#[test]
+	fn beads_bomb_unmatched_braids_and_stack_with_fail() {
+		let mut game = Game::empty(RuleSet::additive());
+		let bomb = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let braid = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Blue, RingType::Braid),
+				(TileColor::Teal, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+			],
+			1,
+			1,
+		);
+		let ch = game.edge_channels(bomb, braid);
+		assert_eq!(ch.bead_mismatch, 3);
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.braid_mismatch, 1);
+		assert_eq!(ch.braid_match, 0);
+		assert_eq!(game.edge_score(bomb, braid), (0, 4));
+		assert_eq!(bomb.weight, 3);
+		assert_eq!(braid.weight, 3);
+	}
+
+	#[test]
+	fn beads_and_zags_are_independent_channels() {
+		let mut game = empty_independent();
+		let a = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Zag)],
+			1,
+			1,
+		);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Blue, TileColor::Green], 1, 1);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.zag_mismatch, 1, "blue zag hits");
+		assert_eq!(ch.bead_mismatch, 1, "orange bead unmatched");
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.normal_match, 0, "A's blue zag is not a match for B's blue normal");
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(game.edge_score(a, b), (0, 3));
+	}
+
+	#[test]
+	fn center_inner_bead_mismatch_scores_per_petal() {
+		let mut game = empty_independent();
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		let a = beads(&mut game, Player::One, &[TileColor::Orange, TileColor::Orange]);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		assert_eq!(game.edge_channels(a, b).bead_mismatch, 2);
+		assert_eq!(game.edge_score(a, b), (0, 3), "2 unmatched beads + 1 normal hitch");
+		game.place_tile(center, a);
+		game.place_tile(inner, b);
+		assert_eq!(game.tile_effective_weight(center), Some(6), "two petals: +3 + +3");
+		assert_eq!(game.tile_effective_weight(inner), Some(6));
+		assert_eq!(game.tile_score(center), Some((2, 6)));
+		assert!(game.is_overwhelmed(center));
+		assert!(game.is_overwhelmed(inner));
+	}
+
+	#[test]
+	fn both_sides_unmatched_beads_sum() {
+		let mut game = Game::empty(RuleSet::additive());
+		let a = beads(&mut game, Player::One, &[TileColor::Orange]);
+		let b = beads(&mut game, Player::Two, &[TileColor::Green, TileColor::Blue]);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.bead_mismatch, 3, "1 + 2 unmatched bead rings");
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(game.edge_channels(a, b), game.edge_channels(b, a));
+	}
+
+	/// Screenshot: dark 1-ring blue bead vs light orange 2-thread braid on one
+	/// outer (non-center) edge, no other neighbors.
+	#[test]
+	fn one_blue_bead_vs_two_thread_orange_braid_on_one_outer_edge() {
+		let mut game = Game::empty(RuleSet::additive());
+		let bead = beads(&mut game, Player::Two, &[TileColor::Blue]);
+		let braid = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Orange, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_eq!(bead.weight, 1);
+		assert_eq!(braid.weight, 2);
+		assert_eq!(bead.bead_matched_on(braid), 0);
+		assert_eq!(bead.bead_unmatched_on(braid), 1);
+		assert!(braid.braid_fulfilled_by(bead).is_none());
+
+		let ch = game.edge_channels(bead, braid);
+		assert_eq!(ch.normal_match, 0);
+		assert_eq!(ch.normal_mismatch, 0, "neither tile has a normal ring");
+		assert_eq!(ch.zag_mismatch, 0);
+		assert_eq!(ch.braid_match, 0);
+		assert_eq!(ch.braid_mismatch, 1, "failed braid is flat +1, not per thread");
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(ch.bead_mismatch, 1, "one unmatched bead ring, not per braid thread");
+		assert_eq!(game.edge_score(bead, braid), (0, 2));
+		assert_eq!(
+			game.edge_score(braid, bead),
+			(0, 2),
+			"undirected: both tiles take the same totals"
+		);
+		assert_eq!(ch.effective(), 2);
+
+		let spawn = game.board().spawns()[0];
+		let outer = *game
+			.board()
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| n != game.board().center() && !game.board().inner_ring().contains(&n))
+			.expect("spawn attaches to an outer petal node");
+		assert_eq!(
+			game.board().connecting_arc_indices(spawn, outer).count(),
+			1,
+			"outer edge is one arc, not a doubled center petal"
+		);
+		assert_eq!(game.board().incident_others(spawn).filter(|&n| n == outer).count(), 1);
+		assert_eq!(game.board().incident_others(outer).filter(|&n| n == spawn).count(), 1);
+
+		game.place_tile(outer, bead);
+		game.place_tile(spawn, braid);
+		assert_eq!(game.tile_score(spawn), Some((2, 2)), "braid: rings 2 + match 0 vs mismatch 2");
+		assert_eq!(game.tile_score(outer), Some((1, 2)), "bead: rings 1 + match 0 vs mismatch 2");
+		assert_eq!(game.tile_effective_weight(spawn), Some(2));
+		assert_eq!(game.tile_effective_weight(outer), Some(2));
+		assert!(game.is_overwhelmed(spawn), "braid: mismatch−match 2 >= ring count 2");
+		assert!(game.is_overwhelmed(outer), "bead also: 2 >= 1");
+		let gone: Vec<_> = game.collect_removals().into_iter().map(|r| r.node).collect();
+		assert!(gone.contains(&spawn) && gone.contains(&outer), "simultaneous: both leave");
+	}
+
+	fn shared_game() -> Game {
+		Game::empty(RuleSet::additive())
+	}
+
+	#[test]
+	fn shared_channel_drops_the_normal_hitch_on_unmatched_beads() {
+		let mut game = shared_game();
+		let three = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let miss = game.alloc_rings(Player::Two, &[TileColor::Blue], 1, 1);
+		let ch = game.edge_channels(three, miss);
+		assert_eq!(ch.bead_mismatch, 3);
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(ch.score_for(BeadScoring::Independent), (0, 4));
+		assert_eq!(game.edge_score(three, miss), (0, 3), "max(hitch 1, unmatched 3) = 3");
+		assert_eq!(game.edge_score(miss, three), (0, 3));
+	}
+
+	#[test]
+	fn shared_channel_match_stays_at_most_one() {
+		let mut game = shared_game();
+		let three = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(three, hit);
+		assert_eq!(ch.bead_match, 1);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(ch.score_for(BeadScoring::Independent), (2, 0));
+		assert_eq!(game.edge_score(three, hit), (1, 0), "max(1, 1) match, still at most 1");
+	}
+
+	#[test]
+	fn shared_channel_mixed_beads_keep_unmatched_plus_single_match() {
+		let mut game = shared_game();
+		let mixed = beads(&mut game, Player::One, &[TileColor::Orange, TileColor::Green]);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(mixed, hit);
+		assert_eq!(ch.bead_match, 1);
+		assert_eq!(ch.bead_mismatch, 1);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(ch.score_for(BeadScoring::Independent), (2, 1));
+		assert_eq!(game.edge_score(mixed, hit), (1, 1));
+	}
+
+	#[test]
+	fn shared_channel_single_bead_does_not_pop_a_two_ring() {
+		let mut game = shared_game();
+		let bead = beads(&mut game, Player::One, &[TileColor::Blue]);
+		let two = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Teal], 2, 1);
+		assert_eq!(game.edge_score(bead, two), (0, 1), "max(hitch 1, unmatched 1) = 1");
+		let spawn = game.board().spawns()[0];
+		let outer = *game
+			.board()
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| n != game.board().center() && !game.board().inner_ring().contains(&n))
+			.expect("outer neighbor");
+		game.place_tile(spawn, two);
+		game.place_tile(outer, bead);
+		assert_eq!(game.tile_effective_weight(spawn), Some(1));
+		assert_eq!(game.tile_effective_weight(outer), Some(1));
+		assert!(!game.is_overwhelmed(spawn), "2-ring survives effective 1");
+		assert!(game.is_overwhelmed(outer), "1-bead still pops");
+		let (contrib, needed, spawn_two) = game.classify_bead_capture(spawn, two, Some(spawn));
+		assert!(contrib);
+		assert!(!needed, "without beads the hitch is still 1 < 2");
+		assert!(!spawn_two);
+	}
+
+	#[test]
+	fn independent_single_bead_pops_a_fresh_two_ring() {
+		let mut game = empty_independent();
+		let bead = beads(&mut game, Player::One, &[TileColor::Blue]);
+		let two = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Teal], 2, 1);
+		assert_eq!(game.edge_score(bead, two), (0, 2), "hitch 1 + unmatched 1");
+		let spawn = game.board().spawns()[0];
+		let outer = *game
+			.board()
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| n != game.board().center() && !game.board().inner_ring().contains(&n))
+			.expect("outer neighbor");
+		game.place_tile(spawn, two);
+		game.place_tile(outer, bead);
+		assert!(game.is_overwhelmed(spawn));
+		assert!(game.is_overwhelmed(outer));
+		let (contrib, needed, spawn_two) = game.classify_bead_capture(spawn, two, Some(spawn));
+		assert!(contrib);
+		assert!(needed);
+		assert!(spawn_two);
+	}
+
+	#[test]
+	fn shared_channel_leaves_zag_and_braid_additive() {
+		let mut game = shared_game();
+		let bomb = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let braid = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Blue, RingType::Braid),
+				(TileColor::Teal, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+			],
+			1,
+			1,
+		);
+		assert_eq!(game.edge_score(bomb, braid), (0, 4), "unmatched 3 + failed-braid 1");
+		let a = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Bead), (TileColor::Blue, RingType::Zag)],
+			1,
+			1,
+		);
+		let b = game.alloc_rings(Player::Two, &[TileColor::Blue, TileColor::Green], 1, 1);
+		assert_eq!(game.edge_score(a, b), (0, 2), "max(normal hitch 1, unmatched bead 1) + zag 1");
+	}
+
+	fn empty_independent_max() -> Game {
+		assert_eq!(RuleSet::default().channel_mode, ChannelMode::IndependentMax);
+		Game::empty(RuleSet::default_rules())
+	}
+
+	/// Single bead + other ring: bead mismatch can be the edge's max mismatch
+	/// even when another channel matches (productive mismatch). A lone 1-bead
+	/// vs a 2-ring is still only +1, so the 2-ring survives.
+	#[test]
+	fn independent_max_single_bead_plus_normal_is_a_productive_mismatch() {
+		let mut game = empty_independent_max();
+		let mixed = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Normal), (TileColor::Blue, RingType::Bead)],
+			1,
+			1,
+		);
+		let hit = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(mixed, hit);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(ch.bead_mismatch, 1);
+		assert_eq!(ch.bead_match, 0);
+		assert_eq!(
+			game.edge_score(mixed, hit),
+			(1, 1),
+			"max match 1 (normal), max mismatch 1 (bead); wash, not a free match"
+		);
+		let lone = beads(&mut game, Player::One, &[TileColor::Blue]);
+		let two = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Teal], 2, 1);
+		assert_eq!(
+			game.edge_score(lone, two),
+			(0, 1),
+			"lone bead vs 2-ring: max(hitch 1, unmatched 1) = 1; 2-ring survives"
+		);
+		let spawn = game.board().spawns()[0];
+		let outer = *game
+			.board()
+			.neighbors(spawn)
+			.iter()
+			.find(|&&n| n != game.board().center() && !game.board().inner_ring().contains(&n))
+			.expect("outer neighbor");
+		game.place_tile(spawn, two);
+		game.place_tile(outer, lone);
+		assert!(!game.is_overwhelmed(spawn), "2-ring survives effective 1");
+		assert!(game.is_overwhelmed(outer), "1-bead still pops");
+	}
+
+	#[test]
+	fn independent_max_zag_on_zag_takes_the_channel_max() {
+		let mut game = empty_independent_max();
+		let a = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Zag), (TileColor::Blue, RingType::Normal)],
+			1,
+			1,
+		);
+		let b = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Orange, RingType::Zag), (TileColor::Green, RingType::Normal)],
+			1,
+			1,
+		);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.normal_mismatch, 1, "leftover normals hitch");
+		assert!(ch.zag_mismatch >= 1, "orange zags hit each other");
+		assert_eq!(
+			game.edge_score(a, b),
+			(0, ch.normal_mismatch.max(ch.zag_mismatch)),
+			"zag-on-zag does not add on top of the hitch"
+		);
+		assert_eq!(game.edge_score(a, b), game.edge_score(b, a));
+		let zag = game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Zag)], 1, 1);
+		let normal = game.alloc_rings(Player::Two, &[TileColor::Orange], 1, 1);
+		let ch = game.edge_channels(zag, normal);
+		assert_eq!(ch.normal_mismatch, 1);
+		assert_eq!(ch.zag_mismatch, 1);
+		assert_eq!(
+			game.edge_score(zag, normal),
+			(0, 1),
+			"same-color zag vs normal: max(hitch, zag hit) = 1, not 2"
+		);
+	}
+
+	#[test]
+	fn independent_max_braid_does_not_stack_with_leftover_normal() {
+		let mut game = empty_independent_max();
+		let braid_plus = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+				(TileColor::Orange, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		let cover = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Green], 1, 1);
+		let ch = game.edge_channels(braid_plus, cover);
+		assert_eq!(ch.braid_match, 2);
+		assert_eq!(ch.normal_match, 1);
+		assert_eq!(
+			game.edge_score(braid_plus, cover),
+			(2, 0),
+			"max(normal 1, braid 2) = 2, not the additive 3"
+		);
+		let fail = game.alloc_typed_rings(
+			Player::One,
+			&[(TileColor::Orange, RingType::Braid), (TileColor::Green, RingType::Braid)],
+			1,
+			1,
+		);
+		let miss = game.alloc_typed_rings(
+			Player::Two,
+			&[(TileColor::Blue, RingType::Braid), (TileColor::Teal, RingType::Braid)],
+			1,
+			1,
+		);
+		assert_eq!(game.edge_score(fail, miss), (0, 1), "failed braid is still +1");
+	}
+
+	#[test]
+	fn independent_max_mixed_bead_zag_braid_takes_per_kind_maxima() {
+		let mut game = empty_independent_max();
+		let a = game.alloc_typed_rings(
+			Player::One,
+			&[
+				(TileColor::Orange, RingType::Bead),
+				(TileColor::Blue, RingType::Zag),
+				(TileColor::Green, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		let b = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Blue, RingType::Braid),
+				(TileColor::Teal, RingType::Braid),
+				(TileColor::Orange, RingType::Normal),
+			],
+			1,
+			1,
+		);
+		let ch = game.edge_channels(a, b);
+		assert_eq!(ch.bead_match, 1, "orange bead matches B's orange normal");
+		assert_eq!(ch.zag_mismatch, 1, "blue zag hits braid blue");
+		assert_eq!(ch.braid_mismatch, 1, "blue+teal braid is not covered");
+		assert_eq!(ch.normal_match, 1, "B's orange normal matches A's orange bead");
+		assert_eq!(ch.normal_mismatch, 0);
+		assert_eq!(
+			game.edge_score(a, b),
+			(1, 1),
+			"max match 1 (bead/normal), max mismatch 1 (zag/braid); not a sum"
+		);
+		let bomb = beads(
+			&mut game,
+			Player::One,
+			&[TileColor::Orange, TileColor::Orange, TileColor::Orange],
+		);
+		let braid = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Blue, RingType::Braid),
+				(TileColor::Teal, RingType::Braid),
+				(TileColor::Green, RingType::Braid),
+			],
+			1,
+			1,
+		);
+		assert_eq!(
+			game.edge_score(bomb, braid),
+			(0, 3),
+			"max(unmatched beads 3, failed-braid 1) = 3, not additive 4"
+		);
+	}
+
+	#[test]
+	fn independent_max_and_additive_disagree_on_stacked_channels() {
+		let mut max_game = empty_independent_max();
+		let mut add_game = Game::empty(RuleSet::additive());
+		let parts_a = [(TileColor::Orange, RingType::Zag), (TileColor::Blue, RingType::Normal)];
+		let parts_b = [(TileColor::Orange, RingType::Normal)];
+		let a_max = max_game.alloc_typed_rings(Player::One, &parts_a, 1, 1);
+		let b_max = max_game.alloc_typed_rings(Player::Two, &parts_b, 1, 1);
+		let a_add = add_game.alloc_typed_rings(Player::One, &parts_a, 1, 1);
+		let b_add = add_game.alloc_typed_rings(Player::Two, &parts_b, 1, 1);
+		assert_eq!(add_game.edge_score(a_add, b_add), (0, 2), "additive hitch + zag");
+		assert_eq!(max_game.edge_score(a_max, b_max), (0, 1), "independent-max of the two");
+	}
+
+	#[test]
+	fn bead_off_deal_has_no_bead_rings() {
+		let mut off = RuleSet::default();
+		off.bead_numer = 0;
+		let game = Game::new(off, 11);
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.chain(game.bag(Player::One))
+			.all(|t| t.bead_ring_count() == 0));
+	}
+
+	#[test]
+	fn bead_generation_is_a_piece_level_two_or_three_group() {
+		let mut rng = StdRng::seed_from_u64(7);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut pieces = 0u32;
+		let mut bead_tiles = 0u32;
+		for _ in 0..n {
+			let t = sample_tile_with(
+				Player::One,
+				3,
+				0,
+				0,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::Additive,
+				&mut next_id,
+				&mut rng,
+			);
+			pieces += 1;
+			let e = t.bead_ring_count();
+			assert_ne!(e, 1, "generated tiles never have a single bead ring");
+			if e > 0 {
+				assert!(e == 2 || e == 3, "bead groups are 2 or 3, got {e}");
+				bead_tiles += 1;
+			}
+		}
+		let rate = f64::from(bead_tiles) / f64::from(pieces);
+		assert!(
+			(0.12..0.17).contains(&rate),
+			"bead-tile rate={rate:.4} (expected ~0.1429 = 1/7) with zags and braids off"
+		);
+	}
+
+	#[test]
+	fn independent_max_light_election_is_five_three_one() {
+		let mut rng = StdRng::seed_from_u64(11);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut light = 0u32;
+		let mut normals = 0u32;
+		let mut zags = 0u32;
+		let mut beads = 0u32;
+		let mut bead_singles = 0u32;
+		let mut braided = 0u32;
+		let mut rings = 0u32;
+		for _ in 0..n {
+			let t = sample_tile(
+				Player::One,
+				3,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				&mut next_id,
+				&mut rng,
+			);
+			let k = t.n_rings.clamp(1, 3) as usize;
+			rings += k as u32;
+			if t.braid_ring_count() >= 2 {
+				braided += 1;
+			}
+			if t.bead_ring_count() == 1 {
+				bead_singles += 1;
+			}
+			for i in 0..k {
+				match t.ring_type_at(i) {
+					RingType::Braid => {}
+					RingType::Normal => {
+						light += 1;
+						normals += 1;
+					}
+					RingType::Zag => {
+						light += 1;
+						zags += 1;
+					}
+					RingType::Bead => {
+						light += 1;
+						beads += 1;
+					}
+				}
+			}
+		}
+		assert!(light > 0);
+		let n_rate = f64::from(normals) / f64::from(light);
+		let z_rate = f64::from(zags) / f64::from(light);
+		let b_rate = f64::from(beads) / f64::from(light);
+		assert!(
+			(0.52..0.60).contains(&n_rate),
+			"normal light rate={n_rate:.4} (expected 5/9 ≈ 0.5556); n={n} light={light}"
+		);
+		assert!(
+			(0.30..0.37).contains(&z_rate),
+			"zag light rate={z_rate:.4} (expected 3/9 ≈ 0.3333)"
+		);
+		assert!(
+			(0.09..0.14).contains(&b_rate),
+			"bead light rate={b_rate:.4} (expected 1/9 ≈ 0.1111)"
+		);
+		assert!(bead_singles > 0, "independent-max allows single-bead tiles (got {bead_singles})");
+		let piece_rate = f64::from(braided) / f64::from(n);
+		assert!(
+			piece_rate < 0.08,
+			"consecutive-heavy braids are rarer than piece-level 1/7 (got {piece_rate:.4}); rings={rings}"
+		);
+	}
+
+	#[test]
+	fn consecutive_heavies_become_a_braid_lone_and_gapped_fall_through() {
+		assert_eq!(
+			cluster_consecutive_heavies([true, true, false], 2),
+			[RingType::Braid, RingType::Braid, RingType::Normal]
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, true, true], 3),
+			[RingType::Braid, RingType::Braid, RingType::Braid]
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([false, true, true], 3),
+			[RingType::Normal, RingType::Braid, RingType::Braid]
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, false, false], 1),
+			[RingType::Normal; 3],
+			"a 1-ring lone heavy never braids"
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, false, false], 3),
+			[RingType::Normal; 3],
+			"a lone heavy among three slots falls through"
+		);
+		assert_eq!(
+			cluster_consecutive_heavies([true, false, true], 3),
+			[RingType::Normal; 3],
+			"gapped heavies are not a braid"
+		);
+	}
+
+	#[test]
+	fn independent_max_always_heavy_braids_two_and_three_rings_never_ones() {
+		let mut rng = StdRng::seed_from_u64(19);
+		let mut next_id = 1u32;
+		let n = 4_000u32;
+		let mut ones = 0u32;
+		let mut multi = 0u32;
+		let mut braided_ones = 0u32;
+		let mut braided_multi = 0u32;
+		for _ in 0..n {
+			let t = sample_tile_with(
+				Player::One,
+				3,
+				0,
+				BRAID_DENOM,
+				0,
+				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::IndependentMax,
+				&mut next_id,
+				&mut rng,
+			);
+			if t.n_rings <= 1 {
+				ones += 1;
+				if t.braid_ring_count() >= 2 {
+					braided_ones += 1;
+				}
+			} else {
+				multi += 1;
+				if t.braid_ring_count() >= 2 {
+					braided_multi += 1;
+					assert_eq!(t.braid_ring_count(), t.n_rings);
+				}
+			}
+		}
+		assert!(ones > 0 && multi > 0, "ones={ones} multi={multi}");
+		assert_eq!(braided_ones, 0, "1-ring tiles cannot cluster a braid");
+		assert_eq!(braided_multi, multi, "every 2–3 ring tile is all-heavy → one braid");
+	}
+
+	#[test]
+	fn independent_max_gapped_heavy_can_elect_a_single_bead() {
+		let clustered = cluster_consecutive_heavies([true, false, true], 3);
+		assert_eq!(clustered, [RingType::Normal; 3]);
+		let mut rng = StdRng::seed_from_u64(3);
+		let mut saw_single_bead = false;
+		for _ in 0..200 {
+			let mut types = clustered;
+			sample_light_types(&mut rng, 3, &mut types, 0, 7);
+			assert!(types.iter().all(|t| *t != RingType::Braid));
+			if types.iter().filter(|t| **t == RingType::Bead).count() == 1 {
+				saw_single_bead = true;
+				break;
+			}
+		}
+		assert!(
+			saw_single_bead,
+			"gapped heavies fall through to 5:3:1; a stuffed bead roll can leave a single bead"
 		);
 	}
 
@@ -6689,7 +10192,7 @@ mod tests {
 
 	#[test]
 	fn surplus_tokens_are_not_usable_for_add() {
-		let mut game = Game::empty(RuleSet::default());
+		let mut game = Game::empty(RuleSet::additive());
 		game.set_current(Player::One);
 		assert_eq!(game.budget_token_count(Player::One), 7);
 		assert_eq!(game.budget(Player::One), 0);
@@ -6807,5 +10310,964 @@ mod tests {
 		assert_eq!(game.bench(Player::One).len(), 0);
 		assert_eq!(game.budget(Player::One), 0);
 		assert!(game.budget_token_count(Player::One) >= 1);
+	}
+
+	fn put_capture(
+		game: &mut Game,
+		node: NodeId,
+		owner: Player,
+		color: TileColor,
+		weight: u8,
+		dots: u8,
+		capture: CaptureMark,
+	) {
+		let tile = take(game, owner, color, weight, dots).with_capture(capture);
+		game.place_tile(node, tile);
+	}
+
+	fn overwhelm_neighbors(game: &mut Game, node: NodeId, owner: Player) {
+		let nbs = game.board().neighbors(node).to_vec();
+		assert!(nbs.len() >= 2);
+		put_rings(game, nbs[0], owner, &[TileColor::Orange, TileColor::Teal, TileColor::Maroon], 1);
+		put_rings(game, nbs[1], owner, &[TileColor::Orange, TileColor::Teal, TileColor::Maroon], 1);
+	}
+
+	#[test]
+	fn triangle_opponent_capture_earns_tokens() {
+		let mut game = Game::empty(RuleSet::additive());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Triangle);
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let bench_n = game.bench(Player::One).len();
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		let opp = outcome.removals.iter().filter(|r| r.tile.owner == Player::Two).count();
+		assert!(opp > 0);
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Tokens));
+		assert_eq!(
+			game.budget_token_count(Player::One),
+			tokens + outcome.removals.len(),
+			"triangle dest earns one token per captured tile"
+		);
+		assert_eq!(game.bench(Player::One).len(), bench_n);
+	}
+
+	#[test]
+	fn dot_opponent_capture_joins_mover_bench_and_changes_owner() {
+		let mut game = Game::empty(RuleSet::additive());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Dot);
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let bench_n = game.bench(Player::One).len();
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		let opp = outcome
+			.removals
+			.iter()
+			.filter(|r| r.tile.owner == Player::Two)
+			.cloned()
+			.collect::<Vec<_>>();
+		assert!(!opp.is_empty());
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
+		assert_eq!(game.budget_token_count(Player::One), tokens, "dot dest must not earn tokens");
+		assert_eq!(game.bench(Player::One).len(), bench_n + outcome.removals.len());
+		for rem in &outcome.removals {
+			assert!(
+				game.bench(Player::One)
+					.iter()
+					.any(|t| t.id == rem.tile.id && t.owner == Player::One),
+				"captured tile {} must join mover bench with mover owner",
+				rem.tile.id
+			);
+		}
+		assert!(game.budget(Player::One) >= 1.min(game.bench(Player::One).len()));
+		for rem in &outcome.removals {
+			assert_eq!(live_hand_tile(&game, Player::One, rem.tile.id).owner, Player::One);
+		}
+	}
+
+	fn live_hand_tile(game: &Game, player: Player, id: u32) -> Tile {
+		game.deck_slots(player)
+			.iter()
+			.find_map(|s| s.tile().filter(|t| t.id == id))
+			.unwrap_or_else(|| panic!("{player:?} hand is missing tile {id}"))
+	}
+
+	fn free_overwhelm_site(game: &Game, skip: &[NodeId]) -> NodeId {
+		for &node in game.board().spawns() {
+			if skip.contains(&node) || game.tile_at(node).is_some() {
+				continue;
+			}
+			let nbs = game.board().neighbors(node);
+			if nbs.len() < 2 {
+				continue;
+			}
+			let blocked = nbs.iter().any(|&nb| skip.contains(&nb) || game.tile_at(nb).is_some());
+			if !blocked {
+				return node;
+			}
+		}
+		panic!("no free overwhelm site disjoint from {skip:?}")
+	}
+
+	#[test]
+	fn dealt_dot_capture_puts_own_and_opponent_in_mover_hand() {
+		let mut rules = RuleSet::default();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::new(rules, 1);
+		let spawn = game.board().spawns()[0];
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		let own = take(&mut game, Player::One, TileColor::Green, 1, 1);
+		let own_id = own.id;
+		game.place_tile(spawn, own);
+		let mut skip = vec![spawn];
+		skip.extend(game.board().neighbors(spawn).iter().copied());
+		let opp = free_overwhelm_site(&game, &skip);
+		overwhelm_neighbors(&mut game, opp, Player::One);
+		let opp_tile = take(&mut game, Player::Two, TileColor::Green, 1, 1);
+		let opp_id = opp_tile.id;
+		game.place_tile(opp, opp_tile);
+		skip.push(opp);
+		skip.extend(game.board().neighbors(opp).iter().copied());
+		let from = free_overwhelm_site(&game, &skip);
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 2, CaptureMark::Dot);
+		game.set_current(Player::One);
+		let opening_ids: Vec<u32> = game
+			.deck_slots(Player::One)
+			.iter()
+			.filter_map(|s| s.tile().map(|t| t.id))
+			.collect();
+		assert!(!opening_ids.contains(&opp_id), "opponent tile is not in the opening deal");
+		let to = game.destinations(from).into_iter().next().expect("mover can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(
+			outcome
+				.removals
+				.iter()
+				.any(|r| r.tile.id == own_id && r.tile.owner == Player::One),
+			"own tile must be captured: {:?}",
+			outcome.removals
+		);
+		assert!(
+			outcome
+				.removals
+				.iter()
+				.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two),
+			"opponent tile must be captured: {:?}",
+			outcome.removals
+		);
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
+		assert_eq!(live_hand_tile(&game, Player::One, own_id).owner, Player::One);
+		assert_eq!(live_hand_tile(&game, Player::One, opp_id).owner, Player::One);
+		assert!(
+			game.deck_slots(Player::Two)
+				.iter()
+				.all(|s| s.tile().is_none_or(|t| t.id != opp_id)),
+			"flipped opponent tile must leave the opponent hand"
+		);
+		assert_eq!(game.deck_slots(Player::One).len(), game.bench(Player::One).len());
+		game.set_current(Player::One);
+		assert!(
+			game.legal_adds().iter().any(|a| match a {
+				Action::Add { bench_index, .. } => {
+					game.bench(Player::One)[*bench_index].id == opp_id
+				}
+				_ => false,
+			}),
+			"flipped opponent tile must be an ADD source from the mover hand"
+		);
+	}
+
+	#[test]
+	fn dealt_triangle_capture_earns_mover_tokens_not_hand_tiles() {
+		let mut game = Game::new(RuleSet::default(), 1);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		let opp_id = game.tile_at(spawn).unwrap().id;
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 1, 1);
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Triangle);
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let bench_n = game.bench(Player::One).len();
+		let hand_n = game.deck_slots(Player::One).len();
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		assert!(outcome
+			.removals
+			.iter()
+			.any(|r| r.tile.id == opp_id && r.tile.owner == Player::Two));
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Tokens));
+		assert_eq!(game.budget_token_count(Player::One), tokens + outcome.removals.len());
+		assert_eq!(game.bench(Player::One).len(), bench_n);
+		assert_eq!(game.deck_slots(Player::One).len(), hand_n);
+		assert!(
+			game.deck_slots(Player::One)
+				.iter()
+				.all(|s| s.tile().is_none_or(|t| t.id != opp_id)),
+			"triangle captures become mover tokens, not hand tiles"
+		);
+		assert!(game.budget_tokens(Player::One).iter().any(|tok| match tok {
+			BudgetToken::Captured(t) => t.id == opp_id,
+			BudgetToken::Blank => false,
+		}));
+	}
+
+	#[test]
+	fn dot_self_capture_joins_mover_bench() {
+		let mut rules = RuleSet::additive();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
+		assert!(game.is_overwhelmed(spawn));
+		let from = game.board().spawns()[4];
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Dot);
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let bench_n = game.bench(Player::One).len();
+		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.node == spawn && r.tile.owner == Player::One),
+			"own overwhelmed tile must be removed: {:?}",
+			outcome.removals
+		);
+		assert!(outcome.removals.iter().all(|r| r.dest == CaptureDest::Bench));
+		assert_eq!(game.budget_token_count(Player::One), tokens);
+		assert_eq!(game.bench(Player::One).len(), bench_n + outcome.removals.len());
+		assert!(game
+			.bench(Player::One)
+			.iter()
+			.any(|t| t.owner == Player::One && game.tile_at(spawn).is_none()));
+	}
+
+	#[test]
+	fn mixed_multi_capture_shares_one_destination() {
+		let mut rules = RuleSet::additive();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
+		let opp = nbs.get(2).copied().unwrap_or(game.board().spawns()[1]);
+		if game.tile_at(opp).is_none() {
+			let opp_nbs = game.board().neighbors(opp).to_vec();
+			if opp_nbs.len() >= 2
+				&& game.tile_at(opp_nbs[0]).is_none()
+				&& game.tile_at(opp_nbs[1]).is_none()
+			{
+				overwhelm_neighbors(&mut game, opp, Player::One);
+				put(&mut game, opp, Player::Two, TileColor::Green, 1, 1);
+			}
+		}
+		let from = game.board().spawns()[4];
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 2, CaptureMark::Dot);
+		game.set_current(Player::One);
+		let to = game.destinations(from).into_iter().next().expect("mover can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(
+			outcome.removals.len() >= 2,
+			"want mixed opp+self snapshot, got {:?}",
+			outcome.removals
+		);
+		let dests: Vec<_> = outcome.removals.iter().map(|r| r.dest).collect();
+		assert!(dests.iter().all(|d| *d == CaptureDest::Bench));
+		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::One));
+		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::Two));
+		for rem in &outcome.removals {
+			assert!(game
+				.bench(Player::One)
+				.iter()
+				.any(|t| t.id == rem.tile.id && t.owner == Player::One));
+			assert_eq!(live_hand_tile(&game, Player::One, rem.tile.id).owner, Player::One);
+		}
+	}
+
+	#[test]
+	fn captured_to_bench_may_exceed_eleven_and_type_cap() {
+		let mut game = Game::empty(RuleSet::additive());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let land = nbs[0];
+		let from = *game
+			.board()
+			.neighbors(land)
+			.iter()
+			.find(|n| **n != spawn && !nbs.contains(n))
+			.unwrap_or(&nbs[2]);
+		let mut bench = Vec::new();
+		for i in 0..11 {
+			let color = TileColor::ALL[i % 6];
+			let mut t = take(&mut game, Player::One, color, 1, 1);
+			if i < 6 {
+				t.ring_type[0] = RingType::Zag;
+			}
+			bench.push(t);
+		}
+		game.set_bench(Player::One, bench);
+		assert_eq!(game.bench(Player::One).len(), 11);
+		assert_eq!(crate::deck::zag_ring_count(game.bench(Player::One)), 6);
+		let mut captured =
+			take(&mut game, Player::Two, TileColor::Green, 1, 1).with_capture(CaptureMark::Dot);
+		captured.ring_type[0] = RingType::Zag;
+		game.place_tile(spawn, captured);
+		put_rings(
+			&mut game,
+			nbs[1],
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		let mover =
+			take(&mut game, Player::One, TileColor::Blue, 3, 1).with_capture(CaptureMark::Dot);
+		game.place_tile(from, mover);
+		game.set_current(Player::One);
+		let outcome = game.apply(Action::Move { from, to: land }).unwrap();
+		assert!(outcome.removals.iter().any(|r| r.tile.owner == Player::Two));
+		assert!(game.bench(Player::One).len() > 11);
+		assert!(crate::deck::zag_ring_count(game.bench(Player::One)) >= 6);
+		assert_eq!(game.deck_slots(Player::One).len(), game.bench(Player::One).len());
+		for rem in &outcome.removals {
+			assert_eq!(live_hand_tile(&game, Player::One, rem.tile.id).owner, Player::One);
+		}
+		assert_eq!(
+			game.budget(Player::One),
+			game.budget_token_count(Player::One).min(game.bench(Player::One).len())
+		);
+	}
+
+	#[test]
+	fn capture_mark_generation_is_about_half_dots() {
+		let mut rng = StdRng::seed_from_u64(13);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut dots = 0u32;
+		for _ in 0..n {
+			let t =
+				sample_tile(Player::One, 3, 0, 0, 0, DOT_PERCENT_DEFAULT, &mut next_id, &mut rng);
+			assert_ne!(t.capture.bit(), 2);
+			if t.capture.is_dot() {
+				dots += 1;
+			}
+		}
+		let rate = f64::from(dots) / f64::from(n);
+		assert!((0.47..0.53).contains(&rate), "dot rate={rate:.4} (expected ~0.50)");
+	}
+
+	#[test]
+	fn constructors_default_to_triangle() {
+		let t = Tile::mono(1, Player::One, TileColor::Green, 1, 2);
+		assert_eq!(t.capture, CaptureMark::Triangle);
+		assert_eq!(t.dots, 2);
+		assert_eq!(t.emblem, Emblem::None);
+		assert_eq!(t.cost(), t.n_rings);
+	}
+
+	#[test]
+	fn emblem_adds_one_to_deck_cost_not_weight() {
+		let t =
+			Tile::mono(1, Player::One, TileColor::Green, 1, 1).with_emblem(Emblem::CrescentMoon);
+		assert_eq!(t.n_rings, 1);
+		assert_eq!(t.weight, 1);
+		assert_eq!(t.cost(), 2);
+		assert_eq!(t.emblem.cost(), 1);
+		let zs = t.with_emblem(Emblem::TwoZagZs);
+		assert_eq!(zs.cost(), 2);
+		assert_eq!(Tile::mono(2, Player::One, TileColor::Blue, 1, 1).cost(), 1);
+	}
+
+	#[test]
+	fn crescent_saves_a_one_adjacency_equal_rings_overwhelm() {
+		let mut game = Game::empty(RuleSet::additive());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let moon =
+			take(&mut game, Player::One, TileColor::Green, 1, 1).with_emblem(Emblem::CrescentMoon);
+		game.place_tile(spawn, moon);
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
+		assert_eq!(game.occupied_adjacency_count(spawn), 1);
+		assert_eq!(game.tile_effective_weight(spawn), Some(1));
+		assert!(!game.is_overwhelmed(spawn), "mismatch == rings with 1 adjacency is saved");
+		assert_eq!(game.emblem_triggers().crescent_saves, 1);
+		assert!(
+			!game.collect_removals().iter().any(|r| r.node == spawn),
+			"crescent tile itself is not removed; a 1-ring hitch neighbor may still pop"
+		);
+
+		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 1, 1);
+		assert!(game.occupied_adjacency_count(spawn) >= 2);
+		assert!(game.is_overwhelmed(spawn), "two mismatch neighbors still overwhelm");
+	}
+
+	#[test]
+	fn crescent_does_not_save_mismatch_strictly_above_rings() {
+		let mut game = Game::empty(RuleSet::additive());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let moon = game
+			.alloc_rings(Player::One, &[TileColor::Green], 1, 1)
+			.with_emblem(Emblem::CrescentMoon);
+		game.place_tile(spawn, moon);
+		let zag = game.alloc_ring_kinds(
+			Player::Two,
+			&[(TileColor::Green, true), (TileColor::Orange, false)],
+			2,
+			1,
+		);
+		game.place_tile(nbs[0], zag);
+		assert_eq!(game.occupied_adjacency_count(spawn), 1);
+		let eff = game.tile_effective_weight(spawn).unwrap();
+		assert!(eff > 1, "zag hit plus hitch should exceed one ring, eff={eff}");
+		assert!(game.is_overwhelmed(spawn));
+		assert_eq!(game.emblem_triggers().crescent_saves, 0);
+	}
+
+	#[test]
+	fn two_zag_zs_adds_one_per_mismatching_edge_on_the_emblem_tile() {
+		let mut game = Game::empty(RuleSet::additive());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let zs = game
+			.alloc_ring_kinds(Player::One, &[(TileColor::Orange, true)], 1, 1)
+			.with_emblem(Emblem::TwoZagZs);
+		game.place_tile(spawn, zs);
+		let hit = game.alloc_tile(Player::Two, TileColor::Orange, 1, 1);
+		game.place_tile(nbs[0], hit);
+		let ch = game.edge_channels(zs, hit);
+		assert!(ch.zag_mismatch >= 2, "base zag hit plus the emblem +1, got {}", ch.zag_mismatch);
+		assert_eq!(game.zs_bonus_count(spawn, zs), 1);
+		let from_neighbor = game.edge_channels(hit, zs);
+		assert_eq!(
+			from_neighbor.zag_mismatch,
+			ch.zag_mismatch - 1,
+			"neighbor without Zs does not receive the +1"
+		);
+		assert_eq!(game.emblem_triggers().zs_bonuses, 1);
+	}
+
+	#[test]
+	fn emblems_off_skips_rng_so_deals_match() {
+		let mut a_id = 1u32;
+		let mut b_id = 1u32;
+		let mut a_rng = StdRng::seed_from_u64(9);
+		let mut b_rng = StdRng::seed_from_u64(9);
+		let a = sample_tile_with(
+			Player::One,
+			3,
+			0,
+			0,
+			0,
+			50,
+			EmblemWeights::off(),
+			ChannelMode::IndependentMax,
+			&mut a_id,
+			&mut a_rng,
+		);
+		let b = sample_tile_with(
+			Player::One,
+			3,
+			0,
+			0,
+			0,
+			50,
+			EmblemWeights::off(),
+			ChannelMode::IndependentMax,
+			&mut b_id,
+			&mut b_rng,
+		);
+		assert_eq!(a.emblem, Emblem::None);
+		assert_eq!(a.rings, b.rings);
+		assert_eq!(a.dots, b.dots);
+		assert_eq!(a.capture, b.capture);
+	}
+
+	#[test]
+	fn emblem_generation_is_rare_under_default_weights() {
+		let mut rng = StdRng::seed_from_u64(21);
+		let mut next_id = 1u32;
+		let n = 20_000u32;
+		let mut crescent = 0u32;
+		let mut zs = 0u32;
+		let mut blocker = 0u32;
+		let mut rosette = 0u32;
+		for _ in 0..n {
+			let t =
+				sample_tile(Player::One, 3, 0, 0, 0, DOT_PERCENT_DEFAULT, &mut next_id, &mut rng);
+			match t.emblem {
+				Emblem::CrescentMoon => crescent += 1,
+				Emblem::TwoZagZs => zs += 1,
+				Emblem::Blocker => blocker += 1,
+				Emblem::Rosette => rosette += 1,
+				Emblem::None => {}
+			}
+		}
+		let c_rate = f64::from(crescent) / f64::from(n);
+		let z_rate = f64::from(zs) / f64::from(n);
+		let b_rate = f64::from(blocker) / f64::from(n);
+		let r_rate = f64::from(rosette) / f64::from(n);
+		assert!((0.002..0.009).contains(&c_rate), "crescent rate={c_rate:.4} (expected ~1/204)");
+		assert!((0.002..0.009).contains(&z_rate), "zs rate={z_rate:.4} (expected ~1/204)");
+		assert!((0.002..0.009).contains(&b_rate), "blocker rate={b_rate:.4} (expected ~1/204)");
+		assert!((0.002..0.009).contains(&r_rate), "rosette rate={r_rate:.4} (expected ~1/204)");
+	}
+
+	#[test]
+	fn blocker_stops_counted_pass_through() {
+		let mut game = pass_through_game();
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 2);
+		let wall =
+			take(&mut game, Player::Two, TileColor::Green, 1, 1).with_emblem(Emblem::Blocker);
+		game.place_tile(mid, wall);
+		game.set_current(Player::One);
+		let dests = game.destinations(from);
+		assert!(
+			!dests.contains(&land),
+			"Blocker cannot be passed through even with shared normal, got {dests:?}"
+		);
+		assert!(!dests.contains(&mid), "cannot land on the Blocker");
+		game.clear_tile(mid);
+		put(&mut game, mid, Player::Two, TileColor::Green, 1, 1);
+		assert!(
+			game.destinations(from).contains(&land),
+			"the same occupant without Blocker is a legal pass-through"
+		);
+	}
+
+	#[test]
+	fn blocker_stops_hop_flood() {
+		let mut rules = hop_rules();
+		rules.color_restricted_hops = false;
+		let mut game = Game::empty(rules);
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, hop_over, land) = (cycle[0], cycle[1], cycle[2]);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
+		let wall = game
+			.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Blue], 2, 1)
+			.with_emblem(Emblem::Blocker);
+		game.place_tile(hop_over, wall);
+		game.set_current(Player::One);
+		let dests = game.destinations(from);
+		assert!(!dests.contains(&land), "cannot hop a Blocker, got {dests:?}");
+		game.clear_tile(hop_over);
+		let heavier = game.alloc_rings(Player::Two, &[TileColor::Orange, TileColor::Blue], 2, 1);
+		game.place_tile(hop_over, heavier);
+		assert!(
+			game.destinations(from).contains(&land),
+			"the same occupant without Blocker is a legal hop"
+		);
+	}
+
+	#[test]
+	fn blocker_does_not_change_adjacent_overwhelm() {
+		let mut game = Game::empty(RuleSet::additive());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		let wall =
+			take(&mut game, Player::One, TileColor::Green, 1, 1).with_emblem(Emblem::Blocker);
+		game.place_tile(spawn, wall);
+		put(&mut game, nbs[0], Player::Two, TileColor::Orange, 1, 1);
+		assert!(
+			game.is_overwhelmed(spawn),
+			"Blocker still takes a 1-ring hitch from an occupied neighbor"
+		);
+		assert!(game.is_overwhelmed(nbs[0]), "the neighbor still scores against the Blocker tile");
+	}
+
+	#[test]
+	fn blocker_blocks_off_restores_pass_through() {
+		let mut rules = RuleSet::default();
+		rules.blocker_blocks = BlockerBlocks::Off;
+		let mut game = Game::empty(rules);
+		let b = game.board().clone();
+		let cycle = b.circle_cycle(0).to_vec();
+		let (from, mid, land) = (cycle[0], cycle[1], cycle[2]);
+		put(&mut game, from, Player::One, TileColor::Green, 1, 2);
+		let wall =
+			take(&mut game, Player::Two, TileColor::Green, 1, 1).with_emblem(Emblem::Blocker);
+		game.place_tile(mid, wall);
+		game.set_current(Player::One);
+		assert!(
+			game.destinations(from).contains(&land),
+			"--blocker-blocks off: glyph only, pass-through still works"
+		);
+	}
+
+	#[test]
+	fn rosette_subtracts_one_from_deck_cost() {
+		let two = Tile::with_rings(1, Player::One, &[TileColor::Green, TileColor::Blue], 2, 1)
+			.with_emblem(Emblem::Rosette);
+		assert_eq!(two.n_rings, 2);
+		assert_eq!(two.weight, 2);
+		assert_eq!(two.emblem.cost(), -1);
+		assert_eq!(two.cost(), 1);
+		let blocker = two.with_emblem(Emblem::Blocker);
+		assert_eq!(blocker.cost(), 3);
+	}
+
+	#[test]
+	fn rosette_cost_floors_at_tile_cost_min() {
+		let one = Tile::mono(1, Player::One, TileColor::Blue, 1, 1).with_emblem(Emblem::Rosette);
+		assert_eq!(one.n_rings, 1);
+		assert_eq!(one.cost(), TILE_COST_MIN);
+		assert_eq!(TILE_COST_MIN, 0, "existing u8 cost cannot go below 0");
+		assert_eq!(one.weight, 1, "overwhelm weight is unchanged at the floor");
+	}
+
+	/// How many generating-circle petals join `a` and `b`. Inner↔center is 2.
+	fn arc_multiplicity(game: &Game, a: NodeId, b: NodeId) -> usize {
+		game.board().incident_others(a).filter(|&n| n == b).count()
+	}
+
+	/// 2-hop spawn chain that avoids the origin. Center petals score twice, so
+	/// a matching inner↔center edge cancels two mismatch neighbors and the
+	/// leftover overwhelm never appears under independent-max.
+	///
+	/// `extra_mid` may touch `dest` (the ADD still only mismatches `mid`) but
+	/// must not touch `far`, or `far` is leftover-overwhelmed before the ADD.
+	fn two_hop_chain(game: &Game) -> (NodeId, NodeId, NodeId, NodeId, NodeId) {
+		let center = game.board().center();
+		for &dest in game.board().spawns() {
+			if dest == center {
+				continue;
+			}
+			for &mid in game.board().neighbors(dest) {
+				if mid == center || arc_multiplicity(game, dest, mid) != 1 {
+					continue;
+				}
+				for &far in game.board().neighbors(mid) {
+					if far == dest
+						|| far == center || game.board().neighbors(dest).contains(&far)
+						|| arc_multiplicity(game, mid, far) != 1
+					{
+						continue;
+					}
+					let extra_mid = game.board().neighbors(mid).iter().copied().find(|&n| {
+						n != dest
+							&& n != far && n != center
+							&& !game.board().neighbors(far).contains(&n)
+							&& arc_multiplicity(game, mid, n) == 1
+					});
+					let far_extra = game.board().neighbors(far).iter().copied().find(|&n| {
+						n != mid
+							&& n != dest && n != center
+							&& !game.board().neighbors(dest).contains(&n)
+							&& !game.board().neighbors(mid).contains(&n)
+							&& arc_multiplicity(game, far, n) == 1
+					});
+					if let (Some(extra_mid), Some(far_extra)) = (extra_mid, far_extra) {
+						return (dest, mid, far, extra_mid, far_extra);
+					}
+				}
+			}
+		}
+		panic!("rosette has a 2-hop spawn chain with disjoint extras");
+	}
+
+	fn local_claim_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		rules
+	}
+
+	/// Dest ADD captures the adjacent mid tile; the 2-hop far tile becomes
+	/// overwhelmed and stays on the board under local-claim.
+	fn local_claim_leftover_fixture(game: &mut Game) -> (NodeId, NodeId, NodeId, NodeId, NodeId) {
+		let (dest, mid, far, extra_mid, far_extra) = two_hop_chain(game);
+		put(game, extra_mid, Player::One, TileColor::Orange, 1, 1);
+		put(game, far, Player::Two, TileColor::Green, 1, 1);
+		put_rings(
+			game,
+			far_extra,
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			2,
+		);
+		put(game, mid, Player::Two, TileColor::Green, 1, 1);
+		let incoming = game.alloc_rings(
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			3,
+			1,
+		);
+		let mut p1_bench = vec![incoming];
+		for _ in 0..5 {
+			p1_bench.push(take(game, Player::One, TileColor::Blue, 1, 1));
+		}
+		game.set_bench(Player::One, p1_bench);
+		stock_bench(game, Player::Two, 5);
+		game.set_current(Player::One);
+		(dest, mid, far, far_extra, extra_mid)
+	}
+
+	#[test]
+	fn local_add_captures_neighbor_and_leaves_two_hop_overwhelmed() {
+		let mut game = Game::empty(local_claim_rules());
+		assert_eq!(game.rules().capture_mode, CaptureMode::LocalClaim);
+		let (dest, mid, far, _, _) = local_claim_leftover_fixture(&mut game);
+		assert!(!game.is_overwhelmed(mid), "mid still has the far match");
+		assert!(!game.is_overwhelmed(far), "far still has the mid match");
+		let outcome = game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.node == mid && r.tile.owner == Player::Two),
+			"immediate neighbor must be captured: {:?}",
+			outcome.removals
+		);
+		assert!(
+			outcome
+				.removals
+				.iter()
+				.all(|r| { r.node == dest || game.board().neighbors(dest).contains(&r.node) }),
+			"only dest and its neighbors: {:?}",
+			outcome.removals
+		);
+		assert!(game.tile_at(mid).is_none());
+		assert!(game.tile_at(far).is_some(), "2-hop tile stays on the board");
+		assert!(game.is_overwhelmed(far), "2-hop tile is leftover overwhelmed");
+		assert!(game.legal_claims().contains(&Action::Claim { node: far }));
+	}
+
+	#[test]
+	fn claim_opponent_overwhelmed_tile_awards_a_spawn_token() {
+		let mut game = Game::empty(local_claim_rules());
+		let (dest, _mid, far, _, _) = local_claim_leftover_fixture(&mut game);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let victim = game.tile_at(far).expect("leftover opponent tile");
+		assert_eq!(victim.owner, Player::Two);
+		let outcome = game.apply(Action::Claim { node: far }).unwrap();
+		assert_eq!(outcome.removals.len(), 1);
+		assert_eq!(outcome.removals[0].node, far);
+		assert_eq!(outcome.removals[0].tile.owner, Player::Two);
+		assert_eq!(outcome.removals[0].dest, CaptureDest::Tokens);
+		assert!(game.tile_at(far).is_none(), "claimed tile is out of play");
+		assert_eq!(game.budget_token_count(Player::One), tokens + 1);
+		assert!(matches!(game.budget_tokens(Player::One).last(), Some(BudgetToken::Captured(_))));
+	}
+
+	#[test]
+	fn claim_own_overwhelmed_tile_awards_a_spawn_token() {
+		let mut rules = RuleSet::default();
+		rules.self_capture_budget = false;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, spawn, Player::One, TileColor::Green, 1, 1);
+		put_rings(
+			&mut game,
+			nbs[0],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put_rings(
+			&mut game,
+			nbs[1],
+			Player::Two,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		assert!(game.is_overwhelmed(spawn));
+		game.set_current(Player::One);
+		let tokens = game.budget_token_count(Player::One);
+		let outcome = game.apply(Action::Claim { node: spawn }).unwrap();
+		assert_eq!(outcome.removals.len(), 1);
+		assert_eq!(outcome.removals[0].tile.owner, Player::One);
+		assert_eq!(outcome.removals[0].dest, CaptureDest::Tokens);
+		assert!(game.tile_at(spawn).is_none());
+		assert_eq!(
+			game.budget_token_count(Player::One),
+			tokens + 1,
+			"Claim awards a spawn token even with self_capture_budget off"
+		);
+	}
+
+	#[test]
+	fn claim_does_not_cascade_newly_overwhelmed_neighbors() {
+		let mut game = Game::empty(local_claim_rules());
+		let center = game.board().center();
+		let (claimed, support, pressure, heavy_a, heavy_b) = 'found: {
+			for &claimed in game.board().spawns() {
+				if claimed == center {
+					continue;
+				}
+				let nbs = game.board().neighbors(claimed).to_vec();
+				if nbs.len() < 3 {
+					continue;
+				}
+				for i in 0..nbs.len() {
+					for j in (i + 1)..nbs.len() {
+						let heavy_a = nbs[i];
+						let heavy_b = nbs[j];
+						if heavy_a == center
+							|| heavy_b == center || game
+							.board()
+							.neighbors(heavy_a)
+							.contains(&heavy_b)
+						{
+							continue;
+						}
+						for &support in &nbs {
+							if support == heavy_a
+								|| support == heavy_b || support == center
+								|| game.board().neighbors(heavy_a).contains(&support)
+								|| game.board().neighbors(heavy_b).contains(&support)
+								|| arc_multiplicity(&game, claimed, support) != 1
+							{
+								continue;
+							}
+							if let Some(pressure) =
+								game.board().neighbors(support).iter().copied().find(|&p| {
+									p != claimed
+										&& p != center && p != heavy_a && p != heavy_b
+										&& !game.board().neighbors(claimed).contains(&p)
+										&& !game.board().neighbors(heavy_a).contains(&p)
+										&& !game.board().neighbors(heavy_b).contains(&p)
+										&& arc_multiplicity(&game, support, p) == 1
+								}) {
+								break 'found (claimed, support, pressure, heavy_a, heavy_b);
+							}
+						}
+					}
+				}
+			}
+			panic!("rosette has an isolated claim-no-cascade chain");
+		};
+		put_rings(
+			&mut game,
+			heavy_a,
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put_rings(
+			&mut game,
+			heavy_b,
+			Player::One,
+			&[TileColor::Orange, TileColor::Teal, TileColor::Maroon],
+			1,
+		);
+		put(&mut game, claimed, Player::Two, TileColor::Green, 1, 1);
+		put(&mut game, pressure, Player::One, TileColor::Orange, 1, 1);
+		put(&mut game, support, Player::Two, TileColor::Green, 1, 1);
+		assert!(game.is_overwhelmed(claimed));
+		assert!(!game.is_overwhelmed(support), "support still has the claimed match");
+		game.set_current(Player::One);
+		let outcome = game.apply(Action::Claim { node: claimed }).unwrap();
+		assert_eq!(outcome.removals.len(), 1);
+		assert_eq!(outcome.removals[0].node, claimed);
+		assert!(game.tile_at(support).is_some(), "Claim does not cascade");
+		assert!(game.is_overwhelmed(support), "support is leftover overwhelmed");
+	}
+
+	#[test]
+	fn overwhelmed_tile_can_be_healed_before_claim() {
+		let mut game = Game::empty(local_claim_rules());
+		let (dest, _mid, far, far_extra, _) = local_claim_leftover_fixture(&mut game);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(game.is_overwhelmed(far));
+		let land = *game
+			.destinations(far_extra)
+			.iter()
+			.find(|&&n| n != far && !game.board().neighbors(far).contains(&n))
+			.expect("orange can step off the leftover");
+		game.set_current(Player::One);
+		let outcome = game.apply(Action::Move { from: far_extra, to: land }).unwrap();
+		assert!(
+			outcome.removals.iter().all(|r| r.node != far),
+			"healed far must not be captured: {:?}",
+			outcome.removals
+		);
+		assert!(game.tile_at(far).is_some());
+		assert!(!game.is_overwhelmed(far), "removing the mismatch neighbor heals the leftover");
+		assert!(game.apply(Action::Claim { node: far }).is_err());
+		assert!(!game.legal_claims().contains(&Action::Claim { node: far }));
+	}
+
+	#[test]
+	fn claim_prevents_locked_out() {
+		let mut rules = RuleSet::default();
+		rules.control_win = false;
+		let mut game = Game::empty(rules);
+		fill_board_all_green(&mut game);
+		let spawn = game.board().spawns()[0];
+		game.clear_tile(spawn);
+		put(&mut game, spawn, Player::Two, TileColor::Orange, 1, 1);
+		assert!(game.is_overwhelmed(spawn));
+		game.set_bench(Player::One, vec![]);
+		game.set_bench(Player::Two, vec![]);
+		game.set_current(Player::One);
+		assert!(game.legal_adds().is_empty());
+		assert!(game.legal_moves().is_empty(), "board is full");
+		assert!(game.legal_claims().contains(&Action::Claim { node: spawn }));
+		assert!(game.has_add_or_move(), "Claim counts as a legal action");
+		assert_eq!(game.status(), GameStatus::InProgress);
+		game.apply(Action::Claim { node: spawn }).unwrap();
+		assert_ne!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::LockedOut }
+		);
+	}
+
+	#[test]
+	fn cascade_mode_sweeps_leftover_overwhelmed_on_the_next_action() {
+		let mut rules = local_claim_rules();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
+		let (dest, mid, far, _, _) = local_claim_leftover_fixture(&mut game);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(game.tile_at(mid).is_none());
+		assert!(game.tile_at(far).is_some(), "simultaneous snapshot leaves the 2-hop tile");
+		assert!(game.is_overwhelmed(far));
+		assert!(game.legal_claims().is_empty(), "Claim is cascade-illegal");
+		let spawn = *game
+			.board()
+			.spawns()
+			.iter()
+			.find(|&&s| game.tile_at(s).is_none() && !game.board().neighbors(far).contains(&s))
+			.expect("empty spawn away from far");
+		let filler = take(&mut game, Player::One, TileColor::Blue, 3, 1);
+		game.set_bench(Player::One, vec![filler]);
+		game.set_current(Player::One);
+		let outcome = game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert!(
+			outcome.removals.iter().any(|r| r.node == far),
+			"cascade sweeps the leftover on the next action: {:?}",
+			outcome.removals
+		);
+		assert!(game.tile_at(far).is_none());
 	}
 }

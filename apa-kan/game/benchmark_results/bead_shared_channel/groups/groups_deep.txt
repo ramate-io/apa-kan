@@ -1,0 +1,89 @@
+# apa-kan search benchmark
+# budget=nodes:528000,iters:10400 jobs=4 games_per_pairing_per_seat=1 seed_base=1 turn_limit=200
+
+# branching factor (legal actions per position, from greedy/random games)
+# sample_games=4  (greedy vs random, random vs greedy, greedy vs greedy)
+# kind     n_positions  avg    max
+ADD       117          46.22  88
+MOVE      119          15.71  44
+ALL       132          55.14  88
+
+# bead scoring B shared-channel 2-3 groups deep 4x
+# budget=nodes:528000,iters:10400 jobs=4 games_per_pairing_per_seat=1 seed_base=1 turn_limit=200
+# rules: no_moves_loses=on center_hold_win=off center_hold_n=5 no_same_piece_twice=off color_restricted_hops=on hop_weight_cmp=le counted_pass_through=on pass_through_ring_cmp=ge petal_majority_win=off petal_majority_n=1 control_win=on control_n=5 control_hold_turns=1 insufficient_tiles_loss=off starting_bench=7 bag_size=11 deck_size=27 pick=search deck_noise=0 self_capture_budget=on max_rings=3 zag_numer=1 braid_numer=1 bead_numer=1 bead_scoring=shared dot_percent=50 zag_mismatch=sum path_constraint=no-edge-revisit scenario=default
+# ring_process  sample=20000 max_rings=3 zag_numer=1 braid_numer=1 bead_numer=1  n1=12260 n2=6199 n3=1541
+# ring_process_zags  rings=29281 zags=2907 rate=0.0993
+# ring_process_braids  pieces=20000 braided=2769 piece_rate=0.1384 rings=29281 braid_rings=5539 ring_rate=0.1892
+# ring_process_beads  pieces=20000 grouped=2446 piece_rate=0.1223 rings=29281 beads=5935 ring_rate=0.2027
+# ring_process_colors  green=8910 blue=9041 orange=9106 lavender-pink=1091 teal=1024 maroon=109
+# Each row is bot1 as P1 (light) vs bot2 as P2 (dark). W-D-L is from P1's view.
+# avg_depth is minimax completed ID depth per minimax move; avg_iters is MCTS iterations per MCTS move (not cumulative).
+# search_depth: mm_avg/mm_max = completed iterative-deepening depth; mcts_avg/mcts_max = visit-weighted tree depth (root excluded from the mean).
+# pairing  matchup  seat  W-D-L  avg_turns  elim  locked_out  center_hold  petal_maj  control  insuff  low_value  turn_limit  double_pass  repeats>=3  avg_max_repeat  avg_depth  avg_iters  avg_captures  avg_self_captures
+minimax         vs mcts             mixed vs mixed  P1  0-0-1  36.00  0  0  0  0  0  0  1  0  0  0  1.00  4.44  10400.0  cap=6.00  self=7.00  mm_max=5 mcts_avg=2.42 mcts_max=8
+mcts            vs minimax          mixed vs mixed  P1  0-0-1  22.00  0  1  0  0  0  0  0  0  0  0  1.00  4.18  10400.0  cap=7.00  self=7.00  mm_max=5 mcts_avg=2.21 mcts_max=7
+minimax         vs mcts             braid vs braid  P1  1-0-0  31.00  0  0  0  0  0  0  1  0  0  0  1.00  4.81  10400.0  cap=10.00  self=7.00  mm_max=6 mcts_avg=2.52 mcts_max=8
+mcts            vs minimax          braid vs braid  P1  0-0-1  30.00  0  0  0  0  0  0  1  0  0  0  1.00  4.20  10400.0  cap=5.00  self=7.00  mm_max=5 mcts_avg=2.37 mcts_max=9
+minimax         vs mcts             bead vs bead   P1  1-0-0  21.00  0  0  0  0  0  0  1  0  0  0  1.00  4.36  10400.0  cap=5.00  self=4.00  mm_max=5 mcts_avg=2.25 mcts_max=7
+mcts            vs minimax          bead vs bead   P1  1-0-0  21.00  0  0  0  0  1  0  0  0  0  0  1.00  4.80  10400.0  cap=0.00  self=1.00  mm_max=7 mcts_avg=2.44 mcts_max=9
+minimax         vs mcts             braid vs bead  P1  0-0-1  42.00  0  1  0  0  0  0  0  0  0  0  1.00  4.86  10400.0  cap=7.00  self=9.00  mm_max=7 mcts_avg=2.17 mcts_max=8
+mcts            vs minimax          braid vs bead  P1  0-0-1  32.00  0  0  0  0  1  0  0  0  0  0  1.00  4.06  10400.0  cap=4.00  self=8.00  mm_max=5 mcts_avg=2.19 mcts_max=6
+minimax         vs mcts             bead vs braid  P1  0-0-1  26.00  0  1  0  0  0  0  0  0  0  0  1.00  4.46  10400.0  cap=7.00  self=7.00  mm_max=6 mcts_avg=2.32 mcts_max=8
+mcts            vs minimax          bead vs braid  P1  0-0-1  30.00  0  0  0  0  0  0  1  0  0  0  1.00  4.60  10400.0  cap=9.00  self=8.00  mm_max=6 mcts_avg=2.34 mcts_max=8
+# seat_totals  P1 3-0-7  P2 7-0-3  games=10
+# end_reasons  elim=0 locked_out=3 center_hold=0 petal_maj=0 control=2 insuff=0 low_value=5 low_value_wins=5 low_value_draws=0 turn_limit=0 double_pass=0
+# low_value_pairs  pair0=5 later=0 piece_count=0
+# captures  opponent_tiles_removed=60  avg_per_game=6.00  self_captures=65  self_avg_per_game=6.50
+# center_captures  opponent_tiles_removed=4  avg_per_game=0.40  self_captures=0  self_avg_per_game=0.00
+# capture_dest  bench=61 avg_per_game=6.10  tokens=64 avg_per_game=6.40
+# bead_captures  contrib=32 needed=27 spawn_two_ring_single_bead=0  of_total=60
+# search_depth  mm_avg=4.49 mm_max=7 mm_n=146  mcts_avg=2.32 mcts_max=9 mcts_n=145
+# matchup_totals  mixed vs mixed 0-0-2 avg_turns=29.00  |  braid vs braid 1-0-1 avg_turns=30.50  |  bead vs bead 2-0-0 avg_turns=21.00  |  braid vs bead 0-0-2 avg_turns=37.00  |  bead vs braid 0-0-2 avg_turns=28.00
+# archetype_seat  mixed P1=0-0-2 P2=2-0-0  |  braid P1=1-0-3 P2=3-0-1  |  bead P1=2-0-2 P2=2-0-2
+# short_games  turns_le_20=0 lockout=0 control=0
+# tokens_bench_over_time  mean_tokens_per_side=3.97  mean_bench_per_side=7.63  snapshots=301
+# pick_dot_ratio  P1_opening_dots W-D-L  dots3=0-0-1  dots4=0-0-1  dots5=1-0-5  dots6=2-0-0
+
+# stalling (rules unchanged; no threefold draw)
+# games=10  visible_pos_seen_>=2=0  visible_pos_seen_>=3=0  occupancy_seen_>=3=0
+# games_that_both_hit_turn_limit_and_had_a_visible_repeat_>=3 (lower bound via pairing mins) ~ 0
+# Visible hash covers occupancy, tile kind, owner, the public remaining deck, spawn-token count (including surplus), side to move, last-moved tile, moved-this-turn, and hold counters (center, petal, control).
+# Occupancy hash ignores benches. Repeats are evidence of looping; the rules do not forbid them.
+
+# observed_opening_rings  tiles=220  n1=129 n2=67 n3=24
+# observed_opening_colors  green=87 blue=96 orange=91 lavender-pink=24 teal=27 maroon=10
+# add_rings  tiles=162  n1=94 n2=54 n3=14
+# move_rings  tiles=129  n1=60 n2=56 n3=13
+# board_sample  positions=301 avg_tiles=3.45 avg_rings=1.631 avg_weight=1.631
+# braid_edges  occupied_with_braid=20 satisfied=1 rate=0.0500
+
+# deck fairness
+# games=10
+# opening_strength_equal=6/10
+# strength = weight_sum + dots_sum + n_colors on the opening bench (and on tiles that entered play).
+# pearson(opening_combined_diff, outcome +1/0/-1)=0.231
+# pearson(opening_weight_diff, outcome)=-0.045
+# pearson(opening_dots_diff, outcome)=0.424
+# pearson(opening_color_diff, outcome)=0.000
+# pearson(p1_opening_weight, outcome)=-0.040  (shared-deal / first-player view)
+# pearson(p1_opening_weight, turns)=-0.133
+# pearson(played_combined_diff, outcome)=0.540  (board+bench at end; play-influenced)
+# higher_opening_strength_won=2/4 (excludes draws and equal opening strength)
+# higher_played_strength_won=8/10 (excludes draws and equal end strength)
+# opening_deal  pairing  game  seed  p1  p2  p1_bench  p2_bench  outcome  turns
+#   mcts vs minimax [bead vs bead]  g1  seed=210001  p1=n11 w16 d20 c5  p2=n11 w16 d20 c5  [pe+pe+pe3-2^,b1-3^,t1-2^,g+b2-1o,b1-3^,oe+oe+oe3-2o,b1-2o,b1-2^,b1-1o,bz1-1^,b1-1o]  [pe+pe+pe3-2^,b1-3^,t1-2^,g+b2-1o,b1-3^,oe+oe+oe3-2o,b1-2o,b1-2^,b1-1o,bz1-1^,b1-1o]  P1  t21
+#   mcts vs minimax [bead vs braid]  g1  seed=410001  p1=n11 w16 d24 c4  p2=n11 w14 d24 c4  [o1-3^,o1-3^,oe+oe+oe3-3^,o1-2o,o1-1o,gz+p2-2o,te+te+te3-2^,gz1-2o,gz1-2o,o1-2^,o1-2^]  [gd+gd2-2^,g1-3o,g1-3^,bd+gd2-3o,pd+gd2-1o,g1-3^,o1-3^,b1-1o,g1-1^,b1-2^,g1-2^]  P2  t30
+#   mcts vs minimax [braid vs bead]  g1  seed=310001  p1=n11 w15 d26 c4  p2=n11 w17 d30 c5  [gd+gd2-3o,gd+gd2-3^,g+o2-2^,b1-3o,b1-3^,o1-3o,pd+pd2-1^,g1-2o,g1-2^,b1-2o,o1-2^]  [g1-3^,bz+g2-3^,gz+ge+ge3-3o,p1-3o,o1-2o,t+g2-3^,te+te+te3-3^,bz1-3^,g1-3^,o1-1^,g1-3^]  P2  t32
+#   mcts vs minimax [braid vs braid]  g1  seed=110001  p1=n11 w15 d27 c6  p2=n11 w15 d27 c6  [g1-2^,b1-3^,gd+od2-3o,md+md2-1o,td+od2-3^,o+b2-3o,p1-1^,b1-3^,o1-2o,bz1-3^,b1-3^]  [g1-2^,b1-3^,gd+od2-3o,md+md2-1o,td+od2-3^,o+b2-3o,p1-1^,b1-3^,o1-2o,bz1-3^,b1-3^]  P2  t30
+#   mcts vs minimax [mixed vs mixed]  g1  seed=10001  p1=n11 w18 d26 c5  p2=n11 w18 d26 c5  [pz1-3^,t1-2^,o1-3^,oe+oe+oe3-3o,o+g2-3o,bd+bd2-1^,o+gz2-2o,gz1-3^,g1-3^,ge+ge2-1o,gd+gd2-2o]  [pz1-3^,t1-2^,o1-3^,oe+oe+oe3-3o,o+g2-3o,bd+bd2-1^,o+gz2-2o,gz1-3^,g1-3^,ge+ge2-1o,gd+gd2-2o]  P2  t22
+#   minimax vs mcts [bead vs bead]  g1  seed=200001  p1=n11 w19 d24 c5  p2=n11 w19 d24 c5  [o+b2-2o,g+b2-2^,b1-2^,g+oz2-1o,pe+bz+be3-3^,bz+be+be3-3^,me+me2-3o,oz1-1o,g1-2o,o1-3o,o1-2^]  [o+b2-2o,g+b2-2^,b1-2^,g+oz2-1o,pe+bz+be3-3^,bz+be+be3-3^,me+me2-3o,oz1-1o,g1-2o,o1-3o,o1-2^]  P1  t21
+#   minimax vs mcts [bead vs braid]  g1  seed=400001  p1=n11 w17 d19 c5  p2=n11 w14 d22 c4  [pz+pe+pe3-1^,me+gz+ge3-3o,m1-3^,g+oz2-2o,g1-2^,be+pe2-1o,g1-2^,b1-1^,oz1-2^,b1-1^,gz1-1^]  [g1-2^,od+od2-3^,o1-1o,td+td2-2o,o1-3^,b1-3o,gd+td2-3^,bz1-1o,o1-1^,b1-1^,gz1-2^]  P2  t26
+#   minimax vs mcts [braid vs bead]  g1  seed=300001  p1=n11 w15 d21 c4  p2=n11 w17 d25 c4  [b1-2o,gd+gd2-3^,b1-2^,gd+gd2-3^,td+td2-2^,b1-3o,t+o2-1o,g1-2o,oz1-1^,o1-1o,o1-1^]  [b1-3^,b1-2^,pe+pe+pe3-1^,b+o2-2o,be+be+be3-3^,o1-3o,g+b2-2o,oz1-3o,b1-2^,b1-1o,g1-3o]  P2  t42
+#   minimax vs mcts [braid vs braid]  g1  seed=100001  p1=n11 w15 d22 c3  p2=n11 w15 d22 c3  [b1-2o,gd+gd2-2^,bd+bd2-3^,g1-1^,g1-2o,od+od2-3^,bz+o2-1o,o1-1o,bz1-2^,oz1-3o,g1-2o]  [b1-2o,gd+gd2-2^,bd+bd2-3^,g1-1^,g1-2o,od+od2-3^,bz+o2-1o,o1-1o,bz1-2^,oz1-3o,g1-2o]  P1  t31
+#   minimax vs mcts [mixed vs mixed]  g1  seed=1  p1=n11 w22 d25 c4  p2=n11 w22 d25 c4  [bz+be+be3-1^,b1-3o,td+td2-3^,t+o+b3-2o,oe+oe+oe3-2^,bz+g2-3^,od+od2-2o,oz1-2o,b1-2o,oz+t2-2^,gd+gd2-3^]  [bz+be+be3-1^,b1-3o,td+td2-3^,t+o+b3-2o,oe+oe+oe3-2^,bz+g2-3^,od+od2-2o,oz1-2o,b1-2o,oz+t2-2^,gd+gd2-3^]  P2  t36
+
+# MCTS: the remaining deck is public, so bag shuffle is a no-op on default rules. Legacy `capture_draw_on_move` logs still shuffle hidden remainders. Minimax searches the live position.
+# Minimax: iterative deepening alpha-beta, Zobrist TT, TT/capture/killer/history ordering, quiescence on capture sequences.
+# game_record=apa-kan/game/benchmark_results/bead_shared_channel/groups/groups_deep_record.txt
+# games_log=apa-kan/game/benchmark_results/bead_shared_channel/groups/groups_deep.jsonl.gz
+# elapsed_sec=557.0

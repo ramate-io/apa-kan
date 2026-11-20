@@ -1,19 +1,31 @@
 //! Zobrist keys for visible positions: occupancy, kind, owner, benches, capture
-//! budget, side, last-moved / moved-this-turn tile ids, and hold counters
-//! (center, petal, control).
+//! budget, side, last-moved / moved-this-turn tile ids, hold counters
+//! (center, petal, control), the one-way control-cascade ratchet, and
+//! banked / active cascade extra-turn state.
 
 use std::sync::OnceLock;
 
 use crate::game::{Game, Player, KIND_COUNT};
 
 const MAX_NODES: usize = 32;
-const MAX_BENCH_COPIES: usize = 16;
+/// Captures-to-bench can grow past the 11-tile draft, so copy keys go higher.
+const MAX_BENCH_COPIES: usize = 32;
+const CAPTURE_MARKS: usize = 2;
+const EMBLEMS: usize = crate::game::Emblem::COUNT;
 
 pub struct Zobrist {
 	/// node × owner × kind, heap so the 6-color kind space cannot overflow the stack.
 	board: Vec<u64>,
+	/// node × owner × capture-mark bit.
+	board_mark: Vec<u64>,
+	/// node × owner × emblem.
+	board_emblem: Vec<u64>,
 	/// player × kind × copy-count (1-based)
 	bench: Vec<u64>,
+	/// player × capture-mark × copy-count
+	bench_mark: Vec<u64>,
+	/// player × emblem × copy-count
+	bench_emblem: Vec<u64>,
 	side_two: u64,
 	pass_phase: [u64; 4],
 	actions_phase: [u64; 8],
@@ -22,6 +34,9 @@ pub struct Zobrist {
 	center_hold: [[u64; 16]; 2],
 	petal_majority: [[u64; 16]; 2],
 	control_hold: [[u64; 16]; 2],
+	control_ratchet: [u64; 16],
+	extra_turns: [[u64; 16]; 2],
+	extra_turn_active: u64,
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
 	budget: [[u64; 64]; 2],
@@ -33,7 +48,11 @@ impl Zobrist {
 		let mut next = || splitmix(&mut state);
 		let mut z = Self {
 			board: vec![0; MAX_NODES * 2 * KIND_COUNT],
+			board_mark: vec![0; MAX_NODES * 2 * CAPTURE_MARKS],
+			board_emblem: vec![0; MAX_NODES * 2 * EMBLEMS],
 			bench: vec![0; 2 * KIND_COUNT * MAX_BENCH_COPIES],
+			bench_mark: vec![0; 2 * CAPTURE_MARKS * MAX_BENCH_COPIES],
+			bench_emblem: vec![0; 2 * EMBLEMS * MAX_BENCH_COPIES],
 			side_two: next(),
 			pass_phase: [0; 4],
 			actions_phase: [0; 8],
@@ -42,6 +61,9 @@ impl Zobrist {
 			center_hold: [[0; 16]; 2],
 			petal_majority: [[0; 16]; 2],
 			control_hold: [[0; 16]; 2],
+			control_ratchet: [0; 16],
+			extra_turns: [[0; 16]; 2],
+			extra_turn_active: next(),
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
 			budget: [[0; 64]; 2],
@@ -51,12 +73,28 @@ impl Zobrist {
 				for kind in 0..KIND_COUNT {
 					z.board[board_ix(node, owner, kind)] = next();
 				}
+				for mark in 0..CAPTURE_MARKS {
+					z.board_mark[board_mark_ix(node, owner, mark)] = next();
+				}
+				for emblem in 0..EMBLEMS {
+					z.board_emblem[board_emblem_ix(node, owner, emblem)] = next();
+				}
 			}
 		}
 		for player in 0..2 {
 			for kind in 0..KIND_COUNT {
 				for copy in 0..MAX_BENCH_COPIES {
 					z.bench[bench_ix(player, kind, copy)] = next();
+				}
+			}
+			for mark in 0..CAPTURE_MARKS {
+				for copy in 0..MAX_BENCH_COPIES {
+					z.bench_mark[bench_mark_ix(player, mark, copy)] = next();
+				}
+			}
+			for emblem in 0..EMBLEMS {
+				for copy in 0..MAX_BENCH_COPIES {
+					z.bench_emblem[bench_emblem_ix(player, emblem, copy)] = next();
 				}
 			}
 		}
@@ -71,10 +109,14 @@ impl Zobrist {
 				z.center_hold[player][n] = next();
 				z.petal_majority[player][n] = next();
 				z.control_hold[player][n] = next();
+				z.extra_turns[player][n] = next();
 			}
 			for n in 0..64 {
 				z.budget[player][n] = next();
 			}
+		}
+		for n in 0..16 {
+			z.control_ratchet[n] = next();
 		}
 		z
 	}
@@ -92,8 +134,24 @@ fn board_ix(node: usize, owner: usize, kind: usize) -> usize {
 	(node * 2 + owner) * KIND_COUNT + kind
 }
 
+fn board_mark_ix(node: usize, owner: usize, mark: usize) -> usize {
+	(node * 2 + owner) * CAPTURE_MARKS + mark
+}
+
 fn bench_ix(player: usize, kind: usize, copy: usize) -> usize {
 	(player * KIND_COUNT + kind) * MAX_BENCH_COPIES + copy
+}
+
+fn bench_mark_ix(player: usize, mark: usize, copy: usize) -> usize {
+	(player * CAPTURE_MARKS + mark) * MAX_BENCH_COPIES + copy
+}
+
+fn board_emblem_ix(node: usize, owner: usize, emblem: usize) -> usize {
+	(node * 2 + owner) * EMBLEMS + emblem
+}
+
+fn bench_emblem_ix(player: usize, emblem: usize, copy: usize) -> usize {
+	(player * EMBLEMS + emblem) * MAX_BENCH_COPIES + copy
 }
 
 pub fn tables() -> &'static Zobrist {
@@ -109,15 +167,27 @@ pub fn hash(game: &Game) -> u64 {
 		let n = node as usize;
 		if n < MAX_NODES {
 			h ^= z.board[board_ix(n, tile.owner.index(), tile.kind_index())];
+			h ^= z.board_mark[board_mark_ix(n, tile.owner.index(), tile.capture.bit() as usize)];
+			h ^= z.board_emblem[board_emblem_ix(n, tile.owner.index(), tile.emblem.bit() as usize)];
 		}
 	}
 	for player in [Player::One, Player::Two] {
 		let mut copies = [0u8; KIND_COUNT];
+		let mut mark_copies = [0u8; CAPTURE_MARKS];
+		let mut emblem_copies = [0u8; EMBLEMS];
 		for tile in game.bench(player) {
 			let k = tile.kind_index();
 			let n = copies[k].saturating_add(1).min(MAX_BENCH_COPIES as u8);
 			copies[k] = n;
 			h ^= z.bench[bench_ix(player.index(), k, (n as usize) - 1)];
+			let mark = tile.capture.bit() as usize;
+			let mn = mark_copies[mark].saturating_add(1).min(MAX_BENCH_COPIES as u8);
+			mark_copies[mark] = mn;
+			h ^= z.bench_mark[bench_mark_ix(player.index(), mark, (mn as usize) - 1)];
+			let emblem = tile.emblem.bit() as usize;
+			let en = emblem_copies[emblem].saturating_add(1).min(MAX_BENCH_COPIES as u8);
+			emblem_copies[emblem] = en;
+			h ^= z.bench_emblem[bench_emblem_ix(player.index(), emblem, (en as usize) - 1)];
 		}
 	}
 	if game.current_player() == Player::Two {
@@ -133,6 +203,7 @@ pub fn hash(game: &Game) -> u64 {
 		h ^= z.center_hold[player.index()][game.center_hold(player).min(15) as usize];
 		h ^= z.petal_majority[player.index()][game.petal_majority(player).min(15) as usize];
 		h ^= z.control_hold[player.index()][game.control_hold(player).min(15) as usize];
+		h ^= z.extra_turns[player.index()][game.extra_turns(player).min(15) as usize];
 		// Physical token count, not usable budget: surplus can become usable
 		// when an unplaced deck tile remains, so two empty-deck stacks of
 		// different lengths must not collide.
@@ -141,6 +212,10 @@ pub fn hash(game: &Game) -> u64 {
 	match game.moved_this_turn() {
 		None => h ^= z.moved_this_turn_none,
 		Some(id) => h ^= z.moved_this_turn_some ^ mix_id(id),
+	}
+	h ^= z.control_ratchet[game.control_ratchet().min(15) as usize];
+	if game.extra_turn_active() {
+		h ^= z.extra_turn_active;
 	}
 	h
 }
@@ -160,6 +235,8 @@ pub fn occupancy_hash(game: &Game) -> u64 {
 		let n = node as usize;
 		if n < MAX_NODES {
 			h ^= z.board[board_ix(n, tile.owner.index(), tile.kind_index())];
+			h ^= z.board_mark[board_mark_ix(n, tile.owner.index(), tile.capture.bit() as usize)];
+			h ^= z.board_emblem[board_emblem_ix(n, tile.owner.index(), tile.emblem.bit() as usize)];
 		}
 	}
 	if game.current_player() == Player::Two {
@@ -215,6 +292,55 @@ mod tests {
 	}
 
 	#[test]
+	fn hash_distinguishes_capture_marks() {
+		use crate::game::{CaptureMark, Game, Player, TileColor};
+
+		let mut dots = Game::empty(RuleSet::default());
+		let mut tris = Game::empty(RuleSet::default());
+		let spawn = dots.board().spawns()[0];
+		let d = dots
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_capture(CaptureMark::Dot);
+		let t = tris
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_capture(CaptureMark::Triangle);
+		dots.place_tile(spawn, d);
+		tris.place_tile(spawn, t);
+		assert_ne!(hash(&dots), hash(&tris));
+		assert_ne!(occupancy_hash(&dots), occupancy_hash(&tris));
+	}
+
+	#[test]
+	fn hash_distinguishes_emblems() {
+		use crate::game::{Emblem, Game, Player, TileColor};
+
+		let mut none = Game::empty(RuleSet::default());
+		let mut moon = Game::empty(RuleSet::default());
+		let spawn = none.board().spawns()[0];
+		let a = none.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		let b = moon
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_emblem(Emblem::CrescentMoon);
+		none.place_tile(spawn, a);
+		moon.place_tile(spawn, b);
+		assert_ne!(hash(&none), hash(&moon));
+		assert_ne!(occupancy_hash(&none), occupancy_hash(&moon));
+		let mut wall = Game::empty(RuleSet::default());
+		let mut rose = Game::empty(RuleSet::default());
+		let c = wall
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_emblem(Emblem::Blocker);
+		let d = rose
+			.alloc_tile(Player::One, TileColor::Green, 1, 1)
+			.with_emblem(Emblem::Rosette);
+		wall.place_tile(spawn, c);
+		rose.place_tile(spawn, d);
+		assert_ne!(hash(&wall), hash(&rose));
+		assert_ne!(occupancy_hash(&wall), occupancy_hash(&rose));
+		assert_ne!(hash(&wall), hash(&moon));
+	}
+
+	#[test]
 	fn occupancy_hash_ignores_bench_order() {
 		let game = crate::game::Game::new(RuleSet::default(), 4);
 		let _ = Action::Pass;
@@ -249,5 +375,55 @@ mod tests {
 		assert_eq!(placed.center_hold(Player::One), 0);
 		assert_ne!(hash(&placed), hash(&moved));
 		assert_eq!(occupancy_hash(&placed), occupancy_hash(&moved));
+	}
+
+	#[test]
+	fn hash_distinguishes_control_ratchet() {
+		use crate::game::{Game, Player, TileColor};
+
+		let mut low = Game::empty(RuleSet::default());
+		let mut high = Game::empty(RuleSet::default());
+		let center = low.board().center();
+		let inner = low.board().inner_ring().to_vec();
+		for game in [&mut low, &mut high] {
+			let t = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(center, t);
+			for &node in inner.iter().take(3) {
+				let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+				game.place_tile(node, tile);
+			}
+		}
+		low.set_budget_tokens(Player::One, Vec::new());
+		low.set_budget_tokens(Player::Two, Vec::new());
+		high.set_budget_tokens(Player::One, Vec::new());
+		high.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(low.control_ratchet(), 4);
+		high.set_control_ratchet(5);
+		assert_eq!(high.control_ratchet(), 5);
+		assert_eq!(low.max_material(), high.max_material());
+		assert_ne!(hash(&low), hash(&high), "TT key must include the ratcheted control target");
+		assert_eq!(occupancy_hash(&low), occupancy_hash(&high));
+	}
+
+	#[test]
+	fn hash_distinguishes_banked_extra_turns() {
+		use crate::game::{Game, Player};
+
+		let none = Game::empty(RuleSet::default());
+		let mut banked = Game::empty(RuleSet::default());
+		banked.set_extra_turns(Player::Two, 1);
+		assert_eq!(none.extra_turns(Player::Two), 0);
+		assert_eq!(banked.extra_turns(Player::Two), 1);
+		assert_eq!(none.current_player(), banked.current_player());
+		assert_ne!(
+			hash(&none),
+			hash(&banked),
+			"TT key must include banked cascade extra-turn state"
+		);
+		assert_eq!(occupancy_hash(&none), occupancy_hash(&banked));
+		let mut active = Game::empty(RuleSet::default());
+		active.set_extra_turn_active(true);
+		assert_ne!(hash(&none), hash(&active), "TT key must include an active extra turn");
+		assert_ne!(hash(&banked), hash(&active));
 	}
 }

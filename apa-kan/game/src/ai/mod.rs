@@ -3,6 +3,7 @@
 mod eval;
 mod mcts;
 mod minimax;
+mod search_config;
 mod search_move;
 mod zobrist;
 
@@ -13,6 +14,7 @@ use rand::Rng;
 use crate::game::{Action, Game, Player, RuleSet};
 
 pub use eval::{evaluate, terminal_score, WIN};
+pub use search_config::SearchConfig;
 pub use search_move::legal_search_moves;
 pub use zobrist::{hash as visible_hash, occupancy_hash};
 
@@ -136,22 +138,53 @@ pub struct SearchStats {
 	/// MCTS iterations this move (not cumulative).
 	pub iterations: u32,
 	pub nodes: u64,
+	/// Deepest MCTS tree node from the root this move (root = 0).
+	pub mcts_max_depth: u8,
+	/// Visit-weighted mean MCTS node depth this move, excluding the root.
+	/// Factored ADD plies (choose-tile) are not counted.
+	pub mcts_avg_depth: f32,
+	/// Shannon entropy (nats) of the root visit distribution.
+	pub root_entropy: f32,
+	/// `exp(root_entropy)` — 1 if all visits on one move, ~legal if uniform.
+	pub root_eff_branch: f32,
+	/// Fraction of root visits on the most-visited child.
+	pub root_top1_share: f32,
+	/// Root children whose Q is within `1/sqrt(n_best)` of the best Q.
+	pub root_near_best_q: u16,
+	/// Max Q − min Q among the 10 most-visited root children.
+	pub root_q_spread_top10: f32,
+	/// Fraction of iteration checkpoints whose best move matches the final pick.
+	pub root_best_stability: f32,
+	/// Legal real moves at the root (not factored).
+	pub root_legal: u16,
 }
 
 pub struct HistoryTable {
 	moves: Vec<i32>,
 	adds: Vec<i32>,
+	claims: Vec<i32>,
 }
 
 impl HistoryTable {
 	pub fn new() -> Self {
-		Self { moves: vec![0; 32 * 32], adds: vec![0; crate::game::KIND_COUNT * 32] }
+		Self {
+			moves: vec![0; 32 * 32],
+			adds: vec![0; crate::game::KIND_COUNT * 2 * 32],
+			claims: vec![0; 32],
+		}
+	}
+
+	fn add_ix(kind: u32, node: u8) -> usize {
+		let base = (kind & 0xFFFF) as usize;
+		let mark = ((kind >> 16) & 1) as usize;
+		(base * 2 + mark) * 32 + node as usize
 	}
 
 	pub fn get(&self, mv: SearchMove) -> i32 {
 		match mv {
 			SearchMove::Move { from, to } => self.moves[from as usize * 32 + to as usize],
-			SearchMove::Add { kind, node } => self.adds[kind as usize * 32 + node as usize],
+			SearchMove::Add { kind, node } => self.adds[Self::add_ix(kind, node)],
+			SearchMove::Claim { node } => self.claims[node as usize],
 			SearchMove::Pass => 0,
 		}
 	}
@@ -164,7 +197,11 @@ impl HistoryTable {
 				*slot = (*slot + inc).min(20_000);
 			}
 			SearchMove::Add { kind, node } => {
-				let slot = &mut self.adds[kind as usize * 32 + node as usize];
+				let slot = &mut self.adds[Self::add_ix(kind, node)];
+				*slot = (*slot + inc).min(20_000);
+			}
+			SearchMove::Claim { node } => {
+				let slot = &mut self.claims[node as usize];
 				*slot = (*slot + inc).min(20_000);
 			}
 			SearchMove::Pass => {}
@@ -178,6 +215,7 @@ pub struct Searcher {
 	mcts: Option<mcts::MctsTree>,
 	played_hashes: Vec<u64>,
 	stats: SearchStats,
+	config: SearchConfig,
 }
 
 impl Default for Searcher {
@@ -188,11 +226,16 @@ impl Default for Searcher {
 
 impl Searcher {
 	pub fn new() -> Self {
+		Self::with_config(SearchConfig::default())
+	}
+
+	pub fn with_config(config: SearchConfig) -> Self {
 		Self {
-			minimax: minimax::MinimaxState::new(),
+			minimax: minimax::MinimaxState::with_config(config),
 			mcts: None,
 			played_hashes: Vec::new(),
 			stats: SearchStats::default(),
+			config,
 		}
 	}
 
@@ -210,7 +253,7 @@ impl Searcher {
 	/// Walk trees to `game` (after an action was applied).
 	pub fn advance(&mut self, game: &Game) {
 		self.observe(game);
-		mcts::advance(&mut self.mcts, game);
+		mcts::advance(&mut self.mcts, game, self.config);
 	}
 
 	pub fn choose(
@@ -242,6 +285,7 @@ impl Searcher {
 			Actor::Greedy => greedy(game, rng, &self.played_hashes),
 			Actor::Minimax | Actor::MinimaxLegacy => {
 				self.minimax.legacy = actor == Actor::MinimaxLegacy;
+				self.minimax.config = self.config;
 				let (action, stats) =
 					minimax::search(&mut self.minimax, game, &self.played_hashes, rng, limit);
 				self.stats = stats;
@@ -255,6 +299,7 @@ impl Searcher {
 					self.minimax.last_move,
 					rng,
 					limit,
+					self.config,
 				);
 				self.stats = stats;
 				action
@@ -325,6 +370,9 @@ pub struct BranchingReport {
 	pub move_n: u64,
 	pub move_sum: u64,
 	pub move_max: u32,
+	pub claim_n: u64,
+	pub claim_sum: u64,
+	pub claim_max: u32,
 	pub all_n: u64,
 	pub all_sum: u64,
 	pub all_max: u32,
@@ -345,6 +393,14 @@ impl BranchingReport {
 			0.0
 		} else {
 			self.move_sum as f64 / self.move_n as f64
+		}
+	}
+
+	pub fn claim_avg(&self) -> f64 {
+		if self.claim_n == 0 {
+			0.0
+		} else {
+			self.claim_sum as f64 / self.claim_n as f64
 		}
 	}
 
@@ -369,6 +425,12 @@ impl BranchingReport {
 			self.move_n += 1;
 			self.move_sum += u64::from(moves);
 			self.move_max = self.move_max.max(moves);
+		}
+		let claims = game.legal_claims().len() as u32;
+		if claims > 0 {
+			self.claim_n += 1;
+			self.claim_sum += u64::from(claims);
+			self.claim_max = self.claim_max.max(claims);
 		}
 		self.all_n += 1;
 		self.all_sum += u64::from(all);
@@ -560,6 +622,125 @@ mod tests {
 	}
 
 	#[test]
+	fn minimax_takes_cascade_control_win_at_target_four() {
+		use crate::game::{EndReason, EndgameRule, GameStatus, Player, TileColor};
+
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = true;
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.control_hold_turns = 1;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(2) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		let land = inner[2];
+		let from = game
+			.board()
+			.neighbors(land)
+			.iter()
+			.copied()
+			.find(|&n| game.board().is_spawn(n) && game.tile_at(n).is_none())
+			.expect("empty inner has a spawn neighbor");
+		let mover = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(from, mover);
+		game.set_budget_tokens(Player::One, Vec::new());
+		// Keep P2 alive and away from P1's landing so the winning MOVE is
+		// Control, not Elimination / LockedOut.
+		let mut hot = std::collections::HashSet::new();
+		for (node, tile) in game.tiles() {
+			if tile.owner == Player::One {
+				hot.insert(node);
+				hot.extend(game.board().neighbors(node).iter().copied());
+			}
+		}
+		hot.insert(land);
+		hot.extend(game.board().neighbors(land).iter().copied());
+		let p2_homes: Vec<_> = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.filter(|s| !hot.contains(s) && game.tile_at(*s).is_none())
+			.take(2)
+			.collect();
+		assert!(p2_homes.len() >= 2, "need two distant spawns for P2, got {p2_homes:?}");
+		for &s in &p2_homes {
+			let opp = game.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+			game.place_tile(s, opp);
+		}
+		game.set_budget_tokens(Player::Two, Vec::new());
+		assert_eq!(game.max_material(), 4);
+		assert_eq!(game.control_need(), 4);
+		assert_eq!(game.control_count(Player::One), 3);
+		assert!(game.is_alive(Player::Two));
+		game.set_current(Player::One);
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control },
+			"minimax should take the cascade control win, got {:?} after {action:?} (winning dest {from}->{land})",
+			game.status()
+		);
+	}
+
+	#[test]
+	fn minimax_takes_cascade_turn_gain_extra_turn_win() {
+		use crate::game::{EndReason, GameStatus, Player};
+
+		let (mut game, extra, from, _land) = Game::cascade_turn_gain_forced_extra_win();
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		assert_eq!(
+			action,
+			crate::game::Action::Add { bench_index: 0, node: extra },
+			"should ADD to drop and keep the extra turn"
+		);
+		assert!(game.apply(action).is_ok());
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.current_player(), Player::One);
+		assert!(game.extra_turn_active());
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		match action {
+			crate::game::Action::Move { from: src, .. } => {
+				assert_eq!(src, from, "extra-turn MOVE should be the piece just ADDed");
+			}
+			other => panic!("expected MOVE from {from}, got {other:?}"),
+		}
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	#[test]
+	fn minimax_takes_immediate_cascade_drop_win() {
+		use crate::game::{EndReason, GameStatus, Player};
+
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(game.control_need(), 5);
+		assert_eq!(game.control_ratchet(), 5);
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		assert_eq!(action, crate::game::Action::Claim { node: extra });
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(game.control_win_immediate());
+		assert_eq!(game.control_ratchet(), 4);
+	}
+
+	#[test]
 	fn minimax_completes_control_hold_instead_of_vacating() {
 		use crate::game::{EndReason, GameStatus, Player, TileColor};
 
@@ -688,6 +869,31 @@ mod tests {
 	}
 
 	#[test]
+	fn mcts_root_parallel_returns_a_legal_move() {
+		let game = Game::new(RuleSet::default(), 8);
+		let mut cfg = SearchConfig::enhanced();
+		cfg.mcts_root_threads = 2;
+		let mut searcher = Searcher::with_config(cfg);
+		let mut rng = StdRng::seed_from_u64(8);
+		let action = searcher.choose_with(&game, Actor::Mcts, &mut rng, SearchLimit::work(80, 16));
+		assert!(game.legal_actions().contains(&action));
+		assert_eq!(searcher.stats().iterations, 16);
+	}
+
+	#[test]
+	fn mcts_reports_tree_depth() {
+		let game = Game::new(RuleSet::default(), 8);
+		let mut rng = StdRng::seed_from_u64(8);
+		let mut searcher = Searcher::new();
+		let _ = searcher.choose_with(&game, Actor::Mcts, &mut rng, SearchLimit::work(80, 24));
+		let st = searcher.stats();
+		assert!(st.mcts_max_depth >= 1, "expanded MCTS tree should have depth >= 1");
+		assert!(st.mcts_avg_depth > 0.0);
+		assert!(st.mcts_avg_depth <= f32::from(st.mcts_max_depth) + 1e-3);
+		assert_eq!(st.depth, 0, "MCTS does not fill minimax completed-ID depth");
+	}
+
+	#[test]
 	fn mcts_reports_iterations_per_move() {
 		let mut game = Game::new(RuleSet::default(), 8);
 		let mut rng = StdRng::seed_from_u64(8);
@@ -708,16 +914,22 @@ mod tests {
 	}
 
 	#[test]
-	fn shuffle_bags_is_noop_when_the_deck_is_public() {
+	fn shuffle_bags_does_not_touch_the_public_bench() {
 		let mut game = Game::new(RuleSet::default(), 1);
-		assert!(game.bag(Player::One).is_empty());
+		assert_eq!(
+			game.bag_len(Player::One),
+			crate::game::BAG_SIZE - crate::game::BAG_SIZE_DEFAULT
+		);
 		let kinds =
 			|g: &Game, p: Player| g.bench(p).iter().map(|t| t.kind_index()).collect::<Vec<_>>();
 		let before = kinds(&game, Player::One);
 		let mut rng = StdRng::seed_from_u64(99);
 		game.shuffle_bags(&mut rng);
 		assert_eq!(before, kinds(&game, Player::One));
-		assert!(game.bag(Player::One).is_empty());
+		assert_eq!(
+			game.bag_len(Player::One),
+			crate::game::BAG_SIZE - crate::game::BAG_SIZE_DEFAULT
+		);
 	}
 
 	#[test]

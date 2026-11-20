@@ -27,4 +27,11 @@ Each RFC directory should contain:
 ## Index
 
 - [rfc-001-001-001-rosette-redesign](./rfc-001-001-001-rosette-redesign/README.md) — 8-petal rosette board, color overwhelm, bench/bag, exact-`d` MOVE, stall-prevention RuleSet options
-- [rfc-001-001-002-independent-channels](./rfc-001-001-002-independent-channels/README.md) — independent additive normal / zag / braid edge channels; accepted default: channels + flat-1 failed braids + public 11-tile deck with spawn tokens + doubles allowed
+- [rfc-001-001-002-independent-channels](./rfc-001-001-002-independent-channels/README.md) — independent additive normal / zag / braid / bead edge channels; `--channel-mode additive` restores this stacking
+- [rfc-001-001-008-independent-max-channels](./rfc-001-001-008-independent-max-channels/README.md) — experimental default: max match / max mismatch of any one channel; beads are light 5:3:1; braids remain the only heavy group
+- [rfc-001-001-003-deck-building](./rfc-001-001-003-deck-building/README.md) — 27-tile collections, 7+4 public bench, reserves never usable, 6-ring-per-type cap (zag, braid, bead; braids count by slots)
+- [rfc-001-001-004-beads](./rfc-001-001-004-beads/README.md) — fourth ring type: beads as a bomb against non-matching colors; unmatched bead rings +1 each, single match −1 per edge
+- [rfc-001-001-005-capture-modifiers](./rfc-001-001-005-capture-modifiers/README.md) — every tile is a dot or a triangle: captures from that tile go to the mover's bench or to spawn tokens
+- [rfc-001-001-006-emblems](./rfc-001-001-006-emblems/README.md) — one optional emblem slot per tile (Crescent Moon, Two Zag Zs); +1 deck cost; rare generation (200/1/1)
+- [rfc-001-001-007-character-library](./rfc-001-001-007-character-library/README.md) — twenty-five named character medallion PNGs with ids and a Bevy asset manifest; not yet wired into generation
+- [rfc-000-000-00n-generation](./rfc-000-000-00n-generation/README.md) — two-pass tile generation; versioned character assignment (specific map, aesthetic embedding, fallback)

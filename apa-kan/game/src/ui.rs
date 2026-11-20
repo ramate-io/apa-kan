@@ -11,17 +11,29 @@ use rand::SeedableRng;
 use crate::ai;
 use crate::board::NodeId;
 use crate::config::GameConfig;
-use crate::game::{Action, BudgetToken, DeckSlot, Game, Player, Tile, ZagMismatchCount};
+use crate::deck::{
+	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
+};
+use crate::game::{Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
 	let screenshot = cfg.screenshot.clone();
 	let from_start = cfg.screenshot_from_start;
-	let game = if screenshot.is_some() && !from_start {
-		visual::demo_midgame()
+	let interactive_setup = cfg.bot1.is_human() || cfg.bot2.is_human();
+	let (game, setup_session) = if screenshot.is_some() && !from_start {
+		(visual::demo_midgame(), None)
+	} else if screenshot.is_some() || !interactive_setup {
+		match Game::start_with(cfg.rules, cfg.seed, cfg.scenario.as_ref(), cfg.setup) {
+			Ok(g) => (g, None),
+			Err(err) => {
+				eprintln!("{err}");
+				std::process::exit(1);
+			}
+		}
 	} else {
-		match Game::start(cfg.rules, cfg.seed, cfg.scenario.as_ref()) {
-			Ok(g) => g,
+		match SetupSession::begin(&cfg) {
+			Ok(session) => (Game::empty(cfg.rules), Some(session)),
 			Err(err) => {
 				eprintln!("{err}");
 				std::process::exit(1);
@@ -31,6 +43,7 @@ pub fn run_app(cfg: GameConfig) {
 	let rng = StdRng::seed_from_u64(cfg.seed ^ 0xA5A5_A5A5);
 	let width = cfg.width;
 	let height = cfg.height;
+	let search = cfg.search;
 	let deck_slots = game.rules().bag_size as usize;
 	let mut resolution = WindowResolution::new(width, height);
 	resolution.set_scale_factor_override(Some(1.0));
@@ -47,6 +60,7 @@ pub fn run_app(cfg: GameConfig) {
 		.insert_resource(ConfigRes(cfg))
 		.insert_resource(PlayState {
 			game,
+			setup: setup_session,
 			selection: Selection::None,
 			log: if screenshot.is_some() && !from_start {
 				"P1 ADD orange w2 d2 at center".into()
@@ -55,7 +69,10 @@ pub fn run_app(cfg: GameConfig) {
 			},
 			warning: String::new(),
 			last_removals: String::new(),
+			flash: visual::CaptureFlash::empty(),
 			fingerprint: 0,
+			search1: ai::Searcher::with_config(search),
+			search2: ai::Searcher::with_config(search),
 		})
 		.insert_resource(RngRes(rng))
 		.insert_resource(BotClock { wait: 0.4 })
@@ -101,11 +118,334 @@ impl std::ops::Deref for UiLayout {
 #[derive(Resource)]
 struct PlayState {
 	game: Game,
+	setup: Option<SetupSession>,
 	selection: Selection,
 	log: String,
 	warning: String,
 	last_removals: String,
+	flash: visual::CaptureFlash,
 	fingerprint: u64,
+	search1: ai::Searcher,
+	search2: ai::Searcher,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SetupStage {
+	Opening(Player),
+	Reveal,
+	Extend(Player),
+	Done,
+}
+
+#[derive(Clone)]
+struct SetupSession {
+	rules: crate::game::RuleSet,
+	seed: u64,
+	cfg: SetupConfig,
+	decks: [Vec<Tile>; 2],
+	pick7: [Vec<usize>; 2],
+	extend: [Vec<usize>; 2],
+	selected: Vec<usize>,
+	stage: SetupStage,
+}
+
+impl SetupSession {
+	fn begin(cfg: &GameConfig) -> Result<Self, String> {
+		let mut next_id = 1u32;
+		let mut rules = cfg.rules;
+		if let Some(s) = cfg.scenario.as_ref() {
+			if s.generative {
+				rules.identical_bags = s.mirror;
+			}
+		}
+		let decks = if let Some(s) = cfg.scenario.as_ref() {
+			if s.generative {
+				deck::generate_both_collections(&rules, &cfg.setup, cfg.seed, &mut next_id)
+			} else {
+				let game = Game::from_scenario_with(rules, cfg.seed, s, cfg.setup)?;
+				let rec = game.setup_record().cloned().ok_or("scenario produced no setup")?;
+				return Ok(Self {
+					rules,
+					seed: cfg.seed,
+					cfg: cfg.setup,
+					decks: rec.decks,
+					pick7: [Vec::new(), Vec::new()],
+					extend: [Vec::new(), Vec::new()],
+					selected: Vec::new(),
+					stage: SetupStage::Opening(Player::One),
+				});
+			}
+		} else {
+			deck::generate_both_collections(&rules, &cfg.setup, cfg.seed, &mut next_id)
+		};
+		Ok(Self {
+			rules,
+			seed: cfg.seed,
+			cfg: cfg.setup,
+			decks,
+			pick7: [Vec::new(), Vec::new()],
+			extend: [Vec::new(), Vec::new()],
+			selected: Vec::new(),
+			stage: SetupStage::Opening(Player::One),
+		})
+	}
+
+	fn actor_player(&self) -> Option<Player> {
+		match self.stage {
+			SetupStage::Opening(p) | SetupStage::Extend(p) => Some(p),
+			SetupStage::Reveal | SetupStage::Done => None,
+		}
+	}
+
+	fn need(&self) -> usize {
+		match self.stage {
+			SetupStage::Opening(p) => pick_plan(self.decks[p.index()].len()).0,
+			SetupStage::Extend(p) => pick_plan(self.decks[p.index()].len()).1,
+			SetupStage::Reveal | SetupStage::Done => 0,
+		}
+	}
+
+	fn reserve_tiles(&self, p: Player) -> Vec<Tile> {
+		let used = self.picked_tiles(p, true);
+		self.decks[p.index()]
+			.iter()
+			.copied()
+			.filter(|t| !used.iter().any(|u| u.id == t.id))
+			.collect()
+	}
+
+	fn picked_tiles(&self, p: Player, opening_only: bool) -> Vec<Tile> {
+		let deck = &self.decks[p.index()];
+		let mut out: Vec<Tile> =
+			self.pick7[p.index()].iter().filter_map(|&i| deck.get(i).copied()).collect();
+		if !opening_only {
+			out.extend(self.extend[p.index()].iter().filter_map(|&i| deck.get(i).copied()));
+		}
+		out
+	}
+
+	fn committed_tiles(&self, p: Player) -> Vec<Tile> {
+		match self.stage {
+			SetupStage::Opening(_) => Vec::new(),
+			SetupStage::Extend(_) | SetupStage::Reveal | SetupStage::Done => {
+				self.picked_tiles(p, true)
+			}
+		}
+	}
+
+	fn pool_tiles(&self) -> Vec<Tile> {
+		match self.stage {
+			SetupStage::Opening(p) => self.decks[p.index()].clone(),
+			SetupStage::Extend(p) => self.reserve_tiles(p),
+			SetupStage::Reveal | SetupStage::Done => Vec::new(),
+		}
+	}
+
+	fn candidate_tiles(&self, p: Player) -> Vec<Tile> {
+		let mut cur = self.committed_tiles(p);
+		let pool = self.pool_tiles();
+		for &i in &self.selected {
+			if let Some(t) = pool.get(i) {
+				cur.push(*t);
+			}
+		}
+		cur
+	}
+
+	fn can_confirm(&self) -> bool {
+		match self.stage {
+			SetupStage::Reveal | SetupStage::Done => true,
+			SetupStage::Opening(p) | SetupStage::Extend(p) => {
+				self.selected.len() == self.need() && respects_type_cap(&self.candidate_tiles(p))
+			}
+		}
+	}
+
+	fn toggle(&mut self, index: usize) -> Result<(), String> {
+		let Some(p) = self.actor_player() else {
+			return Ok(());
+		};
+		if let Some(pos) = self.selected.iter().position(|&i| i == index) {
+			self.selected.remove(pos);
+			return Ok(());
+		}
+		if self.selected.len() >= self.need() {
+			return Err(format!("already picked {} tiles", self.need()));
+		}
+		let pool = self.pool_tiles();
+		let Some(tile) = pool.get(index).copied() else {
+			return Err("no tile there".into());
+		};
+		let mut cur = self.committed_tiles(p);
+		for &i in &self.selected {
+			if let Some(t) = pool.get(i) {
+				cur.push(*t);
+			}
+		}
+		if !would_respect_cap(&cur, tile) {
+			cur.push(tile);
+			return Err(format!(
+				"illegal: exceeds the 6-ring-per-type cap ({})",
+				visual::format_setup_cap(&cur)
+			));
+		}
+		self.selected.push(index);
+		Ok(())
+	}
+
+	fn visible_bench(&self, p: Player) -> Vec<Tile> {
+		match self.stage {
+			SetupStage::Opening(cur) if cur == p => self.candidate_tiles(p),
+			SetupStage::Opening(_) => Vec::new(),
+			SetupStage::Extend(cur) if cur == p => self.candidate_tiles(p),
+			SetupStage::Reveal | SetupStage::Extend(_) | SetupStage::Done => {
+				self.picked_tiles(p, true)
+			}
+		}
+	}
+
+	fn auto_pick(&mut self, p: Player) {
+		let (opening, ext) = pick_plan(self.decks[p.index()].len());
+		match self.stage {
+			SetupStage::Opening(cur) if cur == p => {
+				let tiles = pick_from_pool(
+					&self.decks[p.index()],
+					opening,
+					&[],
+					&[],
+					ext,
+					p,
+					&self.rules,
+					self.cfg.pick,
+					self.cfg.limit,
+					self.cfg.deck_seed(self.seed) ^ 0x0707,
+				);
+				self.pick7[p.index()] = indices_of(&self.decks[p.index()], &tiles);
+				self.selected.clear();
+				self.stage = next_after_opening(p);
+			}
+			SetupStage::Extend(cur) if cur == p => {
+				let mine7 = self.picked_tiles(p, true);
+				let opp7 = self.picked_tiles(p.other(), true);
+				let reserves = self.reserve_tiles(p);
+				let tiles = pick_from_pool(
+					&reserves,
+					ext,
+					&mine7,
+					&opp7,
+					0,
+					p,
+					&self.rules,
+					self.cfg.pick,
+					self.cfg.limit,
+					self.cfg.deck_seed(self.seed) ^ 0xE4E4,
+				);
+				self.extend[p.index()] = indices_of(&self.decks[p.index()], &tiles);
+				self.selected.clear();
+				self.stage = next_after_extend(p);
+			}
+			_ => {}
+		}
+	}
+
+	fn confirm_human(&mut self) -> Result<(), String> {
+		match self.stage {
+			SetupStage::Reveal => {
+				self.stage = SetupStage::Extend(Player::One);
+				self.selected.clear();
+				return Ok(());
+			}
+			SetupStage::Done => return Ok(()),
+			SetupStage::Opening(_) | SetupStage::Extend(_) => {}
+		}
+		let Some(p) = self.actor_player() else {
+			return Ok(());
+		};
+		if !self.can_confirm() {
+			return Err(
+				"pick a legal set under the 6-ring-per-type cap (braids count by slots)".into()
+			);
+		}
+		match self.stage {
+			SetupStage::Opening(_) => {
+				self.pick7[p.index()] = self.selected.clone();
+				self.selected.clear();
+				self.stage = next_after_opening(p);
+			}
+			SetupStage::Extend(_) => {
+				let reserves = self.reserve_tiles(p);
+				let chosen: Vec<Tile> =
+					self.selected.iter().filter_map(|&i| reserves.get(i).copied()).collect();
+				self.extend[p.index()] = indices_of(&self.decks[p.index()], &chosen);
+				self.selected.clear();
+				self.stage = next_after_extend(p);
+			}
+			SetupStage::Reveal | SetupStage::Done => {}
+		}
+		Ok(())
+	}
+
+	fn is_ready(&self) -> bool {
+		matches!(self.stage, SetupStage::Done)
+	}
+
+	fn finish(self) -> SetupRecord {
+		let tiles = |deck: &[Tile], idx: &[usize]| {
+			idx.iter().filter_map(|&i| deck.get(i).copied()).collect::<Vec<_>>()
+		};
+		SetupRecord {
+			decks: self.decks.clone(),
+			pick7: [tiles(&self.decks[0], &self.pick7[0]), tiles(&self.decks[1], &self.pick7[1])],
+			extend: [
+				tiles(&self.decks[0], &self.extend[0]),
+				tiles(&self.decks[1], &self.extend[1]),
+			],
+			strategy: self.cfg.pick,
+			deck_seed: self.cfg.deck_seed(self.seed),
+			deck_noise: self.cfg.deck_noise,
+			p1_deck: self.cfg.p1_deck,
+			p2_deck: self.cfg.p2_deck,
+		}
+	}
+
+	fn prompt(&self) -> String {
+		match self.stage {
+			SetupStage::Opening(p) => format!(
+				"{}: pick {} tiles for your bench ({})",
+				p.label(),
+				self.need(),
+				visual::format_setup_cap(&self.candidate_tiles(p))
+			),
+			SetupStage::Reveal => {
+				"Both 7-tile benches are public. Click confirm to pick 4 from reserves.".into()
+			}
+			SetupStage::Done => "Starting...".into(),
+			SetupStage::Extend(p) => format!(
+				"{}: pick {} from reserves ({})",
+				p.label(),
+				self.need(),
+				visual::format_setup_cap(&self.candidate_tiles(p))
+			),
+		}
+	}
+}
+
+fn next_after_opening(p: Player) -> SetupStage {
+	match p {
+		Player::One => SetupStage::Opening(Player::Two),
+		Player::Two => SetupStage::Reveal,
+	}
+}
+
+fn next_after_extend(p: Player) -> SetupStage {
+	match p {
+		Player::One => SetupStage::Extend(Player::Two),
+		Player::Two => SetupStage::Done,
+	}
+}
+
+fn indices_of(deck: &[Tile], chosen: &[Tile]) -> Vec<usize> {
+	chosen.iter().filter_map(|t| deck.iter().position(|d| d.id == t.id)).collect()
 }
 
 #[derive(Resource)]
@@ -228,6 +568,9 @@ fn handle_click(
 	layout: Res<UiLayout>,
 ) {
 	if keys.just_pressed(KeyCode::Escape) {
+		if let Some(session) = play.setup.as_mut() {
+			session.selected.clear();
+		}
 		play.selection = Selection::None;
 		play.warning.clear();
 		return;
@@ -238,9 +581,19 @@ fn handle_click(
 	if play.game.status().is_over() {
 		return;
 	}
-	let actor = cfg.actor(play.game.current_player());
-	if !actor.is_human() {
+	let allow_setup = match play.setup.as_ref().map(|s| s.stage) {
+		Some(SetupStage::Reveal | SetupStage::Done) => true,
+		Some(SetupStage::Opening(p) | SetupStage::Extend(p)) => cfg.actor(p).is_human(),
+		None => false,
+	};
+	if play.setup.is_some() && !allow_setup {
 		return;
+	}
+	if play.setup.is_none() {
+		let actor = cfg.actor(play.game.current_player());
+		if !actor.is_human() {
+			return;
+		}
 	}
 	let Some(window) = windows.iter().next() else {
 		return;
@@ -255,7 +608,76 @@ fn handle_click(
 		Ok(p) => p,
 		Err(_) => return,
 	};
+	if play.setup.is_some() {
+		try_click_setup(&mut play, &layout.0, world_pos);
+		complete_setup_if_ready(&mut play);
+		return;
+	}
 	try_click(&mut play, &layout.0, world_pos);
+}
+
+fn try_click_setup(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
+	let Some(session) = play.setup.as_mut() else {
+		return;
+	};
+	if hit_setup_confirm(layout, pos) {
+		match session.confirm_human() {
+			Ok(()) => {
+				play.warning.clear();
+				play.log = session.prompt();
+			}
+			Err(err) => play.warning = err,
+		}
+		return;
+	}
+	let pool_len = session.pool_tiles().len();
+	if let Some(i) = hit_setup_grid(pool_len, layout, pos) {
+		match session.toggle(i) {
+			Ok(()) => {
+				play.warning.clear();
+				play.log = session.prompt();
+			}
+			Err(err) => play.warning = err,
+		}
+	}
+}
+
+fn hit_setup_confirm(layout: &ViewLayout, pos: Vec2) -> bool {
+	let p = layout.setup_confirm_pos();
+	pos.distance_squared(Vec2::new(p[0], p[1])) <= 52.0 * 52.0
+}
+
+fn hit_setup_grid(len: usize, layout: &ViewLayout, pos: Vec2) -> Option<usize> {
+	let r = layout.bench_tile_radius + 8.0;
+	let mut best = None;
+	let mut best_d = r * r;
+	for i in 0..len {
+		let p = layout.setup_grid_pos(i, len);
+		let d = pos.distance_squared(Vec2::new(p[0], p[1]));
+		if d <= best_d {
+			best_d = d;
+			best = Some(i);
+		}
+	}
+	best
+}
+
+fn complete_setup_if_ready(play: &mut PlayState) {
+	let Some(session) = play.setup.take() else {
+		return;
+	};
+	if !session.is_ready() {
+		play.setup = Some(session);
+		return;
+	}
+	let rules = session.rules;
+	let seed = session.seed;
+	let rec = session.finish();
+	play.game = Game::from_setup_record(rules, seed, rec);
+	play.log = "Setup complete. 11-tile benches are public.".into();
+	play.warning.clear();
+	play.selection = Selection::None;
+	play.fingerprint = 0;
 }
 
 fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
@@ -290,6 +712,10 @@ fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
 			_ => {}
 		}
 		if let Some(tile) = play.game.tile_at(node) {
+			if play.game.rules().capture_mode.allows_claim() && play.game.is_overwhelmed(node) {
+				apply_action(play, Action::Claim { node });
+				return;
+			}
 			if tile.owner == current {
 				play.selection = Selection::Piece(node);
 				play.warning.clear();
@@ -312,6 +738,7 @@ fn attempt_add(play: &mut PlayState, bench_index: usize, node: NodeId) {
 fn apply_action(play: &mut PlayState, action: Action) {
 	match play.game.apply(action) {
 		Ok(outcome) => {
+			play.flash = visual::CaptureFlash::from_outcome(&outcome);
 			play.log = outcome.log_line;
 			if outcome.removals.is_empty() {
 				play.last_removals.clear();
@@ -334,6 +761,8 @@ fn apply_action(play: &mut PlayState, action: Action) {
 			}
 			play.selection = Selection::None;
 			play.warning.clear();
+			play.search1.advance(&play.game);
+			play.search2.advance(&play.game);
 		}
 		Err(err) => {
 			play.warning = err;
@@ -436,10 +865,46 @@ fn bot_turn(
 	mut play: ResMut<PlayState>,
 	mut rng: ResMut<RngRes>,
 ) {
-	if play.game.status().is_over() {
+	if cfg.screenshot.is_some() {
 		return;
 	}
-	if cfg.screenshot.is_some() {
+	if play.setup.is_some() {
+		complete_setup_if_ready(&mut play);
+		let human_waiting = match play.setup.as_ref().map(|s| s.stage) {
+			Some(SetupStage::Opening(p) | SetupStage::Extend(p)) => cfg.actor(p).is_human(),
+			Some(SetupStage::Reveal | SetupStage::Done) => false,
+			None => false,
+		};
+		if human_waiting {
+			clock.wait = cfg.delay.as_secs_f32();
+			return;
+		}
+		if play.setup.is_none() {
+			return;
+		}
+		clock.wait -= time.delta().as_secs_f32();
+		if clock.wait > 0.0 {
+			return;
+		}
+		clock.wait = cfg.delay.as_secs_f32();
+		if let Some(session) = play.setup.as_mut() {
+			match session.stage {
+				SetupStage::Reveal => {
+					let _ = session.confirm_human();
+				}
+				SetupStage::Opening(p) | SetupStage::Extend(p) => {
+					session.auto_pick(p);
+				}
+				SetupStage::Done => {}
+			}
+		}
+		let prompt = play.setup.as_ref().map(|s| s.prompt()).unwrap_or_default();
+		play.log = prompt;
+		play.warning.clear();
+		complete_setup_if_ready(&mut play);
+		return;
+	}
+	if play.game.status().is_over() {
 		return;
 	}
 	let actor = cfg.actor(play.game.current_player());
@@ -452,7 +917,15 @@ fn bot_turn(
 		return;
 	}
 	clock.wait = cfg.delay.as_secs_f32();
-	let action = ai::choose(&play.game, actor, &mut rng.0, cfg.think);
+	let player = play.game.current_player();
+	let think = cfg.think;
+	let action = {
+		let PlayState { game, search1, search2, .. } = &mut *play;
+		match player {
+			Player::One => search1.choose(game, actor, &mut rng.0, think),
+			Player::Two => search2.choose(game, actor, &mut rng.0, think),
+		}
+	};
 	apply_action(&mut play, action);
 }
 
@@ -492,7 +965,7 @@ fn refresh_view(
 			play.game.tile_at(arc.from),
 			play.game.tile_at(arc.to),
 			board.center(),
-			play.game.rules().zag_mismatch,
+			play.game.rules(),
 		);
 	}
 
@@ -537,8 +1010,21 @@ fn refresh_view(
 		}
 	}
 
+	if play.setup.is_some() {
+		draw_setup_view(
+			&mut commands,
+			&mut meshes,
+			&mut materials,
+			layout,
+			play.setup.as_ref().unwrap(),
+		);
+		return;
+	}
+
 	for id in 0..board.node_count() as NodeId {
 		if let Some(tile) = play.game.tile_at(id) {
+			let claimable =
+				play.game.rules().capture_mode.allows_claim() && play.game.is_overwhelmed(id);
 			spawn_tile_at(
 				&mut commands,
 				&mut meshes,
@@ -546,8 +1032,17 @@ fn refresh_view(
 				world_v(layout, board.position(id)),
 				tile,
 				matches!(play.selection, Selection::Piece(n) if n == id),
+				false,
 				layout.tile_radius,
 			);
+			if claimable {
+				spawn_label(
+					&mut commands,
+					world_v(layout, board.position(id))
+						+ Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
+					"CLAIM",
+				);
+			}
 		} else if board.is_spawn(id) && matches!(play.selection, Selection::Bench(_)) {
 			spawn_label(
 				&mut commands,
@@ -572,6 +1067,7 @@ fn refresh_view(
 					player,
 					layout.bench_tile_radius,
 					0,
+					false,
 				),
 				DeckSlot::Live(tile) => {
 					let bench_i = play.game.bench(player).iter().position(|t| t.id == tile.id);
@@ -579,6 +1075,7 @@ fn refresh_view(
 						&& bench_i
 							.map(|idx| play.selection == Selection::Bench(idx))
 							.unwrap_or(false);
+					let just_captured = play.flash.highlights_tile(tile.id, CaptureDest::Bench);
 					spawn_tile_at(
 						&mut commands,
 						&mut meshes,
@@ -586,15 +1083,23 @@ fn refresh_view(
 						Vec2::new(p[0], p[1]),
 						*tile,
 						highlight,
+						just_captured,
 						layout.bench_tile_radius,
 					);
 				}
 				DeckSlot::Spent(_) => {}
 			}
 		}
-		let n = play.game.budget_tokens(player).len();
+		let tokens = play.game.budget_tokens(player);
+		let n = tokens.len();
 		for i in 0..n {
 			let p = layout.budget_stack_pos(player, i, n);
+			let just_captured = match tokens[i] {
+				BudgetToken::Captured(tile) => {
+					play.flash.highlights_tile(tile.id, CaptureDest::Tokens)
+				}
+				BudgetToken::Blank => false,
+			};
 			spawn_solid_token(
 				&mut commands,
 				&mut meshes,
@@ -603,6 +1108,84 @@ fn refresh_view(
 				player,
 				layout.bench_tile_radius,
 				i,
+				just_captured,
+			);
+		}
+	}
+
+	if !play.flash.is_empty() {
+		let n = play.flash.tiles.len();
+		let r = layout.capture_flash_radius();
+		for (i, tile) in play.flash.tiles.iter().enumerate() {
+			let p = layout.capture_flash_pos(i, n);
+			spawn_tile_at(
+				&mut commands,
+				&mut meshes,
+				&mut materials,
+				Vec2::new(p[0], p[1]),
+				*tile,
+				false,
+				false,
+				r,
+			);
+		}
+	}
+}
+
+fn draw_setup_view(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	layout: &ViewLayout,
+	session: &SetupSession,
+) {
+	let pool = session.pool_tiles();
+	let n = pool.len();
+	for (i, tile) in pool.iter().enumerate() {
+		let p = layout.setup_grid_pos(i, n);
+		let selected = session.selected.contains(&i);
+		spawn_tile_at(
+			commands,
+			meshes,
+			materials,
+			Vec2::new(p[0], p[1]),
+			*tile,
+			selected,
+			false,
+			layout.bench_tile_radius,
+		);
+	}
+	for player in [Player::Two, Player::One] {
+		let bench = session.visible_bench(player);
+		let n = bench.len();
+		for (i, tile) in bench.iter().enumerate() {
+			let p = layout.bench_pos(player, i, n.max(1));
+			spawn_tile_at(
+				commands,
+				meshes,
+				materials,
+				Vec2::new(p[0], p[1]),
+				*tile,
+				false,
+				false,
+				layout.bench_tile_radius,
+			);
+		}
+	}
+	if !matches!(session.stage, SetupStage::Done) {
+		let p = layout.setup_confirm_pos();
+		let label = if session.can_confirm() { "CONFIRM" } else { "pick" };
+		spawn_label(commands, Vec2::new(p[0], p[1]), label);
+		if session.can_confirm() {
+			spawn_ring(
+				commands,
+				meshes,
+				materials,
+				Vec2::new(p[0], p[1]),
+				layout.bench_tile_radius + 4.0,
+				layout.bench_tile_radius + 8.0,
+				rgb(visual::HIGHLIGHT_RGB),
+				visual::Z_HIGHLIGHT,
 			);
 		}
 	}
@@ -641,7 +1224,7 @@ fn spawn_arc(
 	from: Option<Tile>,
 	to: Option<Tile>,
 	center: NodeId,
-	zag_mismatch: ZagMismatchCount,
+	rules: &crate::game::RuleSet,
 ) {
 	let samples = arc.sample(visual::ARC_SAMPLES);
 	let pts: Vec<[f64; 2]> = samples
@@ -652,7 +1235,7 @@ fn spawn_arc(
 		})
 		.collect();
 	let width = layout.arc_width;
-	let paint = visual::arc_paint_with(from, to, zag_mismatch);
+	let paint = visual::arc_paint_for_rules(from, to, rules);
 	let stripe_off = if visual::arc_touches_center(arc, center) {
 		f64::from(layout.stripe_off_center)
 	} else {
@@ -842,6 +1425,65 @@ fn spawn_arc(
 			rgb(visual::tile_rgb(color)),
 			visual::Z_ARC_OVER + 0.03 * i as f32,
 		);
+	}
+	spawn_bead_lane(
+		commands,
+		meshes,
+		materials,
+		&pts,
+		&paint,
+		lanes[3].unwrap_or(0.0),
+		layout.scale,
+		layout.arc_width,
+	);
+}
+
+fn spawn_bead_lane(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f64; 2]],
+	paint: &visual::ArcPaint,
+	lane: f64,
+	scale: f32,
+	arc_width: f32,
+) {
+	if !paint.has_bead_lane() {
+		return;
+	}
+	let spacing = visual::ARC_BEAD_SPACING_UNITS * f64::from(scale);
+	let bead_r = visual::arc_bead_radius(arc_width);
+	let pinch = f64::from(visual::bead_pinch(bead_r));
+	let mut z = visual::Z_ARC_OVER + 0.04;
+	let push = |commands: &mut Commands,
+	            meshes: &mut Assets<Mesh>,
+	            materials: &mut Assets<ColorMaterial>,
+	            color: crate::game::TileColor,
+	            off: f64,
+	            z: f32| {
+		let line = visual::offset_polyline(pts, lane + off);
+		let tris = visual::bead_chain_triangles(&line, spacing, f64::from(bead_r), pinch);
+		spawn_filled_tris(commands, meshes, materials, &tris, rgb(visual::tile_rgb(color)), z);
+	};
+	if let Some(color) = paint.bead_match {
+		push(commands, meshes, materials, color, 0.0, z);
+		z += 0.01;
+	}
+	let n = paint.bead_from_count() + paint.bead_to_count() + paint.bead_mid_count();
+	let fan = visual::zag_center_offsets(n.max(1), spacing.max(1.0));
+	let mut i = 0usize;
+	for color in paint
+		.beads_from
+		.iter()
+		.chain(paint.beads_to.iter())
+		.chain(paint.beads_mid.iter())
+	{
+		let Some(color) = *color else {
+			continue;
+		};
+		push(commands, meshes, materials, color, fan.get(i).copied().unwrap_or(0.0), z);
+		z += 0.01;
+		i += 1;
 	}
 }
 
@@ -1079,6 +1721,81 @@ fn spawn_stroke(
 	));
 }
 
+fn spawn_stroke_capped(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f64; 2]],
+	width: f32,
+	color: Color,
+	z: f32,
+) {
+	spawn_stroke(commands, meshes, materials, pts, width, color, z);
+	let cap = (width * 0.5).max(0.35);
+	for p in [pts.first(), pts.last()].into_iter().flatten() {
+		commands.spawn((
+			DynamicView,
+			Mesh2d(meshes.add(Circle::new(cap))),
+			MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+			Transform::from_translation(Vec2::new(p[0] as f32, p[1] as f32).extend(z)),
+		));
+	}
+}
+
+fn spawn_filled_poly(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pts: &[[f32; 2]],
+	color: Color,
+	z: f32,
+) {
+	if pts.len() < 3 {
+		return;
+	}
+	spawn_filled_tris(commands, meshes, materials, &visual::polygon_triangles(pts), color, z);
+}
+
+fn spawn_filled_tris(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	tris: &[[[f32; 2]; 3]],
+	color: Color,
+	z: f32,
+) {
+	if tris.is_empty() {
+		return;
+	}
+	commands.spawn((
+		DynamicView,
+		Mesh2d(meshes.add(tris_mesh(tris))),
+		MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+		Transform::from_xyz(0.0, 0.0, z),
+	));
+}
+
+fn tris_mesh(tris: &[[[f32; 2]; 3]]) -> Mesh {
+	let mut positions: Vec<[f32; 3]> = Vec::with_capacity(tris.len() * 3);
+	let mut normals: Vec<[f32; 3]> = Vec::with_capacity(tris.len() * 3);
+	let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(tris.len() * 3);
+	let mut indices: Vec<u32> = Vec::with_capacity(tris.len() * 3);
+	for tri in tris {
+		let i0 = positions.len() as u32;
+		for p in tri {
+			positions.push([p[0], p[1], 0.0]);
+			normals.push([0.0, 0.0, 1.0]);
+			uvs.push([0.0, 0.0]);
+		}
+		indices.extend_from_slice(&[i0, i0 + 1, i0 + 2]);
+	}
+	Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+		.with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+		.with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+		.with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+		.with_inserted_indices(Indices::U32(indices))
+}
+
 fn polyline_mesh(pts: &[[f64; 2]], width: f32) -> Mesh {
 	let n = pts.len();
 	let hw = f64::from(width) / 2.0;
@@ -1143,6 +1860,7 @@ fn spawn_solid_token(
 	player: Player,
 	radius: f32,
 	stack_index: usize,
+	just_captured: bool,
 ) {
 	let fill_z = visual::token_stack_fill_z(stack_index);
 	let rim_z = visual::token_stack_rim_z(stack_index);
@@ -1166,6 +1884,39 @@ fn spawn_solid_token(
 		rgb(visual::BLANK_TOKEN_RIM_RGB),
 		rim_z,
 	);
+	if just_captured {
+		spawn_capture_glow(commands, meshes, materials, pos, radius);
+	}
+}
+
+fn spawn_capture_glow(
+	commands: &mut Commands,
+	meshes: &mut Assets<Mesh>,
+	materials: &mut Assets<ColorMaterial>,
+	pos: Vec2,
+	radius: f32,
+) {
+	let scale = (radius / visual::PREV_TILE_RADIUS_PX).max(0.4);
+	spawn_ring(
+		commands,
+		meshes,
+		materials,
+		pos,
+		radius + 1.6 * scale,
+		radius + 3.2 * scale,
+		rgb(visual::CAPTURE_GLOW_INNER_RGB),
+		visual::Z_HIGHLIGHT,
+	);
+	spawn_ring(
+		commands,
+		meshes,
+		materials,
+		pos,
+		radius + 3.4 * scale,
+		radius + 5.6 * scale,
+		rgb(visual::CAPTURE_GLOW_RGB),
+		visual::Z_HIGHLIGHT + 0.01,
+	);
 }
 
 fn spawn_tile_at(
@@ -1175,6 +1926,7 @@ fn spawn_tile_at(
 	pos: Vec2,
 	tile: Tile,
 	highlight: bool,
+	just_captured: bool,
 	radius: f32,
 ) {
 	let fill = rgb(visual::owner_fill_rgb(tile.owner));
@@ -1188,6 +1940,9 @@ fn spawn_tile_at(
 	));
 	let draw = visual::TileRingDraw::for_radius(radius);
 	let ring_half = draw.stroke * 0.5;
+	let marks = visual::capture_mark_count(tile);
+	let down = visual::CAPTURE_DOWN_BEVY;
+	let notches = visual::tile_notches(tile, down);
 	let strokes = tile.ring_strokes();
 	for k in 0..strokes {
 		if tile.stroke_is_braid(k) {
@@ -1197,34 +1952,72 @@ fn spawn_tile_at(
 		if r > 6.0 * draw.scale {
 			let color = tile.stroke_color(k);
 			let z = visual::Z_TILE_RING + f32::from(k) * 0.02;
+			let center = [f64::from(pos.x), f64::from(pos.y)];
 			if tile.stroke_is_zag(k) {
-				let zig = visual::zigzag_circle(
-					[f64::from(pos.x), f64::from(pos.y)],
+				for zig in visual::zigzag_notched(
+					center,
 					f64::from(r - ring_half * 0.5),
 					f64::from(draw.zag_amp),
 					draw.zag_teeth,
-					draw.zag_samples,
+					&notches,
+				) {
+					spawn_stroke_capped(
+						commands,
+						meshes,
+						materials,
+						&zig,
+						draw.zag_stroke.max(0.45),
+						rgb(visual::tile_rgb(color)),
+						z,
+					);
+				}
+			} else if tile.stroke_is_bead(k) {
+				let bead_r = f64::from(draw.bead_r.max(0.7));
+				let pinch = f64::from(visual::bead_pinch(bead_r as f32));
+				let rr = f64::from(r - ring_half * 0.5);
+				let color = rgb(visual::tile_rgb(color));
+				let tris = visual::bead_chain_notched(
+					center,
+					rr,
+					draw.bead_count,
+					bead_r,
+					pinch,
+					visual::TILE_BEAD_SAMPLES,
+					&notches,
 				);
-				spawn_stroke(
-					commands,
-					meshes,
-					materials,
-					&zig,
-					draw.zag_stroke.max(0.45),
-					rgb(visual::tile_rgb(color)),
-					z,
-				);
+				spawn_filled_tris(commands, meshes, materials, &tris, color, z);
+				let cap = (pinch as f32).max(0.4);
+				for rim in
+					visual::tile_ring_notched(center, rr, &notches, visual::TILE_BEAD_SAMPLES)
+				{
+					for p in [rim.first(), rim.last()].into_iter().flatten() {
+						commands.spawn((
+							DynamicView,
+							Mesh2d(meshes.add(Circle::new(cap))),
+							MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+							Transform::from_translation(
+								Vec2::new(p[0] as f32, p[1] as f32).extend(z),
+							),
+						));
+					}
+				}
 			} else {
-				spawn_ring(
-					commands,
-					meshes,
-					materials,
-					pos,
-					(r - ring_half).max(1.0),
-					r,
-					rgb(visual::tile_rgb(color)),
-					z,
-				);
+				for rim in visual::tile_ring_notched(
+					center,
+					f64::from(r - ring_half * 0.5),
+					&notches,
+					visual::TILE_RING_ARC_SAMPLES,
+				) {
+					spawn_stroke_capped(
+						commands,
+						meshes,
+						materials,
+						&rim,
+						draw.stroke.max(1.2),
+						rgb(visual::tile_rgb(color)),
+						z,
+					);
+				}
 			}
 		}
 	}
@@ -1232,37 +2025,76 @@ fn spawn_tile_at(
 		let r = f64::from(draw.ring_radius(radius, 0) - ring_half * 0.5);
 		if r > 6.0 * f64::from(draw.scale) {
 			let center = [f64::from(pos.x), f64::from(pos.y)];
-			let rim = visual::circle_polyline(center, r, draw.braid_samples);
 			let amp = f64::from(draw.braid_amp);
-			let turns = visual::tile_braid_turns(r);
 			let w = draw.braid_stroke.max(0.28);
-			for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
-				spawn_braid_strand(
-					commands,
-					meshes,
-					materials,
-					&thread.pts,
-					&thread.phase,
-					w,
-					rgb(visual::tile_rgb(thread.color)),
-					visual::Z_TILE_RING,
-					visual::Z_TILE_RING + 0.08,
-				);
+			for rim in visual::tile_ring_notched(center, r, &notches, draw.braid_samples) {
+				let sweep = visual::polyline_angular_sweep(&rim, center);
+				let turns = visual::tile_braid_turns(r) * sweep / (2.0 * std::f64::consts::PI);
+				for thread in visual::braid_threads(&rim, amp, turns, tile.braid_colors()) {
+					let color = rgb(visual::tile_rgb(thread.color));
+					spawn_braid_strand(
+						commands,
+						meshes,
+						materials,
+						&thread.pts,
+						&thread.phase,
+						w,
+						color,
+						visual::Z_TILE_RING,
+						visual::Z_TILE_RING + 0.08,
+					);
+					let cap = (w * 0.5).max(0.28);
+					for p in [thread.pts.first(), thread.pts.last()].into_iter().flatten() {
+						commands.spawn((
+							DynamicView,
+							Mesh2d(meshes.add(Circle::new(cap))),
+							MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+							Transform::from_translation(
+								Vec2::new(p[0] as f32, p[1] as f32)
+									.extend(visual::Z_TILE_RING + 0.08),
+							),
+						));
+					}
+				}
 			}
 		}
 	}
-	let dots = tile.dots.min(3);
-	let spread = draw.dot_spread;
-	let start = -spread * (f32::from(dots) - 1.0) / 2.0;
-	let dot_r = draw.dot_r.max(2.0);
-	for i in 0..dots {
-		let dx = start + f32::from(i) * spread;
-		commands.spawn((
-			DynamicView,
-			Mesh2d(meshes.add(Circle::new(dot_r))),
-			MeshMaterial2d(materials.add(ColorMaterial::from(primary))),
-			Transform::from_translation((pos + Vec2::new(dx, 0.0)).extend(visual::Z_TILE_DOT)),
-		));
+	for i in 0..marks {
+		let triangle = matches!(tile.capture, CaptureMark::Triangle);
+		let poly = draw.capture_mark_poly(
+			[pos.x, pos.y],
+			radius,
+			i,
+			marks,
+			visual::CAPTURE_DOWN_BEVY,
+			triangle,
+		);
+		spawn_filled_poly(commands, meshes, materials, &poly, primary, visual::Z_TILE_DOT);
+	}
+	let up = [-down[0], -down[1]];
+	let glyph = draw.emblem_glyph(tile.emblem, [pos.x, pos.y], radius, up);
+	for fill in glyph.fills {
+		match fill {
+			visual::EmblemFill::Tris(tris) => {
+				spawn_filled_tris(commands, meshes, materials, &tris, primary, visual::Z_TILE_DOT);
+			}
+			visual::EmblemFill::Poly(poly) => {
+				spawn_filled_poly(commands, meshes, materials, &poly, primary, visual::Z_TILE_DOT);
+			}
+		}
+	}
+	for stroke in glyph.strokes {
+		let pts: Vec<[f64; 2]> =
+			stroke.pts.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+		spawn_stroke_capped(
+			commands,
+			meshes,
+			materials,
+			&pts,
+			stroke.width.max(0.7),
+			primary,
+			visual::Z_TILE_DOT,
+		);
 	}
 	if highlight {
 		spawn_ring(
@@ -1275,6 +2107,8 @@ fn spawn_tile_at(
 			rgb(visual::HIGHLIGHT_RGB),
 			visual::Z_HIGHLIGHT,
 		);
+	} else if just_captured {
+		spawn_capture_glow(commands, meshes, materials, pos, radius);
 	}
 }
 
@@ -1311,6 +2145,10 @@ fn update_hud(
 		&mut Text,
 		(With<WarnHud>, Without<StatusHud>, Without<TurnHud>, Without<LogHud>, Without<HelpHud>),
 	>,
+	mut help: Query<
+		&mut Text,
+		(With<HelpHud>, Without<StatusHud>, Without<TurnHud>, Without<LogHud>, Without<WarnHud>),
+	>,
 ) {
 	let g = &play.game;
 	let a1 = cfg.bot1.name();
@@ -1319,13 +2157,28 @@ fn update_hud(
 		*t = Text::new(visual::format_title(a1, a2));
 	}
 	if let Some(mut t) = turn.iter_mut().next() {
-		*t = Text::new(visual::format_turn_line(g, cfg.actor(g.current_player()).name()));
+		*t = Text::new(if let Some(session) = play.setup.as_ref() {
+			session.prompt()
+		} else {
+			visual::format_turn_line(g, cfg.actor(g.current_player()).name())
+		});
 	}
 	if let Some(mut t) = log.iter_mut().next() {
-		*t = Text::new(visual::format_log_line(&play.log, &play.last_removals));
+		*t = Text::new(if play.setup.is_some() {
+			play.log.clone()
+		} else {
+			visual::format_log_line(&play.log, &play.last_removals)
+		});
 	}
 	if let Some(mut t) = warn.iter_mut().next() {
 		*t = Text::new(play.warning.clone());
+	}
+	if let Some(mut t) = help.iter_mut().next() {
+		*t = Text::new(if play.setup.is_some() {
+			visual::SETUP_HELP_TEXT
+		} else {
+			visual::HELP_TEXT
+		});
 	}
 }
 
@@ -1394,6 +2247,21 @@ fn view_fingerprint(play: &PlayState, layout: &ViewLayout) -> u64 {
 				}
 			}
 		}
+	}
+	if let Some(session) = &play.setup {
+		1u8.hash(&mut h);
+		session.stage.hash(&mut h);
+		session.selected.hash(&mut h);
+		session.pick7.hash(&mut h);
+		session.extend.hash(&mut h);
+	} else {
+		0u8.hash(&mut h);
+	}
+	play.flash.mover.hash(&mut h);
+	play.flash.dest.hash(&mut h);
+	play.flash.tiles.len().hash(&mut h);
+	for t in &play.flash.tiles {
+		t.id.hash(&mut h);
 	}
 	h.finish()
 }

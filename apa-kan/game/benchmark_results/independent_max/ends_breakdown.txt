@@ -1,0 +1,21 @@
+# h2h.txt light independent-max  games=20
+elimination             wins=0  draws=0  total=0
+locked_out              wins=4  draws=0  total=4
+center_hold             wins=0  draws=0  total=0
+petal_majority          wins=0  draws=0  total=0
+control                 wins=7  draws=0  total=7
+insufficient_tiles      wins=0  draws=0  total=0
+low_value               wins=9  draws=0  total=9
+turn_limit              wins=0  draws=0  total=0
+double_pass             wins=0  draws=0  total=0
+
+# h2h_shallow.txt independent-max  games=100
+elimination             wins=1  draws=0  total=1
+locked_out              wins=23  draws=0  total=23
+center_hold             wins=0  draws=0  total=0
+petal_majority          wins=0  draws=0  total=0
+control                 wins=20  draws=0  total=20
+insufficient_tiles      wins=0  draws=0  total=0
+low_value               wins=50  draws=1  total=51
+turn_limit              wins=0  draws=5  total=5
+double_pass             wins=0  draws=0  total=0

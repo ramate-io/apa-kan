@@ -8,7 +8,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::Deserialize;
 
-use crate::game::{RingType, Tile, TileColor, MAX_COLOR_RINGS};
+use crate::game::{CaptureMark, Emblem, RingType, Tile, TileColor, MAX_COLOR_RINGS};
 
 /// One (rings × dots) kind. `count` repeats in the bag. `weight` is always
 /// the ring-slot count.
@@ -19,6 +19,8 @@ pub struct KindCount {
 	pub ring_type: [RingType; 3],
 	pub weight: u8,
 	pub dots: u8,
+	pub capture: CaptureMark,
+	pub emblem: Emblem,
 	pub count: u8,
 }
 
@@ -30,6 +32,8 @@ impl KindCount {
 			ring_type: [RingType::Normal; 3],
 			weight: 1,
 			dots,
+			capture: CaptureMark::Triangle,
+			emblem: Emblem::None,
 			count,
 		}
 	}
@@ -39,7 +43,14 @@ impl KindCount {
 	}
 
 	pub fn tag(self) -> String {
-		kind_tag(self.ring_colors(), &self.ring_type, self.weight, self.dots)
+		kind_tag(
+			self.ring_colors(),
+			&self.ring_type,
+			self.weight,
+			self.dots,
+			self.capture,
+			self.emblem,
+		)
 	}
 }
 
@@ -51,6 +62,8 @@ pub struct TileSpec {
 	pub ring_type: [RingType; 3],
 	pub weight: u8,
 	pub dots: u8,
+	pub capture: CaptureMark,
+	pub emblem: Emblem,
 }
 
 impl TileSpec {
@@ -71,22 +84,30 @@ impl TileSpec {
 	}
 }
 
-pub fn kind_tag(colors: &[TileColor], types: &[RingType; 3], weight: u8, dots: u8) -> String {
+pub fn kind_tag(
+	colors: &[TileColor],
+	types: &[RingType; 3],
+	weight: u8,
+	dots: u8,
+	capture: CaptureMark,
+	emblem: Emblem,
+) -> String {
 	let rings = colors
 		.iter()
 		.enumerate()
 		.map(|(i, c)| match types[i] {
 			RingType::Zag => format!("{}z", c.tag()),
 			RingType::Braid => format!("{}d", c.tag()),
+			RingType::Bead => format!("{}e", c.tag()),
 			RingType::Normal => c.tag().to_string(),
 		})
 		.collect::<Vec<_>>()
 		.join("+");
-	format!("{rings}{weight}-{dots}")
+	format!("{rings}{weight}-{dots}{}{}", capture.tag(), emblem.tag())
 }
 
 pub fn tile_tag(tile: Tile) -> String {
-	kind_tag(tile.ring_colors(), &tile.ring_type, tile.weight, tile.dots)
+	kind_tag(tile.ring_colors(), &tile.ring_type, tile.weight, tile.dots, tile.capture, tile.emblem)
 }
 
 /// Sum of ring counts (weight), dots, and distinct colors — a simple deck-strength view.
@@ -104,7 +125,7 @@ impl DeckStrength {
 		let mut weight_sum = 0u32;
 		let mut dots_sum = 0u32;
 		for t in tiles {
-			weight_sum += u32::from(t.weight);
+			weight_sum += u32::from(t.cost());
 			dots_sum += u32::from(t.dots);
 			for &c in t.ring_colors() {
 				if (c as usize) < 6 {
@@ -159,9 +180,9 @@ pub struct Scenario {
 	pub shuffle: bool,
 	/// Copy P1's kind sequence onto P2 (new tile ids / owner).
 	pub mirror: bool,
-	/// Sample [`crate::game::RuleSet::bag_size`] tiles from the ring/color
-	/// process (same as `Game::new`, default [`crate::game::BAG_SIZE_DEFAULT`])
-	/// instead of expanding `p1`/`p2` kinds.
+	/// Sample [`crate::game::RuleSet::deck_size`] tiles from the ring/color
+	/// process (same as `Game::new`, default 27) instead of expanding `p1`/`p2`
+	/// kinds, then draft a 7+4 public bench.
 	pub generative: bool,
 	pub p1: DeckSpec,
 	pub p2: DeckSpec,
@@ -194,18 +215,23 @@ impl Scenario {
 		must_parse("independent", include_str!("../scenarios/independent.toml"))
 	}
 
+	pub fn emblems() -> Self {
+		must_parse("emblems", include_str!("../scenarios/emblems.toml"))
+	}
+
 	pub fn builtin(name: &str) -> Option<Self> {
 		match name {
 			"default" | "same" => Some(Self::same()),
 			"independent" => Some(Self::independent()),
 			"complementary" => Some(Self::complementary()),
 			"complementary-swapped" => Some(Self::complementary_swapped()),
+			"emblems" => Some(Self::emblems()),
 			_ => None,
 		}
 	}
 
 	pub fn builtin_names() -> &'static [&'static str] {
-		&["default", "same", "independent", "complementary", "complementary-swapped"]
+		&["default", "same", "independent", "complementary", "complementary-swapped", "emblems"]
 	}
 
 	/// Name of a builtin, or a path to a `.toml` file.
@@ -331,6 +357,18 @@ struct FileTile {
 	/// If true, every ring on this tile is a braid (must be 2 or 3 slots).
 	#[serde(default)]
 	braid: Option<bool>,
+	/// Colors among this tile's rings that are beads.
+	#[serde(default)]
+	beads: Option<Vec<String>>,
+	/// If true, every ring on this tile is a bead.
+	#[serde(default)]
+	bead: Option<bool>,
+	/// `dot` or `triangle`. Default triangle (spawn-token captures).
+	#[serde(default)]
+	capture: Option<String>,
+	/// `none`, `crescent`, `zs`, `blocker`, or `rosette`. Default none.
+	#[serde(default)]
+	emblem: Option<String>,
 }
 
 pub fn parse_toml(text: &str) -> Result<Scenario, String> {
@@ -420,6 +458,8 @@ fn deck_from_file(d: &FileDeck) -> Result<DeckSpec, String> {
 					types,
 					t.weight.unwrap_or(1),
 					t.dots.unwrap_or(1),
+					parse_file_capture(t)?,
+					parse_file_emblem(t)?,
 				));
 			}
 			Some(out)
@@ -459,10 +499,11 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 			let mut found = false;
 			for (i, &ring) in out.iter().enumerate() {
 				if ring == c {
-					if types[i].is_braid() {
+					if !types[i].is_normal() {
 						return Err(format!(
-							"ring color '{}' cannot be both zag and braid",
-							c.name()
+							"ring color '{}' cannot be both {} and zag",
+							c.name(),
+							types[i].name()
 						));
 					}
 					types[i] = RingType::Zag;
@@ -476,8 +517,8 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 	}
 	if t.braid.unwrap_or(false) {
 		for slot in types.iter_mut().take(out.len()) {
-			if slot.is_zag() {
-				return Err("a tile cannot be both fully zag and fully braid".into());
+			if !slot.is_normal() {
+				return Err(format!("a tile cannot be both fully {} and fully braid", slot.name()));
 			}
 			*slot = RingType::Braid;
 		}
@@ -488,10 +529,11 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 			let mut found = false;
 			for (i, &ring) in out.iter().enumerate() {
 				if ring == c {
-					if types[i].is_zag() {
+					if !types[i].is_normal() {
 						return Err(format!(
-							"ring color '{}' cannot be both zag and braid",
-							c.name()
+							"ring color '{}' cannot be both {} and braid",
+							c.name(),
+							types[i].name()
 						));
 					}
 					types[i] = RingType::Braid;
@@ -503,6 +545,36 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 			}
 		}
 	}
+	if t.bead.unwrap_or(false) {
+		for slot in types.iter_mut().take(out.len()) {
+			if !slot.is_normal() {
+				return Err(format!("a tile cannot be both fully {} and fully bead", slot.name()));
+			}
+			*slot = RingType::Bead;
+		}
+	}
+	if let Some(names) = &t.beads {
+		for name in names {
+			let c = TileColor::parse(name)?;
+			let mut found = false;
+			for (i, &ring) in out.iter().enumerate() {
+				if ring == c {
+					if !types[i].is_normal() {
+						return Err(format!(
+							"ring color '{}' cannot be both {} and bead",
+							c.name(),
+							types[i].name()
+						));
+					}
+					types[i] = RingType::Bead;
+					found = true;
+				}
+			}
+			if !found {
+				return Err(format!("bead color '{}' is not one of this tile's rings", c.name()));
+			}
+		}
+	}
 	let braid_n = types.iter().take(out.len()).filter(|t| t.is_braid()).count();
 	if braid_n == 1 {
 		return Err("a braid occupies 2 or 3 ring slots".into());
@@ -510,14 +582,35 @@ fn parse_file_rings(t: &FileTile) -> Result<(Vec<TileColor>, [RingType; 3]), Str
 	Ok((out, types))
 }
 
-fn spec_from_rings(colors: &[TileColor], types: [RingType; 3], _weight: u8, dots: u8) -> TileSpec {
+fn spec_from_rings(
+	colors: &[TileColor],
+	types: [RingType; 3],
+	_weight: u8,
+	dots: u8,
+	capture: CaptureMark,
+	emblem: Emblem,
+) -> TileSpec {
 	let first = colors[0];
 	let mut rings = [first; 3];
 	for (i, &c) in colors.iter().take(3).enumerate() {
 		rings[i] = c;
 	}
 	let n_rings = colors.len().min(3) as u8;
-	TileSpec { rings, n_rings, ring_type: types, weight: n_rings.max(1), dots }
+	TileSpec { rings, n_rings, ring_type: types, weight: n_rings.max(1), dots, capture, emblem }
+}
+
+fn parse_file_capture(t: &FileTile) -> Result<CaptureMark, String> {
+	match &t.capture {
+		None => Ok(CaptureMark::Triangle),
+		Some(s) => CaptureMark::parse(s),
+	}
+}
+
+fn parse_file_emblem(t: &FileTile) -> Result<Emblem, String> {
+	match &t.emblem {
+		None => Ok(Emblem::None),
+		Some(s) => Emblem::parse(s),
+	}
 }
 
 fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
@@ -526,6 +619,8 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 	if count == 0 {
 		return Err("tile count must be >= 1".into());
 	}
+	let capture = parse_file_capture(t)?;
+	let emblem = parse_file_emblem(t)?;
 	let to_kind = |dots: u8| {
 		let n = colors.len().min(3) as u8;
 		let mut k = KindCount::mono(colors[0], n, dots, count);
@@ -536,6 +631,8 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 		k.n_rings = n;
 		k.weight = n.max(1);
 		k.ring_type = types;
+		k.capture = capture;
+		k.emblem = emblem;
 		k
 	};
 	match (t.weight, t.dots) {
@@ -543,6 +640,8 @@ fn expand_tile(t: &FileTile) -> Result<Vec<KindCount>, String> {
 			.into_iter()
 			.map(|mut k| {
 				k.count = count;
+				k.capture = capture;
+				k.emblem = emblem;
 				k
 			})
 			.collect()),
@@ -591,7 +690,14 @@ pub fn materialize(
 				.iter()
 				.map(|&(role, w, d)| {
 					let color = if role == 0 { excl } else { c.shared };
-					spec_from_rings(&[color], [RingType::Normal; 3], w, d)
+					spec_from_rings(
+						&[color],
+						[RingType::Normal; 3],
+						w,
+						d,
+						CaptureMark::Triangle,
+						Emblem::None,
+					)
 				})
 				.collect()
 		};
@@ -632,6 +738,8 @@ fn expand_kinds(kinds: &[KindCount]) -> Vec<TileSpec> {
 				ring_type: k.ring_type,
 				weight: k.weight,
 				dots: k.dots,
+				capture: k.capture,
+				emblem: k.emblem,
 			});
 		}
 	}
@@ -650,7 +758,7 @@ fn take_fixed_bench(
 		let pos = bag.iter().position(|&x| x == k).ok_or_else(|| {
 			format!(
 				"fixed bench {} is not in the bag",
-				kind_tag(k.ring_colors(), &k.ring_type, k.weight, k.dots)
+				kind_tag(k.ring_colors(), &k.ring_type, k.weight, k.dots, k.capture, k.emblem)
 			)
 		})?;
 		bench.push(bag.remove(pos));
@@ -692,11 +800,13 @@ mod tests {
 	#[test]
 	fn generative_scenario_respects_bag_size() {
 		let mut rules = RuleSet::default();
-		rules.bag_size = 11;
+		rules.deck_size = 27;
 		let a = Game::new(rules, 7);
 		let b = Game::from_scenario(rules, 7, &Scenario::same()).unwrap();
-		assert_eq!(a.bag_len(Player::One), 0);
-		assert_eq!(b.bag_len(Player::One), 0);
+		assert_eq!(a.collection(Player::One).len(), 27);
+		assert_eq!(b.collection(Player::One).len(), 27);
+		assert_eq!(a.bag_len(Player::One), 16);
+		assert_eq!(b.bag_len(Player::One), 16);
 		assert_eq!(a.bench(Player::One).len(), 11);
 		assert_eq!(b.bench(Player::One).len(), 11);
 		let kinds = |g: &Game, p: Player| {
@@ -730,18 +840,19 @@ mod tests {
 	fn complementary_is_mirror_aside_from_exclusive_color() {
 		let s = Scenario::complementary();
 		let game = Game::from_scenario(RuleSet::default(), 3, &s).unwrap();
-		assert_eq!(game.bench(Player::One).len(), 18);
-		assert_eq!(game.bag_len(Player::One), 0);
-		assert_eq!(game.bag_len(Player::Two), 0);
+		assert_eq!(game.collection(Player::One).len(), 18);
+		assert_eq!(game.bench(Player::One).len(), 11);
+		assert_eq!(game.bag_len(Player::One), 7);
+		assert_eq!(game.bag_len(Player::Two), 7);
 		assert_eq!(game.budget(Player::One), 7);
 		let seq = |p: Player| {
-			game.bench(p)
+			game.collection(p)
 				.iter()
 				.map(|t| (t.weight, t.dots, t.primary() == TileColor::Orange))
 				.collect::<Vec<_>>()
 		};
 		assert_eq!(seq(Player::One), seq(Player::Two), "weight/dot/shared-role sequence");
-		let all = |p: Player| game.bench(p).iter().copied().collect::<Vec<_>>();
+		let all = |p: Player| game.collection(p).to_vec();
 		let p1c = unique_colors(&all(Player::One));
 		let p2c = unique_colors(&all(Player::Two));
 		assert!(p1c.iter().all(|c| matches!(c, TileColor::Green | TileColor::Orange)));
@@ -756,7 +867,7 @@ mod tests {
 		let b =
 			Game::from_scenario(RuleSet::default(), 5, &Scenario::complementary_swapped()).unwrap();
 		let excl = |g: &Game, p: Player| {
-			g.bench(p)
+			g.collection(p)
 				.iter()
 				.find(|t| t.primary() != TileColor::Orange)
 				.map(|t| t.primary())
@@ -844,6 +955,50 @@ count = 1
 	}
 
 	#[test]
+	fn custom_toml_bead_ring() {
+		let toml = r#"
+name = "bead"
+shuffle = false
+mirror = true
+[[p1.tiles]]
+colors = ["blue", "orange"]
+beads = ["blue", "orange"]
+weight = 2
+dots = 1
+count = 1
+"#;
+		let s = parse_toml(toml).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		let t = game.bench(Player::One)[0];
+		assert!(t.ring_is_bead(0));
+		assert!(t.ring_is_bead(1));
+		assert_eq!(t.bead_ring_count(), 2);
+		assert!(t.has_color(TileColor::Orange));
+	}
+
+	#[test]
+	fn custom_toml_allows_a_single_bead_ring() {
+		let toml = r#"
+name = "bead1"
+shuffle = false
+[[p1.tiles]]
+colors = ["blue", "orange"]
+beads = ["orange"]
+weight = 1
+dots = 1
+count = 1
+"#;
+		let s = parse_toml(toml).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		let t = game.bench(Player::One)[0];
+		assert_eq!(t.bead_ring_count(), 1);
+		assert!(t.ring_is_bead(1));
+		assert!(!t.ring_is_bead(0));
+		assert!(!t.ring_is_zag(0));
+		assert!(!t.ring_is_braid(0));
+	}
+
+	#[test]
 	fn custom_toml_fixed_bench() {
 		let toml = r#"
 name = "fixed"
@@ -879,6 +1034,63 @@ dots = 3
 		assert_eq!(game.bench(Player::One)[0].dots, 3);
 		assert_eq!(game.bench(Player::Two)[0].weight, 1);
 		assert_eq!(game.budget(Player::One), 1);
+	}
+
+	#[test]
+	fn custom_toml_carries_emblem_slot() {
+		let toml = r#"
+name = "emblems"
+shuffle = false
+[[p1.tiles]]
+color = "green"
+weight = 1
+dots = 1
+count = 1
+emblem = "crescent"
+capture = "dot"
+[[p1.tiles]]
+colors = ["orange"]
+zags = ["orange"]
+weight = 1
+dots = 2
+count = 1
+emblem = "zs"
+"#;
+		let s = parse_toml(toml).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		let tiles = game.collection(Player::One);
+		assert_eq!(tiles.len(), 2);
+		assert_eq!(tiles[0].emblem, crate::game::Emblem::CrescentMoon);
+		assert_eq!(tiles[0].cost(), 2);
+		assert_eq!(tiles[1].emblem, crate::game::Emblem::TwoZagZs);
+		assert_eq!(tiles[1].cost(), 2);
+		assert!(format_kind_list(tiles).contains("m"));
+		assert!(format_kind_list(tiles).contains("zz"));
+		let extra = r#"
+name = "emblems"
+shuffle = false
+[[p1.tiles]]
+color = "blue"
+weight = 1
+dots = 1
+count = 1
+emblem = "blocker"
+[[p1.tiles]]
+color = "green"
+weight = 1
+dots = 1
+count = 1
+emblem = "rosette"
+"#;
+		let s = parse_toml(extra).unwrap();
+		let game = Game::from_scenario(RuleSet::default(), 1, &s).unwrap();
+		let tiles = game.collection(Player::One);
+		assert_eq!(tiles[0].emblem, crate::game::Emblem::Blocker);
+		assert_eq!(tiles[0].cost(), 2);
+		assert_eq!(tiles[1].emblem, crate::game::Emblem::Rosette);
+		assert_eq!(tiles[1].cost(), 0);
+		assert!(format_kind_list(tiles).contains("bk"));
+		assert!(format_kind_list(tiles).contains("ro"));
 	}
 
 	#[test]

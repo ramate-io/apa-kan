@@ -1,0 +1,129 @@
+# Character illustration library.
+# Paths are Bevy-relative (from apa-kan/game/assets/).
+# Ids are the PNG file stem; display names title-case the stem with dashes
+# turned into spaces. Not yet wired into tile or deck generation.
+
+[[characters]]
+id = "cadredl"
+path = "characters/cadredl.png"
+display_name = "Cadredl"
+
+[[characters]]
+id = "captain"
+path = "characters/captain.png"
+display_name = "Captain"
+
+[[characters]]
+id = "cosam"
+path = "characters/cosam.png"
+display_name = "Cosam"
+
+[[characters]]
+id = "harteld"
+path = "characters/harteld.png"
+display_name = "Harteld"
+
+[[characters]]
+id = "hartish"
+path = "characters/hartish.png"
+display_name = "Hartish"
+
+[[characters]]
+id = "lanyan"
+path = "characters/lanyan.png"
+display_name = "Lanyan"
+
+[[characters]]
+id = "magrenedl"
+path = "characters/magrenedl.png"
+display_name = "Magrenedl"
+
+[[characters]]
+id = "melets"
+path = "characters/melets.png"
+display_name = "Melets"
+
+[[characters]]
+id = "merenmarch"
+path = "characters/merenmarch.png"
+display_name = "Merenmarch"
+
+[[characters]]
+id = "nocunfall"
+path = "characters/nocunfall.png"
+display_name = "Nocunfall"
+
+[[characters]]
+id = "nocunist"
+path = "characters/nocunist.png"
+display_name = "Nocunist"
+
+[[characters]]
+id = "ocunbun"
+path = "characters/ocunbun.png"
+display_name = "Ocunbun"
+
+[[characters]]
+id = "sam"
+path = "characters/sam.png"
+display_name = "Sam"
+
+[[characters]]
+id = "savist"
+path = "characters/savist.png"
+display_name = "Savist"
+
+[[characters]]
+id = "skulkenflock"
+path = "characters/skulkenflock.png"
+display_name = "Skulkenflock"
+
+[[characters]]
+id = "springfall"
+path = "characters/springfall.png"
+display_name = "Springfall"
+
+[[characters]]
+id = "squib"
+path = "characters/squib.png"
+display_name = "Squib"
+
+[[characters]]
+id = "tellbrok"
+path = "characters/tellbrok.png"
+display_name = "Tellbrok"
+
+[[characters]]
+id = "tiblone"
+path = "characters/tiblone.png"
+display_name = "Tiblone"
+
+[[characters]]
+id = "tissen"
+path = "characters/tissen.png"
+display_name = "Tissen"
+
+[[characters]]
+id = "toppenpol"
+path = "characters/toppenpol.png"
+display_name = "Toppenpol"
+
+[[characters]]
+id = "waking-rose"
+path = "characters/waking-rose.png"
+display_name = "Waking Rose"
+
+[[characters]]
+id = "warsam"
+path = "characters/warsam.png"
+display_name = "Warsam"
+
+[[characters]]
+id = "westerlit"
+path = "characters/westerlit.png"
+display_name = "Westerlit"
+
+[[characters]]
+id = "zaster"
+path = "characters/zaster.png"
+display_name = "Zaster"
