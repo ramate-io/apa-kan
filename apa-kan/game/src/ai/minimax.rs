@@ -68,7 +68,7 @@ impl TranspositionTable {
 		if cur.hash == hash && cur.depth > depth {
 			return;
 		}
-		let (kind, a, b) = best.map(SearchMove::pack).unwrap_or((u16::MAX - 1, 0, 0));
+		let (kind, a, b) = best.map(SearchMove::pack).unwrap_or((u16::MAX - 2, 0, 0));
 		self.entries[slot] = TTEntry { hash, score, depth, flag: flag as u8, kind, a, b };
 	}
 }
@@ -588,7 +588,9 @@ fn center_relevant(game: &Game, mv: SearchMove) -> bool {
 	let center = game.board().center();
 	match mv {
 		SearchMove::Move { to, .. } => to == center || game.board().inner_ring().contains(&to),
-		SearchMove::Add { node, .. } => game.board().inner_ring().contains(&node),
+		SearchMove::Add { node, .. } | SearchMove::Claim { node } => {
+			node == center || game.board().inner_ring().contains(&node)
+		}
 		SearchMove::Pass => false,
 	}
 }
@@ -660,6 +662,13 @@ fn capture_hint(game: &Game, mv: SearchMove) -> i32 {
 				80_000
 			} else {
 				0
+			}
+		}
+		SearchMove::Claim { node } => {
+			if game.tile_at(node).is_some_and(|t| t.owner != game.current_player()) {
+				200_000
+			} else {
+				90_000
 			}
 		}
 		SearchMove::Pass => 0,

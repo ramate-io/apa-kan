@@ -17,6 +17,9 @@ pub enum SearchMove {
 		from: NodeId,
 		to: NodeId,
 	},
+	Claim {
+		node: NodeId,
+	},
 	Pass,
 }
 
@@ -32,6 +35,7 @@ impl SearchMove {
 				SearchMove::Add { kind, node }
 			}
 			Action::Move { from, to } => SearchMove::Move { from, to },
+			Action::Claim { node } => SearchMove::Claim { node },
 			Action::Pass => SearchMove::Pass,
 		}
 	}
@@ -46,11 +50,13 @@ impl SearchMove {
 				Some(Action::Add { bench_index: idx, node })
 			}
 			SearchMove::Move { from, to } => Some(Action::Move { from, to }),
+			SearchMove::Claim { node } => Some(Action::Claim { node }),
 			SearchMove::Pass => Some(Action::Pass),
 		}
 	}
 
-	/// Packed TT key: 0 = MOVE, u16::MAX = PASS, 1..=COLOR_STATES = ADD color-state.
+	/// Packed TT key: 0 = MOVE, u16::MAX = PASS, u16::MAX-1 = CLAIM,
+	/// 1..=COLOR_STATES = ADD color-state.
 	/// `b` is `dots | (capture_bit << 2) | (emblem << 3)`.
 	pub fn pack(self) -> (u16, u8, u8) {
 		match self {
@@ -64,6 +70,7 @@ impl SearchMove {
 				(state, node, dots | (capture << 2) | (emblem << 3))
 			}
 			SearchMove::Move { from, to } => (0, from, to),
+			SearchMove::Claim { node } => (u16::MAX - 1, node, 0),
 			SearchMove::Pass => (u16::MAX, 0, 0),
 		}
 	}
@@ -71,6 +78,7 @@ impl SearchMove {
 	pub fn unpack(kind: u16, a: u8, b: u8) -> Option<Self> {
 		match kind {
 			u16::MAX => Some(SearchMove::Pass),
+			k if k == u16::MAX - 1 => Some(SearchMove::Claim { node: a }),
 			0 => Some(SearchMove::Move { from: a, to: b }),
 			state
 				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
@@ -143,6 +151,9 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	for mv in game.legal_moves() {
 		out.push(SearchMove::from_action(game, mv));
 	}
+	for claim in game.legal_claims() {
+		out.push(SearchMove::from_action(game, claim));
+	}
 	if out.is_empty() && !game.rules().no_moves_loses {
 		out.push(SearchMove::Pass);
 	}
@@ -202,6 +213,21 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 				} else if game.budget_token_count(tile.owner) < 3 {
 					s += 10;
 				}
+			}
+			s
+		}
+		SearchMove::Claim { node } => {
+			let mut s = 280;
+			if let Some(tile) = game.tile_at(node) {
+				if tile.owner != game.current_player() {
+					s += 160;
+				} else {
+					s += 40;
+				}
+				s += 12 * i32::from(tile.weight);
+			}
+			if game.budget_token_count(game.current_player()) < 3 {
+				s += 30;
 			}
 			s
 		}
@@ -323,6 +349,9 @@ mod tests {
 		let mv = SearchMove::Move { from: 2, to: 7 };
 		let (k, a, b) = mv.pack();
 		assert_eq!(SearchMove::unpack(k, a, b), Some(mv));
+		let claim = SearchMove::Claim { node: 9 };
+		let packed = claim.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(claim));
 	}
 
 	#[test]
