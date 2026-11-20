@@ -2026,9 +2026,9 @@ impl BraidScoring {
 			"braid-only-match" | "braid-only" | "only-match" | "match-only" => {
 				Ok(Self::BraidOnlyMatch)
 			}
-			other => Err(format!(
-				"unknown braid-scoring '{other}' (expected current|braid-only-match)"
-			)),
+			other => {
+				Err(format!("unknown braid-scoring '{other}' (expected current|braid-only-match)"))
+			}
 		}
 	}
 
