@@ -2192,6 +2192,18 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_ring_dist_channels_shallow_replays() {
+		for rel in [
+			"benchmark_results/ring_dist_channels/h2h_a_additive_enhanced.jsonl.gz",
+			"benchmark_results/ring_dist_channels/h2h_b_imax_enhanced.jsonl.gz",
+			"benchmark_results/ring_dist_channels/h2h_a_additive_counterplay.jsonl.gz",
+			"benchmark_results/ring_dist_channels/h2h_b_imax_counterplay.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
 	fn default_games_log_path_is_jsonl_gz_sibling() {
 		let p =
 			std::path::Path::new("apa-kan/game/benchmark_results/low_value_pairs_deck11_on.txt");

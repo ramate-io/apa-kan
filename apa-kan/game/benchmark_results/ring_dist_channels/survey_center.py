@@ -144,6 +144,7 @@ def summarize(path: Path) -> None:
     n = len(rows)
     took = [r for r in rows if r["first_owner"] is not None]
     still = [r for r in took if r["still_first"]]
+    never_left = [r for r in still if r["holders"] == 1]
     first_wins = [r for r in took if r["first_side_won"]]
     still_and_win = [r for r in still if r["first_side_won"]]
     displaced = [r for r in took if not r["still_first"]]
@@ -170,6 +171,10 @@ def summarize(path: Path) -> None:
     print(
         f"still_on_center {len(still)}/{len(took)} "
         f"({(len(still)/len(took)*100 if took else 0):.1f}%)"
+    )
+    print(
+        f"never_left {len(never_left)}/{len(took)} "
+        f"({(len(never_left)/len(took)*100 if took else 0):.1f}%)"
     )
     print(
         f"first_taker_side_won {len(first_wins)}/{len(took)} "
