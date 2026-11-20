@@ -306,6 +306,20 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	let presence = 32 * (my_board - opp_board);
 	let mobility = 4 * (mobility_of(game, me) - mobility_of(game, opp));
 
+	let mut claimable = 0i32;
+	if game.rules().capture_mode.is_local_claim() {
+		for node in game.overwhelmed_nodes() {
+			if let Some(tile) = game.tile_at(node) {
+				let v = 48 + 10 * i32::from(tile.weight);
+				if tile.owner == me {
+					claimable -= v;
+				} else {
+					claimable += v;
+				}
+			}
+		}
+	}
+
 	let mut score =
 		material
 			+ bench_score
@@ -314,6 +328,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 			+ geometry
 			+ spawn_control
 			+ mobility
+			+ claimable
 			- 22 * at_risk;
 
 	score += race_score(game, me, opp);
@@ -482,6 +497,9 @@ fn mobility_of(game: &Game, player: Player) -> i32 {
 	}
 	if game.budget(player) > 0 && !game.bench(player).is_empty() {
 		m += game.board().spawns().iter().filter(|&&s| game.tile_at(s).is_none()).count() as i32;
+	}
+	if game.rules().capture_mode.allows_claim() && game.current_player() == player {
+		m += game.overwhelmed_nodes().len() as i32;
 	}
 	m
 }
