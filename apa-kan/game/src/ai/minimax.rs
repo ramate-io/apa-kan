@@ -7,7 +7,7 @@ use rand::Rng;
 
 use crate::game::{Action, Game, Player};
 
-use super::eval::{evaluate, evaluate_legacy, terminal_score, WIN};
+use super::eval::{evaluate_legacy, evaluate_with, terminal_score, WIN};
 use super::search_move::{apply_move, cheap_order, is_capture, legal_search_moves, SearchMove};
 use super::zobrist;
 use super::{count_repeats, HistoryTable, SearchConfig, SearchLimit, SearchStats};
@@ -611,7 +611,7 @@ fn eval_now(game: &Game, ctx: &Ctx<'_>) -> i32 {
 	if ctx.legacy {
 		evaluate_legacy(game, me, repeats)
 	} else {
-		evaluate(game, me, repeats)
+		evaluate_with(game, me, repeats, ctx.config)
 	}
 }
 
@@ -725,7 +725,7 @@ fn order_moves(
 		return;
 	}
 	moves.sort_by_cached_key(|mv| {
-		let mut s = cheap_order(game, *mv);
+		let mut s = cheap_order(game, *mv, config);
 		let hint = capture_hint(game, *mv);
 		s += hint.saturating_mul(config.order_capture_scale) / 100;
 		if Some(*mv) == tt_move {

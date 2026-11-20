@@ -1,0 +1,15 @@
+# Counterplay personality.
+# Downweight sitting on the center; score overwhelm-pressure on the
+# center holder under control_win; boost claims and mismatch-into-center;
+# slightly higher PUCT so shallow MCTS looks at more replies.
+name = "counterplay"
+description = "Contest the center holder"
+eval_center_occ = 70
+eval_inner_ring = 70
+eval_center_pressure = 100
+order_center_bonus = 4000
+order_claim_center = 5000
+order_center_threat = 3500
+order_vacate_center = 800
+order_vacate_overwhelmed = 0
+puct = 2.0

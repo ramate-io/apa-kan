@@ -110,9 +110,10 @@ braid). Additive still paints every firing channel.
 2. **Bead collector triples.** Dropped the ≥1 triple quota so bead-heavy
    27-tile bags still form under 5:3:5 light stuffing. Revisit if collectors
    should force a 3-bead tile some other way.
-3. **Braid piece rate.** Per-slot `1/7` consecutive clustering is rarer
-   than the old piece-level 1/7 (1-ring tiles never braid). Collectors stuff
-   `braid_numer=7` so every 2–3 ring tile clusters into a braid.
+3. **Braid piece rate.** Default IndependentMax heavy coin is now 2:1
+   light:heavy (one in three) so braid rings land near 10% at 7:5:4 ring
+   counts. Collectors still stuff `braid_numer=7` so every 2–3 ring tile
+   clusters into a braid. `--braid-chance k` for k≠1 keeps the `k/7` coin.
 
 ## Tests
 

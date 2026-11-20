@@ -20,7 +20,7 @@ use rand::{Rng, SeedableRng};
 
 use crate::game::{Action, Game, Player};
 
-use super::eval::{eval_unit, evaluate, terminal_score, WIN};
+use super::eval::{eval_unit_with, evaluate_with, terminal_score, WIN};
 use super::search_move::{apply_move, cheap_order, legal_search_moves, SearchMove};
 use super::zobrist;
 use super::{count_repeats, SearchConfig, SearchLimit, SearchStats};
@@ -161,15 +161,20 @@ fn prepare_untried(
 		|| config.prior_widening
 		|| config.mcts_move_priors
 	{
-		untried.sort_by_cached_key(|edge| order_score(game, *edge, last_move));
+		untried.sort_by_cached_key(|edge| order_score(game, *edge, last_move, config));
 	}
 	untried
 }
 
-fn order_score(game: &Game, edge: Edge, last_move: Option<SearchMove>) -> i32 {
+fn order_score(
+	game: &Game,
+	edge: Edge,
+	last_move: Option<SearchMove>,
+	config: SearchConfig,
+) -> i32 {
 	match edge {
 		Edge::Real(mv) => {
-			let mut s = cheap_order(game, mv);
+			let mut s = cheap_order(game, mv, config);
 			if is_reverse(mv, last_move) {
 				s -= 500;
 			}
@@ -178,7 +183,7 @@ fn order_score(game: &Game, edge: Edge, last_move: Option<SearchMove>) -> i32 {
 		Edge::Tile(kind) => legal_search_moves(game)
 			.into_iter()
 			.filter_map(|mv| match mv {
-				SearchMove::Add { kind: k, .. } if k == kind => Some(cheap_order(game, mv)),
+				SearchMove::Add { kind: k, .. } if k == kind => Some(cheap_order(game, mv, config)),
 				_ => None,
 			})
 			.max()
@@ -205,7 +210,7 @@ fn softmax_priors(
 	let temp = f64::from(config.prior_temperature).max(0.05);
 	let scores: Vec<f64> = edges
 		.iter()
-		.map(|e| f64::from(order_score(game, *e, last_move)) / temp)
+		.map(|e| f64::from(order_score(game, *e, last_move, config)) / temp)
 		.collect();
 	let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 	let exps: Vec<f64> = scores.iter().map(|s| (s - max).exp()).collect();
@@ -722,7 +727,7 @@ fn iterate(
 			if config.mcts_move_priors {
 				0.05
 			} else {
-				prior_of(&state, player, played)
+				prior_of(&state, player, played, config)
 			}
 		});
 		let proven = if config.mcts_solver && child_pending.is_none() {
@@ -895,7 +900,7 @@ fn pick_untried(
 	let mut best_i = 0usize;
 	let mut best_s = i32::MIN;
 	for (i, edge) in untried.iter().enumerate() {
-		let s = order_score(state, *edge, last_move);
+		let s = order_score(state, *edge, last_move, config);
 		if s > best_s {
 			best_s = s;
 			best_i = i;
@@ -904,10 +909,10 @@ fn pick_untried(
 	untried.swap_remove(best_i)
 }
 
-fn prior_of(state: &Game, mover: Player, played: &[u64]) -> f64 {
+fn prior_of(state: &Game, mover: Player, played: &[u64], config: SearchConfig) -> f64 {
 	let h = zobrist::occupancy_hash(state);
 	let repeats = count_repeats(played, &[], h);
-	let ev = evaluate(state, mover, repeats);
+	let ev = evaluate_with(state, mover, repeats, config);
 	(f64::from(ev) / 350.0).tanh() * 0.5 + 0.5
 }
 
@@ -1142,7 +1147,7 @@ fn heavy_playout(
 		let mv = if rng.gen_bool(epsilon) {
 			moves[rng.gen_range(0..moves.len())]
 		} else {
-			greedy_sample(game, &moves, rng, played)
+			greedy_sample(game, &moves, rng, played, config)
 		};
 		if apply_move(game, mv).is_err() {
 			break;
@@ -1159,7 +1164,7 @@ fn leaf_value(game: &Game, root: Player, played: &[u64], config: SearchConfig) -
 	if config.playout_leaf_depth == 0 {
 		let h = zobrist::occupancy_hash(game);
 		let repeats = count_repeats(played, &[], h);
-		return eval_unit(game, root, repeats);
+		return eval_unit_with(game, root, repeats, config);
 	}
 	let side = game.current_player();
 	let v = short_search(game, side, played, config.playout_leaf_depth, config);
@@ -1177,15 +1182,15 @@ fn short_search(game: &Game, me: Player, played: &[u64], depth: u8, config: Sear
 	if depth == 0 {
 		let h = zobrist::occupancy_hash(game);
 		let repeats = count_repeats(played, &[], h);
-		return eval_unit(game, me, repeats);
+		return eval_unit_with(game, me, repeats, config);
 	}
 	let mut moves = legal_search_moves(game);
 	if moves.is_empty() {
 		let h = zobrist::occupancy_hash(game);
 		let repeats = count_repeats(played, &[], h);
-		return eval_unit(game, me, repeats);
+		return eval_unit_with(game, me, repeats, config);
 	}
-	moves.sort_by_cached_key(|mv| std::cmp::Reverse(cheap_order(game, *mv)));
+	moves.sort_by_cached_key(|mv| std::cmp::Reverse(cheap_order(game, *mv, config)));
 	let cap = if depth >= 2 { usize::from(config.q_capture_cap).clamp(4, 12) } else { 12usize };
 	if moves.len() > cap {
 		moves.truncate(cap);
@@ -1211,7 +1216,7 @@ fn short_search(game: &Game, me: Player, played: &[u64], depth: u8, config: Sear
 	if !any {
 		let h = zobrist::occupancy_hash(game);
 		let repeats = count_repeats(played, &[], h);
-		return eval_unit(game, me, repeats);
+		return eval_unit_with(game, me, repeats, config);
 	}
 	best
 }
@@ -1221,6 +1226,7 @@ fn greedy_sample(
 	moves: &[SearchMove],
 	rng: &mut impl Rng,
 	played: &[u64],
+	config: SearchConfig,
 ) -> SearchMove {
 	let cap = 10usize;
 	let sample: Vec<SearchMove> = if moves.len() <= cap {
@@ -1243,7 +1249,7 @@ fn greedy_sample(
 		}
 		let h = zobrist::occupancy_hash(&child);
 		let repeats = count_repeats(played, &[], h);
-		let s = evaluate(&child, me, repeats);
+		let s = evaluate_with(&child, me, repeats, config);
 		if s > best_s {
 			best_s = s;
 			best = mv;

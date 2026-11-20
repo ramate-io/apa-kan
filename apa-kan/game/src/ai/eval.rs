@@ -1,5 +1,6 @@
 //! Heuristic evaluation. Positive is good for `me`.
 
+use super::SearchConfig;
 use crate::game::{Game, GameStatus, LowValueResolution, Player};
 
 pub const WIN: i32 = 50_000;
@@ -190,7 +191,14 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 /// Material, mobility, center-hold / petal-majority progress, next-turn
 /// center threats, overwhelm pressure on the center occupant, lockout-aware
 /// mobility, and a fade toward 0 as the turn-limit approaches.
+///
+/// Uses [`SearchConfig::enhanced`] eval weights. Search should call
+/// [`evaluate_with`] so per-bot personalities apply.
 pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
+	evaluate_with(game, me, repeat_count, SearchConfig::enhanced())
+}
+
+pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchConfig) -> i32 {
 	if let Some(term) = terminal_score(game, me) {
 		return term;
 	}
@@ -240,7 +248,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 			if game.rules().center_hold_win {
 				420
 			} else if game.rules().control_win {
-				180
+				config.eval_center_occ
 			} else {
 				22
 			}
@@ -249,7 +257,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 				|| game.rules().petal_majority_win
 				|| game.rules().control_win
 			{
-				55
+				config.eval_inner_ring
 			} else {
 				16
 			}
@@ -327,7 +335,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 			+ claimable
 			- 22 * at_risk;
 
-	score += race_score(game, me, opp);
+	score += race_score(game, me, opp, config);
 
 	if contact_pairs == 0 && my_board > 0 && opp_board > 0 {
 		score -= 70 * (material + presence).signum();
@@ -351,7 +359,7 @@ pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
 	score
 }
 
-fn race_score(game: &Game, me: Player, opp: Player) -> i32 {
+fn race_score(game: &Game, me: Player, opp: Player, config: SearchConfig) -> i32 {
 	let mut s = 0i32;
 	let center = game.board().center();
 	let occupant = game.tile_at(center);
@@ -420,6 +428,27 @@ fn race_score(game: &Game, me: Player, opp: Player) -> i32 {
 		}
 		if opp_ctl >= need {
 			s -= 1_100;
+		}
+		if config.eval_center_pressure > 0 && !game.rules().center_hold_win {
+			let scale = config.eval_center_pressure;
+			match occupant {
+				Some(t) if t.owner == me => {
+					s += 900 * scale / 100;
+					if let Some((matches, mismatches)) = game.tile_score(center) {
+						s -= 180 * (mismatches - (matches - 1)).max(0) * scale / 100;
+					}
+				}
+				Some(t) if t.owner == opp => {
+					s -= 1_200 * scale / 100;
+					if let Some((matches, mismatches)) = game.tile_score(center) {
+						s += 280 * mismatches * scale / 100;
+						if mismatches >= matches {
+							s += 2_400 * scale / 100;
+						}
+					}
+				}
+				_ => {}
+			}
 		}
 		if game.rules().endgame_rule.is_control_cascade() {
 			if let Some(target) = game.cascade_control_target() {
@@ -517,11 +546,11 @@ fn mobility_of(game: &Game, player: Player) -> i32 {
 	m
 }
 
-pub fn eval_unit(game: &Game, me: Player, repeat_count: u16) -> f64 {
+pub fn eval_unit_with(game: &Game, me: Player, repeat_count: u16, config: SearchConfig) -> f64 {
 	if let Some(term) = terminal_score(game, me) {
 		return f64::from(term) / f64::from(WIN);
 	}
-	(f64::from(evaluate(game, me, repeat_count)) / 400.0).tanh()
+	(f64::from(evaluate_with(game, me, repeat_count, config)) / 400.0).tanh()
 }
 
 #[cfg(test)]
@@ -983,5 +1012,36 @@ mod tests {
 		let w = evaluate(&wall, Player::One, 0);
 		assert!(r < n, "Rosette −1 cost lowers in-play material, r={r} n={n}");
 		assert!(w > n, "Blocker +1 cost raises in-play material, w={w} n={n}");
+	}
+
+	#[test]
+	fn control_win_center_pressure_is_a_counterplay_knob() {
+		use crate::game::TileColor;
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = true;
+		let mut quiet = Game::empty(rules);
+		let mut threatened = Game::empty(rules);
+		let center = quiet.board().center();
+		let inner = quiet.board().inner_ring()[0];
+		let occ = quiet.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
+		quiet.place_tile(center, occ);
+		threatened.place_tile(center, occ);
+		let press = threatened.alloc_tile(Player::One, TileColor::Orange, 2, 1);
+		threatened.place_tile(inner, press);
+		quiet.pad_above_low_value();
+		threatened.pad_above_low_value();
+		let enhanced = SearchConfig::enhanced();
+		let counter = SearchConfig::counterplay();
+		let e_quiet = evaluate_with(&quiet, Player::One, 0, enhanced);
+		let e_threat = evaluate_with(&threatened, Player::One, 0, enhanced);
+		let c_quiet = evaluate_with(&quiet, Player::One, 0, counter);
+		let c_threat = evaluate_with(&threatened, Player::One, 0, counter);
+		let enhanced_delta = e_threat - e_quiet;
+		let counter_delta = c_threat - c_quiet;
+		assert!(
+			counter_delta > enhanced_delta + 200,
+			"counterplay should value pressuring the center holder more (enhanced_delta={enhanced_delta} counter_delta={counter_delta})"
+		);
 	}
 }

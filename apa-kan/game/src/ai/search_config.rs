@@ -9,6 +9,8 @@
 //! - `explorative`: high PUCT, progressive widening on
 //! - `deep_mcts`: move-ordering softmax priors + prior-ordered expansion +
 //!   tree reuse + solver (focused MCTS; extra PW / low PUCT lost strength)
+//! - `counterplay`: downweight sitting on center, score overwhelm-pressure on
+//!   the center holder under control_win, boost claims/threats, higher PUCT
 //!
 //! Overlay any field with `--search k=v,...`. Load a TOML file with `--bot-config`.
 
@@ -106,6 +108,26 @@ pub struct SearchConfig {
 	pub playout_leaf_depth: u8,
 	/// Propagate proven wins/losses so settled lines stop getting visits.
 	pub mcts_solver: bool,
+
+	/// Geometry bonus for occupying the center under `control_win` (not
+	/// `center_hold_win`, which stays a near-mate 420). Default 180.
+	pub eval_center_occ: i32,
+	/// Geometry bonus for an inner-ring node under control / petal / hold.
+	/// Default 55.
+	pub eval_inner_ring: i32,
+	/// Percent of center-holder overwhelm pressure to apply under
+	/// `control_win`. 0 = live enhanced (pressure only when `center_hold_win`).
+	/// 100 = the same occupant mismatch numbers as the hold-to-win branch.
+	pub eval_center_pressure: i32,
+	/// Extra `cheap_order` for claiming an opponent tile on center or inner ring.
+	pub order_claim_center: i32,
+	/// Extra `cheap_order` for a MOVE/ADD that mismatches the opponent's
+	/// center occupant.
+	pub order_center_threat: i32,
+	/// Penalty for vacating a healthy center occupant under control/hold.
+	pub order_vacate_center: i32,
+	/// Penalty for vacating an overwhelmed center occupant (0 = no flee tax).
+	pub order_vacate_overwhelmed: i32,
 }
 
 impl SearchConfig {
@@ -149,6 +171,13 @@ impl SearchConfig {
 			mcts_factored_moves: false,
 			playout_leaf_depth: 0,
 			mcts_solver: false,
+			eval_center_occ: 180,
+			eval_inner_ring: 55,
+			eval_center_pressure: 0,
+			order_claim_center: 0,
+			order_center_threat: 0,
+			order_vacate_center: 1_200,
+			order_vacate_overwhelmed: 1_200,
 		}
 	}
 
@@ -232,6 +261,23 @@ impl SearchConfig {
 		cfg
 	}
 
+	/// Counterplay: treat control as a 9-node set, not a center rush.
+	/// Scores overwhelm-pressure on the center holder, boosts claims and
+	/// mismatch-into-center, and raises PUCT so shallow MCTS looks wider.
+	pub fn counterplay() -> Self {
+		let mut cfg = Self::enhanced();
+		cfg.eval_center_occ = 70;
+		cfg.eval_inner_ring = 70;
+		cfg.eval_center_pressure = 100;
+		cfg.order_center_bonus = 4_000;
+		cfg.order_claim_center = 5_000;
+		cfg.order_center_threat = 3_500;
+		cfg.order_vacate_center = 800;
+		cfg.order_vacate_overwhelmed = 0;
+		cfg.puct = 2.0;
+		cfg
+	}
+
 	pub fn parse_profile(s: &str) -> Result<Self, String> {
 		match s.trim().to_ascii_lowercase().as_str() {
 			"enhanced" | "new" | "full" | "pruned" | "default" => Ok(Self::enhanced()),
@@ -241,14 +287,24 @@ impl SearchConfig {
 			"positional" | "cautious" | "solid" => Ok(Self::positional()),
 			"explorative" | "explore" | "curious" => Ok(Self::explorative()),
 			"deep_mcts" | "deep-mcts" | "deep" | "focused" => Ok(Self::deep_mcts()),
+			"counterplay" | "counter" | "contest" => Ok(Self::counterplay()),
 			other => Err(format!(
-				"unknown --search-profile '{other}' (expected enhanced|classic|plain|tactical|positional|explorative|deep_mcts)"
+				"unknown --search-profile '{other}' (expected enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay)"
 			)),
 		}
 	}
 
 	pub fn profile_names() -> &'static [&'static str] {
-		&["enhanced", "classic", "plain", "tactical", "positional", "explorative", "deep_mcts"]
+		&[
+			"enhanced",
+			"classic",
+			"plain",
+			"tactical",
+			"positional",
+			"explorative",
+			"deep_mcts",
+			"counterplay",
+		]
 	}
 
 	pub fn profile_name(self) -> &'static str {
@@ -268,6 +324,8 @@ impl SearchConfig {
 			"explorative"
 		} else if core == Self::deep_mcts() {
 			"deep_mcts"
+		} else if core == Self::counterplay() {
+			"counterplay"
 		} else {
 			"custom"
 		}
@@ -385,6 +443,27 @@ impl SearchConfig {
 				"solver" | "mcts-solver" | "mcts_solver" => {
 					self.mcts_solver = parse_on_off(&key, val)?;
 				}
+				"eval-center" | "eval_center_occ" | "eval-center-occ" => {
+					self.eval_center_occ = parse_i32(&key, val)?;
+				}
+				"eval-inner" | "eval_inner_ring" | "eval-inner-ring" => {
+					self.eval_inner_ring = parse_i32(&key, val)?;
+				}
+				"eval-pressure" | "eval_center_pressure" | "eval-center-pressure" => {
+					self.eval_center_pressure = parse_i32(&key, val)?;
+				}
+				"order-claim-center" | "order_claim_center" => {
+					self.order_claim_center = parse_i32(&key, val)?;
+				}
+				"order-center-threat" | "order_center_threat" => {
+					self.order_center_threat = parse_i32(&key, val)?;
+				}
+				"order-vacate" | "order_vacate_center" | "order-vacate-center" => {
+					self.order_vacate_center = parse_i32(&key, val)?;
+				}
+				"order-vacate-overwhelmed" | "order_vacate_overwhelmed" => {
+					self.order_vacate_overwhelmed = parse_i32(&key, val)?;
+				}
 				other => {
 					return Err(format!(
 						"unknown --search key '{other}' (see --list-search-profiles)"
@@ -456,7 +535,7 @@ impl SearchConfig {
 
 	pub fn label(self) -> String {
 		format!(
-			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={}",
+			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={} eval_center={} eval_inner={} eval_pressure={} order_claim_c={} order_threat={}",
 			self.profile_name(),
 			on_off(self.move_ordering),
 			on_off(self.transposition),
@@ -476,7 +555,12 @@ impl SearchConfig {
 			on_off(self.mcts_transpositions),
 			on_off(self.mcts_factored_moves),
 			self.playout_leaf_depth,
-			on_off(self.mcts_solver)
+			on_off(self.mcts_solver),
+			self.eval_center_occ,
+			self.eval_inner_ring,
+			self.eval_center_pressure,
+			self.order_claim_center,
+			self.order_center_threat
 		)
 	}
 }
@@ -593,6 +677,27 @@ mod tests {
 		assert_eq!(explorative, SearchConfig::explorative());
 		let deep = SearchConfig::parse_toml(include_str!("../../bots/deep_mcts.toml")).unwrap();
 		assert_eq!(deep, SearchConfig::deep_mcts());
+		let counter =
+			SearchConfig::parse_toml(include_str!("../../bots/counterplay.toml")).unwrap();
+		assert_eq!(counter, SearchConfig::counterplay());
+	}
+
+	#[test]
+	fn counterplay_profile_reweights_center_and_pressure() {
+		let cfg = SearchConfig::counterplay();
+		assert_eq!(cfg.profile_name(), "counterplay");
+		assert_eq!(cfg.eval_center_occ, 70);
+		assert_eq!(cfg.eval_inner_ring, 70);
+		assert_eq!(cfg.eval_center_pressure, 100);
+		assert_eq!(cfg.order_claim_center, 5_000);
+		assert!((cfg.puct - 2.0).abs() < 1e-6);
+		assert_eq!(SearchConfig::parse_profile("contest").unwrap(), cfg);
+		let overlay = SearchConfig::enhanced()
+			.with_spec("eval-pressure=100,eval-center=70,order-claim-center=5000")
+			.unwrap();
+		assert_eq!(overlay.eval_center_pressure, 100);
+		assert_eq!(overlay.eval_center_occ, 70);
+		assert_eq!(overlay.profile_name(), "custom");
 	}
 
 	#[test]
