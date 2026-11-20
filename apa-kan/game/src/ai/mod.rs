@@ -692,6 +692,36 @@ mod tests {
 	}
 
 	#[test]
+	fn minimax_takes_cascade_turn_gain_extra_turn_win() {
+		use crate::game::{EndReason, GameStatus, Player};
+
+		let (mut game, extra, from, _land) = Game::cascade_turn_gain_forced_extra_win();
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		assert_eq!(
+			action,
+			crate::game::Action::Add { bench_index: 0, node: extra },
+			"should ADD to drop and keep the extra turn"
+		);
+		assert!(game.apply(action).is_ok());
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.current_player(), Player::One);
+		assert!(game.extra_turn_active());
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		match action {
+			crate::game::Action::Move { from: src, .. } => {
+				assert_eq!(src, from, "extra-turn MOVE should be the piece just ADDed");
+			}
+			other => panic!("expected MOVE from {from}, got {other:?}"),
+		}
+		assert!(game.apply(action).is_ok());
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+	}
+
+	#[test]
 	fn minimax_takes_immediate_cascade_drop_win() {
 		use crate::game::{EndReason, GameStatus, Player};
 

@@ -109,7 +109,7 @@ fn usage() -> &'static str {
 	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
 	   --hop-weight-cmp, --counted-pass-through, --graph-hops, --pass-through-ring-cmp,\n\
 	   --petal-majority-win, --petal-majority-n,\n\
-	   --control-win, --control-n, --control-hold-turns, --endgame-rule,\n\
+	   --control-win, --control-n, --control-hold-turns, --endgame-rule, --cascade-turn-gain,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
 	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --capture-mode, --dot-chance,\n\
@@ -511,6 +511,12 @@ struct SeatStats {
 	control_t2: u32,
 	control_immediate: u32,
 	control_hold_win: u32,
+	turn_gain_awarded: u32,
+	turn_gain_mover: u32,
+	turn_gain_opponent: u32,
+	extra_turns_played: u32,
+	ended_on_extra: u32,
+	ended_after_extra: u32,
 	insuff: u32,
 	low_value: u32,
 	low_value_wins: u32,
@@ -634,7 +640,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -649,6 +655,7 @@ fn run(cfg: BenchConfig) {
 		rules.control_n,
 		rules.control_hold_turns,
 		rules.endgame_rule.name(),
+		on_off(rules.cascade_turn_gain),
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
 		rules.bag_size,
@@ -823,6 +830,12 @@ fn run(cfg: BenchConfig) {
 	let mut end_control_t2 = 0u32;
 	let mut end_control_immediate = 0u32;
 	let mut end_control_hold_win = 0u32;
+	let mut turn_gain_awarded = 0u32;
+	let mut turn_gain_mover = 0u32;
+	let mut turn_gain_opponent = 0u32;
+	let mut extra_turns_played = 0u32;
+	let mut ended_on_extra = 0u32;
+	let mut ended_after_extra = 0u32;
 	let mut end_insuff = 0u32;
 	let mut end_low_value = 0u32;
 	let mut end_low_value_wins = 0u32;
@@ -881,6 +894,12 @@ fn run(cfg: BenchConfig) {
 		end_control_t2 += stats.control_t2;
 		end_control_immediate += stats.control_immediate;
 		end_control_hold_win += stats.control_hold_win;
+		turn_gain_awarded += stats.turn_gain_awarded;
+		turn_gain_mover += stats.turn_gain_mover;
+		turn_gain_opponent += stats.turn_gain_opponent;
+		extra_turns_played += stats.extra_turns_played;
+		ended_on_extra += stats.ended_on_extra;
+		ended_after_extra += stats.ended_after_extra;
 		end_insuff += stats.insuff;
 		end_low_value += stats.low_value;
 		end_low_value_wins += stats.low_value_wins;
@@ -982,6 +1001,15 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!(
 		"# claims  total={claims} avg_per_game={avg_claims:.2}  own={claim_own} opponent={claim_opp}  healed={healed} healed_avg_per_game={avg_healed:.2}"
 	));
+	let avg_gain =
+		if games_n == 0 { 0.0 } else { f64::from(turn_gain_awarded) / f64::from(games_n) };
+	let ended_extra = ended_on_extra + ended_after_extra;
+	lines.push(format!(
+		"# turn_gain  awarded={turn_gain_awarded} avg_per_game={avg_gain:.2}  mover={turn_gain_mover} opponent={turn_gain_opponent}  played={extra_turns_played}  ended_on={ended_on_extra} ended_after={ended_after_extra} ended_on_or_after={ended_extra}"
+	));
+	println!(
+		"# turn_gain  awarded={turn_gain_awarded} avg_per_game={avg_gain:.2}  mover={turn_gain_mover} opponent={turn_gain_opponent}  played={extra_turns_played}  ended_on={ended_on_extra} ended_after={ended_after_extra} ended_on_or_after={ended_extra}"
+	);
 	let avg_moon = if games_n == 0 { 0.0 } else { f64::from(crescent_saves) / f64::from(games_n) };
 	let avg_zs = if games_n == 0 { 0.0 } else { f64::from(zs_bonuses) / f64::from(games_n) };
 	lines.push(format!(
@@ -1472,6 +1500,12 @@ fn summarize_pairing(
 		stats.healed += result.healed;
 		stats.crescent_saves += result.crescent_saves;
 		stats.zs_bonuses += result.zs_bonuses;
+		stats.turn_gain_awarded += result.turn_gain_awarded;
+		stats.turn_gain_mover += result.turn_gain_mover;
+		stats.turn_gain_opponent += result.turn_gain_opponent;
+		stats.extra_turns_played += result.extra_turns_played;
+		stats.ended_on_extra += u32::from(result.ended_on_extra);
+		stats.ended_after_extra += u32::from(result.ended_after_extra);
 		match result.status {
 			GameStatus::Won { winner, reason } => {
 				if winner == Player::One {
@@ -1887,6 +1921,12 @@ struct PlayResult {
 	healed: u32,
 	crescent_saves: u32,
 	zs_bonuses: u32,
+	turn_gain_awarded: u32,
+	turn_gain_mover: u32,
+	turn_gain_opponent: u32,
+	extra_turns_played: u32,
+	ended_on_extra: bool,
+	ended_after_extra: bool,
 	record: Option<GameRecord>,
 	log: Option<GameLog>,
 	deck: DeckRow,
@@ -2271,6 +2311,12 @@ fn play_game(
 		healed,
 		crescent_saves,
 		zs_bonuses,
+		turn_gain_awarded: game.turn_gain_awarded(),
+		turn_gain_mover: game.turn_gain_mover(),
+		turn_gain_opponent: game.turn_gain_opponent(),
+		extra_turns_played: game.extra_turns_played(),
+		ended_on_extra: game.ended_on_extra_turn(),
+		ended_after_extra: game.ended_after_extra_turn(),
 		record,
 		log: game_log,
 		deck: DeckRow {
@@ -2645,6 +2691,7 @@ mod tests {
 					|| line.starts_with("# seat_totals")
 					|| line.starts_with("# end_reasons")
 					|| line.starts_with("# control_cascade")
+					|| line.starts_with("# turn_gain")
 					|| line.starts_with("# low_value_pairs")
 					|| line.starts_with("# captures")
 					|| line.starts_with("# center_captures")

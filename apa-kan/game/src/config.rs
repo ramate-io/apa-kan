@@ -303,6 +303,9 @@ where
 		"--endgame-rule" => {
 			rules.endgame_rule = EndgameRule::parse(&require_value(arg, it.next())?)?;
 		}
+		"--cascade-turn-gain" => {
+			rules.cascade_turn_gain = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--insufficient-tiles-loss" => {
 			rules.insufficient_tiles_loss =
 				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
@@ -463,6 +466,7 @@ pub fn usage() -> &'static str {
 	   --control-n <1..9>                         Control-set occupancy cap (default: 5)\n\
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --endgame-rule <control-cascade|low-value>  One-way ratchet 5→2 with max material, then low-value at ≤1 (default: control-cascade)\n\
+	   --cascade-turn-gain <on|off>               Extra turn for the material leader on a non-winning cascade drop (default: on)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
@@ -651,6 +655,15 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_cascade_turn_gain() {
+		let on = GameConfig::parse(["--cascade-turn-gain", "on"]).unwrap();
+		assert!(on.rules.cascade_turn_gain);
+		let off = GameConfig::parse(["--cascade-turn-gain", "off"]).unwrap();
+		assert!(!off.rules.cascade_turn_gain);
+		assert!(GameConfig::parse(["--cascade-turn-gain", "maybe"]).is_err());
+	}
+
+	#[test]
 	fn stall_rule_defaults_match_ruleset() {
 		let cfg = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(cfg.rules, RuleSet::default());
@@ -666,6 +679,7 @@ mod tests {
 		assert_eq!(cfg.rules.control_n, 5);
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.endgame_rule, crate::game::EndgameRule::ControlCascade);
+		assert!(cfg.rules.cascade_turn_gain);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);

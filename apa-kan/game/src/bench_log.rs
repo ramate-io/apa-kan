@@ -7,7 +7,7 @@ use crate::game::{
 	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
 	CaptureMode, ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
 	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
-	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, ZagMismatchCount,
+	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, TurnGainKind, ZagMismatchCount,
 	DOT_PERCENT_DEFAULT,
 };
 
@@ -328,6 +328,10 @@ pub struct RulesLog {
 	/// Absent on older logs; replay uses `low-value`, which matches those ends.
 	#[serde(default = "default_low_value_endgame")]
 	pub endgame_rule: String,
+	/// Extra turn for the material leader on a non-winning cascade drop.
+	/// Absent on older logs; replay uses off (PR #74).
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub cascade_turn_gain: bool,
 	pub insufficient_tiles_loss: String,
 	pub path_constraint: String,
 	pub counted_pass_through: bool,
@@ -431,6 +435,7 @@ impl RulesLog {
 			control_n: r.control_n,
 			control_hold_turns: r.control_hold_turns,
 			endgame_rule: r.endgame_rule.name().into(),
+			cascade_turn_gain: r.cascade_turn_gain,
 			insufficient_tiles_loss: r.insufficient_tiles_loss.name().into(),
 			path_constraint: r.path_constraint.name().into(),
 			counted_pass_through: r.counted_pass_through,
@@ -479,6 +484,7 @@ impl RulesLog {
 			control_n: self.control_n,
 			control_hold_turns: self.control_hold_turns,
 			endgame_rule: EndgameRule::parse(&self.endgame_rule)?,
+			cascade_turn_gain: self.cascade_turn_gain,
 			insufficient_tiles_loss: InsufficientTilesLoss::parse(&self.insufficient_tiles_loss)?,
 			path_constraint: PathConstraint::parse(&self.path_constraint)?,
 			counted_pass_through: self.counted_pass_through,
@@ -511,6 +517,10 @@ pub struct OpeningLog {
 	/// One-way control-cascade checkpoint at the opening deal.
 	#[serde(default = "default_control_ratchet")]
 	pub control_ratchet: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p1: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p2: u8,
 }
 
 /// Full collection, revealed 7-picks, and +4 extensions. Absent on logs from
@@ -578,6 +588,8 @@ impl OpeningLog {
 			p1_tokens: game.budget_token_count(Player::One),
 			p2_tokens: game.budget_token_count(Player::Two),
 			control_ratchet: game.control_ratchet(),
+			extra_turns_p1: game.extra_turns(Player::One),
+			extra_turns_p2: game.extra_turns(Player::Two),
 		}
 	}
 }
@@ -649,6 +661,15 @@ pub struct ActionLog {
 	/// One-way control-cascade checkpoint after this action.
 	#[serde(default = "default_control_ratchet")]
 	pub control_ratchet: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p1: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p2: u8,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub extra_turn_active: bool,
+	/// `mover` or `opponent` when this action awarded cascade turn gain.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub turn_gain: Option<String>,
 }
 
 /// One captured tile: original owner and where it went.
@@ -730,6 +751,10 @@ impl ActionLog {
 			healed: 0,
 			leftover_overwhelmed: game_after.overwhelmed_nodes().len() as u8,
 			control_ratchet: game_after.control_ratchet(),
+			extra_turns_p1: game_after.extra_turns(Player::One),
+			extra_turns_p2: game_after.extra_turns(Player::Two),
+			extra_turn_active: game_after.extra_turn_active(),
+			turn_gain: game_after.last_turn_gain().map(TurnGainKind::name).map(str::to_string),
 		}
 	}
 
@@ -841,6 +866,18 @@ pub struct EndLog {
 	/// `immediate` for a unique-holder drop win, `hold` for `control_hold_turns`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub control_win_kind: Option<String>,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub turn_gain_awarded: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub turn_gain_mover: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub turn_gain_opponent: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub extra_turns_played: u32,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub ended_on_extra: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub ended_after_extra: bool,
 }
 
 impl EndLog {
@@ -856,6 +893,12 @@ impl EndLog {
 				max_mat: None,
 				control_ratchet: None,
 				control_win_kind: None,
+				turn_gain_awarded: 0,
+				turn_gain_mover: 0,
+				turn_gain_opponent: 0,
+				extra_turns_played: 0,
+				ended_on_extra: false,
+				ended_after_extra: false,
 			},
 			GameStatus::Won { winner, reason } => Self {
 				status: "won".into(),
@@ -866,6 +909,12 @@ impl EndLog {
 				max_mat: None,
 				control_ratchet: None,
 				control_win_kind: None,
+				turn_gain_awarded: 0,
+				turn_gain_mover: 0,
+				turn_gain_opponent: 0,
+				extra_turns_played: 0,
+				ended_on_extra: false,
+				ended_after_extra: false,
 			},
 			GameStatus::Draw { reason } => Self {
 				status: "draw".into(),
@@ -876,6 +925,12 @@ impl EndLog {
 				max_mat: None,
 				control_ratchet: None,
 				control_win_kind: None,
+				turn_gain_awarded: 0,
+				turn_gain_mover: 0,
+				turn_gain_opponent: 0,
+				extra_turns_played: 0,
+				ended_on_extra: false,
+				ended_after_extra: false,
 			},
 		}
 	}
@@ -955,6 +1010,12 @@ pub struct FinalLog {
 	pub p2_tokens: TokenStackLog,
 	#[serde(default = "default_control_ratchet")]
 	pub control_ratchet: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p1: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub extra_turns_p2: u8,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub extra_turn_active: bool,
 }
 
 impl FinalLog {
@@ -977,6 +1038,9 @@ impl FinalLog {
 			p1_tokens: TokenStackLog::from_game(game, Player::One),
 			p2_tokens: TokenStackLog::from_game(game, Player::Two),
 			control_ratchet: game.control_ratchet(),
+			extra_turns_p1: game.extra_turns(Player::One),
+			extra_turns_p2: game.extra_turns(Player::Two),
+			extra_turn_active: game.extra_turn_active(),
 		}
 	}
 }
@@ -1136,6 +1200,12 @@ impl GameLog {
 			self.end.control_win_kind =
 				Some(if live.control_win_immediate() { "immediate".into() } else { "hold".into() });
 		}
+		self.end.turn_gain_awarded = live.turn_gain_awarded();
+		self.end.turn_gain_mover = live.turn_gain_mover();
+		self.end.turn_gain_opponent = live.turn_gain_opponent();
+		self.end.extra_turns_played = live.extra_turns_played();
+		self.end.ended_on_extra = live.ended_on_extra_turn();
+		self.end.ended_after_extra = live.ended_after_extra_turn();
 		self.final_state = Some(FinalLog::from_game(live));
 		let mut contrib = 0u32;
 		let mut needed = 0u32;
@@ -1662,6 +1732,41 @@ mod tests {
 	}
 
 	#[test]
+	fn missing_cascade_turn_gain_replays_as_off() {
+		let mut r = RuleSet::default();
+		r.cascade_turn_gain = false;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("cascade_turn_gain"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert!(!parsed.cascade_turn_gain);
+		assert!(!parsed.to_rules().unwrap().cascade_turn_gain);
+		let on = RulesLog::from_rules(RuleSet::default());
+		assert!(on.cascade_turn_gain);
+		assert!(serde_json::to_string(&on).unwrap().contains("cascade_turn_gain"));
+	}
+
+	#[test]
+	fn finish_records_cascade_turn_gain() {
+		use crate::game::{Action, Game};
+
+		let (mut game, dest) = Game::cascade_turn_gain_mover_add_drop();
+		let mut log = GameLog::begin(1, "t", "a", "b", 0, "default", &game);
+		assert!(log.rules.cascade_turn_gain);
+		let action = Action::Add { bench_index: 0, node: dest };
+		let outcome = game.apply(action).unwrap();
+		log.push_action(action, None, &outcome, &game);
+		log.finish(&game, None);
+		assert_eq!(log.actions[0].turn_gain.as_deref(), Some("mover"));
+		assert!(log.actions[0].extra_turn_active);
+		assert_eq!(log.end.turn_gain_awarded, 1);
+		assert_eq!(log.end.turn_gain_mover, 1);
+		assert_eq!(log.end.turn_gain_opponent, 0);
+		assert_eq!(log.end.extra_turns_played, 1);
+		assert_eq!(log.final_state.as_ref().map(|s| s.extra_turn_active), Some(true));
+	}
+
+	#[test]
 	fn missing_endgame_rule_replays_as_low_value() {
 		let mut r = RuleSet::default();
 		r.endgame_rule = EndgameRule::LowValue;
@@ -2056,6 +2161,14 @@ mod tests {
 	fn committed_control_cascade_ratchet_shallow_replays() {
 		assert_committed_jsonl_gz_replays_n(
 			"benchmark_results/control_cascade/h2h_shallow_ratchet.jsonl.gz",
+			100,
+		);
+	}
+
+	#[test]
+	fn committed_control_cascade_turn_gain_shallow_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/control_cascade_turn_gain/h2h_shallow.jsonl.gz",
 			100,
 		);
 	}

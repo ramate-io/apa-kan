@@ -1433,7 +1433,8 @@ pub enum EndReason {
 	/// fixed `control_n` (default 5) held for `control_hold_turns` own turns.
 	/// Under [`EndgameRule::ControlCascade`] it is the one-way ratcheted
 	/// checkpoint (5→4→3→2): either an immediate unique-holder win when the
-	/// ratchet drops, or the usual `control_hold_turns` hold.
+	/// ratchet drops, or the usual `control_hold_turns` hold. A non-winning
+	/// drop may also award a cascade turn-gain extra turn.
 	Control,
 	/// Could no longer occupy 5 control-set nodes (`insufficient_tiles_loss`).
 	InsufficientTiles,
@@ -2101,7 +2102,10 @@ impl InsufficientTilesLoss {
 /// never raise the target. A drop onto a checkpoint held by exactly one
 /// player is an immediate [`EndReason::Control`] (no `control_hold_turns`).
 /// If both already hold the new checkpoint, play continues under the
-/// turn-boundary hold. [`Self::LowValue`] restores the baseline fixed-5
+/// turn-boundary hold. When nobody wins immediately on a drop and
+/// [`RuleSet::cascade_turn_gain`] is on, the strict material leader
+/// receives one extra turn (mover goes again, or the opponent banks a
+/// consecutive turn). [`Self::LowValue`] restores the baseline fixed-5
 /// control target plus low-value when both sides are strictly below 5.
 ///
 /// Material uses [`Game::budget`] (`min(spawn_tokens, unplaced_bench)`),
@@ -2134,6 +2138,32 @@ impl EndgameRule {
 
 	pub fn is_control_cascade(self) -> bool {
 		matches!(self, Self::ControlCascade)
+	}
+}
+
+/// Who received the extra turn when a cascade checkpoint dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TurnGainKind {
+	/// The player who just moved leads in material and goes again immediately.
+	Mover,
+	/// The opponent leads; they take their normal turn and then one extra.
+	Opponent,
+}
+
+impl TurnGainKind {
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Mover => "mover",
+			Self::Opponent => "opponent",
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"mover" => Ok(Self::Mover),
+			"opponent" => Ok(Self::Opponent),
+			other => Err(format!("unknown turn-gain kind '{other}' (expected mover|opponent)")),
+		}
 	}
 }
 
@@ -2267,6 +2297,11 @@ pub struct RuleSet {
 	/// Control-then-low-value scaling. Default [`EndgameRule::ControlCascade`].
 	/// `--endgame-rule low-value` restores fixed-`control_n` plus both-below-5.
 	pub endgame_rule: EndgameRule,
+	/// Extra turn for the strict material leader when a cascade checkpoint
+	/// drops and nobody wins immediately. Default true. `--cascade-turn-gain
+	/// off` restores PR #74 (ratchet + immediate unique-holder wins only).
+	/// Missing JSONL `cascade_turn_gain` replays as off.
+	pub cascade_turn_gain: bool,
 	/// Lose when board + remaining deck cannot reach 5 tiles (see
 	/// [`InsufficientTilesLoss`]). Default off.
 	pub insufficient_tiles_loss: InsufficientTilesLoss,
@@ -2347,6 +2382,7 @@ impl Default for RuleSet {
 			control_n: 5,
 			control_hold_turns: 1,
 			endgame_rule: EndgameRule::ControlCascade,
+			cascade_turn_gain: true,
 			insufficient_tiles_loss: InsufficientTilesLoss::Off,
 			path_constraint: PathConstraint::NoEdgeRevisit,
 			counted_pass_through: true,
@@ -2470,6 +2506,23 @@ pub struct Game {
 	/// Set when the last [`EndReason::Control`] was an immediate drop win
 	/// rather than a `control_hold_turns` hold.
 	control_win_immediate: bool,
+	/// Banked extra consecutive turns per player, awarded by cascade turn
+	/// gain. Consumed in [`Self::finish_turn`] instead of passing the side.
+	extra_turns: [u8; 2],
+	/// The player to move is taking a consumed extra turn (HUD + JSONL).
+	playing_extra_turn: bool,
+	/// The turn that just passed was an extra turn. Used to flag games that
+	/// ended on the following action.
+	prev_finished_extra: bool,
+	/// Last drop's turn-gain award, if any. Reset at the start of [`Self::apply`].
+	last_turn_gain: Option<TurnGainKind>,
+	/// Lifetime counters for reconstructible logs and bench summaries.
+	turn_gain_awarded: u32,
+	turn_gain_mover: u32,
+	turn_gain_opponent: u32,
+	extra_turns_played: u32,
+	ended_on_extra: bool,
+	ended_after_extra: bool,
 	/// Spawn-token stack. Tokens are earned and spent here; usable ADD
 	/// permission is [`Self::budget`] = min(stack length, remaining deck).
 	budget_tokens: [Vec<BudgetToken>; 2],
@@ -2579,6 +2632,16 @@ impl Game {
 			control_hold: [0, 0],
 			control_ratchet: initial_control_ratchet(&rules),
 			control_win_immediate: false,
+			extra_turns: [0, 0],
+			playing_extra_turn: false,
+			prev_finished_extra: false,
+			last_turn_gain: None,
+			turn_gain_awarded: 0,
+			turn_gain_mover: 0,
+			turn_gain_opponent: 0,
+			extra_turns_played: 0,
+			ended_on_extra: false,
+			ended_after_extra: false,
 			budget_tokens: [
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
@@ -2633,6 +2696,16 @@ impl Game {
 			control_hold: [0, 0],
 			control_ratchet: initial_control_ratchet(&rules),
 			control_win_immediate: false,
+			extra_turns: [0, 0],
+			playing_extra_turn: false,
+			prev_finished_extra: false,
+			last_turn_gain: None,
+			turn_gain_awarded: 0,
+			turn_gain_mover: 0,
+			turn_gain_opponent: 0,
+			extra_turns_played: 0,
+			ended_on_extra: false,
+			ended_after_extra: false,
 			budget_tokens: [
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
@@ -2689,6 +2762,16 @@ impl Game {
 			control_hold: [0, 0],
 			control_ratchet: initial_control_ratchet(&rules),
 			control_win_immediate: false,
+			extra_turns: [0, 0],
+			playing_extra_turn: false,
+			prev_finished_extra: false,
+			last_turn_gain: None,
+			turn_gain_awarded: 0,
+			turn_gain_mover: 0,
+			turn_gain_opponent: 0,
+			extra_turns_played: 0,
+			ended_on_extra: false,
+			ended_after_extra: false,
 			budget_tokens: [
 				blank_budget(rules.starting_bench_size),
 				blank_budget(rules.starting_bench_size),
@@ -2839,6 +2922,60 @@ impl Game {
 		self.control_win_immediate
 	}
 
+	/// Banked extra consecutive turns remaining for `player`.
+	pub fn extra_turns(&self, player: Player) -> u8 {
+		self.extra_turns[player.index()]
+	}
+
+	/// True when the side to move is taking a consumed cascade extra turn.
+	pub fn extra_turn_active(&self) -> bool {
+		self.playing_extra_turn
+	}
+
+	/// Who was awarded turn gain on the last applied action, if anyone.
+	pub fn last_turn_gain(&self) -> Option<TurnGainKind> {
+		self.last_turn_gain
+	}
+
+	pub fn turn_gain_awarded(&self) -> u32 {
+		self.turn_gain_awarded
+	}
+
+	pub fn turn_gain_mover(&self) -> u32 {
+		self.turn_gain_mover
+	}
+
+	pub fn turn_gain_opponent(&self) -> u32 {
+		self.turn_gain_opponent
+	}
+
+	pub fn extra_turns_played(&self) -> u32 {
+		self.extra_turns_played
+	}
+
+	pub fn ended_on_extra_turn(&self) -> bool {
+		self.ended_on_extra
+	}
+
+	pub fn ended_after_extra_turn(&self) -> bool {
+		self.ended_after_extra
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_extra_turns(&mut self, player: Player, n: u8) {
+		self.extra_turns[player.index()] = n;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_extra_turn_active(&mut self, active: bool) {
+		self.playing_extra_turn = active;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_cascade_turn_gain(&mut self, on: bool) {
+		self.rules.cascade_turn_gain = on;
+	}
+
 	/// Ratcheted cascade checkpoint (`2..=control_n`) when
 	/// [`EndgameRule::ControlCascade`] is on and `max_mat >= 2`. `None` when
 	/// the cascade is off, or when `max_mat <= 1` (low-value is the
@@ -2927,6 +3064,217 @@ impl Game {
 		assert!(game.control_count(Player::Two) < 4);
 		game.set_current(Player::One);
 		(game, extra)
+	}
+
+	/// P1 occupies 3 of 9. Claiming `extra` drops 5→4 with no unique holder.
+	/// `p1_mat` / `p2_mat` are totals before the claim; afterwards P2 is
+	/// `p2_mat - 1` and P1 stays `p1_mat` (the claim token is surplus).
+	#[cfg(test)]
+	pub(crate) fn cascade_turn_gain_drop_position(p1_mat: usize, p2_mat: usize) -> (Self, NodeId) {
+		let mut game = Self::cascade_turn_gain_base(3);
+		let extra = Self::overwhelmed_p2_spawn_for(&game);
+		let victim = game.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
+		game.place_tile(extra, victim);
+		assert!(game.is_overwhelmed(extra), "P2 extra at {extra} should be claimable");
+		game.pin_total_material(Player::Two, p2_mat);
+		game.pin_total_material(Player::One, p1_mat);
+		assert_eq!(game.control_ratchet(), 5);
+		assert_eq!(game.control_count(Player::One), 3);
+		assert!(game.control_count(Player::Two) < 4);
+		game.set_current(Player::One);
+		(game, extra)
+	}
+
+	#[cfg(test)]
+	fn cascade_turn_gain_base(p1_control: usize) -> Self {
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 1;
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.cascade_turn_gain = true;
+		let mut game = Self::empty(rules);
+		let center = game.board.center();
+		let inner = game.board.inner_ring().to_vec();
+		let occupant = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.place_tile(center, occupant);
+		for &node in inner.iter().take(p1_control.saturating_sub(1)) {
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(node, tile);
+		}
+		game
+	}
+
+	#[cfg(test)]
+	fn overwhelmed_p2_spawn_for(game: &Self) -> NodeId {
+		let control: std::collections::HashSet<_> = std::iter::once(game.board.center())
+			.chain(game.board.inner_ring().iter().copied())
+			.collect();
+		game.board
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| {
+				!control.contains(&s)
+					&& game.tile_at(s).is_none()
+					&& game
+						.board
+						.neighbors(s)
+						.iter()
+						.any(|&n| game.tile_at(n).map(|t| t.owner == Player::One).unwrap_or(false))
+			})
+			.expect("a spawn neighbors a P1 control tile")
+	}
+
+	/// ADD onto `dest` captures two weak P2 neighbors, dropping 5→4 with P1
+	/// strictly leading (4 vs 3). No unique holder of 4.
+	#[cfg(test)]
+	pub(crate) fn cascade_turn_gain_mover_add_drop() -> (Self, NodeId) {
+		let (game, dest, _) = Self::cascade_turn_gain_mover_add_drop_inner(false);
+		(game, dest)
+	}
+
+	#[cfg(test)]
+	fn touches_player(game: &Self, node: NodeId, player: Player) -> bool {
+		game.board
+			.neighbors(node)
+			.iter()
+			.any(|&n| game.tile_at(n).map(|t| t.owner == player).unwrap_or(false))
+	}
+
+	/// Isolated empty spawn (no occupied neighbor). Used so a follow-up ADD
+	/// cannot self-capture next to P1 and drop the ratchet into a unique hold.
+	#[cfg(test)]
+	pub(crate) fn isolated_empty_spawn(&self) -> NodeId {
+		self.board
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| self.tile_at(s).is_none() && self.occupied_adjacency_count(s) == 0)
+			.expect("an empty spawn with no occupied neighbors")
+	}
+
+	#[cfg(test)]
+	fn cascade_turn_gain_mover_add_drop_inner(need_land: bool) -> (Self, NodeId, NodeId) {
+		// Center stays empty so dest's two inner-ring neighbors are not
+		// pre-overwhelmed by a P1 origin. Those two inners are not adjacent
+		// (unlike a spawn's outer pair), so same-color 1-rings stay unclaimable
+		// until the ADD, then both fall.
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.control_win = true;
+		rules.control_n = 5;
+		rules.control_hold_turns = 1;
+		rules.endgame_rule = EndgameRule::ControlCascade;
+		rules.cascade_turn_gain = true;
+		let mut game = Self::empty(rules);
+		let inners = game.board.inner_ring().to_vec();
+		assert_eq!(inners.len(), 8);
+		let dest = game.board.spawns()[4];
+		let dest_inners: Vec<_> = inners
+			.iter()
+			.copied()
+			.filter(|&n| game.board.neighbors(dest).contains(&n))
+			.collect();
+		assert_eq!(dest_inners.len(), 2, "spawn {dest} should sit between two inners");
+		let land = dest_inners[0];
+		let p1_homes: Vec<_> =
+			inners.iter().copied().filter(|n| !dest_inners.contains(n)).take(3).collect();
+		assert_eq!(p1_homes.len(), 3);
+		for &node in &p1_homes {
+			// 2 dots: cannot step to the adjacent empty center, so the ADD
+			// plus extra-turn MOVE dest→land is the unique 2-ply win.
+			let tile = game.alloc_tile(Player::One, TileColor::Green, 1, 2);
+			game.place_tile(node, tile);
+		}
+		assert!(!Self::touches_player(&game, dest, Player::One));
+		let neigh = dest_inners;
+		assert!(neigh.contains(&land));
+		for &n in &neigh {
+			let v = game.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
+			game.place_tile(n, v);
+			assert!(
+				!game.is_overwhelmed(n),
+				"P2 victim at {n} must not be claimable before the ADD"
+			);
+		}
+		let far: Vec<_> = (0..game.board.node_count() as NodeId)
+			.filter(|&s| {
+				s != dest
+					&& game.tile_at(s).is_none()
+					&& s != game.board.center()
+					&& !inners.contains(&s)
+					&& !game.board.neighbors(dest).contains(&s)
+					&& !Self::touches_player(&game, s, Player::One)
+					&& neigh.iter().all(|&v| !game.board.neighbors(v).contains(&s))
+			})
+			.take(3)
+			.collect();
+		assert_eq!(far.len(), 3, "need three distant P2 tiles");
+		for &s in &far {
+			let t = game.alloc_rings(
+				Player::Two,
+				&[TileColor::Orange, TileColor::LavenderPink, TileColor::Blue],
+				3,
+				1,
+			);
+			game.place_tile(s, t);
+			assert!(!game.is_overwhelmed(s), "far P2 at {s} must not be claimable");
+		}
+		game.pin_total_material(Player::Two, 5);
+		game.pin_total_material(Player::One, 4);
+		let incoming = game.alloc_rings(
+			Player::One,
+			&[TileColor::Green, TileColor::Teal, TileColor::Maroon],
+			3,
+			1,
+		);
+		let mut bench = game.bench(Player::One).to_vec();
+		assert!(!bench.is_empty());
+		bench[0] = incoming;
+		game.set_bench(Player::One, bench);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank]);
+		assert_eq!(game.total_material(Player::One), 4);
+		assert_eq!(game.max_material(), 5);
+		assert_eq!(game.control_ratchet(), 5);
+		assert_eq!(game.control_count(Player::One), 3);
+		assert!(!game.would_overwhelm_add(incoming, dest), "ADD dest {dest} must survive");
+		game.set_current(Player::One);
+		{
+			let mut probe = game.clone();
+			let outcome = probe.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+			let p2_caps = outcome.removals.iter().filter(|r| r.tile.owner == Player::Two).count();
+			assert_eq!(p2_caps, 2, "ADD must capture both weak neighbors: {:?}", outcome.removals);
+			assert!(
+				!outcome.removals.iter().any(|r| r.node == dest),
+				"ADD dest must not self-capture: {:?}",
+				outcome.removals
+			);
+			assert_eq!(probe.status(), GameStatus::InProgress);
+			assert_eq!(probe.control_ratchet(), 4);
+			assert!(probe.total_material(Player::One) > probe.total_material(Player::Two));
+			assert_eq!(probe.current_player(), Player::One);
+			if need_land {
+				probe.apply(Action::Move { from: dest, to: land }).unwrap();
+				assert_eq!(
+					probe.status(),
+					GameStatus::Won { winner: Player::One, reason: EndReason::Control },
+					"extra-turn MOVE dest→land must win"
+				);
+			}
+		}
+		(game, dest, land)
+	}
+
+	/// ADD drops 5→4 and awards P1 an extra turn; MOVE dest→land then occupies
+	/// the 4th control node and wins. Catches search sign-flip bugs.
+	#[cfg(test)]
+	pub(crate) fn cascade_turn_gain_forced_extra_win() -> (Self, NodeId, NodeId, NodeId) {
+		let (game, dest, land) = Self::cascade_turn_gain_mover_add_drop_inner(true);
+		(game, dest, dest, land)
 	}
 
 	#[cfg(test)]
@@ -3927,6 +4275,7 @@ impl Game {
 		if self.status.is_over() {
 			return Err("game is over".into());
 		}
+		self.last_turn_gain = None;
 		let player = self.current;
 		match action {
 			Action::Add { bench_index, node } => self.apply_add(bench_index, node)?,
@@ -4017,6 +4366,9 @@ impl Game {
 		if turn_done && !self.status.is_over() {
 			self.finish_turn(player);
 		}
+		if self.status.is_over() {
+			self.mark_end_timing();
+		}
 
 		Ok(ActionOutcome { action, player, removals, draws, log_line, emblem })
 	}
@@ -4042,12 +4394,30 @@ impl Game {
 			self.status = GameStatus::Draw { reason: EndReason::TurnLimit };
 			return;
 		}
-		self.current = who.other();
+		if self.extra_turns[who.index()] > 0 {
+			self.extra_turns[who.index()] -= 1;
+			self.playing_extra_turn = true;
+			self.extra_turns_played = self.extra_turns_played.saturating_add(1);
+			self.current = who;
+		} else {
+			self.prev_finished_extra = self.playing_extra_turn;
+			self.playing_extra_turn = false;
+			self.current = who.other();
+		}
 		if self.rules.no_moves_loses && !self.has_add_or_move() {
-			self.status = GameStatus::Won { winner: who, reason: EndReason::LockedOut };
+			self.status =
+				GameStatus::Won { winner: self.current.other(), reason: EndReason::LockedOut };
 		}
 		if !self.status.is_over() {
 			self.check_low_value();
+		}
+	}
+
+	fn mark_end_timing(&mut self) {
+		if self.playing_extra_turn {
+			self.ended_on_extra = true;
+		} else if self.prev_finished_extra {
+			self.ended_after_extra = true;
 		}
 	}
 
@@ -4139,6 +4509,8 @@ impl Game {
 
 	/// If the ratchet just dropped and exactly one player already holds the
 	/// new checkpoint, they win immediately (no `control_hold_turns`).
+	/// Otherwise, if [`RuleSet::cascade_turn_gain`] is on, the strict
+	/// material leader receives one extra turn.
 	fn check_immediate_control_drop(&mut self) {
 		if self.status.is_over() || !self.rules.control_win {
 			return;
@@ -4154,7 +4526,33 @@ impl Game {
 		match (p1, p2) {
 			(true, false) => self.award_control(Player::One, true),
 			(false, true) => self.award_control(Player::Two, true),
-			_ => {}
+			_ => self.award_cascade_turn_gain(),
+		}
+	}
+
+	/// One extra turn for the strict material leader after a non-winning
+	/// checkpoint drop. Multi-step drops (5→3) still award at most one.
+	fn award_cascade_turn_gain(&mut self) {
+		if !self.rules.cascade_turn_gain || self.status.is_over() {
+			return;
+		}
+		let p1 = self.total_material(Player::One);
+		let p2 = self.total_material(Player::Two);
+		let leader = if p1 > p2 {
+			Player::One
+		} else if p2 > p1 {
+			Player::Two
+		} else {
+			return;
+		};
+		self.extra_turns[leader.index()] = self.extra_turns[leader.index()].saturating_add(1);
+		self.turn_gain_awarded = self.turn_gain_awarded.saturating_add(1);
+		if leader == self.current {
+			self.last_turn_gain = Some(TurnGainKind::Mover);
+			self.turn_gain_mover = self.turn_gain_mover.saturating_add(1);
+		} else {
+			self.last_turn_gain = Some(TurnGainKind::Opponent);
+			self.turn_gain_opponent = self.turn_gain_opponent.saturating_add(1);
 		}
 	}
 
@@ -4707,6 +5105,7 @@ mod tests {
 		assert_eq!(rules.control_n, 5);
 		assert_eq!(rules.control_hold_turns, 1);
 		assert_eq!(rules.endgame_rule, EndgameRule::ControlCascade);
+		assert!(rules.cascade_turn_gain);
 		assert_eq!(rules.starting_bench_size, 7);
 		assert_eq!(rules.bag_size, BAG_SIZE_DEFAULT as u8);
 		assert_eq!(rules.deck_size, BAG_SIZE as u8);
@@ -6113,6 +6512,151 @@ mod tests {
 		assert_eq!(game.control_need(), 4);
 		assert_eq!(game.control_hold(Player::One), 1, "actor still ticks the turn-boundary hold");
 		assert_eq!(game.control_hold(Player::Two), 0);
+	}
+
+	#[test]
+	fn cascade_turn_gain_mover_leads_goes_again() {
+		let (mut game, dest) = Game::cascade_turn_gain_mover_add_drop();
+		assert_eq!(game.current_player(), Player::One);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.control_ratchet(), 4);
+		assert!(game.total_material(Player::One) > game.total_material(Player::Two));
+		assert_eq!(game.last_turn_gain(), Some(TurnGainKind::Mover));
+		assert_eq!(game.turn_gain_awarded(), 1);
+		assert_eq!(game.turn_gain_mover(), 1);
+		assert_eq!(game.extra_turns(Player::One), 0, "mover extra is consumed at finish_turn");
+		assert_eq!(game.current_player(), Player::One, "mover goes again immediately");
+		assert!(game.extra_turn_active());
+		assert_eq!(game.extra_turns_played(), 1);
+	}
+
+	#[test]
+	fn cascade_turn_gain_opponent_leads_banks_consecutive_turn() {
+		let (mut game, extra) = Game::cascade_turn_gain_drop_position(3, 5);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.control_ratchet(), 4);
+		assert_eq!(game.total_material(Player::One), 3);
+		assert_eq!(game.total_material(Player::Two), 4);
+		assert_eq!(game.last_turn_gain(), Some(TurnGainKind::Opponent));
+		assert_eq!(game.turn_gain_opponent(), 1);
+		assert_eq!(game.current_player(), Player::Two);
+		assert_eq!(game.extra_turns(Player::Two), 1, "opponent extra is banked");
+		assert!(!game.extra_turn_active());
+		let dest = game.isolated_empty_spawn();
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.current_player(), Player::Two, "after the normal turn it stays P2");
+		assert_eq!(game.extra_turns(Player::Two), 0);
+		assert!(game.extra_turn_active());
+		assert_eq!(game.extra_turns_played(), 1);
+	}
+
+	#[test]
+	fn cascade_turn_gain_tied_material_awards_nothing() {
+		let (mut game, extra) = Game::cascade_turn_gain_drop_position(4, 5);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.total_material(Player::One), 4);
+		assert_eq!(game.total_material(Player::Two), 4);
+		assert_eq!(game.last_turn_gain(), None);
+		assert_eq!(game.turn_gain_awarded(), 0);
+		assert_eq!(game.current_player(), Player::Two);
+		assert!(!game.extra_turn_active());
+		assert_eq!(game.extra_turns(Player::One), 0);
+		assert_eq!(game.extra_turns(Player::Two), 0);
+	}
+
+	#[test]
+	fn cascade_turn_gain_immediate_unique_holder_overrides() {
+		let (mut game, extra) = Game::cascade_unique_holder_drop_position(3);
+		assert_eq!(game.control_count(Player::One), 4);
+		assert!(game.rules().cascade_turn_gain);
+		game.apply(Action::Claim { node: extra }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control }
+		);
+		assert!(game.control_win_immediate());
+		assert_eq!(game.last_turn_gain(), None);
+		assert_eq!(game.turn_gain_awarded(), 0);
+		assert_eq!(game.extra_turns_played(), 0);
+		assert!(!game.extra_turn_active());
+		assert_eq!(game.current_player(), Player::One, "game ended before any extra turn");
+	}
+
+	#[test]
+	fn cascade_turn_gain_off_restores_pr74() {
+		let (mut game, dest) = Game::cascade_turn_gain_mover_add_drop();
+		game.set_cascade_turn_gain(false);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.current_player(), Player::Two);
+		assert_eq!(game.turn_gain_awarded(), 0);
+		assert!(!game.extra_turn_active());
+		assert_eq!(game.last_turn_gain(), None);
+	}
+
+	#[test]
+	fn cascade_turn_gain_multi_step_drop_awards_at_most_one() {
+		let mut rules = cascade_rules();
+		rules.cascade_turn_gain = true;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let neighbors: Vec<_> = game.board().neighbors(spawn).iter().copied().collect();
+		assert!(neighbors.len() >= 2, "spawn should have two neighbors");
+		put(&mut game, neighbors[0], Player::Two, TileColor::Blue, 1, 1);
+		put(&mut game, neighbors[1], Player::Two, TileColor::Blue, 1, 1);
+		// Three more P2 tiles off the capture so max_mat starts at 5 and the
+		// two local captures drop 5→3.
+		let far: Vec<_> = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.filter(|&s| s != spawn && game.tile_at(s).is_none())
+			.take(3)
+			.collect();
+		assert_eq!(far.len(), 3);
+		for &s in &far {
+			put(&mut game, s, Player::Two, TileColor::Orange, 3, 1);
+		}
+		let p1_home = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| s != spawn && game.tile_at(s).is_none())
+			.expect("empty spawn for P1");
+		put(&mut game, p1_home, Player::One, TileColor::Green, 3, 1);
+		pin_material(&mut game, Player::Two, 5);
+		pin_material(&mut game, Player::One, 2);
+		assert_eq!(game.control_ratchet(), 5);
+		assert_eq!(game.max_material(), 5);
+		let incoming = take(&mut game, Player::One, TileColor::Green, 3, 1);
+		let mut bench = game.bench(Player::One).to_vec();
+		bench.insert(0, incoming);
+		game.set_bench(Player::One, bench);
+		// Keep P1 material at 2 so max_mat after the captures is P2's 3.
+		pin_material(&mut game, Player::One, 2);
+		game.set_current(Player::One);
+		let before = game.control_ratchet();
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert!(
+			game.control_ratchet() + 1 < before,
+			"must skip at least one checkpoint, {before} → {}",
+			game.control_ratchet()
+		);
+		assert!(
+			game.control_ratchet() <= 3,
+			"5→3-or-lower in one action, got {}",
+			game.control_ratchet()
+		);
+		assert_eq!(game.status(), GameStatus::InProgress, "no unique-holder drop win");
+		assert_eq!(game.turn_gain_awarded(), 1, "multi-step drop still awards at most 1");
+		assert_eq!(game.turn_gain_mover() + game.turn_gain_opponent(), 1);
+		assert!(game.last_turn_gain().is_some());
 	}
 
 	#[test]
