@@ -4,11 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
-	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
-	CaptureMode, ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
+	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
+	BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark, CaptureMode,
+	ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
 	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
-	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, TurnGainKind, ZagMismatchCount,
-	DOT_PERCENT_DEFAULT,
+	Player, RingCountWeights, RingType, RuleSet, SamePieceTwice, Tile, TileColor, TurnGainKind,
+	ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -67,6 +68,35 @@ fn default_cascade_capture_mode() -> String {
 
 fn skip_cascade_capture_mode(v: &String) -> bool {
 	v == CaptureMode::Cascade.name()
+}
+
+fn default_ring_count_weights() -> String {
+	RingCountWeights::default().label()
+}
+
+fn skip_default_ring_count_weights(v: &String) -> bool {
+	*v == RingCountWeights::default().label()
+}
+
+fn default_zero_color_drift() -> String {
+	"0".into()
+}
+
+fn skip_zero_str(v: &String) -> bool {
+	v.is_empty() || v == "0"
+}
+
+fn color_drift_label(drift: ColorDrift) -> String {
+	color_drift_diagonal_value(drift).unwrap_or(0).to_string()
+}
+
+fn parse_color_drift(s: &str) -> ColorDrift {
+	if s.is_empty() || s == "0" {
+		return color_drift_zero();
+	}
+	s.parse::<i32>()
+		.map(color_drift_diagonal)
+		.unwrap_or_else(|_| color_drift_zero())
 }
 
 fn default_mixed() -> String {
@@ -298,6 +328,16 @@ pub struct RulesLog {
 	pub bag_one_of_each_kind: bool,
 	pub max_rings: u8,
 	pub zag_numer: u8,
+	/// `singles,doubles,triples` generation weights. Absent on older logs;
+	/// replay uses the live 7:5:4 default (tiles themselves are stored).
+	#[serde(
+		default = "default_ring_count_weights",
+		skip_serializing_if = "skip_default_ring_count_weights"
+	)]
+	pub ring_count_weights: String,
+	/// RFC ColorPass.drift diagonal (or `0`). Absent on older logs; replay uses 0.
+	#[serde(default = "default_zero_color_drift", skip_serializing_if = "skip_zero_str")]
+	pub color_drift: String,
 	#[serde(default)]
 	pub braid_numer: u8,
 	/// Absent/0 on logs from before beads; replay then uses 0 (beads off).
@@ -413,6 +453,8 @@ impl RulesLog {
 			bag_one_of_each_kind: r.bag_one_of_each_kind,
 			max_rings: r.max_rings,
 			zag_numer: r.zag_numer,
+			ring_count_weights: r.ring_count_weights.label(),
+			color_drift: color_drift_label(r.color_drift),
 			braid_numer: r.braid_numer,
 			bead_numer: r.bead_numer,
 			dot_percent: r.dot_percent,
@@ -462,6 +504,9 @@ impl RulesLog {
 			bag_one_of_each_kind: self.bag_one_of_each_kind,
 			max_rings: self.max_rings,
 			zag_numer: self.zag_numer,
+			ring_count_weights: RingCountWeights::parse(&self.ring_count_weights)
+				.unwrap_or_default(),
+			color_drift: parse_color_drift(&self.color_drift),
 			braid_numer: self.braid_numer,
 			bead_numer: self.bead_numer,
 			dot_percent: self.dot_percent,
@@ -2171,6 +2216,18 @@ mod tests {
 			"benchmark_results/control_cascade_turn_gain/h2h_shallow.jsonl.gz",
 			100,
 		);
+	}
+
+	#[test]
+	fn committed_ring_dist_channels_shallow_replays() {
+		for rel in [
+			"benchmark_results/ring_dist_channels/h2h_a_additive_enhanced.jsonl.gz",
+			"benchmark_results/ring_dist_channels/h2h_b_imax_enhanced.jsonl.gz",
+			"benchmark_results/ring_dist_channels/h2h_a_additive_counterplay.jsonl.gz",
+			"benchmark_results/ring_dist_channels/h2h_b_imax_counterplay.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
 	}
 
 	#[test]

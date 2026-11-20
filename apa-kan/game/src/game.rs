@@ -65,20 +65,74 @@ pub const COLOR_WEIGHTS: [(TileColor, u32); 6] = [
 	(TileColor::Maroon, 1),
 ];
 pub const COLOR_WEIGHT_TOTAL: u32 = 262;
-/// Ring 2/3: weight 7 keep the last existing color, weight 1 draw any color.
+/// RFC 000 ColorPass.drift: after drawing color *i*, add `color_drift[i][j]`
+/// to color *j*'s running weight. Live default is all zeros (independent
+/// draws). `--color-drift N` sets the diagonal to *N* (the RFC “keep last
+/// color” hysteresis).
+pub type ColorDrift = [[i32; 6]; 6];
+
+pub fn color_drift_zero() -> ColorDrift {
+	[[0; 6]; 6]
+}
+
+/// Uniform diagonal, as in the RFC keep-last example (`+40`).
+pub fn color_drift_diagonal(n: i32) -> ColorDrift {
+	let mut m = color_drift_zero();
+	for i in 0..6 {
+		m[i][i] = n;
+	}
+	m
+}
+
+pub fn color_drift_is_zero(drift: ColorDrift) -> bool {
+	drift == color_drift_zero()
+}
+
+pub fn color_drift_diagonal_value(drift: ColorDrift) -> Option<i32> {
+	let n = drift[0][0];
+	for i in 0..6 {
+		for j in 0..6 {
+			let want = if i == j { n } else { 0 };
+			if drift[i][j] != want {
+				return None;
+			}
+		}
+	}
+	Some(n)
+}
+
+pub fn base_color_weights() -> [i32; 6] {
+	let mut w = [0i32; 6];
+	for &(c, wt) in &COLOR_WEIGHTS {
+		w[c as usize] = wt as i32;
+	}
+	w
+}
+/// Historical sequential gate: ring 2/3 kept the last color with weight 7
+/// or drew any color with weight 1 (a redraw was not a new ring). That made
+/// singles ~87%+ of tiles. Live count is now [`RingCountWeights`].
 pub const RING_SAME_WEIGHT: u32 = 7;
 pub const RING_ANY_WEIGHT: u32 = 1;
 pub const RING_EXIST_TOTAL: u32 = RING_SAME_WEIGHT + RING_ANY_WEIGHT;
+/// Singles : doubles : triples generation weights (7 : 5 : 4).
+pub const RING_COUNT_1_WEIGHT: u16 = 7;
+pub const RING_COUNT_2_WEIGHT: u16 = 5;
+pub const RING_COUNT_3_WEIGHT: u16 = 4;
+/// IndependentMax per-slot [light, heavy] when `braid_numer` is the default 1.
+/// Tuned so ~10% of generated **tiles** contain a braid (consecutive ≥2
+/// heavies). At 7:5:4 and 4:3:2 counts that is about 10% of tiles / ~12% of
+/// rings; 4:3:1 is a bit under (fewer triples). Was 2:1 (~8% of tiles).
+pub const HEAVY_LIGHT_WEIGHT: u32 = 5;
+pub const HEAVY_BRAID_WEIGHT: u32 = 3;
 /// Each ring is independently a zag with probability `zag_numer / ZAG_DENOM`.
 pub const ZAG_DENOM: u8 = 7;
 pub const ZAG_NUMER_DEFAULT: u8 = 1;
 /// A piece forms a braid with probability `braid_numer / BRAID_DENOM`.
 pub const BRAID_DENOM: u8 = 7;
 pub const BRAID_NUMER_DEFAULT: u8 = 1;
-/// A piece forms a 2–3 bead group with probability `bead_numer / BEAD_DENOM`.
-/// Rolled after braid and zag. `bead_numer == 0` (`--bead-chance 0`) skips the
-/// RNG and matches the pre-bead deal. Used under [`ChannelMode::Additive`].
-/// [`ChannelMode::IndependentMax`] elects beads per light slot instead.
+/// Historical Additive piece-level 2–3 bead group used `bead_numer / BEAD_DENOM`.
+/// Live generation always elects beads per light slot (`--bead-chance 0` still
+/// disables). [`sample_bead_types`] remains for replay of that roll.
 pub const BEAD_DENOM: u8 = 7;
 pub const BEAD_NUMER_DEFAULT: u8 = 1;
 /// Light-slot election under [`ChannelMode::IndependentMax`]:
@@ -163,6 +217,11 @@ impl RingType {
 		matches!(self, Self::Bead)
 	}
 
+	/// Beads score and paint as part of the normal channel.
+	pub fn is_folded_normal(self) -> bool {
+		self.is_normal() || self.is_bead()
+	}
+
 	pub fn from_zag(zag: bool) -> Self {
 		if zag {
 			Self::Zag
@@ -224,6 +283,80 @@ impl TileColor {
 	}
 }
 
+/// Weighted draw of 1 / 2 / 3 live rings. CLI `--ring-count-weights`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RingCountWeights {
+	pub singles: u16,
+	pub doubles: u16,
+	pub triples: u16,
+}
+
+impl Default for RingCountWeights {
+	fn default() -> Self {
+		Self {
+			singles: RING_COUNT_1_WEIGHT,
+			doubles: RING_COUNT_2_WEIGHT,
+			triples: RING_COUNT_3_WEIGHT,
+		}
+	}
+}
+
+impl RingCountWeights {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		let mut parts = s.split(',');
+		let singles = parse_ring_count_part(parts.next(), "singles")?;
+		let doubles = parse_ring_count_part(parts.next(), "doubles")?;
+		let triples = parse_ring_count_part(parts.next(), "triples")?;
+		if parts.next().is_some() {
+			return Err("invalid --ring-count-weights (expected singles,doubles,triples)".into());
+		}
+		let w = Self { singles, doubles, triples };
+		if w.total() == 0 {
+			return Err("invalid --ring-count-weights (at least one weight must be > 0)".into());
+		}
+		Ok(w)
+	}
+
+	pub fn total(self) -> u32 {
+		u32::from(self.singles) + u32::from(self.doubles) + u32::from(self.triples)
+	}
+
+	pub fn label(self) -> String {
+		format!("{},{},{}", self.singles, self.doubles, self.triples)
+	}
+
+	pub fn is_default(self) -> bool {
+		self == Self::default()
+	}
+}
+
+fn parse_ring_count_part(part: Option<&str>, name: &str) -> Result<u16, String> {
+	let raw = part.ok_or_else(|| format!("invalid --ring-count-weights (missing {name})"))?;
+	raw.trim()
+		.parse::<u16>()
+		.map_err(|_| format!("invalid --ring-count-weights {name} '{raw}'"))
+}
+
+/// Draw `n_rings` ∈ {1,2,3} from [`RingCountWeights`], clamped by `max_rings`.
+pub fn sample_ring_count(rng: &mut impl Rng, max_rings: u8, weights: RingCountWeights) -> u8 {
+	let max = max_rings.clamp(1, MAX_COLOR_RINGS);
+	if max == 1 {
+		return 1;
+	}
+	let w1 = u32::from(weights.singles);
+	let w2 = if max >= 2 { u32::from(weights.doubles) } else { 0 };
+	let w3 = if max >= 3 { u32::from(weights.triples) } else { 0 };
+	let total = (w1 + w2 + w3).max(1);
+	let roll = rng.gen_range(0..total);
+	if roll < w1 {
+		1
+	} else if roll < w1 + w2 {
+		2.min(max)
+	} else {
+		3.min(max)
+	}
+}
+
 /// Draw one color from the 81/81/81/9/9/1 tree.
 pub fn sample_color(rng: &mut impl Rng) -> TileColor {
 	let mut roll = rng.gen_range(0..COLOR_WEIGHT_TOTAL);
@@ -234,6 +367,32 @@ pub fn sample_color(rng: &mut impl Rng) -> TileColor {
 		roll -= w;
 	}
 	TileColor::Maroon
+}
+
+/// Draw one color from running [`ColorPass`](rfc/rfc-000-000-00n-generation) weights.
+pub fn sample_color_weighted(rng: &mut impl Rng, weights: &[i32; 6]) -> TileColor {
+	let total: i64 = weights.iter().map(|&w| i64::from(w.max(0))).sum();
+	let total = u64::try_from(total.max(1)).unwrap_or(1);
+	let mut roll = rng.gen_range(0..total) as i64;
+	for (i, &w) in weights.iter().enumerate() {
+		let w = i64::from(w.max(0));
+		if roll < w {
+			return TileColor::ALL[i];
+		}
+		roll -= w;
+	}
+	TileColor::Maroon
+}
+
+/// RFC ColorPass: after drawing `color`, add `drift[color]` to the running weights.
+pub fn apply_color_drift(weights: &mut [i32; 6], color: TileColor, drift: ColorDrift) {
+	if color_drift_is_zero(drift) {
+		return;
+	}
+	let row = drift[color as usize];
+	for (j, d) in row.iter().enumerate() {
+		weights[j] = weights[j].saturating_add(*d);
+	}
 }
 
 /// Independent 1/`ZAG_DENOM` zag rolls. `zag_numer == 0` skips the RNG so a
@@ -293,16 +452,44 @@ pub fn sample_braid(
 	types
 }
 
-/// Per-slot heavy coin (`braid_numer / 7`) for [`ChannelMode::IndependentMax`].
+/// IndependentMax per-slot [light, heavy] weights.
+///
+/// Default `braid_numer == 1` uses [`HEAVY_LIGHT_WEIGHT`] : [`HEAVY_BRAID_WEIGHT`]
+/// (5 : 3) so consecutive-heavy braids land near 10% of **tiles**. `0`
+/// disables; `7` is always-heavy (collectors); any other numerator keeps
+/// the `k/7` coin.
+pub fn heavy_election_weights(braid_numer: u8) -> [u32; 2] {
+	if braid_numer == 0 {
+		[1, 0]
+	} else if braid_numer == BRAID_NUMER_DEFAULT {
+		[HEAVY_LIGHT_WEIGHT, HEAVY_BRAID_WEIGHT]
+	} else if braid_numer >= BRAID_DENOM {
+		[0, 1]
+	} else {
+		[u32::from(BRAID_DENOM - braid_numer), u32::from(braid_numer)]
+	}
+}
+
+/// Per-slot heavy coin for [`ChannelMode::IndependentMax`].
 /// `braid_numer == 0` skips the RNG so `--braids off` matches the no-braid deal.
 pub fn sample_heavy_slots(rng: &mut impl Rng, n_rings: u8, braid_numer: u8) -> [bool; 3] {
 	let mut heavy = [false; 3];
 	if braid_numer == 0 {
 		return heavy;
 	}
-	let numer = u32::from(braid_numer.min(BRAID_DENOM));
+	let [light_w, heavy_w] = heavy_election_weights(braid_numer);
+	let total = light_w + heavy_w;
+	if total == 0 || heavy_w == 0 {
+		return heavy;
+	}
+	if light_w == 0 {
+		for flag in heavy.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
+			*flag = true;
+		}
+		return heavy;
+	}
 	for flag in heavy.iter_mut().take(n_rings.clamp(1, MAX_COLOR_RINGS) as usize) {
-		*flag = rng.gen_range(0..u32::from(BRAID_DENOM)) < numer;
+		*flag = rng.gen_range(0..total) < heavy_w;
 	}
 	heavy
 }
@@ -442,29 +629,62 @@ pub fn sample_bead_types(
 	}
 }
 
-/// 1–3 distinct ring colors. Ring 1 is always drawn. Rings 2 and 3
-/// keep the last existing color with weight 7, or draw any color with weight 1
-/// (a redraw of an already-present color is not a new ring). Each ring is
-/// then independently marked zag or normal.
+/// 1–3 distinct ring colors. Count is drawn from [`RingCountWeights`]
+/// (default 7 : 5 : 4), then that many distinct colors are sampled from the
+/// six-color tree. Each ring is then independently typed (zag / braid / bead).
 pub fn sample_rings(rng: &mut impl Rng, max_rings: u8) -> ([TileColor; 3], u8) {
-	let max_rings = max_rings.clamp(1, MAX_COLOR_RINGS);
-	let r1 = sample_color(rng);
-	let mut rings = [r1, r1, r1];
-	let mut n = 1u8;
-	if max_rings >= 2 && rng.gen_range(0..RING_EXIST_TOTAL) < RING_ANY_WEIGHT {
-		let c = sample_color(rng);
-		if c != r1 {
-			rings[1] = c;
-			n = 2;
-		}
-	}
-	if max_rings >= 3 && rng.gen_range(0..RING_EXIST_TOTAL) < RING_ANY_WEIGHT {
-		let last = rings[(n - 1) as usize];
-		let c = sample_color(rng);
-		if c != last && !rings[..n as usize].contains(&c) {
+	sample_rings_with(rng, max_rings, RingCountWeights::default())
+}
+
+pub fn sample_rings_with(
+	rng: &mut impl Rng,
+	max_rings: u8,
+	weights: RingCountWeights,
+) -> ([TileColor; 3], u8) {
+	let mut color_w = base_color_weights();
+	sample_rings_colored(rng, max_rings, weights, color_drift_zero(), &mut color_w)
+}
+
+/// Color sampling under RFC ColorPass.drift.
+///
+/// Drift all zeros: independent draws, reject duplicate colors on the tile
+/// (live default). Nonzero drift: allow repeats and add `drift[i]` to the
+/// running weights after drawing color *i*. `color_w` is the running chart;
+/// collection generation keeps it across tiles so a deck can lean toward
+/// fewer colors with the **same** drift matrix (not a second setting).
+pub fn sample_rings_colored(
+	rng: &mut impl Rng,
+	max_rings: u8,
+	weights: RingCountWeights,
+	drift: ColorDrift,
+	color_w: &mut [i32; 6],
+) -> ([TileColor; 3], u8) {
+	let want = sample_ring_count(rng, max_rings, weights);
+	if color_drift_is_zero(drift) {
+		let r1 = sample_color(rng);
+		let mut rings = [r1, r1, r1];
+		let mut n = 1u8;
+		let mut guard = 0u32;
+		while n < want && guard < 64 {
+			guard += 1;
+			let c = sample_color(rng);
+			if rings[..n as usize].contains(&c) {
+				continue;
+			}
 			rings[n as usize] = c;
 			n += 1;
 		}
+		return (rings, n);
+	}
+	let r1 = sample_color_weighted(rng, color_w);
+	apply_color_drift(color_w, r1, drift);
+	let mut rings = [r1, r1, r1];
+	let mut n = 1u8;
+	while n < want {
+		let c = sample_color_weighted(rng, color_w);
+		apply_color_drift(color_w, c, drift);
+		rings[n as usize] = c;
+		n += 1;
 	}
 	(rings, n)
 }
@@ -967,12 +1187,25 @@ impl Tile {
 		self.stroke_type(k).is_bead()
 	}
 
+	pub fn stroke_is_folded_normal(self, k: u8) -> bool {
+		self.stroke_type(k).is_folded_normal()
+	}
+
 	pub fn color_mask(self) -> u8 {
 		let mut m = 0u8;
 		for &c in self.ring_colors() {
 			m |= c.bit();
 		}
 		m.max(1)
+	}
+
+	/// Distinct colors among live ring slots (duplicates from ColorPass.drift count once).
+	pub fn distinct_color_count(self) -> u8 {
+		let mut m = 0u8;
+		for k in 0..self.n_rings.min(MAX_COLOR_RINGS) {
+			m |= self.rings[k as usize].bit();
+		}
+		m.count_ones() as u8
 	}
 
 	pub fn normal_mask(self) -> u8 {
@@ -1080,6 +1313,31 @@ impl Tile {
 	/// either tile is in the other tile's [`Self::non_zag_colors_multiset`].
 	pub fn normal_channel_matches(self, other: Tile) -> bool {
 		self.normal_color_in(other) || other.normal_color_in(self)
+	}
+
+	/// Beads are part of the normal channel: a bead-ring color matches the
+	/// same way a normal-ring color does.
+	pub fn folded_normal_color_in(self, other: Tile) -> bool {
+		self.ring_colors()
+			.iter()
+			.enumerate()
+			.any(|(i, &c)| self.ring_type[i].is_folded_normal() && other.has_non_zag_color(c))
+	}
+
+	pub fn folded_normal_channel_matches(self, other: Tile) -> bool {
+		self.folded_normal_color_in(other) || other.folded_normal_color_in(self)
+	}
+
+	/// Collection identity for same-deck mirroring (ids and owner excluded).
+	pub fn collection_kind(self) -> (u8, u8, [u8; 3], [u8; 3], u8, u8) {
+		(
+			self.n_rings,
+			self.dots,
+			self.rings.map(|c| c as u8),
+			self.ring_type.map(|r| r as u8),
+			self.capture.bit(),
+			self.emblem.bit(),
+		)
 	}
 
 	/// How many of this tile's zag **rings** of `color` hit `target`
@@ -1772,28 +2030,34 @@ impl BeadScoring {
 /// overwhelm, HUD `tile_score`, and search.
 ///
 /// Channel *components* ([`EdgeChannels`]) are always independent. This flag
-/// only changes aggregation, and (for generation) whether beads are a light
-/// per-slot election or a 2–3 heavy group.
+/// only changes aggregation. Tile generation always uses IndependentMax
+/// clustering (per-slot heavy coin + 5:3:1 light election) regardless of
+/// mode, so `--channel-mode additive` does not stuff 2–3 braid/bead groups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ChannelMode {
 	/// Independent channels; the edge takes the **maximum** match and the
-	/// **maximum** mismatch of any single channel. Beads are light
-	/// (normal:zag:bead = 5:3:1). Per-slot heavies cluster: consecutive ≥2
-	/// become a braid; a lone or gapped heavy falls through to the light
-	/// election. CLI: `--channel-mode independent-max` (this branch's default).
+	/// **maximum** mismatch of any single channel. Beads fold into the
+	/// normal channel for HUD kind and paint (`max(normal, bead)` is the
+	/// folded-normal component). CLI: `--channel-mode independent-max`
+	/// / `--independent-channels on` (this branch's default).
 	#[default]
 	IndependentMax,
 	/// RFC 001-001-002 additive stacking: `--bead-scoring` combines normal
-	/// and bead, then zag and braid add. Beads generate as 2–3 groups.
-	/// CLI: `--channel-mode additive` (legacy comparison).
+	/// and bead (default shared = beads part of normal), then zag and braid
+	/// **sum**. Generation is the same clustering as IndependentMax.
+	/// CLI: `--channel-mode additive`.
 	Additive,
 }
 
 impl ChannelMode {
 	pub fn parse(s: &str) -> Result<Self, String> {
 		match s.to_ascii_lowercase().as_str() {
-			"independent-max" | "independent_max" | "max" | "indep-max" => Ok(Self::IndependentMax),
-			"additive" | "legacy" | "sum" | "shared-sum" | "add" => Ok(Self::Additive),
+			"independent-max" | "independent_max" | "max" | "indep-max" | "independent" | "on" => {
+				Ok(Self::IndependentMax)
+			}
+			"additive" | "legacy" | "sum" | "shared-sum" | "add" | "shared" | "off" => {
+				Ok(Self::Additive)
+			}
 			other => {
 				Err(format!("unknown channel-mode '{other}' (expected independent-max|additive)"))
 			}
@@ -2216,20 +2480,23 @@ pub struct RuleSet {
 	/// Max distinct rings per tile (1–3). Default 3. `1` is the
 	/// single-ring baseline (still the six-color tree).
 	pub max_rings: u8,
-	/// Each ring is a zag with probability `zag_numer / 7` under
-	/// [`ChannelMode::Additive`]. Under [`ChannelMode::IndependentMax`],
-	/// default `1` is the zag weight 3 in the 5:3:1 light election; `0`
-	/// disables zags (`--zags off` / `--zag-chance 0`).
+	/// Default `1` is the zag weight 3 in the 5:3:1 light election; `0`
+	/// disables zags (`--zags off` / `--zag-chance 0`). Historical Additive
+	/// generation used `zag_numer / 7` per ring; live generation always
+	/// elects light slots.
 	pub zag_numer: u8,
-	/// A piece forms a braid with probability `braid_numer / 7`. Default 1
-	/// (1/7, same rate as zags). `0` disables braids (`--braids off` /
-	/// `--braid-chance 0`). Braids are the only heavy group in both modes.
+	/// Singles : doubles : triples generation weights. Default 7 : 5 : 4.
+	/// CLI `--ring-count-weights`. The previous sequential 7:1 keep-vs-any
+	/// gate made singles ~87%+ of tiles.
+	pub ring_count_weights: RingCountWeights,
+	/// Default `1` is the 5:3 light:heavy per-slot coin (~10% of tiles
+	/// braid). `0` disables; `7` always-heavy. `--braid-chance 2..6` keeps
+	/// the historical `k/7` coin. Channel mode does not change this.
 	pub braid_numer: u8,
-	/// Under [`ChannelMode::Additive`]: a piece forms a 2–3 bead group with
-	/// probability `bead_numer / 7`. Under [`ChannelMode::IndependentMax`]:
-	/// default `1` is the bead weight 1 in the 5:3:1 light election (singles
+	/// Default `1` is the bead weight 1 in the 5:3:1 light election (singles
 	/// allowed); a stuffed numerator (collectors) replaces that weight.
-	/// `0` disables beads (`--bead-chance 0`).
+	/// `0` disables beads (`--bead-chance 0`). Channel mode does not change
+	/// this — Additive no longer rolls a piece-level 2–3 group.
 	pub bead_numer: u8,
 	/// Percent of generated tiles that carry a **dot** capture mark (rest
 	/// triangles). Default [`DOT_PERCENT_DEFAULT`] (50). CLI `--dot-chance`.
@@ -2330,15 +2597,19 @@ pub struct RuleSet {
 	/// research variants (issue #39).
 	pub braid_fail_mismatch: BraidFailMismatch,
 	/// How normal and bead channels combine under [`ChannelMode::Additive`].
-	/// Default [`BeadScoring::SharedChannel`] (rule B): `max` instead of sum.
-	/// [`BeadScoring::Independent`] is rule A (`--bead-scoring independent`).
-	/// Ignored under [`ChannelMode::IndependentMax`] (all four channels are
-	/// independent, then the edge takes max match and max mismatch).
+	/// Default [`BeadScoring::SharedChannel`] (rule B): beads are part of
+	/// the normal channel (`max` instead of sum). [`BeadScoring::Independent`]
+	/// is rule A (`--bead-scoring independent`, four-way sum). IndependentMax
+	/// still takes max of the four components (associative with the fold).
 	pub bead_scoring: BeadScoring,
-	/// How channel totals combine, and how beads generate. Default
-	/// [`ChannelMode::IndependentMax`]. `--channel-mode additive` restores
-	/// RFC 001-001-002 additive stacking and 2–3 bead groups.
+	/// How channel totals combine. Default [`ChannelMode::IndependentMax`].
+	/// `--channel-mode additive` sums folded-normal + zag + braid. Does not
+	/// change tile generation.
 	pub channel_mode: ChannelMode,
+	/// RFC 000 ColorPass.drift. After drawing color *i*, add `color_drift[i][j]`
+	/// to color *j*'s running weight. Default all zeros. `--color-drift N`
+	/// sets the diagonal to *N*.
+	pub color_drift: ColorDrift,
 	/// How overwhelmed tiles leave the board. Default
 	/// [`CaptureMode::LocalClaim`]: ADD/MOVE capture only the placed/moved
 	/// tile and its destination neighbors; leftover overwhelmed tiles stay
@@ -2358,6 +2629,7 @@ impl Default for RuleSet {
 			bag_one_of_each_kind: true,
 			max_rings: MAX_COLOR_RINGS,
 			zag_numer: ZAG_NUMER_DEFAULT,
+			ring_count_weights: RingCountWeights::default(),
 			braid_numer: BRAID_NUMER_DEFAULT,
 			bead_numer: BEAD_NUMER_DEFAULT,
 			dot_percent: DOT_PERCENT_DEFAULT,
@@ -2391,6 +2663,7 @@ impl Default for RuleSet {
 			braid_fail_mismatch: BraidFailMismatch::One,
 			bead_scoring: BeadScoring::SharedChannel,
 			channel_mode: ChannelMode::IndependentMax,
+			color_drift: color_drift_zero(),
 			capture_mode: CaptureMode::LocalClaim,
 		}
 	}
@@ -2401,9 +2674,9 @@ impl RuleSet {
 		Self::default()
 	}
 
-	/// RFC 001-001-002 additive stacking with shared-channel beads and 2–3
-	/// bead groups. Used by `--channel-mode additive` and by tests that lock
-	/// the previous default.
+	/// RFC 001-001-002 additive stacking with shared-channel beads.
+	/// Generation stays IndependentMax clustering; only aggregation sums.
+	/// Used by `--channel-mode additive`.
 	pub fn additive() -> Self {
 		let mut rules = Self::default();
 		rules.channel_mode = ChannelMode::Additive;
@@ -3607,7 +3880,9 @@ impl Game {
 	/// normal is a hitch plus a zag hit. Aggregation into edge totals is
 	/// [`RuleSet::channel_mode`]: [`ChannelMode::IndependentMax`] (default)
 	/// takes max match and max mismatch of any one channel;
-	/// [`ChannelMode::Additive`] stacks with [`BeadScoring`].
+	/// [`ChannelMode::Additive`] stacks with [`BeadScoring`]. Beads are part
+	/// of the normal channel for HUD/paint; components stay separate so the
+	/// unmatched-bead bomb (`bead_mismatch`) still feeds `max(normal, bead)`.
 	///
 	/// - **Normal:** match 1 if some normal-ring color of either tile is in
 	///   the other tile's [`Tile::non_zag_colors_multiset`]; otherwise
@@ -3623,7 +3898,7 @@ impl Game {
 	///   the rings, not color-pairs). If any bead is matched — same presence
 	///   test as the normal channel, `other.has_non_zag_color(bead_color)` —
 	///   a single match of 1 (one −1 at most per edge). Mixed edges can
-	///   score both.
+	///   score both. Painted on the normal lane.
 	pub fn edge_channels(&self, tile: Tile, other: Tile) -> EdgeChannels {
 		EdgeChannels::between(tile, other, &self.rules)
 	}
@@ -4799,6 +5074,7 @@ pub fn sample_tile(
 		dot_percent,
 		EmblemWeights::default(),
 		ChannelMode::IndependentMax,
+		RingCountWeights::default(),
 		next_id,
 		rng,
 	)
@@ -4810,15 +5086,36 @@ pub fn sample_tile_from_rules(
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
-	sample_tile_with(
-		owner,
+	let mut color_w = base_color_weights();
+	sample_tile_from_rules_with_colors(owner, rules, next_id, rng, &mut color_w)
+}
+
+/// Like [`sample_tile_from_rules`], keeping ColorPass running weights so a
+/// collection can apply the same drift across tiles.
+pub fn sample_tile_from_rules_with_colors(
+	owner: Player,
+	rules: &RuleSet,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+	color_w: &mut [i32; 6],
+) -> Tile {
+	let _ = rules.channel_mode;
+	let (rings, n_rings) = sample_rings_colored(
+		rng,
 		rules.max_rings,
+		rules.ring_count_weights,
+		rules.color_drift,
+		color_w,
+	);
+	finish_sampled_tile(
+		owner,
+		rings,
+		n_rings,
 		rules.zag_numer,
 		rules.braid_numer,
 		rules.bead_numer,
 		rules.dot_percent,
 		rules.emblem_weights,
-		rules.channel_mode,
 		next_id,
 		rng,
 	)
@@ -4833,28 +5130,41 @@ pub fn sample_tile_with(
 	dot_percent: u8,
 	emblem_weights: EmblemWeights,
 	channel_mode: ChannelMode,
+	ring_count_weights: RingCountWeights,
 	next_id: &mut u32,
 	rng: &mut impl Rng,
 ) -> Tile {
-	let (mut rings, mut n_rings) = sample_rings(rng, max_rings);
-	let mut ring_type = match channel_mode {
-		ChannelMode::IndependentMax => {
-			let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
-			cluster_consecutive_heavies(heavy, n_rings)
-		}
-		ChannelMode::Additive => {
-			sample_braid(rng, &mut rings, &mut n_rings, max_rings, braid_numer)
-		}
-	};
-	match channel_mode {
-		ChannelMode::IndependentMax => {
-			sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
-		}
-		ChannelMode::Additive => {
-			sample_zag_types(rng, n_rings, &mut ring_type, zag_numer);
-			sample_bead_types(rng, &mut rings, &mut n_rings, max_rings, &mut ring_type, bead_numer);
-		}
-	}
+	let _ = channel_mode; // scoring-only; generation always IndependentMax clustering
+	let (rings, n_rings) = sample_rings_with(rng, max_rings, ring_count_weights);
+	finish_sampled_tile(
+		owner,
+		rings,
+		n_rings,
+		zag_numer,
+		braid_numer,
+		bead_numer,
+		dot_percent,
+		emblem_weights,
+		next_id,
+		rng,
+	)
+}
+
+fn finish_sampled_tile(
+	owner: Player,
+	rings: [TileColor; 3],
+	n_rings: u8,
+	zag_numer: u8,
+	braid_numer: u8,
+	bead_numer: u8,
+	dot_percent: u8,
+	emblem_weights: EmblemWeights,
+	next_id: &mut u32,
+	rng: &mut impl Rng,
+) -> Tile {
+	let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
+	let mut ring_type = cluster_consecutive_heavies(heavy, n_rings);
+	sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
 	let weight = n_rings.max(1);
 	let dots = rng.gen_range(1..=3);
 	let capture = if rng.gen_range(0..100u8) < dot_percent.min(100) {
@@ -5124,6 +5434,7 @@ mod tests {
 		assert_eq!(rules.capture_mode, CaptureMode::LocalClaim);
 		assert_eq!(rules.bead_scoring, BeadScoring::SharedChannel);
 		assert_eq!(rules.channel_mode, ChannelMode::IndependentMax);
+		assert_eq!(rules.ring_count_weights, RingCountWeights::default());
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
 		assert_eq!(rules.no_same_piece_twice, SamePieceTwice::Off);
 		assert!(rules.no_moves_loses);
@@ -7341,13 +7652,12 @@ mod tests {
 		}
 		assert_eq!(ring_n[0], 0);
 		assert!(ring_n[1] > ring_n[2] && ring_n[2] > ring_n[3]);
-		let two_plus = f64::from(ring_n[2] + ring_n[3]) / f64::from(n);
-		assert!(
-			(0.12..0.22).contains(&two_plus),
-			"P(2+ rings)={two_plus:.4} (expected ~0.17; ring 3 can still add a second color)"
-		);
+		let one = f64::from(ring_n[1]) / f64::from(n);
+		let two = f64::from(ring_n[2]) / f64::from(n);
 		let three = f64::from(ring_n[3]) / f64::from(n);
-		assert!((0.002..0.02).contains(&three), "P(3 rings)={three:.4}");
+		assert!((0.40..0.48).contains(&one), "P(1 ring)={one:.4} (expected 7/16 = 0.4375)");
+		assert!((0.28..0.35).contains(&two), "P(2 rings)={two:.4} (expected 5/16 = 0.3125)");
+		assert!((0.22..0.29).contains(&three), "P(3 rings)={three:.4} (expected 4/16 = 0.2500)");
 		let total_rings = color_hits.iter().sum::<u32>() as f64;
 		let share = |i: usize| f64::from(color_hits[i]) / total_rings;
 		for i in 0..3 {
@@ -7362,6 +7672,212 @@ mod tests {
 		for _ in 0..2_000 {
 			let (_, k) = sample_rings(&mut rng, 1);
 			assert_eq!(k, 1);
+		}
+	}
+
+	#[test]
+	fn color_drift_zero_keeps_distinct_ring_colors() {
+		let mut rng = StdRng::seed_from_u64(3);
+		let mut color_w = base_color_weights();
+		let mut two = 0u32;
+		for _ in 0..4_000 {
+			let (rings, k) = sample_rings_colored(
+				&mut rng,
+				3,
+				RingCountWeights::default(),
+				color_drift_zero(),
+				&mut color_w,
+			);
+			if k == 2 {
+				two += 1;
+				assert_ne!(
+					rings[0], rings[1],
+					"default ColorPass.drift 0 rejects duplicate colors"
+				);
+			}
+		}
+		assert!(two > 0);
+	}
+
+	#[test]
+	fn color_drift_diagonal_repeats_an_already_chosen_color() {
+		let mut rng = StdRng::seed_from_u64(5);
+		let drift = color_drift_diagonal(200);
+		let n = 8_000u32;
+		let mut two = 0u32;
+		let mut mono = 0u32;
+		for _ in 0..n {
+			let mut color_w = base_color_weights();
+			let (rings, k) =
+				sample_rings_colored(&mut rng, 3, RingCountWeights::default(), drift, &mut color_w);
+			if k >= 2 {
+				two += 1;
+				let distinct = {
+					let mut m = 0u8;
+					for i in 0..k as usize {
+						m |= rings[i].bit();
+					}
+					m.count_ones()
+				};
+				if distinct == 1 {
+					mono += 1;
+				}
+			}
+		}
+		assert!(two > 0);
+		let rate = f64::from(mono) / f64::from(two);
+		assert!(
+			rate > 0.35,
+			"diagonal +200 should often repeat the first color (mono rate={rate:.3})"
+		);
+	}
+
+	#[test]
+	fn color_drift_across_a_collection_leans_toward_fewer_colors() {
+		use crate::deck::{generate_archetype_collection, DeckArchetype};
+		let mut zero_rules = RuleSet::default();
+		zero_rules.color_drift = color_drift_zero();
+		let mut strong_rules = RuleSet::default();
+		strong_rules.color_drift = color_drift_diagonal(160);
+		let mut mean_zero = 0.0;
+		let mut mean_strong = 0.0;
+		let decks = 80u32;
+		for seed in 0..decks {
+			let mut rng = StdRng::seed_from_u64(u64::from(seed) + 11);
+			let mut next = 1u32;
+			let z = generate_archetype_collection(
+				Player::One,
+				27,
+				&zero_rules,
+				DeckArchetype::Mixed,
+				&mut next,
+				&mut rng,
+			);
+			let mut rng = StdRng::seed_from_u64(u64::from(seed) + 11);
+			next = 1;
+			let s = generate_archetype_collection(
+				Player::One,
+				27,
+				&strong_rules,
+				DeckArchetype::Mixed,
+				&mut next,
+				&mut rng,
+			);
+			let distinct = |tiles: &[Tile]| {
+				let mut m = 0u8;
+				for t in tiles {
+					for k in 0..t.n_rings.min(3) {
+						m |= t.rings[k as usize].bit();
+					}
+				}
+				f64::from(m.count_ones())
+			};
+			mean_zero += distinct(&z);
+			mean_strong += distinct(&s);
+		}
+		mean_zero /= f64::from(decks);
+		mean_strong /= f64::from(decks);
+		assert!(
+			mean_strong + 0.4 < mean_zero,
+			"strong ColorPass.drift should shrink distinct colors per 27-tile deck (zero={mean_zero:.2} strong={mean_strong:.2})"
+		);
+	}
+
+	/// RFC ColorPass.drift diagonal 0 / 40 / 160 on 4:3:2. Default 0 is
+	/// uniqueness (every 2–3-ring tile is multicolor). Nonzero diagonal is
+	/// the RFC keep-last hysteresis — not a second mechanism.
+	#[test]
+	fn color_drift_diagonal_0_40_160_reduces_multicolor() {
+		use crate::deck::{generate_archetype_collection, DeckArchetype};
+		let weights = RingCountWeights { singles: 4, doubles: 3, triples: 2 };
+		let decks_n = 400u32;
+		let mut prev_multi = f64::INFINITY;
+		let mut prev_deck = f64::INFINITY;
+		for n in [0i32, 40, 160] {
+			let mut rules = RuleSet::default();
+			rules.ring_count_weights = weights;
+			rules.color_drift = color_drift_diagonal(n);
+			let mut multi = 0u32;
+			let mut distinct_sum = 0u32;
+			let mut deck_sum = 0u32;
+			for seed in 0..decks_n {
+				let mut rng = StdRng::seed_from_u64(u64::from(seed) + 100);
+				let mut next = 1u32;
+				let deck = generate_archetype_collection(
+					Player::One,
+					27,
+					&rules,
+					DeckArchetype::Mixed,
+					&mut next,
+					&mut rng,
+				);
+				let mut m = 0u8;
+				for t in &deck {
+					let dc = t.distinct_color_count();
+					distinct_sum += u32::from(dc);
+					if dc >= 2 {
+						multi += 1;
+					}
+					for k in 0..t.n_rings.min(3) {
+						m |= t.rings[k as usize].bit();
+					}
+				}
+				deck_sum += u32::from(m.count_ones());
+			}
+			let tiles_n = decks_n * 27;
+			let multi_rate = f64::from(multi) / f64::from(tiles_n);
+			let mean_tile = f64::from(distinct_sum) / f64::from(tiles_n);
+			let mean_deck = f64::from(deck_sum) / f64::from(decks_n);
+			assert!(
+				multi_rate < prev_multi - 0.02,
+				"ColorPass.drift diagonal {n} should cut 2+ color tile share (prev={prev_multi:.3} now={multi_rate:.3})"
+			);
+			assert!(
+				mean_deck < prev_deck - 0.05,
+				"ColorPass.drift diagonal {n} should cut distinct colors per 27-tile deck (prev={prev_deck:.2} now={mean_deck:.2})"
+			);
+			prev_multi = multi_rate;
+			prev_deck = mean_deck;
+			if std::env::var_os("MEASURE_DRIFT").is_some() {
+				eprintln!(
+					"color_drift={n} multi_rate={multi_rate:.4} mean_distinct_per_tile={mean_tile:.3} mean_distinct_per_deck={mean_deck:.3}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn historical_sequential_ring_gate_was_seven_to_one() {
+		assert_eq!(RING_SAME_WEIGHT, 7);
+		assert_eq!(RING_ANY_WEIGHT, 1);
+		assert_eq!(RING_EXIST_TOTAL, 8);
+		assert_eq!(RingCountWeights::default().label(), "7,5,4");
+	}
+
+	#[test]
+	fn same_deck_both_players_start_with_identical_27_tile_collections() {
+		let rules = RuleSet::default();
+		assert!(rules.identical_bags, "same-deck is the live default");
+		assert_eq!(rules.deck_size as usize, BAG_SIZE);
+		let setup = crate::deck::SetupConfig::same_deck();
+		assert_eq!(setup.deck_noise, 0);
+		assert_eq!(setup.p1_deck, crate::deck::DeckArchetype::Mixed);
+		assert_eq!(setup.p2_deck, crate::deck::DeckArchetype::Mixed);
+		for seed in [1u64, 7, 42, 99] {
+			let game = Game::new_with_setup(rules, seed, setup.with_seed(seed));
+			let p1 = game.collection(Player::One);
+			let p2 = game.collection(Player::Two);
+			assert_eq!(p1.len(), 27, "seed {seed}");
+			assert_eq!(p2.len(), 27, "seed {seed}");
+			let k1: Vec<_> = p1.iter().map(|t| t.collection_kind()).collect();
+			let k2: Vec<_> = p2.iter().map(|t| t.collection_kind()).collect();
+			assert_eq!(
+				k1, k2,
+				"same-deck: both players begin with the identical 27-tile set (seed {seed})"
+			);
+			assert_ne!(p1[0].id, p2[0].id, "mirrored copies still have distinct ids");
+			assert_eq!(p1[0].owner, Player::One);
+			assert_eq!(p2[0].owner, Player::Two);
 		}
 	}
 
@@ -8199,6 +8715,7 @@ mod tests {
 				DOT_PERCENT_DEFAULT,
 				EmblemWeights::default(),
 				ChannelMode::Additive,
+				RingCountWeights::default(),
 				&mut next_id,
 				&mut rng,
 			);
@@ -8214,11 +8731,14 @@ mod tests {
 		}
 		let piece_rate = f64::from(braided) / f64::from(n);
 		assert!(
-			(0.12..0.17).contains(&piece_rate),
-			"braid piece rate={piece_rate:.4} (expected ~0.1429 = 1/7)"
+			(0.08..0.13).contains(&piece_rate),
+			"braid tile rate={piece_rate:.4} (expected ~0.10 of tiles at 7:5:4, 5:3 heavy)"
 		);
 		let ring_rate = f64::from(braid_rings) / f64::from(rings);
-		assert!(ring_rate > 0.05, "braid rings should show up (rate={ring_rate:.4})");
+		assert!(
+			(0.10..0.16).contains(&ring_rate),
+			"braid ring rate={ring_rate:.4} (a bit above the tile rate)"
+		);
 		let mut rng = StdRng::seed_from_u64(6);
 		let mut rings = [TileColor::Green; 3];
 		let mut n = 2u8;
@@ -9821,38 +10341,71 @@ mod tests {
 	}
 
 	#[test]
-	fn bead_generation_is_a_piece_level_two_or_three_group() {
+	fn bead_generation_allows_singles_under_every_channel_mode() {
 		let mut rng = StdRng::seed_from_u64(7);
 		let mut next_id = 1u32;
-		let n = 20_000u32;
-		let mut pieces = 0u32;
-		let mut bead_tiles = 0u32;
-		for _ in 0..n {
-			let t = sample_tile_with(
+		let n = 8_000u32;
+		let mut singles = 0u32;
+		for mode in [ChannelMode::Additive, ChannelMode::IndependentMax] {
+			for _ in 0..n {
+				let t = sample_tile_with(
+					Player::One,
+					3,
+					0,
+					0,
+					BEAD_NUMER_DEFAULT,
+					DOT_PERCENT_DEFAULT,
+					EmblemWeights::default(),
+					mode,
+					RingCountWeights::default(),
+					&mut next_id,
+					&mut rng,
+				);
+				if t.bead_ring_count() == 1 {
+					singles += 1;
+				}
+			}
+		}
+		assert!(singles > 0, "light election allows single-bead tiles (got {singles})");
+	}
+
+	#[test]
+	fn channel_mode_does_not_change_tile_generation() {
+		let mut a_id = 1u32;
+		let mut b_id = 1u32;
+		let mut a_rng = StdRng::seed_from_u64(19);
+		let mut b_rng = StdRng::seed_from_u64(19);
+		for _ in 0..200 {
+			let a = sample_tile_with(
 				Player::One,
 				3,
-				0,
-				0,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::IndependentMax,
+				RingCountWeights::default(),
+				&mut a_id,
+				&mut a_rng,
+			);
+			let b = sample_tile_with(
+				Player::One,
+				3,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
 				BEAD_NUMER_DEFAULT,
 				DOT_PERCENT_DEFAULT,
 				EmblemWeights::default(),
 				ChannelMode::Additive,
-				&mut next_id,
-				&mut rng,
+				RingCountWeights::default(),
+				&mut b_id,
+				&mut b_rng,
 			);
-			pieces += 1;
-			let e = t.bead_ring_count();
-			assert_ne!(e, 1, "generated tiles never have a single bead ring");
-			if e > 0 {
-				assert!(e == 2 || e == 3, "bead groups are 2 or 3, got {e}");
-				bead_tiles += 1;
-			}
+			assert_eq!(a.collection_kind(), b.collection_kind());
+			assert_eq!(a.n_rings, b.n_rings);
+			assert_eq!(a.ring_type, b.ring_type);
 		}
-		let rate = f64::from(bead_tiles) / f64::from(pieces);
-		assert!(
-			(0.12..0.17).contains(&rate),
-			"bead-tile rate={rate:.4} (expected ~0.1429 = 1/7) with zags and braids off"
-		);
 	}
 
 	#[test]
@@ -9866,6 +10419,7 @@ mod tests {
 		let mut beads = 0u32;
 		let mut bead_singles = 0u32;
 		let mut braided = 0u32;
+		let mut braid_rings = 0u32;
 		let mut rings = 0u32;
 		for _ in 0..n {
 			let t = sample_tile(
@@ -9880,7 +10434,9 @@ mod tests {
 			);
 			let k = t.n_rings.clamp(1, 3) as usize;
 			rings += k as u32;
-			if t.braid_ring_count() >= 2 {
+			let br = t.braid_ring_count();
+			braid_rings += u32::from(br);
+			if br >= 2 {
 				braided += 1;
 			}
 			if t.bead_ring_count() == 1 {
@@ -9922,9 +10478,68 @@ mod tests {
 		);
 		assert!(bead_singles > 0, "independent-max allows single-bead tiles (got {bead_singles})");
 		let piece_rate = f64::from(braided) / f64::from(n);
+		let ring_rate = f64::from(braid_rings) / f64::from(rings);
 		assert!(
-			piece_rate < 0.08,
-			"consecutive-heavy braids are rarer than piece-level 1/7 (got {piece_rate:.4}); rings={rings}"
+			(0.08..0.13).contains(&piece_rate),
+			"consecutive-heavy braid tile rate={piece_rate:.4} (expected ~0.10 of tiles at 7:5:4, 5:3 heavy)"
+		);
+		assert!(
+			(0.10..0.16).contains(&ring_rate),
+			"braid ring rate={ring_rate:.4} (a bit above the tile rate); rings={rings} braid_rings={braid_rings}"
+		);
+	}
+
+	#[test]
+	fn independent_max_default_heavy_is_five_to_three() {
+		assert_eq!(heavy_election_weights(0), [1, 0]);
+		assert_eq!(
+			heavy_election_weights(BRAID_NUMER_DEFAULT),
+			[HEAVY_LIGHT_WEIGHT, HEAVY_BRAID_WEIGHT]
+		);
+		assert_eq!(HEAVY_LIGHT_WEIGHT, 5);
+		assert_eq!(HEAVY_BRAID_WEIGHT, 3);
+		assert_eq!(heavy_election_weights(BRAID_DENOM), [0, 1]);
+		assert_eq!(heavy_election_weights(2), [5, 2]);
+	}
+
+	fn braid_tile_rate(weights: RingCountWeights, seed: u64, n: u32) -> f64 {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let mut next_id = 1u32;
+		let mut braided = 0u32;
+		for _ in 0..n {
+			let t = sample_tile_with(
+				Player::One,
+				3,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				EmblemWeights::default(),
+				ChannelMode::IndependentMax,
+				weights,
+				&mut next_id,
+				&mut rng,
+			);
+			if t.braid_ring_count() >= 2 {
+				braided += 1;
+			}
+		}
+		f64::from(braided) / f64::from(n)
+	}
+
+	#[test]
+	fn braid_tile_share_is_near_ten_percent_at_bench_counts() {
+		let n = 20_000u32;
+		let w432 = RingCountWeights { singles: 4, doubles: 3, triples: 2 };
+		let w431 = RingCountWeights { singles: 4, doubles: 3, triples: 1 };
+		let r754 = braid_tile_rate(RingCountWeights::default(), 23, n);
+		let r432 = braid_tile_rate(w432, 29, n);
+		let r431 = braid_tile_rate(w431, 31, n);
+		assert!((0.08..0.13).contains(&r754), "7:5:4 braid tile rate={r754:.4} (target ~0.10)");
+		assert!((0.08..0.13).contains(&r432), "4:3:2 braid tile rate={r432:.4} (target ~0.10)");
+		assert!(
+			(0.06..0.12).contains(&r431),
+			"4:3:1 braid tile rate={r431:.4} (fewer triples, a bit under 10%)"
 		);
 	}
 
@@ -9978,6 +10593,7 @@ mod tests {
 				DOT_PERCENT_DEFAULT,
 				EmblemWeights::default(),
 				ChannelMode::IndependentMax,
+				RingCountWeights::default(),
 				&mut next_id,
 				&mut rng,
 			);
@@ -10789,6 +11405,7 @@ mod tests {
 			50,
 			EmblemWeights::off(),
 			ChannelMode::IndependentMax,
+			RingCountWeights::default(),
 			&mut a_id,
 			&mut a_rng,
 		);
@@ -10801,6 +11418,7 @@ mod tests {
 			50,
 			EmblemWeights::off(),
 			ChannelMode::IndependentMax,
+			RingCountWeights::default(),
 			&mut b_id,
 			&mut b_rng,
 		);

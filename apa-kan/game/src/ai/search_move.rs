@@ -3,6 +3,8 @@
 use crate::board::NodeId;
 use crate::game::{Action, Game, KIND_DOTS};
 
+use super::SearchConfig;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchMove {
 	/// Low 16 bits: [`crate::game::Tile::kind_index`] (color-state × dots).
@@ -172,7 +174,7 @@ pub fn is_capture(outcome: &crate::game::ActionOutcome, _mover: crate::game::Pla
 }
 
 /// Cheap move-ordering key (higher is searched first). Callers add TT/killer/history.
-pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
+pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 	match mv {
 		SearchMove::Move { from, to } => {
 			let mut s = 50;
@@ -183,13 +185,20 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 				s += 220;
 			}
 			if from == center {
-				// Vacating our own center is almost never right under hold-to-win.
-				s -= if game.rules().center_hold_win || game.rules().control_win {
-					1_200
+				// Vacating a healthy center is rarely right under control/hold.
+				// An overwhelmed occupant is a claim target; fleeing is counterplay.
+				let tax = if game.rules().center_hold_win || game.rules().control_win {
+					if game.is_overwhelmed(from) {
+						config.order_vacate_overwhelmed
+					} else {
+						config.order_vacate_center
+					}
 				} else {
 					40
 				};
+				s -= tax;
 			}
+			s += center_threat_bonus(game, to, config);
 			if let Some(tile) = game.tile_at(from) {
 				for nb in game.board().incident_others(to) {
 					if let Some(other) = game.tile_at(nb) {
@@ -229,6 +238,10 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 			if game.budget_token_count(game.current_player()) < 3 {
 				s += 30;
 			}
+			let center = game.board().center();
+			if node == center || game.board().inner_ring().contains(&node) {
+				s += config.order_claim_center;
+			}
 			s
 		}
 		SearchMove::Add { kind, node } => {
@@ -243,6 +256,7 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 			} else if game.budget_token_count(me) < 3 {
 				s += 8;
 			}
+			s += center_threat_bonus(game, node, config);
 			for nb in game.board().incident_others(node) {
 				if let Some(other) = game.tile_at(nb) {
 					if other.owner == game.current_player() {
@@ -280,6 +294,23 @@ pub fn cheap_order(game: &Game, mv: SearchMove) -> i32 {
 		}
 		SearchMove::Pass => -1_000,
 	}
+}
+
+fn center_threat_bonus(game: &Game, dest: crate::board::NodeId, config: SearchConfig) -> i32 {
+	if config.order_center_threat == 0 {
+		return 0;
+	}
+	let center = game.board().center();
+	let Some(occ) = game.tile_at(center) else {
+		return 0;
+	};
+	if occ.owner == game.current_player() {
+		return 0;
+	}
+	if !game.board().incident_others(dest).any(|nb| nb == center) && dest != center {
+		return 0;
+	}
+	config.order_center_threat
 }
 
 #[cfg(test)]
@@ -385,7 +416,8 @@ mod tests {
 		);
 		let hit = SearchMove::Add { kind: search_kind(braid), node: spawn };
 		let miss_mv = SearchMove::Add { kind: search_kind(miss), node: spawn };
-		assert!(cheap_order(&game, hit) > cheap_order(&game, miss_mv));
+		let cfg = crate::ai::SearchConfig::enhanced();
+		assert!(cheap_order(&game, hit, cfg) > cheap_order(&game, miss_mv, cfg));
 	}
 
 	#[test]

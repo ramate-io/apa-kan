@@ -8,9 +8,9 @@ use std::time::Duration;
 use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode, EmblemWeights,
-	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RuleSet,
-	SamePieceTwice, ZagMismatchCount, BAG_SIZE,
+	color_drift_diagonal, BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode,
+	EmblemWeights, EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp,
+	PathConstraint, RingCountWeights, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -77,6 +77,7 @@ impl GameConfig {
 		S: AsRef<str>,
 	{
 		let mut cfg = Self::default();
+		let mut same_deck = None;
 		let mut it = args.into_iter();
 		while let Some(raw) = it.next() {
 			let arg = raw.as_ref();
@@ -115,6 +116,10 @@ impl GameConfig {
 				"--p2-deck" => {
 					cfg.setup.p2_deck =
 						DeckArchetype::parse(&require_value("--p2-deck", it.next())?)?;
+				}
+				"--same-deck" => {
+					same_deck =
+						Some(parse_bool("--same-deck", &require_value("--same-deck", it.next())?)?);
 				}
 				"--think-ms" => {
 					let ms = parse_u64("--think-ms", &require_value("--think-ms", it.next())?)?;
@@ -192,6 +197,13 @@ impl GameConfig {
 				}
 			}
 		}
+		if same_deck == Some(true) {
+			cfg.rules.identical_bags = true;
+			cfg.rules.deck_size = DECK_SIZE_DEFAULT as u8;
+			cfg.setup.apply_same_deck();
+		} else if same_deck == Some(false) {
+			cfg.rules.identical_bags = false;
+		}
 		validate_rule_flags(&cfg.rules)?;
 		if cfg.setup.deck_seed.is_none() {
 			cfg.setup.deck_seed = Some(cfg.seed);
@@ -216,6 +228,10 @@ fn require_value(flag: &str, value: Option<impl AsRef<str>>) -> Result<String, S
 
 fn parse_u64(flag: &str, value: &str) -> Result<u64, String> {
 	value.parse::<u64>().map_err(|_| format!("invalid {flag} '{value}'"))
+}
+
+fn parse_i64(flag: &str, value: &str) -> Result<i64, String> {
+	value.parse::<i64>().map_err(|_| format!("invalid {flag} '{value}'"))
 }
 
 fn parse_bool(flag: &str, value: &str) -> Result<bool, String> {
@@ -373,6 +389,27 @@ where
 		"--channel-mode" => {
 			rules.channel_mode = ChannelMode::parse(&require_value(arg, it.next())?)?;
 		}
+		"--independent-channels" => {
+			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
+			rules.channel_mode =
+				if on { ChannelMode::IndependentMax } else { ChannelMode::Additive };
+		}
+		"--ring-count-weights" => {
+			rules.ring_count_weights = RingCountWeights::parse(&require_value(arg, it.next())?)?;
+		}
+		"--color-drift" => {
+			let n = parse_i64(arg, &require_value(arg, it.next())?)?;
+			if !(-10_000..=10_000).contains(&n) {
+				return Err(
+					"invalid --color-drift (expected -10000..10000, RFC ColorPass.drift diagonal)"
+						.into(),
+				);
+			}
+			rules.color_drift = color_drift_diagonal(n as i32);
+		}
+		"--identical-bags" => {
+			rules.identical_bags = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--capture-mode" => {
 			rules.capture_mode = CaptureMode::parse(&require_value(arg, it.next())?)?;
 		}
@@ -427,8 +464,8 @@ pub fn usage() -> &'static str {
 	 Options:\n\
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts>\n\
-	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay>\n\
+	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest)\n\
 	   --bot-config <path.toml>                   Load a SearchConfig TOML (overlays missing keys with enhanced defaults)\n\
 	   --list-search-profiles                     Print named presets and their labels\n\
 	   --search <k=v,...>                         Overlay any knob: ordering, tt, lmr, pvs, q-depth, pw, puct,\n\
@@ -440,6 +477,8 @@ pub fn usage() -> &'static str {
 	   --pick <heuristic|search|greedy>           Bench 7+4 picker (default: heuristic)\n\
 	   --p1-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P1 collection archetype (default: mixed)\n\
 	   --p2-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P2 collection archetype (default: mixed)\n\
+	   --same-deck <on|off>                       Identical 27-tile start for both players (default: on)\n\
+	   --identical-bags <on|off>                  Mirror collections when archetypes match (default: on)\n\
 	   --think-ms <n>                             Bot think time in ms (default: 80)\n\
 	   --delay-ms <n>                             Delay between bot moves (default: 350)\n\
 	   --actions <1..8>                           Actions per turn (default: 1)\n\
@@ -477,9 +516,12 @@ pub fn usage() -> &'static str {
 	   --zags <on|off>                            Alias for --zag-chance 1 or 0 (default: on)\n\
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
-	   --bead-chance <0..7>                       Additive: 2–3 bead group k/7. Independent-max: bead light weight (default: 1)\n\
-	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (ignored by independent-max)\n\
-	   --channel-mode <independent-max|additive>  Edge combine + generation (default: independent-max)\n\
+	   --bead-chance <0..7>                       Bead light-election weight (default: 1; 0 disables)\n\
+	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine; shared = beads part of normal\n\
+	   --channel-mode <independent-max|additive>  Edge combine only (default: independent-max). Generation is always clustering\n\
+	   --independent-channels <on|off>            Alias: on = independent-max, off = additive scoring\n\
+	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
+	   --color-drift <n>                          RFC ColorPass.drift diagonal (default 0, currently zeroed)\n\
 	   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim; cascade = PR #70)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
@@ -547,6 +589,9 @@ mod tests {
 		let cfg = GameConfig::parse(["--search-profile", "deep"]).unwrap();
 		assert_eq!(cfg.search, SearchConfig::deep_mcts());
 		assert_eq!(cfg.search.profile_name(), "deep_mcts");
+		let cfg = GameConfig::parse(["--search-profile", "counterplay"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::counterplay());
+		assert_eq!(cfg.search.profile_name(), "counterplay");
 	}
 
 	#[test]
@@ -689,6 +734,8 @@ mod tests {
 		assert!(cfg.rules.self_capture_budget);
 		assert_eq!(cfg.rules.max_rings, 3);
 		assert_eq!(cfg.rules.zag_numer, 1);
+		assert_eq!(cfg.rules.ring_count_weights, crate::game::RingCountWeights::default());
+		assert_eq!(cfg.rules.color_drift, crate::game::color_drift_zero());
 		assert_eq!(cfg.rules.braid_numer, 1);
 		assert_eq!(cfg.rules.bead_numer, 1);
 		assert_eq!(cfg.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
@@ -826,6 +873,47 @@ mod tests {
 		assert_eq!(legacy.rules.channel_mode, crate::game::ChannelMode::Additive);
 		let err = GameConfig::parse(["--channel-mode", "average"]).unwrap_err();
 		assert!(err.contains("channel-mode"));
+		let on = GameConfig::parse(["--independent-channels", "on"]).unwrap();
+		assert_eq!(on.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
+		let off = GameConfig::parse(["--independent-channels", "off"]).unwrap();
+		assert_eq!(off.rules.channel_mode, crate::game::ChannelMode::Additive);
+	}
+
+	#[test]
+	fn parses_same_deck() {
+		let on = GameConfig::parse(["--same-deck", "on"]).unwrap();
+		assert!(on.rules.identical_bags);
+		assert_eq!(on.rules.deck_size as usize, DECK_SIZE_DEFAULT);
+		assert_eq!(on.setup.deck_noise, 0);
+		assert_eq!(on.setup.p1_deck, crate::deck::DeckArchetype::Mixed);
+		assert_eq!(on.setup.p2_deck, crate::deck::DeckArchetype::Mixed);
+		let off = GameConfig::parse(["--same-deck", "off"]).unwrap();
+		assert!(!off.rules.identical_bags);
+		let bags = GameConfig::parse(["--identical-bags", "off"]).unwrap();
+		assert!(!bags.rules.identical_bags);
+	}
+
+	#[test]
+	fn parses_ring_count_weights() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.ring_count_weights, crate::game::RingCountWeights::default());
+		let custom = GameConfig::parse(["--ring-count-weights", "1,2,3"]).unwrap();
+		assert_eq!(custom.rules.ring_count_weights.singles, 1);
+		assert_eq!(custom.rules.ring_count_weights.doubles, 2);
+		assert_eq!(custom.rules.ring_count_weights.triples, 3);
+		let err = GameConfig::parse(["--ring-count-weights", "0,0,0"]).unwrap_err();
+		assert!(err.contains("ring-count-weights"));
+	}
+
+	#[test]
+	fn parses_color_drift_as_rfc_diagonal() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.color_drift, crate::game::color_drift_zero());
+		let forty = GameConfig::parse(["--color-drift", "40"]).unwrap();
+		assert_eq!(forty.rules.color_drift, crate::game::color_drift_diagonal(40));
+		assert_eq!(crate::game::color_drift_diagonal_value(forty.rules.color_drift), Some(40));
+		let err = GameConfig::parse(["--color-drift", "nope"]).unwrap_err();
+		assert!(err.contains("color-drift"));
 	}
 
 	#[test]
