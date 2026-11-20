@@ -39,6 +39,10 @@ pub struct Zobrist {
 	extra_turn_active: u64,
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
+	last_swap_none: [u64; 2],
+	last_swap_some: [u64; 2],
+	swapped_this_turn_none: u64,
+	swapped_this_turn_some: u64,
 	budget: [[u64; 64]; 2],
 }
 
@@ -66,6 +70,10 @@ impl Zobrist {
 			extra_turn_active: next(),
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
+			last_swap_none: [next(), next()],
+			last_swap_some: [next(), next()],
+			swapped_this_turn_none: next(),
+			swapped_this_turn_some: next(),
 			budget: [[0; 64]; 2],
 		};
 		for node in 0..MAX_NODES {
@@ -212,6 +220,16 @@ pub fn hash(game: &Game) -> u64 {
 	match game.moved_this_turn() {
 		None => h ^= z.moved_this_turn_none,
 		Some(id) => h ^= z.moved_this_turn_some ^ mix_id(id),
+	}
+	for player in [Player::One, Player::Two] {
+		match game.last_swap_pair(player) {
+			None => h ^= z.last_swap_none[player.index()],
+			Some((a, b)) => h ^= z.last_swap_some[player.index()] ^ mix_id(a) ^ mix_id(b),
+		}
+	}
+	match game.swapped_this_turn() {
+		None => h ^= z.swapped_this_turn_none,
+		Some((a, b)) => h ^= z.swapped_this_turn_some ^ mix_id(a) ^ mix_id(b),
 	}
 	h ^= z.control_ratchet[game.control_ratchet().min(15) as usize];
 	if game.extra_turn_active() {

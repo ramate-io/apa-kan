@@ -7,8 +7,8 @@ use crate::game::{
 	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
 	CaptureMode, ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
 	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
-	Player, RingCountWeights, RingType, RuleSet, SamePieceTwice, Tile, TileColor, TurnGainKind,
-	ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	Player, RingCountWeights, RingType, RuleSet, SamePieceTwice, SwapMode, Tile, TileColor,
+	TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -399,6 +399,17 @@ pub struct RulesLog {
 		skip_serializing_if = "skip_default_blocker_blocks"
 	)]
 	pub blocker_blocks: String,
+	/// `on` (live default: adjacent swap with no-echo) or `off`. Absent on
+	/// older logs; replay uses off. Historical comparison-mode names fold
+	/// to on.
+	#[serde(default = "default_swap_off", skip_serializing_if = "skip_swap_off")]
+	pub swap_mode: String,
+	/// Historical. Live swaps always ban echoing the last pair.
+	#[serde(default, skip_serializing)]
+	pub swap_no_immediate_back: bool,
+	/// Historical flag; ignored.
+	#[serde(default, skip_serializing)]
+	pub swap_no_just_moved: bool,
 }
 
 fn default_low_value_endgame() -> String {
@@ -415,6 +426,14 @@ fn default_blocker_blocks() -> String {
 
 fn skip_default_blocker_blocks(v: &String) -> bool {
 	*v == BlockerBlocks::default().name()
+}
+
+fn default_swap_off() -> String {
+	SwapMode::Off.name().to_string()
+}
+
+fn skip_swap_off(v: &String) -> bool {
+	*v == SwapMode::Off.name()
 }
 
 impl RulesLog {
@@ -465,6 +484,9 @@ impl RulesLog {
 			capture_mode: r.capture_mode.name().into(),
 			emblem_weights: r.emblem_weights.label(),
 			blocker_blocks: r.blocker_blocks.name().into(),
+			swap_mode: r.swap_mode.name().into(),
+			swap_no_immediate_back: false,
+			swap_no_just_moved: false,
 		}
 	}
 
@@ -518,6 +540,7 @@ impl RulesLog {
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
 				.unwrap_or_else(|_| EmblemWeights::default()),
 			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
+			swap_mode: SwapMode::parse_log(&self.swap_mode).unwrap_or(SwapMode::Off),
 		})
 	}
 }
@@ -638,6 +661,11 @@ pub struct ActionLog {
 	pub captures: Vec<CaptureEventLog>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub piece: Option<PieceRef>,
+	/// Partner tile on a SWAP (the occupant of `to` before the exchange).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub partner: Option<PieceRef>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub partner_owner: Option<u8>,
 	pub tokens: usize,
 	pub budget: usize,
 	#[serde(default, skip_serializing_if = "skip_zero_usize")]
@@ -721,6 +749,7 @@ impl ActionLog {
 			}
 			Action::Move { from, to } => ("MOVE".to_string(), Some(from), Some(to), None),
 			Action::Claim { node } => ("CLAIM".to_string(), None, Some(node), None),
+			Action::Swap { from, to } => ("SWAP".to_string(), Some(from), Some(to), None),
 			Action::Pass => ("PASS".to_string(), None, None, None),
 		};
 		let capture = outcome.removals.iter().filter(|r| r.tile.owner != player).count() as u8;
@@ -751,6 +780,8 @@ impl ActionLog {
 			capture_dest,
 			captures,
 			piece: piece.map(PieceRef::from_tile),
+			partner: None,
+			partner_owner: None,
 			tokens: game_after.budget_token_count(player),
 			budget: game_after.budget(player),
 			surplus: game_after.budget_surplus(player),
@@ -778,6 +809,12 @@ impl ActionLog {
 
 	pub fn with_overwhelm_delta(mut self, healed: u8) -> Self {
 		self.healed = healed;
+		self
+	}
+
+	pub fn with_partner(mut self, tile: Tile) -> Self {
+		self.partner_owner = Some(player_num(tile.owner));
+		self.partner = Some(PieceRef::from_tile(tile));
 		self
 	}
 
@@ -811,6 +848,11 @@ impl ActionLog {
 				let node = self.to.ok_or("CLAIM missing to")?;
 				Ok(Action::Claim { node })
 			}
+			"SWAP" => {
+				let from = self.from.ok_or("SWAP missing from")?;
+				let to = self.to.ok_or("SWAP missing to")?;
+				Ok(Action::Swap { from, to })
+			}
 			"PASS" => Ok(Action::Pass),
 			other => Err(format!("unknown action kind '{other}'")),
 		}
@@ -822,6 +864,7 @@ impl ActionLog {
 			"ADD" => tags.push("ADD"),
 			"MOVE" => tags.push("MOVE"),
 			"CLAIM" => tags.push("CLAIM"),
+			"SWAP" => tags.push("SWAP"),
 			"PASS" => tags.push("PASS"),
 			_ => {}
 		}
@@ -1192,7 +1235,22 @@ impl GameLog {
 		outcome: &ActionOutcome,
 		game_after: &Game,
 	) {
-		self.actions.push(ActionLog::record(action, piece, outcome, game_after));
+		self.push_action_partner(action, piece, None, outcome, game_after);
+	}
+
+	pub fn push_action_partner(
+		&mut self,
+		action: Action,
+		piece: Option<Tile>,
+		partner: Option<Tile>,
+		outcome: &ActionOutcome,
+		game_after: &Game,
+	) {
+		let mut rec = ActionLog::record(action, piece, outcome, game_after);
+		if let Some(p) = partner {
+			rec = rec.with_partner(p);
+		}
+		self.actions.push(rec);
 	}
 
 	pub fn push_action_with_search(
@@ -1203,8 +1261,23 @@ impl GameLog {
 		game_after: &Game,
 		stats: crate::ai::SearchStats,
 	) {
-		self.actions
-			.push(ActionLog::record(action, piece, outcome, game_after).with_search(stats));
+		self.push_action_with_search_partner(action, piece, None, outcome, game_after, stats);
+	}
+
+	pub fn push_action_with_search_partner(
+		&mut self,
+		action: Action,
+		piece: Option<Tile>,
+		partner: Option<Tile>,
+		outcome: &ActionOutcome,
+		game_after: &Game,
+		stats: crate::ai::SearchStats,
+	) {
+		let mut rec = ActionLog::record(action, piece, outcome, game_after).with_search(stats);
+		if let Some(p) = partner {
+			rec = rec.with_partner(p);
+		}
+		self.actions.push(rec);
 	}
 
 	pub fn finish(&mut self, live: &Game, low_value: Option<LowValueResolution>) {
@@ -1455,7 +1528,16 @@ pub fn piece_for_action(game: &Game, action: Action) -> Option<Tile> {
 		}
 		Action::Move { from, .. } => game.tile_at(from),
 		Action::Claim { node } => game.tile_at(node),
+		Action::Swap { from, .. } => game.tile_at(from),
 		Action::Pass => None,
+	}
+}
+
+/// Partner tile looked up *before* `apply` (occupant of SWAP `to`).
+pub fn partner_for_action(game: &Game, action: Action) -> Option<Tile> {
+	match action {
+		Action::Swap { to, .. } => game.tile_at(to),
+		_ => None,
 	}
 }
 
@@ -1509,13 +1591,17 @@ mod tests {
 			};
 			let action = searcher.choose(&game, actor, &mut rng, think);
 			let piece = piece_for_action(&game, action);
+			let partner = partner_for_action(&game, action);
 			match game.apply(action) {
-				Ok(outcome) => log.push_action(action, piece, &outcome, &game),
+				Ok(outcome) => {
+					log.push_action_partner(action, piece, partner, &outcome, &game);
+				}
 				Err(_) => {
 					let fallback = game.legal_actions().into_iter().next().unwrap_or(Action::Pass);
 					let piece = piece_for_action(&game, fallback);
+					let partner = partner_for_action(&game, fallback);
 					if let Ok(outcome) = game.apply(fallback) {
-						log.push_action(fallback, piece, &outcome, &game);
+						log.push_action_partner(fallback, piece, partner, &outcome, &game);
 					}
 					break;
 				}
@@ -1586,7 +1672,7 @@ mod tests {
 		assert!(!log.actions.is_empty());
 		for act in &log.actions {
 			assert!(
-				matches!(act.kind.as_str(), "ADD" | "MOVE" | "PASS"),
+				matches!(act.kind.as_str(), "ADD" | "MOVE" | "CLAIM" | "SWAP" | "PASS"),
 				"unexpected kind {}",
 				act.kind
 			);
@@ -1596,7 +1682,7 @@ mod tests {
 					assert!(act.to.is_some());
 					assert!(act.piece.is_some());
 				}
-				"MOVE" => {
+				"MOVE" | "SWAP" => {
 					assert!(act.from.is_some());
 					assert!(act.to.is_some());
 					assert!(act.piece.is_some());
@@ -1605,6 +1691,14 @@ mod tests {
 						piece.n_rings,
 						piece.normal_rings + piece.zag_rings + piece.braid_rings + piece.bead_rings
 					);
+					if act.kind == "SWAP" {
+						assert_eq!(piece.n_rings, 1);
+						assert!(act.partner.is_some());
+						assert!(act.partner_owner.is_some());
+					}
+				}
+				"CLAIM" => {
+					assert!(act.to.is_some());
 				}
 				"PASS" => {
 					assert!(act.from.is_none());
@@ -2198,6 +2292,16 @@ mod tests {
 			"benchmark_results/ring_dist_channels/h2h_b_imax_enhanced.jsonl.gz",
 			"benchmark_results/ring_dist_channels/h2h_a_additive_counterplay.jsonl.gz",
 			"benchmark_results/ring_dist_channels/h2h_b_imax_counterplay.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
+	fn committed_singles_swap_shallow_replays() {
+		for rel in [
+			"benchmark_results/singles_swap/h2h_b_adj_any_counterplay_noback.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_locked_counterplay.jsonl.gz",
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 100);
 		}

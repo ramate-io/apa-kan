@@ -10,7 +10,7 @@ use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, D
 use crate::game::{
 	BeadScoring, BlockerBlocks, BraidFailMismatch, CaptureMode, ChannelMode, EmblemWeights,
 	EndgameRule, HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint,
-	RingCountWeights, RuleSet, SamePieceTwice, ZagMismatchCount, BAG_SIZE,
+	RingCountWeights, RuleSet, SamePieceTwice, SwapMode, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -384,6 +384,9 @@ where
 		"--capture-mode" => {
 			rules.capture_mode = CaptureMode::parse(&require_value(arg, it.next())?)?;
 		}
+		"--singles-swap" | "--swap-mode" => {
+			rules.swap_mode = SwapMode::parse_cli(&require_value(arg, it.next())?)?;
+		}
 		"--dot-chance" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n > 100 {
@@ -458,7 +461,7 @@ pub fn usage() -> &'static str {
 	   --from-start                               With --screenshot, capture the opening deal\n\
 	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
 	   --list-scenarios                           Print builtin deck scenarios\n\
-	   --no-moves-loses <on|off>                  No ADD/MOVE/CLAIM loses (default: on)\n\
+	   --no-moves-loses <on|off>                  No ADD/MOVE/SWAP/CLAIM loses (default: on)\n\
 	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
 	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
 	   --no-same-piece-twice <off|always|when-deck-empty>\n\
@@ -490,7 +493,8 @@ pub fn usage() -> &'static str {
 	   --channel-mode <independent-max|additive>  Edge combine + generation (default: independent-max)\n\
 	   --independent-channels <on|off>            Alias: on = independent-max, off = additive shared scoring\n\
 	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 7,5,4)\n\
-	   --capture-mode <local-claim|cascade>       Local ADD/MOVE captures + Claim (default: local-claim; cascade = PR #70)\n\
+	   --capture-mode <local-claim|cascade>       Local ADD/MOVE/SWAP captures + Claim (default: local-claim; cascade = PR #70)\n\
+	   --singles-swap <on|off>                    Single-ring tiles swap with an adjacent tile (default: on; alias --swap-mode)\n\
 	   --dot-chance <0..100>                      Generated tiles that are dots (rest triangles; default: 50)\n\
 	   --emblem-weights <none,crescent,zs[,blocker,rosette]>\n\
 	                                              Emblem generation weights (default: 200,1,1,1,1)\n\
@@ -868,6 +872,22 @@ mod tests {
 		assert_eq!(cascade.rules.capture_mode, crate::game::CaptureMode::Cascade);
 		let err = GameConfig::parse(["--capture-mode", "explode"]).unwrap_err();
 		assert!(err.contains("capture-mode"));
+	}
+
+	#[test]
+	fn parses_singles_swap() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.swap_mode, crate::game::SwapMode::On);
+		let off = GameConfig::parse(["--singles-swap", "off"]).unwrap();
+		assert_eq!(off.rules.swap_mode, crate::game::SwapMode::Off);
+		let on = GameConfig::parse(["--swap-mode", "on"]).unwrap();
+		assert_eq!(on.rules.swap_mode, crate::game::SwapMode::On);
+		let adj = GameConfig::parse(["--singles-swap", "adjacent-any"]).unwrap();
+		assert_eq!(adj.rules.swap_mode, crate::game::SwapMode::On);
+		let err = GameConfig::parse(["--singles-swap", "any"]).unwrap_err();
+		assert!(err.contains("singles-swap"));
+		let gone = GameConfig::parse(["--swap-no-immediate-back", "on"]).unwrap_err();
+		assert!(gone.contains("unknown argument"));
 	}
 
 	#[test]

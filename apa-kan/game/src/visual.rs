@@ -170,7 +170,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Click an overwhelmed tile to CLAIM it (always a spawn token). Win: 5 of 9 ratcheting 4-3-2 with max board+usable (never rises), then lowest pieces if both <=1.";
+	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Click a single then an adjacent tile to SWAP (same pair cannot swap back next). Click an overwhelmed tile to CLAIM it (always a spawn token). Win: 5 of 9 ratcheting 4-3-2 with max board+usable (never rises), then lowest pieces if both <=1.";
 
 pub const SETUP_HELP_TEXT: &str =
 	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6). Normal uncapped.";
@@ -184,6 +184,8 @@ pub const NODE_RGB: [f32; 3] = [0.75, 0.75, 0.75];
 pub const CENTER_RGB: [f32; 3] = [0.85, 0.85, 0.85];
 pub const HIGHLIGHT_RGB: [f32; 3] = [0.95, 0.85, 0.25];
 pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
+/// Occupied SWAP partner highlight. Distinct from MOVE-dest cyan.
+pub const SWAP_RGB: [f32; 3] = [0.95, 0.45, 0.75];
 /// Amber outline on a tile that just landed (token stack or bench) after
 /// a capture. Distinct from selection gold.
 pub const CAPTURE_GLOW_RGB: [f32; 3] = [1.00, 0.72, 0.28];
