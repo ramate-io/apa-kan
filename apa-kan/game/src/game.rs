@@ -75,6 +75,10 @@ pub fn color_drift_zero() -> ColorDrift {
 	[[0; 6]; 6]
 }
 
+/// Live playtest ColorPass.drift (rarer multicolor). JSONL missing-field
+/// default stays 0 via [`color_drift_zero`].
+pub const COLOR_DRIFT_DEFAULT: i32 = 160;
+
 /// Uniform diagonal, as in the RFC keep-last example (`+40`).
 pub fn color_drift_diagonal(n: i32) -> ColorDrift {
 	let mut m = color_drift_zero();
@@ -114,7 +118,8 @@ pub fn base_color_weights() -> [i32; 6] {
 pub const RING_SAME_WEIGHT: u32 = 7;
 pub const RING_ANY_WEIGHT: u32 = 1;
 pub const RING_EXIST_TOTAL: u32 = RING_SAME_WEIGHT + RING_ANY_WEIGHT;
-/// Singles : doubles : triples generation weights (7 : 5 : 4).
+/// Historical JSONL / [`RingCountWeights::default`] mix (7 : 5 : 4).
+/// Live playtest generation uses [`LIVE_RING_COUNT_WEIGHTS`] (4 : 3 : 1).
 pub const RING_COUNT_1_WEIGHT: u16 = 7;
 pub const RING_COUNT_2_WEIGHT: u16 = 5;
 pub const RING_COUNT_3_WEIGHT: u16 = 4;
@@ -332,6 +337,11 @@ impl RingCountWeights {
 		self == Self::default()
 	}
 }
+
+/// Live ring-count mix (more singles). Distinct from [`RingCountWeights::default`],
+/// which stays 7:5:4 so JSONL missing fields replay the historical mix.
+pub const LIVE_RING_COUNT_WEIGHTS: RingCountWeights =
+	RingCountWeights { singles: 4, doubles: 3, triples: 1 };
 
 fn parse_ring_count_part(part: Option<&str>, name: &str) -> Result<u16, String> {
 	let raw = part.ok_or_else(|| format!("invalid --ring-count-weights (missing {name})"))?;
@@ -664,8 +674,9 @@ pub fn sample_rings_with(
 /// Color sampling under RFC ColorPass.drift.
 ///
 /// Drift all zeros: independent draws, reject duplicate colors on the tile
-/// (live default). Nonzero drift: allow repeats and add `drift[i]` to the
-/// running weights after drawing color *i*. `color_w` is the running chart;
+/// (`--color-drift 0`). Live default is diagonal [`COLOR_DRIFT_DEFAULT`]:
+/// allow repeats and add `drift[i]` to the running weights after drawing
+/// color *i*. `color_w` is the running chart;
 /// collection generation keeps it across tiles so a deck can lean toward
 /// fewer colors with the **same** drift matrix (not a second setting).
 pub fn sample_rings_colored(
@@ -2032,28 +2043,28 @@ impl BraidFailMismatch {
 
 /// How the braid channel matches and how match totals treat other channels.
 ///
-/// CLI: `--braid-scoring`. Default [`Self::Current`] is live scoring
-/// (coverage match, size ≥ 2, failed-braid mismatch from
-/// [`BraidFailMismatch`]).
+/// CLI: `--braid-scoring`. Enum default [`Self::Current`] is the JSONL
+/// missing-field replay (coverage, size ≥ 2). Live [`RuleSet`] default is
+/// [`Self::BraidOnlyExact`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum BraidScoring {
-	/// Live default: a 2–3 slot braid matches on multiset coverage
-	/// (`have >= need`); match weight is the braid's slot count. Other
-	/// channels still contribute their match. Failed braids use
-	/// [`RuleSet::braid_fail_mismatch`].
+	/// Coverage match, size ≥ 2; other channels still contribute. Restore
+	/// with `--braid-scoring current`. JSONL missing `braid_scoring` replays
+	/// as this. Failed braids use [`RuleSet::braid_fail_mismatch`].
 	#[default]
 	Current,
-	/// Only braid-channel matches add to the edge **match** total. A normal
-	/// or bead match is still **displayed** as a match in the HUD and still
-	/// occupies the channel (it does not become a hitch / mismatch) but
-	/// contributes 0 to the match score. Mismatches are unchanged. Braid
-	/// fulfillment is the current coverage rule.
+	/// Legacy: only braid-channel matches add to the edge **match** total.
+	/// A normal or bead match is still **displayed** as a match in the HUD
+	/// and still occupies the channel (it does not become a hitch /
+	/// mismatch) but contributes 0 to the match score. Mismatches are
+	/// unchanged. Fulfillment is the coverage rule. Kept so #82 JSONL
+	/// replays; `--braid-scoring braid-only-match`.
 	BraidOnlyMatch,
-	/// Like [`Self::BraidOnlyMatch`], but fulfillment is **exact**: a braid
-	/// matches only if the neighbor has exactly the braid's count of each
-	/// color present on the braid. Extra neighbor colors the braid does not
-	/// use are allowed. 1-slot braids may match and score +1. CLI:
-	/// `--braid-scoring braid-only-exact` or `--braid-exact on`.
+	/// Live default. Like [`Self::BraidOnlyMatch`], but fulfillment is
+	/// **exact**: a braid matches only if the neighbor has exactly the
+	/// braid's count of each color present on the braid. Extra neighbor
+	/// colors the braid does not use are allowed. 1-slot braids may match
+	/// and score +1. CLI: `--braid-scoring braid-only-exact`.
 	BraidOnlyExact,
 }
 
@@ -2148,15 +2159,16 @@ pub enum ChannelMode {
 	/// Independent channels; the edge takes the **maximum** match and the
 	/// **maximum** mismatch of any single channel. Beads fold into the
 	/// normal channel for HUD kind and paint. CLI: `--channel-mode
-	/// independent-max` / `--independent-channels on` (this branch's default).
+	/// independent-max` / `--independent-channels on`. Enum default only;
+	/// live [`RuleSet`] default is [`Self::Additive`].
 	#[default]
 	IndependentMax,
-	/// RFC 001-001-002 additive stacking: each channel (normal, bead, zag,
-	/// braid) contributes its weight. Default [`BeadScoring::Independent`]
-	/// sums them, so a normal match and a bead match on the same edge is 2.
-	/// `--bead-scoring shared` restores `max(normal, bead)` folding.
-	/// Generation is the same clustering as IndependentMax.
-	/// CLI: `--channel-mode additive`.
+	/// Live default. RFC 001-001-002 additive stacking: each channel
+	/// (normal, bead, zag, braid) contributes its weight.
+	/// [`BeadScoring::Independent`] sums them, so a normal match and a bead
+	/// match on the same edge is 2. `--bead-scoring shared` restores
+	/// `max(normal, bead)` folding. Generation is the same clustering as
+	/// IndependentMax. CLI: `--channel-mode additive`.
 	Additive,
 }
 
@@ -2230,17 +2242,19 @@ impl CaptureMode {
 }
 
 /// When a single-ring tile may swap positions with an adjacent occupied
-/// tile as a full action. Live default is [`SwapMode::On`]: own or
-/// opponent partner, plus a one-move no-echo guardrail (neither player
-/// may swap the same unordered tile pair back on the immediately
-/// following action). Vacant nodes, including an empty center, are not
-/// legal partners. CLI `--singles-swap on|off|normal-only`.
+/// tile as a full action. Live [`RuleSet`] default is [`SwapMode::NormalOnly`]:
+/// only a 1-ring **normal** initiates; the partner may be any adjacent
+/// occupied tile (own or opponent); one-move no-echo (neither player may
+/// swap the same unordered pair back on the immediately following action);
+/// vacant nodes, including an empty center, are not legal partners.
+/// `--singles-swap on` restores any-1-ring initiators; `--singles-swap off`
+/// disables SWAP. Enum default stays [`SwapMode::On`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum SwapMode {
 	#[default]
 	On,
-	/// Like [`Self::On`], but only a 1-ring **normal** tile may initiate
-	/// (single braids, beads, and zags cannot).
+	/// Live default. Like [`Self::On`], but only a 1-ring **normal** tile
+	/// may initiate (single braids, beads, and zags cannot).
 	NormalOnly,
 	Off,
 }
@@ -2657,8 +2671,10 @@ impl GameStatus {
 	}
 }
 
-/// Configurable rules. Defaults match the redesign spec; each field is listed
-/// in `rfc/rfc-001-001-001-rosette-redesign`.
+/// Configurable rules. Live defaults are the playtest package (4:3:1 Additive
+/// braid-only-exact, single braids on, normal-only SWAP, color-drift 160,
+/// per-arc double-count). Each field is listed in
+/// `rfc/rfc-001-001-001-rosette-redesign`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
 	/// Opening spawn-token stack (that many blank tokens). Default 7.
@@ -2694,9 +2710,9 @@ pub struct RuleSet {
 	/// generation used `zag_numer / 7` per ring; live generation always
 	/// elects light slots.
 	pub zag_numer: u8,
-	/// Singles : doubles : triples generation weights. Default 7 : 5 : 4.
-	/// CLI `--ring-count-weights`. The previous sequential 7:1 keep-vs-any
-	/// gate made singles ~87%+ of tiles.
+	/// Singles : doubles : triples generation weights. Live default
+	/// [`LIVE_RING_COUNT_WEIGHTS`] (4 : 3 : 1). CLI `--ring-count-weights`.
+	/// [`RingCountWeights::default`] stays 7:5:4 for JSONL missing fields.
 	pub ring_count_weights: RingCountWeights,
 	/// Default `1` is the 5:3 light:heavy per-slot coin (~10% of tiles
 	/// braid). `0` disables; `7` always-heavy. `--braid-chance 2..6` keeps
@@ -2805,12 +2821,13 @@ pub struct RuleSet {
 	/// [`BraidFailMismatch::Weight`] / [`BraidFailMismatch::Sum`] are
 	/// research variants (issue #39).
 	pub braid_fail_mismatch: BraidFailMismatch,
-	/// Braid match rule. Default [`BraidScoring::Current`]. CLI:
-	/// `--braid-scoring` / `--braid-exact`.
+	/// Braid match rule. Live default [`BraidScoring::BraidOnlyExact`].
+	/// `--braid-scoring current` restores coverage. CLI: `--braid-scoring`.
 	pub braid_scoring: BraidScoring,
 	/// If true, a lone heavy slot (including a 1-ring tile) becomes a 1-slot
-	/// braid instead of falling through to light election. Default false.
-	/// CLI: `--single-braids`. Uses the existing heavy coin (no extra roll).
+	/// braid instead of falling through to light election. Live default true.
+	/// `--single-braids off` restores the fall-through. Uses the existing
+	/// heavy coin (no extra roll).
 	pub allow_single_braids: bool,
 	/// How normal and bead channels combine under [`ChannelMode::Additive`].
 	/// Default [`BeadScoring::Independent`] (rule A): beads are a separate
@@ -2818,10 +2835,9 @@ pub struct RuleSet {
 	/// (`--bead-scoring shared`, `max` instead of sum). IndependentMax still
 	/// takes max of the four components (associative with the fold).
 	pub bead_scoring: BeadScoring,
-	/// How channel totals combine. Default [`ChannelMode::IndependentMax`].
-	/// `--channel-mode additive` sums normal + bead + zag + braid (unless
-	/// `--bead-scoring shared` folds normal/bead). Does not change tile
-	/// generation.
+	/// How channel totals combine. Live default [`ChannelMode::Additive`]
+	/// (beads separate). `--channel-mode independent-max` restores max of
+	/// any one channel. Does not change tile generation.
 	pub channel_mode: ChannelMode,
 	/// If true, each unique node pair contributes once to match/mismatch
 	/// scoring. The two generating-circle petals between the center and an
@@ -2830,8 +2846,8 @@ pub struct RuleSet {
 	/// `--link-once`.
 	pub score_unique_neighbors: bool,
 	/// RFC 000 ColorPass.drift. After drawing color *i*, add `color_drift[i][j]`
-	/// to color *j*'s running weight. Default all zeros. `--color-drift N`
-	/// sets the diagonal to *N*.
+	/// to color *j*'s running weight. Live default diagonal
+	/// [`COLOR_DRIFT_DEFAULT`] (160). `--color-drift 0` restores uniqueness.
 	pub color_drift: ColorDrift,
 	/// How overwhelmed tiles leave the board. Default
 	/// [`CaptureMode::LocalClaim`]: ADD/MOVE/SWAP capture only the
@@ -2839,9 +2855,10 @@ pub struct RuleSet {
 	/// overwhelmed tiles stay until healed or [`Action::Claim`]ed.
 	/// `--capture-mode cascade` restores PR #70's full-board simultaneous sweep.
 	pub capture_mode: CaptureMode,
-	/// Single-ring tiles swapping with an adjacent occupied tile. Default
-	/// [`SwapMode::On`]. CLI `--singles-swap on|off|normal-only`. When on,
-	/// echoing either player's last SWAP pair is illegal for one action.
+	/// Single-ring tiles swapping with an adjacent occupied tile. Live
+	/// default [`SwapMode::NormalOnly`]. `--singles-swap off` disables;
+	/// `--singles-swap on` restores any-1-ring initiators. Echoing either
+	/// player's last SWAP pair is illegal for one action.
 	pub swap_mode: SwapMode,
 }
 
@@ -2856,7 +2873,7 @@ impl Default for RuleSet {
 			bag_one_of_each_kind: true,
 			max_rings: MAX_COLOR_RINGS,
 			zag_numer: ZAG_NUMER_DEFAULT,
-			ring_count_weights: RingCountWeights::default(),
+			ring_count_weights: LIVE_RING_COUNT_WEIGHTS,
 			braid_numer: BRAID_NUMER_DEFAULT,
 			bead_numer: BEAD_NUMER_DEFAULT,
 			dot_percent: DOT_PERCENT_DEFAULT,
@@ -2888,14 +2905,14 @@ impl Default for RuleSet {
 			pass_through_ring_cmp: PassThroughRingCmp::Ge,
 			zag_mismatch: ZagMismatchCount::Sum,
 			braid_fail_mismatch: BraidFailMismatch::One,
-			braid_scoring: BraidScoring::Current,
-			allow_single_braids: false,
+			braid_scoring: BraidScoring::BraidOnlyExact,
+			allow_single_braids: true,
 			bead_scoring: BeadScoring::Independent,
-			channel_mode: ChannelMode::IndependentMax,
+			channel_mode: ChannelMode::Additive,
 			score_unique_neighbors: false,
-			color_drift: color_drift_zero(),
+			color_drift: color_drift_diagonal(COLOR_DRIFT_DEFAULT),
 			capture_mode: CaptureMode::LocalClaim,
-			swap_mode: SwapMode::On,
+			swap_mode: SwapMode::NormalOnly,
 		}
 	}
 }
@@ -2905,13 +2922,23 @@ impl RuleSet {
 		Self::default()
 	}
 
-	/// RFC 001-001-002 additive stacking. Beads are a separate channel and
-	/// sum with normals (default [`BeadScoring::Independent`]). Generation
-	/// stays IndependentMax clustering; only aggregation sums.
-	/// Used by `--channel-mode additive`.
+	/// RFC 001-001-002 additive stacking with coverage braid scoring
+	/// ([`BraidScoring::Current`]). Beads are a separate channel and sum
+	/// with normals ([`BeadScoring::Independent`]). Generation stays
+	/// IndependentMax clustering; only aggregation sums. Live
+	/// [`RuleSet::default`] is Additive **plus** [`BraidScoring::BraidOnlyExact`].
 	pub fn additive() -> Self {
 		let mut rules = Self::default();
 		rules.channel_mode = ChannelMode::Additive;
+		rules.braid_scoring = BraidScoring::Current;
+		rules
+	}
+
+	/// Independent-max aggregation on top of the live playtest generation.
+	/// `--channel-mode independent-max` / `--independent-channels on`.
+	pub fn independent_max() -> Self {
+		let mut rules = Self::default();
+		rules.channel_mode = ChannelMode::IndependentMax;
 		rules
 	}
 
@@ -4147,12 +4174,11 @@ impl Game {
 	/// of that type. Zag and braid never override other types. Zag colors are
 	/// excluded from every match except zag-on-zag: a zag vs a same-color
 	/// normal is a hitch plus a zag hit. Aggregation into edge totals is
-	/// [`RuleSet::channel_mode`]: [`ChannelMode::IndependentMax`] (default)
-	/// takes max match and max mismatch of any one channel;
-	/// [`ChannelMode::Additive`] sums every channel (default
-	/// [`BeadScoring::Independent`]). `--bead-scoring shared` folds Additive
-	/// normal/bead with `max`. IndependentMax HUD still paints beads on the
-	/// normal lane.
+	/// [`RuleSet::channel_mode`]: live default [`ChannelMode::Additive`]
+	/// sums every channel ([`BeadScoring::Independent`]).
+	/// [`ChannelMode::IndependentMax`] takes max match and max mismatch of
+	/// any one channel. `--bead-scoring shared` folds Additive normal/bead
+	/// with `max`. IndependentMax HUD still paints beads on the normal lane.
 	///
 	/// - **Normal:** match 1 if some normal-ring color of either tile is in
 	///   the other tile's [`Tile::non_zag_colors_multiset`]; otherwise
@@ -5897,12 +5923,13 @@ mod tests {
 		assert_eq!(rules.braid_fail_mismatch, BraidFailMismatch::One);
 		assert_eq!(rules.capture_mode, CaptureMode::LocalClaim);
 		assert_eq!(rules.bead_scoring, BeadScoring::Independent);
-		assert_eq!(rules.braid_scoring, BraidScoring::Current);
-		assert!(!rules.allow_single_braids);
+		assert_eq!(rules.braid_scoring, BraidScoring::BraidOnlyExact);
+		assert!(rules.allow_single_braids);
 		assert!(!rules.score_unique_neighbors);
-		assert_eq!(rules.channel_mode, ChannelMode::IndependentMax);
-		assert_eq!(rules.swap_mode, SwapMode::On);
-		assert_eq!(rules.ring_count_weights, RingCountWeights::default());
+		assert_eq!(rules.channel_mode, ChannelMode::Additive);
+		assert_eq!(rules.swap_mode, SwapMode::NormalOnly);
+		assert_eq!(rules.ring_count_weights, LIVE_RING_COUNT_WEIGHTS);
+		assert_eq!(rules.color_drift, color_drift_diagonal(COLOR_DRIFT_DEFAULT));
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
 		assert_eq!(rules.no_same_piece_twice, SamePieceTwice::Off);
 		assert!(rules.no_moves_loses);
@@ -6991,6 +7018,7 @@ mod tests {
 		rules.control_n = 5;
 		rules.control_hold_turns = 3;
 		rules.no_same_piece_twice = SamePieceTwice::Off;
+		rules.braid_scoring = BraidScoring::Current;
 		let mut game = Game::empty(rules);
 		occupy_control_five(&mut game, Player::One);
 		{
@@ -10637,9 +10665,10 @@ mod tests {
 
 	#[test]
 	fn independent_max_scores_ignore_bead_scoring_fold() {
-		let mut shared = RuleSet::default();
+		let mut shared = RuleSet::independent_max();
+		shared.braid_scoring = BraidScoring::Current;
 		shared.bead_scoring = BeadScoring::SharedChannel;
-		let mut game_ind = Game::empty(RuleSet::default());
+		let mut game_ind = empty_independent_max();
 		let mut game_shared = Game::empty(shared);
 		let mixed = game_ind.alloc_typed_rings(
 			Player::One,
@@ -10758,7 +10787,7 @@ mod tests {
 
 	#[test]
 	fn braid_only_match_zeros_non_braid_match_on_independent_max() {
-		let mut rules = RuleSet::default();
+		let mut rules = RuleSet::independent_max();
 		rules.braid_scoring = BraidScoring::BraidOnlyMatch;
 		let mut game = Game::empty(rules);
 		let a = game.alloc_rings(Player::One, &[TileColor::Orange], 1, 1);
@@ -10852,8 +10881,9 @@ mod tests {
 	}
 
 	fn empty_independent_max() -> Game {
-		assert_eq!(RuleSet::default().channel_mode, ChannelMode::IndependentMax);
-		Game::empty(RuleSet::default_rules())
+		let mut rules = RuleSet::independent_max();
+		rules.braid_scoring = BraidScoring::Current;
+		Game::empty(rules)
 	}
 
 	/// Single bead + other ring: bead mismatch can be the edge's max mismatch
@@ -12382,6 +12412,7 @@ mod tests {
 	fn local_claim_rules() -> RuleSet {
 		let mut rules = RuleSet::default();
 		rules.control_win = false;
+		rules.braid_scoring = BraidScoring::Current;
 		rules
 	}
 
@@ -12657,6 +12688,7 @@ mod tests {
 	fn swap_on() -> RuleSet {
 		let mut rules = RuleSet::default();
 		rules.no_moves_loses = false;
+		rules.swap_mode = SwapMode::On;
 		rules
 	}
 

@@ -9,9 +9,14 @@ first-taker wins 58.2%). This package layers single-braid exact matching
 and normal-only swap on that recipe, and benches **both** center↔inner
 link-once and the pre-#82 double-count.
 
-All levers are saveable `RuleSet` / CLI flags. Live defaults are unchanged:
-`--braid-scoring current`, `--single-braids off`, `--singles-swap on`
-(from PR #80), `--link-once off`.
+All levers are saveable `RuleSet` / CLI flags. At the time of the cells
+below, live defaults were still `--braid-scoring current`, `--single-braids
+off`, `--singles-swap on` (from PR #80), `--link-once off`. Later in this
+PR those live defaults flipped to the **full double-count** cell (4:3:1
+Additive braid-only-exact, single braids on, normal-only swap, link-once
+off, color-drift 160). Confirmation on a no-extra-rule-flag run:
+[`h2h_defaults`](h2h_defaults.txt). Do not treat that as a rewrite of
+the tables below.
 
 Reproduce with [`run_h2h.sh`](run_h2h.sh). Survey: [`survey.py`](survey.py)
 (first center *take* counts only if the landing piece is still there after
@@ -82,9 +87,14 @@ per config.
 | [`h2h_full_double`](h2h_full_double.txt) | double | on | normal-only | full setup |
 | [`h2h_full_double_noswap`](h2h_full_double_noswap.txt) | double | on | off | ablation |
 | [`h2h_full_double_nobraid`](h2h_full_double_nobraid.txt) | double | off | normal-only | ablation; 8.3% braid tiles |
+| [`h2h_defaults`](h2h_defaults.txt) | double | on | normal-only | live RuleSet defaults; no extra rule flags |
 
 `run_h2h.sh all` is the two full cells; `LINK=off run_h2h.sh noswap|nobraid`
 are the ablations at double-count (the better-looking link setting).
+`run_h2h.sh defaults` is the same harness on live `RuleSet::default()` with
+no extra `--braid-scoring` / `--single-braids` / `--singles-swap` /
+`--ring-count-weights` / `--color-drift` / `--independent-channels` /
+`--link-once` flags.
 
 JSONL.gz logs reconstruct each game (rules include `braid_scoring`,
 `allow_single_braids`, `swap_mode`, `score_unique_neighbors`).
@@ -101,6 +111,7 @@ recorded take (none by ADD or SWAP). CLAIM-on-center is still ~0.
 | full **double-count** | 54-0-46 | 52.71 | 35 / 61 / 4 | 95 @ t10.56 | **23.2%** | **55.8%** | **0.81** | 88.9% | 1.45 / 0.77 | 0.18 | 30.2% |
 | double **no-swap** | 60-0-40 | 51.57 | 29 / 68 / 3 | 95 @ t10.29 | 26.3% | **50.5%** | 0.73 | 86.3% | 1.27 / 0.76 | 0 | 29.1% |
 | double **no-single-braid** | **47-0-53** | 57.90 | **26** / 67 / 7 | 92 @ t9.30 | **22.8%** | **51.1%** | **0.96** | 84.4% | 1.62 / 0.82 | 0.18 | 29.9% |
+| live **defaults** | 59-0-41 | 53.93 | 28 / 66 / 6 | 96 @ t10.16 | 26.0% | 51.0% | 0.82 | 90.2% | 1.35 / 0.84 | 0.16 | 27.1% |
 
 Contested-center / sit-and-win (among games with a surviving take):
 
@@ -110,6 +121,14 @@ Contested-center / sit-and-win (among games with a surviving take):
 | full double | **75.8%** | **20.0%** | 0.05 |
 | double no-swap | 71.6% | 21.1% | 0 |
 | double no-single-braid | **77.2%** | **18.5%** | 0.02 |
+| live defaults | 74.0% | 22.9% | 0.07 |
+
+Live `RuleSet::default()` confirmation (`h2h_defaults`) is in line with the
+full double-count cell (never-left 26% vs 23%, sit-and-win 23% vs 20%,
+swaps 0.16 vs 0.18). P1 is a bit stronger (59-0-41 vs 54-0-46) and more
+1-rings reach play (opening 9.6% vs 8.5%; 74 single-braids placed vs a
+handful in the original cell) because search pick rollouts now see exact
+1-slot +1. Do not overwrite the original `h2h_full_*` logs.
 
 Control-cascade target5 / 4 / 3 / 2 (immediate vs hold):
 

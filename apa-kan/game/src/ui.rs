@@ -958,6 +958,8 @@ fn refresh_view(
 		Selection::Piece(n) => play.game.legal_destinations(n),
 		_ => Vec::new(),
 	};
+	// Pink rings on legal SWAP partners only. Under NormalOnly that is
+	// empty unless the selected tile is a 1-ring normal.
 	let swap_partners: Vec<NodeId> = match play.selection {
 		Selection::Piece(n) => play.game.legal_swap_partners(n),
 		_ => Vec::new(),

@@ -116,7 +116,7 @@ fn usage() -> &'static str {
 	   --control-win, --control-n, --control-hold-turns, --endgame-rule, --cascade-turn-gain,\n\
 	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --ring-count-weights, --color-drift, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --braid-scoring, --braid-exact, --single-braids, --score-unique-neighbors, --link-once, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --singles-swap, --dot-chance,\n\
+	   --braid-fail-mismatch, --braid-scoring, --single-braids, --score-unique-neighbors, --link-once, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --singles-swap, --dot-chance,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -663,7 +663,7 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, false).label()
 	));
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -688,6 +688,7 @@ fn run(cfg: BenchConfig) {
 		on_off(rules.self_capture_budget),
 		rules.max_rings,
 		rules.ring_count_weights.label(),
+		color_drift_diagonal_value(rules.color_drift).unwrap_or(0),
 		rules.zag_numer,
 		rules.braid_numer,
 		rules.bead_numer,
@@ -2993,7 +2994,7 @@ mod tests {
 		let braid =
 			parse(vec!["--braid-scoring".to_string(), "braid-only-match".to_string()]).unwrap();
 		assert_eq!(braid.rules.braid_scoring, apa_kan::game::BraidScoring::BraidOnlyMatch);
-		assert_eq!(cfg.rules.channel_mode, apa_kan::game::ChannelMode::IndependentMax);
+		assert_eq!(cfg.rules.channel_mode, apa_kan::game::ChannelMode::Additive);
 		let emblems = parse(vec![
 			"--deck-matchups".to_string(),
 			"crescent:mixed,zs:emblem,emblem:bead".to_string(),

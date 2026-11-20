@@ -337,7 +337,8 @@ pub struct RulesLog {
 	pub max_rings: u8,
 	pub zag_numer: u8,
 	/// `singles,doubles,triples` generation weights. Absent on older logs;
-	/// replay uses the live 7:5:4 default (tiles themselves are stored).
+	/// replay uses historical 7:5:4 (tiles themselves are stored). Live
+	/// [`RuleSet`] default is 4:3:1.
 	#[serde(
 		default = "default_ring_count_weights",
 		skip_serializing_if = "skip_default_ring_count_weights"
@@ -403,8 +404,8 @@ pub struct RulesLog {
 	/// Absent on older logs; replay uses independent, which matches those captures.
 	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
 	pub bead_scoring: String,
-	/// `current` (live default) or a `--braid-scoring` variant. Absent on older
-	/// logs; replay uses current.
+	/// Live RuleSet default is `braid-only-exact`. Absent on older logs;
+	/// replay uses `current` (coverage) so pre-exact captures still match.
 	#[serde(default = "default_current_braid", skip_serializing_if = "skip_current_braid")]
 	pub braid_scoring: String,
 	/// Lone-heavy 1-slot braids (`--single-braids`). Absent/false on older logs.
@@ -415,8 +416,9 @@ pub struct RulesLog {
 	/// is `Some(false)`, replay also treats this as on.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub score_unique_neighbors: bool,
-	/// `independent-max` (live default) or `additive` (RFC 001-001-002).
-	/// Absent on older logs; replay uses additive, which matches those captures.
+	/// Live RuleSet default is `additive`. Absent on older logs; replay uses
+	/// additive, which matches those captures. Independent-max logs write
+	/// the field (skip only serializes additive).
 	#[serde(
 		default = "default_additive_channel_mode",
 		skip_serializing_if = "skip_additive_channel_mode"
@@ -444,9 +446,8 @@ pub struct RulesLog {
 		skip_serializing_if = "skip_default_blocker_blocks"
 	)]
 	pub blocker_blocks: String,
-	/// `on` (live default: adjacent swap with no-echo) or `off`. Absent on
-	/// older logs; replay uses off. Historical comparison-mode names fold
-	/// to on.
+	/// Live RuleSet default is `normal-only`. Absent on older logs; replay
+	/// uses off. Historical comparison-mode names fold to on.
 	#[serde(default = "default_swap_off", skip_serializing_if = "skip_swap_off")]
 	pub swap_mode: String,
 	/// Historical. Live swaps always ban echoing the last pair.
@@ -1875,22 +1876,40 @@ mod tests {
 		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
 		assert_eq!(log.bead_scoring, "shared");
 		assert_eq!(log.braid_scoring, "braid-only-match");
-		assert!(!log.allow_single_braids);
+		assert!(log.allow_single_braids);
 		assert!(log.score_unique_neighbors);
 		assert_eq!(log.score_incident_arcs, Some(false));
 	}
 
 	#[test]
 	fn missing_braid_scoring_replays_as_current() {
-		let log = RulesLog::from_rules(RuleSet::default());
+		let mut r = RuleSet::default();
+		r.braid_scoring = BraidScoring::Current;
+		r.allow_single_braids = false;
+		let log = RulesLog::from_rules(r);
 		let json = serde_json::to_string(&log).unwrap();
 		assert!(!json.contains("braid_scoring"), "{json}");
 		assert!(!json.contains("score_unique_neighbors"), "{json}");
+		assert!(!json.contains("allow_single_braids"), "{json}");
 		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
 		assert_eq!(parsed.braid_scoring, "current");
 		assert!(!parsed.score_unique_neighbors);
+		assert!(!parsed.allow_single_braids);
 		assert_eq!(parsed.to_rules().unwrap().braid_scoring, BraidScoring::Current);
 		assert!(!parsed.to_rules().unwrap().score_unique_neighbors);
+	}
+
+	#[test]
+	fn live_defaults_write_exact_single_braids_and_normal_only_swap() {
+		let log = RulesLog::from_rules(RuleSet::default());
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(json.contains("braid-only-exact"), "{json}");
+		assert!(json.contains("allow_single_braids"), "{json}");
+		assert!(json.contains("normal-only"), "{json}");
+		assert!(json.contains("4,3,1"), "{json}");
+		assert!(json.contains("\"160\""), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.to_rules().unwrap(), RuleSet::default());
 	}
 
 	#[test]
@@ -2387,6 +2406,23 @@ mod tests {
 			"benchmark_results/single_braid_exact_swap/h2h_full_double.jsonl.gz",
 			"benchmark_results/single_braid_exact_swap/h2h_full_double_noswap.jsonl.gz",
 			"benchmark_results/single_braid_exact_swap/h2h_full_double_nobraid.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_defaults.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
+	fn committed_center_link_once_shallow_replays() {
+		for rel in [
+			"benchmark_results/center_link_once/h2h_431_add_bom.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_431_add.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_431_imax.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_431_imax_bom.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_add.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_add_bom.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_imax.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_imax_bom.jsonl.gz",
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 100);
 		}
