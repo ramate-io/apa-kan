@@ -9,7 +9,7 @@ use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	color_drift_diagonal, BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, CaptureMode,
-	ChannelMode, EmblemWeights, EndgameRule, HopWeightCmp, InsufficientTilesLoss,
+	ChannelMode, EmblemWeights, EndgameRule, ExtraSwapMode, HopWeightCmp, InsufficientTilesLoss,
 	PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet, SamePieceTwice, SwapMode,
 	ZagMismatchCount, BAG_SIZE,
 };
@@ -325,6 +325,15 @@ where
 		"--cascade-turn-gain" => {
 			rules.cascade_turn_gain = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--cascade-winner-swap" => {
+			rules.cascade_winner_swap = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--extra-swap-mode" => {
+			rules.extra_swap_mode = ExtraSwapMode::parse(&require_value(arg, it.next())?)?;
+		}
+		"--center-mismatch" => {
+			rules.center_mismatch = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--insufficient-tiles-loss" => {
 			rules.insufficient_tiles_loss =
 				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
@@ -522,6 +531,9 @@ pub fn usage() -> &'static str {
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --endgame-rule <control-cascade|low-value>  One-way ratchet 5→2 with max material, then low-value at ≤1 (default: control-cascade)\n\
 	   --cascade-turn-gain <on|off>               Extra turn for the material leader on a non-winning cascade drop (default: on)\n\
+	   --cascade-winner-swap <on|off>             Extra turn when a pre-action center occupant is captured; extra-turn SWAP is permissive (default: off)\n\
+	   --extra-swap-mode <any|own|not-center>     Extra-turn SWAP partner filter (default: any; only used with --cascade-winner-swap on)\n\
+	   --center-mismatch <on|off>                 Unmatched center occupant scores +1 mismatch (default: off)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
@@ -736,6 +748,26 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_cascade_winner_swap_and_center_mismatch() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert!(!def.rules.cascade_winner_swap);
+		assert_eq!(def.rules.extra_swap_mode, crate::game::ExtraSwapMode::Any);
+		assert!(!def.rules.center_mismatch);
+		let on = GameConfig::parse(["--cascade-winner-swap", "on"]).unwrap();
+		assert!(on.rules.cascade_winner_swap);
+		let off = GameConfig::parse(["--cascade-winner-swap", "off"]).unwrap();
+		assert!(!off.rules.cascade_winner_swap);
+		let own = GameConfig::parse(["--extra-swap-mode", "own"]).unwrap();
+		assert_eq!(own.rules.extra_swap_mode, crate::game::ExtraSwapMode::Own);
+		let nc = GameConfig::parse(["--extra-swap-mode", "not-center"]).unwrap();
+		assert_eq!(nc.rules.extra_swap_mode, crate::game::ExtraSwapMode::NotCenter);
+		let mm = GameConfig::parse(["--center-mismatch", "on"]).unwrap();
+		assert!(mm.rules.center_mismatch);
+		assert!(GameConfig::parse(["--cascade-winner-swap", "maybe"]).is_err());
+		assert!(GameConfig::parse(["--extra-swap-mode", "adjacent"]).is_err());
+	}
+
+	#[test]
 	fn stall_rule_defaults_match_ruleset() {
 		let cfg = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(cfg.rules, RuleSet::default());
@@ -752,6 +784,9 @@ mod tests {
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.endgame_rule, crate::game::EndgameRule::ControlCascade);
 		assert!(cfg.rules.cascade_turn_gain);
+		assert!(!cfg.rules.cascade_winner_swap);
+		assert_eq!(cfg.rules.extra_swap_mode, crate::game::ExtraSwapMode::Any);
+		assert!(!cfg.rules.center_mismatch);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);
@@ -784,6 +819,8 @@ mod tests {
 		assert_eq!(cfg.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
 		assert_eq!(cfg.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::One);
 		assert_eq!(cfg.rules.swap_mode, crate::game::SwapMode::NormalOnly);
+		assert!(!cfg.rules.cascade_winner_swap);
+		assert!(!cfg.rules.center_mismatch);
 	}
 
 	#[test]

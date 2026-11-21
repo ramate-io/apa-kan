@@ -2801,7 +2801,14 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 				}
 			}
 			if game.extra_turn_active() {
-				extra.push_str(&format!("{HUD_SEP}+turn"));
+				if game.extra_swap_active() {
+					extra.push_str(&format!(
+						"{HUD_SEP}+turn swap-{}",
+						game.rules().extra_swap_mode.name()
+					));
+				} else {
+					extra.push_str(&format!("{HUD_SEP}+turn"));
+				}
 			}
 			for player in [Player::One, Player::Two] {
 				let n = game.extra_turns(player);

@@ -6,10 +6,10 @@ use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
 	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
 	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
-	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game,
-	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
-	PathConstraint, Player, RingCountWeights, RingType, RuleSet, SamePieceTwice, SwapMode, Tile,
-	TileColor, TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule,
+	ExtraSwapMode, Game, GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution,
+	PassThroughRingCmp, PathConstraint, Player, RingCountWeights, RingType, RuleSet,
+	SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -381,6 +381,16 @@ pub struct RulesLog {
 	/// Absent on older logs; replay uses off (PR #74).
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cascade_turn_gain: bool,
+	/// Extra turn when a pre-action center occupant is captured, with
+	/// permissive extra-turn SWAP. Absent/false on older logs.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub cascade_winner_swap: bool,
+	/// Extra-turn SWAP partner filter. Absent on older logs; replay uses any.
+	#[serde(default = "default_extra_swap_any", skip_serializing_if = "skip_extra_swap_any")]
+	pub extra_swap_mode: String,
+	/// Unmatched center occupant scores +1 mismatch. Absent/false on older logs.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub center_mismatch: bool,
 	pub insufficient_tiles_loss: String,
 	pub path_constraint: String,
 	pub counted_pass_through: bool,
@@ -482,6 +492,14 @@ fn skip_swap_off(v: &String) -> bool {
 	*v == SwapMode::Off.name()
 }
 
+fn default_extra_swap_any() -> String {
+	ExtraSwapMode::Any.name().to_string()
+}
+
+fn skip_extra_swap_any(v: &String) -> bool {
+	*v == ExtraSwapMode::Any.name()
+}
+
 impl RulesLog {
 	pub fn from_rules(r: RuleSet) -> Self {
 		Self {
@@ -518,6 +536,9 @@ impl RulesLog {
 			control_hold_turns: r.control_hold_turns,
 			endgame_rule: r.endgame_rule.name().into(),
 			cascade_turn_gain: r.cascade_turn_gain,
+			cascade_winner_swap: r.cascade_winner_swap,
+			extra_swap_mode: r.extra_swap_mode.name().into(),
+			center_mismatch: r.center_mismatch,
 			insufficient_tiles_loss: r.insufficient_tiles_loss.name().into(),
 			path_constraint: r.path_constraint.name().into(),
 			counted_pass_through: r.counted_pass_through,
@@ -576,6 +597,10 @@ impl RulesLog {
 			control_hold_turns: self.control_hold_turns,
 			endgame_rule: EndgameRule::parse(&self.endgame_rule)?,
 			cascade_turn_gain: self.cascade_turn_gain,
+			cascade_winner_swap: self.cascade_winner_swap,
+			extra_swap_mode: ExtraSwapMode::parse(&self.extra_swap_mode)
+				.unwrap_or(ExtraSwapMode::Any),
+			center_mismatch: self.center_mismatch,
 			insufficient_tiles_loss: InsufficientTilesLoss::parse(&self.insufficient_tiles_loss)?,
 			path_constraint: PathConstraint::parse(&self.path_constraint)?,
 			counted_pass_through: self.counted_pass_through,
@@ -772,6 +797,12 @@ pub struct ActionLog {
 	/// `mover` or `opponent` when this action awarded cascade turn gain.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub turn_gain: Option<String>,
+	/// `mover` or `opponent` when this action awarded a center-fight extra turn.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub fight_gain: Option<String>,
+	/// True when this action was taken as a consumed extra turn.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub played_as_extra: bool,
 }
 
 /// One captured tile: original owner and where it went.
@@ -860,6 +891,8 @@ impl ActionLog {
 			extra_turns_p2: game_after.extra_turns(Player::Two),
 			extra_turn_active: game_after.extra_turn_active(),
 			turn_gain: game_after.last_turn_gain().map(TurnGainKind::name).map(str::to_string),
+			fight_gain: game_after.last_fight_gain().map(TurnGainKind::name).map(str::to_string),
+			played_as_extra: game_after.last_played_as_extra(),
 		}
 	}
 
@@ -991,6 +1024,12 @@ pub struct EndLog {
 	pub turn_gain_opponent: u32,
 	#[serde(default, skip_serializing_if = "skip_zero_u32")]
 	pub extra_turns_played: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub fight_gain_awarded: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub fight_gain_mover: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub fight_gain_opponent: u32,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub ended_on_extra: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1014,6 +1053,9 @@ impl EndLog {
 				turn_gain_mover: 0,
 				turn_gain_opponent: 0,
 				extra_turns_played: 0,
+				fight_gain_awarded: 0,
+				fight_gain_mover: 0,
+				fight_gain_opponent: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
 			},
@@ -1030,6 +1072,9 @@ impl EndLog {
 				turn_gain_mover: 0,
 				turn_gain_opponent: 0,
 				extra_turns_played: 0,
+				fight_gain_awarded: 0,
+				fight_gain_mover: 0,
+				fight_gain_opponent: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
 			},
@@ -1046,6 +1091,9 @@ impl EndLog {
 				turn_gain_mover: 0,
 				turn_gain_opponent: 0,
 				extra_turns_played: 0,
+				fight_gain_awarded: 0,
+				fight_gain_mover: 0,
+				fight_gain_opponent: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
 			},
@@ -1364,6 +1412,9 @@ impl GameLog {
 		self.end.turn_gain_mover = live.turn_gain_mover();
 		self.end.turn_gain_opponent = live.turn_gain_opponent();
 		self.end.extra_turns_played = live.extra_turns_played();
+		self.end.fight_gain_awarded = live.fight_gain_awarded();
+		self.end.fight_gain_mover = live.fight_gain_mover();
+		self.end.fight_gain_opponent = live.fight_gain_opponent();
 		self.end.ended_on_extra = live.ended_on_extra_turn();
 		self.end.ended_after_extra = live.ended_after_extra_turn();
 		self.final_state = Some(FinalLog::from_game(live));
@@ -1947,6 +1998,31 @@ mod tests {
 		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
 		assert_eq!(parsed.channel_mode, "additive");
 		assert_eq!(parsed.to_rules().unwrap().channel_mode, ChannelMode::Additive);
+	}
+
+	#[test]
+	fn missing_cascade_winner_swap_and_center_mismatch_replay_as_off() {
+		let mut r = RuleSet::default();
+		r.cascade_winner_swap = false;
+		r.center_mismatch = false;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("cascade_winner_swap"), "{json}");
+		assert!(!json.contains("center_mismatch"), "{json}");
+		assert!(!json.contains("extra_swap_mode"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert!(!parsed.cascade_winner_swap);
+		assert!(!parsed.center_mismatch);
+		assert_eq!(parsed.to_rules().unwrap().extra_swap_mode, ExtraSwapMode::Any);
+		let mut on = RuleSet::default();
+		on.cascade_winner_swap = true;
+		on.center_mismatch = true;
+		on.extra_swap_mode = ExtraSwapMode::Own;
+		let written = RulesLog::from_rules(on);
+		let json = serde_json::to_string(&written).unwrap();
+		assert!(json.contains("cascade_winner_swap"), "{json}");
+		assert!(json.contains("center_mismatch"), "{json}");
+		assert!(json.contains("own"), "{json}");
 	}
 
 	#[test]

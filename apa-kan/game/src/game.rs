@@ -2311,6 +2311,44 @@ impl SwapMode {
 	}
 }
 
+/// Permissive SWAP used on a cascade-winner extra turn when
+/// [`RuleSet::cascade_winner_swap`] is on. Live extra-turn default is
+/// [`Self::Any`]: any of the mover's pieces may exchange positions with any
+/// occupied tile (own or opponent, not necessarily adjacent). Still a
+/// position swap, not a conversion of the partner; vacant nodes are never
+/// partners; the one-move no-echo guardrail still applies.
+///
+/// `--extra-swap-mode own` keeps only own partners; `not-center` is `any`
+/// except neither node may be the origin. Enum default stays [`Self::Any`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ExtraSwapMode {
+	#[default]
+	Any,
+	Own,
+	NotCenter,
+}
+
+impl ExtraSwapMode {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"any" | "all" | "unrestricted" | "on" => Ok(Self::Any),
+			"own" | "own-only" | "own_only" | "self" => Ok(Self::Own),
+			"not-center" | "not_center" | "no-center" | "no_center" => Ok(Self::NotCenter),
+			other => {
+				Err(format!("unknown extra-swap-mode '{other}' (expected any|own|not-center)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Any => "any",
+			Self::Own => "own",
+			Self::NotCenter => "not-center",
+		}
+	}
+}
+
 /// Which independent channel won an edge's max match or max mismatch.
 /// Tie-break for HUD: match order normal → bead → braid; mismatch order
 /// normal → zag → bead → braid.
@@ -2860,6 +2898,19 @@ pub struct RuleSet {
 	/// `--singles-swap on` restores any-1-ring initiators. Echoing either
 	/// player's last SWAP pair is illegal for one action.
 	pub swap_mode: SwapMode,
+	/// When a pre-action center occupant is captured, the player who
+	/// entered that action with higher material (tie-break: more spawn
+	/// tokens / "capture hold") gets an extra turn. During any extra turn
+	/// (including [`Self::cascade_turn_gain`]), SWAP uses
+	/// [`Self::extra_swap_mode`] instead of [`Self::swap_mode`]. Default
+	/// false. Missing JSONL `cascade_winner_swap` replays as off.
+	pub cascade_winner_swap: bool,
+	/// Partner filter for extra-turn SWAP when [`Self::cascade_winner_swap`]
+	/// is on. Default [`ExtraSwapMode::Any`]. Missing JSONL replays as any.
+	pub extra_swap_mode: ExtraSwapMode,
+	/// Unmatched center occupant scores a synthetic +1 mismatch (no edge
+	/// match from neighbors). Default false. Missing JSONL replays as off.
+	pub center_mismatch: bool,
 }
 
 impl Default for RuleSet {
@@ -2913,6 +2964,9 @@ impl Default for RuleSet {
 			color_drift: color_drift_diagonal(COLOR_DRIFT_DEFAULT),
 			capture_mode: CaptureMode::LocalClaim,
 			swap_mode: SwapMode::NormalOnly,
+			cascade_winner_swap: false,
+			extra_swap_mode: ExtraSwapMode::Any,
+			center_mismatch: false,
 		}
 	}
 }
@@ -2965,10 +3019,11 @@ pub enum Action {
 	Claim {
 		node: NodeId,
 	},
-	/// Exchange the initiator at `from` (own single-ring tile) with the
-	/// partner at `to`. Legal when [`RuleSet::swap_mode`] is on. Does not
-	/// spend a spawn token. Local-claim captures fire on both landing
-	/// nodes and their neighbors.
+	/// Exchange the initiator at `from` (own tile) with the partner at `to`.
+	/// Live SWAP requires [`RuleSet::swap_mode`] (single-ring initiator,
+	/// adjacent partner). A cascade-winner extra turn uses
+	/// [`RuleSet::extra_swap_mode`] instead. Does not spend a spawn token.
+	/// Local-claim captures fire on both landing nodes and their neighbors.
 	Swap {
 		from: NodeId,
 		to: NodeId,
@@ -3067,10 +3122,17 @@ pub struct Game {
 	prev_finished_extra: bool,
 	/// Last drop's turn-gain award, if any. Reset at the start of [`Self::apply`].
 	last_turn_gain: Option<TurnGainKind>,
+	/// Center-occupant-capture extra turn from [`RuleSet::cascade_winner_swap`].
+	last_fight_gain: Option<TurnGainKind>,
+	/// True when the action that just applied was played as an extra turn.
+	last_played_as_extra: bool,
 	/// Lifetime counters for reconstructible logs and bench summaries.
 	turn_gain_awarded: u32,
 	turn_gain_mover: u32,
 	turn_gain_opponent: u32,
+	fight_gain_awarded: u32,
+	fight_gain_mover: u32,
+	fight_gain_opponent: u32,
 	extra_turns_played: u32,
 	ended_on_extra: bool,
 	ended_after_extra: bool,
@@ -3189,9 +3251,14 @@ impl Game {
 			playing_extra_turn: false,
 			prev_finished_extra: false,
 			last_turn_gain: None,
+			last_fight_gain: None,
+			last_played_as_extra: false,
 			turn_gain_awarded: 0,
 			turn_gain_mover: 0,
 			turn_gain_opponent: 0,
+			fight_gain_awarded: 0,
+			fight_gain_mover: 0,
+			fight_gain_opponent: 0,
 			extra_turns_played: 0,
 			ended_on_extra: false,
 			ended_after_extra: false,
@@ -3255,9 +3322,14 @@ impl Game {
 			playing_extra_turn: false,
 			prev_finished_extra: false,
 			last_turn_gain: None,
+			last_fight_gain: None,
+			last_played_as_extra: false,
 			turn_gain_awarded: 0,
 			turn_gain_mover: 0,
 			turn_gain_opponent: 0,
+			fight_gain_awarded: 0,
+			fight_gain_mover: 0,
+			fight_gain_opponent: 0,
 			extra_turns_played: 0,
 			ended_on_extra: false,
 			ended_after_extra: false,
@@ -3323,9 +3395,14 @@ impl Game {
 			playing_extra_turn: false,
 			prev_finished_extra: false,
 			last_turn_gain: None,
+			last_fight_gain: None,
+			last_played_as_extra: false,
 			turn_gain_awarded: 0,
 			turn_gain_mover: 0,
 			turn_gain_opponent: 0,
+			fight_gain_awarded: 0,
+			fight_gain_mover: 0,
+			fight_gain_opponent: 0,
 			extra_turns_played: 0,
 			ended_on_extra: false,
 			ended_after_extra: false,
@@ -3510,12 +3587,39 @@ impl Game {
 		self.extra_turns_played
 	}
 
+	pub fn last_fight_gain(&self) -> Option<TurnGainKind> {
+		self.last_fight_gain
+	}
+
+	pub fn fight_gain_awarded(&self) -> u32 {
+		self.fight_gain_awarded
+	}
+
+	pub fn fight_gain_mover(&self) -> u32 {
+		self.fight_gain_mover
+	}
+
+	pub fn fight_gain_opponent(&self) -> u32 {
+		self.fight_gain_opponent
+	}
+
+	/// True when the last applied action was taken as a consumed extra turn.
+	pub fn last_played_as_extra(&self) -> bool {
+		self.last_played_as_extra
+	}
+
 	pub fn ended_on_extra_turn(&self) -> bool {
 		self.ended_on_extra
 	}
 
 	pub fn ended_after_extra_turn(&self) -> bool {
 		self.ended_after_extra
+	}
+
+	/// Extra-turn SWAP uses [`RuleSet::extra_swap_mode`] instead of
+	/// [`RuleSet::swap_mode`].
+	pub fn extra_swap_active(&self) -> bool {
+		self.rules.cascade_winner_swap && self.playing_extra_turn
 	}
 
 	#[cfg(test)]
@@ -3531,6 +3635,22 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn set_cascade_turn_gain(&mut self, on: bool) {
 		self.rules.cascade_turn_gain = on;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_cascade_winner_swap(&mut self, on: bool) {
+		self.rules.cascade_winner_swap = on;
+	}
+
+	#[cfg(test)]
+	#[allow(dead_code)]
+	pub(crate) fn set_center_mismatch(&mut self, on: bool) {
+		self.rules.center_mismatch = on;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_extra_swap_mode(&mut self, mode: ExtraSwapMode) {
+		self.rules.extra_swap_mode = mode;
 	}
 
 	/// Ratcheted cascade checkpoint (`2..=control_n`) when
@@ -4256,7 +4376,34 @@ impl Game {
 				effective += self.edge_channels(tile, other).effective_for_rules(&self.rules);
 			}
 		}
-		effective
+		effective + self.center_unmatched_penalty(node, tile)
+	}
+
+	/// +1 mismatch on an unmatched center occupant. "Matched" means some
+	/// neighbor edge has a normal, braid, or bead match (HUD match), even
+	/// when braid-only-exact scores that match as 0. Mismatches alone do
+	/// not clear the penalty.
+	fn center_unmatched_penalty(&self, node: NodeId, tile: Tile) -> i32 {
+		if !self.rules.center_mismatch || node != self.board.center() {
+			return 0;
+		}
+		if self.center_has_channel_match(node, tile) {
+			return 0;
+		}
+		1
+	}
+
+	fn center_has_channel_match(&self, node: NodeId, tile: Tile) -> bool {
+		for nb in self.scoring_neighbors(node) {
+			let Some(other) = self.tile_at(nb) else {
+				continue;
+			};
+			let ch = self.edge_channels(tile, other);
+			if ch.normal_match > 0 || ch.braid_match > 0 || ch.bead_match > 0 {
+				return true;
+			}
+		}
+		false
 	}
 
 	/// Two Zag Zs +1 count for `tile` at `node`: incident scoring edges whose
@@ -4356,6 +4503,7 @@ impl Game {
 				mismatches += x;
 			}
 		}
+		mismatches += self.center_unmatched_penalty(node, tile);
 		Some((matches, mismatches))
 	}
 
@@ -4625,16 +4773,15 @@ impl Game {
 		acts
 	}
 
-	/// Legal SWAP actions for the side to move. Empty when
-	/// [`SwapMode::Off`]. The initiator must be an own tile allowed by
-	/// [`SwapMode::allows_initiator`].
+	/// Legal SWAP actions for the side to move. Empty when SWAP is off
+	/// unless an extra-turn permissive SWAP is active.
 	pub fn legal_swaps(&self) -> Vec<Action> {
-		if self.status.is_over() || !self.rules.swap_mode.is_on() {
+		if self.status.is_over() || !self.swap_is_available() {
 			return Vec::new();
 		}
 		let mut acts = Vec::new();
 		for (from, tile) in self.tiles() {
-			if tile.owner != self.current || !self.rules.swap_mode.allows_initiator(tile) {
+			if tile.owner != self.current || !self.swap_allows_initiator(tile) {
 				continue;
 			}
 			for to in self.legal_swap_partners(from) {
@@ -4645,12 +4792,12 @@ impl Game {
 	}
 
 	/// Occupied nodes the tile at `from` may SWAP with under the live
-	/// [`RuleSet::swap_mode`] and guardrails.
+	/// [`RuleSet::swap_mode`] (or extra-turn [`RuleSet::extra_swap_mode`]).
 	pub fn legal_swap_partners(&self, from: NodeId) -> Vec<NodeId> {
 		let Some(init) = self.tile_at(from) else {
 			return Vec::new();
 		};
-		if init.owner != self.current || !self.rules.swap_mode.allows_initiator(init) {
+		if init.owner != self.current || !self.swap_allows_initiator(init) {
 			return Vec::new();
 		}
 		let restricted = self.same_piece_is_restricted(init.id);
@@ -4670,11 +4817,26 @@ impl Game {
 		out
 	}
 
+	fn swap_is_available(&self) -> bool {
+		self.extra_swap_active() || self.rules.swap_mode.is_on()
+	}
+
+	fn swap_allows_initiator(&self, tile: Tile) -> bool {
+		if self.extra_swap_active() {
+			return true;
+		}
+		self.rules.swap_mode.allows_initiator(tile)
+	}
+
 	fn swap_partner_allowed(&self, from: NodeId, to: NodeId, init: Tile, partner: Tile) -> bool {
-		if !self.rules.swap_mode.is_on() {
+		if !self.swap_is_available() {
 			return false;
 		}
-		if !self.board.neighbors(from).contains(&to) {
+		if self.extra_swap_active() {
+			if !self.extra_swap_partner_ok(from, to, init, partner) {
+				return false;
+			}
+		} else if !self.board.neighbors(from).contains(&to) {
 			return false;
 		}
 		let key = swap_pair_key(init.id, partner.id);
@@ -4685,6 +4847,15 @@ impl Game {
 			return false;
 		}
 		true
+	}
+
+	fn extra_swap_partner_ok(&self, from: NodeId, to: NodeId, init: Tile, partner: Tile) -> bool {
+		let center = self.board.center();
+		match self.rules.extra_swap_mode {
+			ExtraSwapMode::Any => true,
+			ExtraSwapMode::Own => partner.owner == init.owner,
+			ExtraSwapMode::NotCenter => from != center && to != center,
+		}
 	}
 
 	/// True if swapping `from` with `to` would remove at least one opponent
@@ -4991,6 +5162,13 @@ impl Game {
 			return Err("game is over".into());
 		}
 		self.last_turn_gain = None;
+		self.last_fight_gain = None;
+		self.last_played_as_extra = self.playing_extra_turn;
+		let pre_p1_mat = self.total_material(Player::One);
+		let pre_p2_mat = self.total_material(Player::Two);
+		let pre_p1_tok = self.budget_token_count(Player::One);
+		let pre_p2_tok = self.budget_token_count(Player::Two);
+		let pre_center_id = self.tile_at(self.board.center()).map(|t| t.id);
 		let player = self.current;
 		match action {
 			Action::Add { bench_index, node } => self.apply_add(bench_index, node)?,
@@ -5067,6 +5245,16 @@ impl Game {
 		self.check_elimination();
 		if !self.status.is_over() {
 			self.check_immediate_control_drop();
+		}
+		if !self.status.is_over() {
+			self.award_center_fight_gain(
+				pre_p1_mat,
+				pre_p2_mat,
+				pre_p1_tok,
+				pre_p2_tok,
+				pre_center_id,
+				&removals,
+			);
 		}
 		if self.status == GameStatus::InProgress
 			&& !self.rules.no_moves_loses
@@ -5257,13 +5445,54 @@ impl Game {
 		}
 		let p1 = self.total_material(Player::One);
 		let p2 = self.total_material(Player::Two);
-		let leader = if p1 > p2 {
-			Player::One
-		} else if p2 > p1 {
-			Player::Two
-		} else {
+		let Some(leader) = Self::strict_material_leader(p1, p2) else {
 			return;
 		};
+		self.bank_extra_turn(leader);
+	}
+
+	/// Extra turn when the tile that occupied the center *before* this
+	/// action is among the removals. Leader is pre-action material, then
+	/// spawn-token count (capture hold). Does not fire on a self-pop of a
+	/// newly landed unmatched piece (center was empty). If cascade turn
+	/// gain already banked an extra turn this action, the fight is still
+	/// counted but not stacked.
+	fn award_center_fight_gain(
+		&mut self,
+		p1_mat: usize,
+		p2_mat: usize,
+		p1_tok: usize,
+		p2_tok: usize,
+		pre_center_id: Option<u32>,
+		removals: &[Removal],
+	) {
+		if !self.rules.cascade_winner_swap || self.status.is_over() {
+			return;
+		}
+		let Some(id) = pre_center_id else {
+			return;
+		};
+		if !removals.iter().any(|r| r.tile.id == id) {
+			return;
+		}
+		let Some(leader) = Self::fight_leader(p1_mat, p2_mat, p1_tok, p2_tok) else {
+			return;
+		};
+		let kind =
+			if leader == self.current { TurnGainKind::Mover } else { TurnGainKind::Opponent };
+		self.last_fight_gain = Some(kind);
+		self.fight_gain_awarded = self.fight_gain_awarded.saturating_add(1);
+		if kind == TurnGainKind::Mover {
+			self.fight_gain_mover = self.fight_gain_mover.saturating_add(1);
+		} else {
+			self.fight_gain_opponent = self.fight_gain_opponent.saturating_add(1);
+		}
+		if self.last_turn_gain.is_none() {
+			self.bank_extra_turn(leader);
+		}
+	}
+
+	fn bank_extra_turn(&mut self, leader: Player) {
 		self.extra_turns[leader.index()] = self.extra_turns[leader.index()].saturating_add(1);
 		self.turn_gain_awarded = self.turn_gain_awarded.saturating_add(1);
 		if leader == self.current {
@@ -5272,6 +5501,29 @@ impl Game {
 		} else {
 			self.last_turn_gain = Some(TurnGainKind::Opponent);
 			self.turn_gain_opponent = self.turn_gain_opponent.saturating_add(1);
+		}
+	}
+
+	fn strict_material_leader(p1: usize, p2: usize) -> Option<Player> {
+		if p1 > p2 {
+			Some(Player::One)
+		} else if p2 > p1 {
+			Some(Player::Two)
+		} else {
+			None
+		}
+	}
+
+	fn fight_leader(p1_mat: usize, p2_mat: usize, p1_tok: usize, p2_tok: usize) -> Option<Player> {
+		if let Some(leader) = Self::strict_material_leader(p1_mat, p2_mat) {
+			return Some(leader);
+		}
+		if p1_tok > p2_tok {
+			Some(Player::One)
+		} else if p2_tok > p1_tok {
+			Some(Player::Two)
+		} else {
+			None
 		}
 	}
 
@@ -5472,7 +5724,7 @@ impl Game {
 	}
 
 	fn apply_swap(&mut self, from: NodeId, to: NodeId) -> Result<(), String> {
-		if !self.rules.swap_mode.is_on() {
+		if !self.swap_is_available() {
 			return Err("SWAP is off".into());
 		}
 		let init = self.tile_at(from).ok_or_else(|| "no tile at swap source".to_string())?;
@@ -5480,7 +5732,7 @@ impl Game {
 		if init.owner != self.current {
 			return Err("not your tile".into());
 		}
-		if !self.rules.swap_mode.allows_initiator(init) {
+		if !self.swap_allows_initiator(init) {
 			return Err(match self.rules.swap_mode {
 				SwapMode::NormalOnly => "only a single-ring normal tile may initiate a SWAP".into(),
 				_ => "only a single-ring tile may initiate a SWAP".into(),
@@ -5928,6 +6180,9 @@ mod tests {
 		assert!(!rules.score_unique_neighbors);
 		assert_eq!(rules.channel_mode, ChannelMode::Additive);
 		assert_eq!(rules.swap_mode, SwapMode::NormalOnly);
+		assert!(!rules.cascade_winner_swap);
+		assert_eq!(rules.extra_swap_mode, ExtraSwapMode::Any);
+		assert!(!rules.center_mismatch);
 		assert_eq!(rules.ring_count_weights, LIVE_RING_COUNT_WEIGHTS);
 		assert_eq!(rules.color_drift, color_drift_diagonal(COLOR_DRIFT_DEFAULT));
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
@@ -12948,5 +13203,266 @@ mod tests {
 		replay.apply(rec.to_action().unwrap()).unwrap();
 		assert_eq!(replay.tile_at(to).map(|t| t.id), game.tile_at(to).map(|t| t.id));
 		assert_eq!(replay.tile_at(from).map(|t| t.id), game.tile_at(from).map(|t| t.id));
+	}
+
+	fn fight_gain_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.cascade_winner_swap = true;
+		rules.cascade_turn_gain = false;
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.no_moves_loses = false;
+		rules
+	}
+
+	fn fight_gain_claim_center(p1_mat: usize, p2_mat: usize) -> (Game, NodeId) {
+		let mut game = fight_gain_board();
+		let center = game.board().center();
+		assert!(game.is_overwhelmed(center), "P2 center single should be claimable");
+		game.pin_total_material(Player::One, p1_mat);
+		game.pin_total_material(Player::Two, p2_mat);
+		game.set_current(Player::One);
+		(game, center)
+	}
+
+	/// P1 inner 3-ring overwhelms a P2 center single; each side also has a
+	/// far spawn so CLAIM does not eliminate P2.
+	fn fight_gain_board() -> Game {
+		let mut game = Game::empty(fight_gain_rules());
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		put_rings(
+			&mut game,
+			inner,
+			Player::One,
+			&[TileColor::Green, TileColor::Orange, TileColor::Teal],
+			1,
+		);
+		put(&mut game, center, Player::Two, TileColor::Blue, 1, 1);
+		let p1_far = game.isolated_empty_spawn();
+		put_rings(
+			&mut game,
+			p1_far,
+			Player::One,
+			&[TileColor::Green, TileColor::Orange, TileColor::Teal],
+			1,
+		);
+		let p2_far = game.isolated_empty_spawn();
+		put_rings(
+			&mut game,
+			p2_far,
+			Player::Two,
+			&[TileColor::Green, TileColor::Orange, TileColor::Teal],
+			1,
+		);
+		game
+	}
+
+	#[test]
+	fn center_mismatch_off_lets_unmatched_single_sit() {
+		let mut game = Game::empty(RuleSet::default());
+		let center = game.board().center();
+		put(&mut game, center, Player::One, TileColor::Green, 1, 1);
+		assert!(!game.rules().center_mismatch);
+		assert!(!game.is_overwhelmed(center));
+		let (m, x) = game.tile_score(center).unwrap();
+		assert_eq!(m, 1);
+		assert_eq!(x, 0);
+	}
+
+	#[test]
+	fn center_mismatch_pops_unmatched_single_on_empty_origin() {
+		let mut rules = RuleSet::default();
+		rules.center_mismatch = true;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		put(&mut game, center, Player::One, TileColor::Green, 1, 1);
+		assert!(game.is_overwhelmed(center));
+		let (m, x) = game.tile_score(center).unwrap();
+		assert_eq!(m, 1);
+		assert_eq!(x, 1);
+	}
+
+	#[test]
+	fn center_mismatch_spares_a_matched_center_occupant() {
+		let mut rules = RuleSet::default();
+		rules.center_mismatch = true;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		put_rings(
+			&mut game,
+			center,
+			Player::One,
+			&[TileColor::Green, TileColor::Blue, TileColor::Orange],
+			1,
+		);
+		put_rings(
+			&mut game,
+			inner,
+			Player::One,
+			&[TileColor::Green, TileColor::Blue, TileColor::Orange],
+			1,
+		);
+		assert!(!game.is_overwhelmed(center), "matching inner neighbor is a match");
+		let (_m, x) = game.tile_score(center).unwrap();
+		assert_eq!(x, 0, "matched occupant must not take the synthetic mismatch");
+	}
+
+	#[test]
+	fn center_mismatch_two_ring_unmatched_is_not_overwhelmed() {
+		let mut rules = RuleSet::default();
+		rules.center_mismatch = true;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		put_rings(&mut game, center, Player::One, &[TileColor::Green, TileColor::Blue], 1);
+		assert!(!game.is_overwhelmed(center), "weight 2 vs +1 mismatch");
+		let (_m, x) = game.tile_score(center).unwrap();
+		assert_eq!(x, 1);
+	}
+
+	#[test]
+	fn unmatched_center_walk_self_pops_and_does_not_award_fight_gain() {
+		let mut rules = fight_gain_rules();
+		rules.center_mismatch = true;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		put(&mut game, inner, Player::One, TileColor::Green, 1, 1);
+		game.set_current(Player::One);
+		game.apply(Action::Move { from: inner, to: center }).unwrap();
+		assert!(game.tile_at(center).is_none(), "unmatched single must self-pop");
+		assert_eq!(game.last_fight_gain(), None);
+		assert_eq!(game.fight_gain_awarded(), 0);
+		assert!(!game.extra_turn_active());
+	}
+
+	#[test]
+	fn cascade_winner_swap_off_does_not_award_on_center_claim() {
+		let (mut game, center) = fight_gain_claim_center(4, 2);
+		game.set_cascade_winner_swap(false);
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert_eq!(game.last_fight_gain(), None);
+		assert_eq!(game.current_player(), Player::Two);
+	}
+
+	#[test]
+	fn cascade_winner_swap_mover_leads_goes_again() {
+		let (mut game, center) = fight_gain_claim_center(4, 2);
+		assert!(game.total_material(Player::One) > game.total_material(Player::Two));
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert_eq!(game.last_fight_gain(), Some(TurnGainKind::Mover));
+		assert_eq!(game.fight_gain_awarded(), 1);
+		assert_eq!(game.fight_gain_mover(), 1);
+		assert_eq!(game.last_turn_gain(), Some(TurnGainKind::Mover));
+		assert_eq!(game.current_player(), Player::One);
+		assert!(game.extra_turn_active());
+		assert!(!game.last_played_as_extra());
+	}
+
+	#[test]
+	fn cascade_winner_swap_token_tie_break() {
+		let mut game = fight_gain_board();
+		let center = game.board().center();
+		assert_eq!(game.total_material(Player::One), 2);
+		assert_eq!(game.total_material(Player::Two), 2);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 7]);
+		game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; 3]);
+		assert_eq!(game.total_material(Player::One), 2);
+		assert_eq!(game.total_material(Player::Two), 2);
+		assert!(game.budget_token_count(Player::One) > game.budget_token_count(Player::Two));
+		game.set_current(Player::One);
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert_eq!(game.last_fight_gain(), Some(TurnGainKind::Mover));
+		assert_eq!(game.current_player(), Player::One);
+		assert!(game.extra_turn_active());
+	}
+
+	#[test]
+	fn cascade_winner_swap_tied_material_and_tokens_awards_nothing() {
+		let mut game = fight_gain_board();
+		let center = game.board().center();
+		assert_eq!(game.total_material(Player::One), 2);
+		assert_eq!(game.total_material(Player::Two), 2);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 4]);
+		game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; 4]);
+		game.set_current(Player::One);
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert_eq!(game.last_fight_gain(), None);
+		assert_eq!(game.fight_gain_awarded(), 0);
+		assert_eq!(game.current_player(), Player::Two);
+	}
+
+	#[test]
+	fn extra_swap_any_allows_non_adjacent_multi_ring() {
+		let mut rules = fight_gain_rules();
+		rules.swap_mode = SwapMode::NormalOnly;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let spawn = game.board().spawns()[0];
+		assert!(
+			!game.board().neighbors(spawn).contains(&center),
+			"spawn is not adjacent to center"
+		);
+		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
+		put(&mut game, center, Player::Two, TileColor::Green, 3, 1);
+		game.set_current(Player::One);
+		assert!(
+			!game.legal_swaps().contains(&Action::Swap { from: spawn, to: center }),
+			"normal-only adjacent SWAP must reject a 2-ring non-adjacent"
+		);
+		game.set_extra_turn_active(true);
+		assert!(
+			game.legal_swaps().contains(&Action::Swap { from: spawn, to: center }),
+			"extra-turn any SWAP may exchange any own piece with any occupied tile"
+		);
+		game.apply(Action::Swap { from: spawn, to: center }).unwrap();
+		assert_eq!(game.tile_at(center).map(|t| t.owner), Some(Player::One));
+		assert_eq!(game.tile_at(spawn).map(|t| t.owner), Some(Player::Two));
+	}
+
+	#[test]
+	fn extra_swap_own_rejects_opponent_and_not_center_rejects_origin() {
+		let mut rules = fight_gain_rules();
+		rules.extra_swap_mode = ExtraSwapMode::Own;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		let outer = *game
+			.board()
+			.neighbors(inner)
+			.iter()
+			.find(|&&n| n != center)
+			.expect("inner has a non-center neighbor");
+		put(&mut game, inner, Player::One, TileColor::Green, 2, 1);
+		put(&mut game, outer, Player::One, TileColor::Blue, 2, 1);
+		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
+		game.set_current(Player::One);
+		game.set_extra_turn_active(true);
+		assert!(game.legal_swaps().contains(&Action::Swap { from: inner, to: outer }));
+		assert!(!game.legal_swaps().contains(&Action::Swap { from: inner, to: center }));
+
+		game.set_extra_swap_mode(ExtraSwapMode::NotCenter);
+		assert!(!game.legal_swaps().contains(&Action::Swap { from: inner, to: center }));
+		assert!(game.legal_swaps().contains(&Action::Swap { from: inner, to: outer }));
+	}
+
+	#[test]
+	fn extra_swap_stays_a_position_exchange_not_a_conversion() {
+		let mut game = Game::empty(fight_gain_rules());
+		let center = game.board().center();
+		let spawn = game.board().spawns()[0];
+		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
+		put(&mut game, center, Player::Two, TileColor::Orange, 3, 1);
+		let p1 = game.tile_at(spawn).unwrap();
+		let p2 = game.tile_at(center).unwrap();
+		game.set_current(Player::One);
+		game.set_extra_turn_active(true);
+		game.apply(Action::Swap { from: spawn, to: center }).unwrap();
+		assert_eq!(game.tile_at(center).map(|t| t.id), Some(p1.id));
+		assert_eq!(game.tile_at(spawn).map(|t| t.id), Some(p2.id));
+		assert_eq!(game.tile_at(center).unwrap().owner, Player::One);
+		assert_eq!(game.tile_at(spawn).unwrap().owner, Player::Two);
 	}
 }
