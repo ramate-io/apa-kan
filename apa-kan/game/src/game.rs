@@ -2311,8 +2311,70 @@ impl SwapMode {
 	}
 }
 
+/// What the cascade-winner extra turn may do besides ordinary ADD/MOVE/CLAIM
+/// (and live SWAP). Default [`Self::Convert`]: flip one opponent tile to the
+/// extra-taker's side; the piece stays on its node. [`Self::Swap`] keeps the
+/// earlier position-exchange reading (`--extra-turn-action swap`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ExtraTurnAction {
+	#[default]
+	Convert,
+	Swap,
+}
+
+impl ExtraTurnAction {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"convert" | "flip" | "turn-over" | "turnover" => Ok(Self::Convert),
+			"swap" | "exchange" | "position" => Ok(Self::Swap),
+			other => Err(format!("unknown extra-turn-action '{other}' (expected convert|swap)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Convert => "convert",
+			Self::Swap => "swap",
+		}
+	}
+}
+
+/// Which opponent tiles an extra-turn [`Action::Convert`] may flip.
+/// Default [`Self::Any`]: any opponent piece, including the origin.
+/// `--extra-convert-mode not-center` skips the origin; `inner` is inner-ring
+/// only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ExtraConvertMode {
+	#[default]
+	Any,
+	NotCenter,
+	Inner,
+}
+
+impl ExtraConvertMode {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"any" | "all" | "unrestricted" | "on" => Ok(Self::Any),
+			"not-center" | "not_center" | "no-center" | "no_center" => Ok(Self::NotCenter),
+			"inner" | "inner-ring" | "inner_ring" | "control-inner" => Ok(Self::Inner),
+			other => {
+				Err(format!("unknown extra-convert-mode '{other}' (expected any|not-center|inner)"))
+			}
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Any => "any",
+			Self::NotCenter => "not-center",
+			Self::Inner => "inner",
+		}
+	}
+}
+
 /// Permissive SWAP used on a cascade-winner extra turn when
-/// [`RuleSet::cascade_winner_swap`] is on. Live extra-turn default is
+/// [`RuleSet::cascade_winner_swap`] is on **and**
+/// [`RuleSet::extra_turn_action`] is [`ExtraTurnAction::Swap`]. Default
 /// [`Self::Any`]: any of the mover's pieces may exchange positions with any
 /// occupied tile (own or opponent, not necessarily adjacent). Still a
 /// position swap, not a conversion of the partner; vacant nodes are never
@@ -2900,13 +2962,23 @@ pub struct RuleSet {
 	pub swap_mode: SwapMode,
 	/// When a pre-action center occupant is captured, the player who
 	/// entered that action with higher material (tie-break: more spawn
-	/// tokens / "capture hold") gets an extra turn. During any extra turn
-	/// (including [`Self::cascade_turn_gain`]), SWAP uses
-	/// [`Self::extra_swap_mode`] instead of [`Self::swap_mode`]. Default
-	/// false. Missing JSONL `cascade_winner_swap` replays as off.
+	/// tokens / "capture hold") gets an extra turn. Default false. Missing
+	/// JSONL `cascade_winner_swap` replays as off.
+	///
+	/// On that extra turn (and any extra from [`Self::cascade_turn_gain`]
+	/// while this flag is on), [`Self::extra_turn_action`] is
+	/// [`ExtraTurnAction::Convert`] (ownership flip) or
+	/// [`ExtraTurnAction::Swap`] (permissive position exchange).
 	pub cascade_winner_swap: bool,
+	/// Extra-turn action when [`Self::cascade_winner_swap`] is on. Default
+	/// [`ExtraTurnAction::Convert`]. Missing JSONL replays as convert.
+	pub extra_turn_action: ExtraTurnAction,
+	/// Opponent-tile filter for extra-turn [`Action::Convert`]. Default
+	/// [`ExtraConvertMode::Any`]. Missing JSONL replays as any.
+	pub extra_convert_mode: ExtraConvertMode,
 	/// Partner filter for extra-turn SWAP when [`Self::cascade_winner_swap`]
-	/// is on. Default [`ExtraSwapMode::Any`]. Missing JSONL replays as any.
+	/// is on and [`Self::extra_turn_action`] is [`ExtraTurnAction::Swap`].
+	/// Default [`ExtraSwapMode::Any`]. Missing JSONL replays as any.
 	pub extra_swap_mode: ExtraSwapMode,
 	/// Unmatched center occupant scores a synthetic +1 mismatch (no edge
 	/// match from neighbors). Default false. Missing JSONL replays as off.
@@ -2965,6 +3037,8 @@ impl Default for RuleSet {
 			capture_mode: CaptureMode::LocalClaim,
 			swap_mode: SwapMode::NormalOnly,
 			cascade_winner_swap: false,
+			extra_turn_action: ExtraTurnAction::Convert,
+			extra_convert_mode: ExtraConvertMode::Any,
 			extra_swap_mode: ExtraSwapMode::Any,
 			center_mismatch: false,
 		}
@@ -3021,12 +3095,21 @@ pub enum Action {
 	},
 	/// Exchange the initiator at `from` (own tile) with the partner at `to`.
 	/// Live SWAP requires [`RuleSet::swap_mode`] (single-ring initiator,
-	/// adjacent partner). A cascade-winner extra turn uses
-	/// [`RuleSet::extra_swap_mode`] instead. Does not spend a spawn token.
-	/// Local-claim captures fire on both landing nodes and their neighbors.
+	/// adjacent partner). A cascade-winner extra turn with
+	/// [`ExtraTurnAction::Swap`] uses [`RuleSet::extra_swap_mode`] instead.
+	/// Does not spend a spawn token. Local-claim captures fire on both
+	/// landing nodes and their neighbors.
 	Swap {
 		from: NodeId,
 		to: NodeId,
+	},
+	/// Flip ownership of the opponent tile at `node` to the mover. The
+	/// piece stays put. Extra-turn only, when [`RuleSet::cascade_winner_swap`]
+	/// is on and [`RuleSet::extra_turn_action`] is
+	/// [`ExtraTurnAction::Convert`]. Local-claim captures then fire on that
+	/// node and its neighbors (the stolen piece can self-pop if unmatched).
+	Convert {
+		node: NodeId,
 	},
 	Pass,
 }
@@ -3619,7 +3702,16 @@ impl Game {
 	/// Extra-turn SWAP uses [`RuleSet::extra_swap_mode`] instead of
 	/// [`RuleSet::swap_mode`].
 	pub fn extra_swap_active(&self) -> bool {
-		self.rules.cascade_winner_swap && self.playing_extra_turn
+		self.rules.cascade_winner_swap
+			&& self.playing_extra_turn
+			&& self.rules.extra_turn_action == ExtraTurnAction::Swap
+	}
+
+	/// Extra-turn [`Action::Convert`] is legal.
+	pub fn extra_convert_active(&self) -> bool {
+		self.rules.cascade_winner_swap
+			&& self.playing_extra_turn
+			&& self.rules.extra_turn_action == ExtraTurnAction::Convert
 	}
 
 	#[cfg(test)]
@@ -3651,6 +3743,16 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn set_extra_swap_mode(&mut self, mode: ExtraSwapMode) {
 		self.rules.extra_swap_mode = mode;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_extra_turn_action(&mut self, action: ExtraTurnAction) {
+		self.rules.extra_turn_action = action;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_extra_convert_mode(&mut self, mode: ExtraConvertMode) {
+		self.rules.extra_convert_mode = mode;
 	}
 
 	/// Ratcheted cascade checkpoint (`2..=control_n`) when
@@ -4645,6 +4747,10 @@ impl Game {
 				CaptureMode::Cascade => self.collect_removals(),
 				CaptureMode::LocalClaim => self.collect_local_removals_pair(from, to),
 			},
+			Action::Convert { node } => match self.rules.capture_mode {
+				CaptureMode::Cascade => self.collect_removals(),
+				CaptureMode::LocalClaim => self.collect_local_removals(node),
+			},
 		}
 	}
 
@@ -4696,6 +4802,7 @@ impl Game {
 		acts.extend(self.legal_adds());
 		acts.extend(self.legal_moves());
 		acts.extend(self.legal_swaps());
+		acts.extend(self.legal_converts());
 		acts.extend(self.legal_claims());
 		if acts.is_empty() && !self.rules.no_moves_loses {
 			acts.push(Action::Pass);
@@ -4771,6 +4878,30 @@ impl Game {
 			}
 		}
 		acts
+	}
+
+	/// Extra-turn CONVERT of opponent tiles. Empty unless
+	/// [`Self::extra_convert_active`].
+	pub fn legal_converts(&self) -> Vec<Action> {
+		if self.status.is_over() || !self.extra_convert_active() {
+			return Vec::new();
+		}
+		let mut acts = Vec::new();
+		for (node, tile) in self.tiles() {
+			if tile.owner != self.current && self.extra_convert_ok(node) {
+				acts.push(Action::Convert { node });
+			}
+		}
+		acts
+	}
+
+	fn extra_convert_ok(&self, node: NodeId) -> bool {
+		let center = self.board.center();
+		match self.rules.extra_convert_mode {
+			ExtraConvertMode::Any => true,
+			ExtraConvertMode::NotCenter => node != center,
+			ExtraConvertMode::Inner => self.board.inner_ring().contains(&node),
+		}
 	}
 
 	/// Legal SWAP actions for the side to move. Empty when SWAP is off
@@ -4948,6 +5079,7 @@ impl Game {
 		!self.legal_adds().is_empty()
 			|| !self.legal_moves().is_empty()
 			|| !self.legal_swaps().is_empty()
+			|| !self.legal_converts().is_empty()
 			|| !self.legal_claims().is_empty()
 	}
 
@@ -5175,10 +5307,12 @@ impl Game {
 			Action::Move { from, to } => self.apply_move(from, to)?,
 			Action::Claim { node } => self.apply_claim(node)?,
 			Action::Swap { from, to } => self.apply_swap(from, to)?,
+			Action::Convert { node } => self.apply_convert(node)?,
 			Action::Pass => {
 				if self.has_add_or_move() {
 					return Err(
-						"pass is only legal when no ADD, MOVE, SWAP, or CLAIM exists".into()
+						"pass is only legal when no ADD, MOVE, SWAP, CLAIM, or CONVERT exists"
+							.into(),
 					);
 				}
 				if self.rules.no_moves_loses {
@@ -5666,7 +5800,8 @@ impl Game {
 		let node = match action {
 			Action::Add { node, .. }
 			| Action::Move { to: node, .. }
-			| Action::Swap { to: node, .. } => node,
+			| Action::Swap { to: node, .. }
+			| Action::Convert { node } => node,
 			Action::Claim { .. } | Action::Pass => return CaptureMark::Triangle,
 		};
 		self.tile_at(node).map(|t| t.capture).unwrap_or(CaptureMark::Triangle)
@@ -5751,6 +5886,22 @@ impl Game {
 		self.tiles[to as usize] = Some(init);
 		self.moved_this_turn = Some(init.id);
 		self.swapped_this_turn = Some(swap_pair_key(init.id, partner.id));
+		Ok(())
+	}
+
+	fn apply_convert(&mut self, node: NodeId) -> Result<(), String> {
+		if !self.extra_convert_active() {
+			return Err("CONVERT is only legal on a cascade-winner extra turn".into());
+		}
+		let mut tile = self.tile_at(node).ok_or_else(|| "no tile to convert".to_string())?;
+		if tile.owner == self.current {
+			return Err("CONVERT targets an opponent tile".into());
+		}
+		if !self.extra_convert_ok(node) {
+			return Err("CONVERT target is outside the extra-convert filter".into());
+		}
+		tile.owner = self.current;
+		self.tiles[node as usize] = Some(tile);
 		Ok(())
 	}
 
@@ -5925,6 +6076,7 @@ fn format_log(
 		Action::Move { from, to } => format!("MOVE {} -> {}", from, to),
 		Action::Claim { node } => format!("CLAIM {}{}", node_tag(board, node), node),
 		Action::Swap { from, to } => format!("SWAP {} <-> {}", from, to),
+		Action::Convert { node } => format!("CONVERT {}{}", node_tag(board, node), node),
 		Action::Pass => "PASS".to_string(),
 	};
 	let mut line = format!("{} ({}) {}", player.label(), player.shade(), act);
@@ -6181,6 +6333,8 @@ mod tests {
 		assert_eq!(rules.channel_mode, ChannelMode::Additive);
 		assert_eq!(rules.swap_mode, SwapMode::NormalOnly);
 		assert!(!rules.cascade_winner_swap);
+		assert_eq!(rules.extra_turn_action, ExtraTurnAction::Convert);
+		assert_eq!(rules.extra_convert_mode, ExtraConvertMode::Any);
 		assert_eq!(rules.extra_swap_mode, ExtraSwapMode::Any);
 		assert!(!rules.center_mismatch);
 		assert_eq!(rules.ring_count_weights, LIVE_RING_COUNT_WEIGHTS);
@@ -13394,9 +13548,15 @@ mod tests {
 		assert_eq!(game.current_player(), Player::Two);
 	}
 
+	fn extra_swap_rules() -> RuleSet {
+		let mut rules = fight_gain_rules();
+		rules.extra_turn_action = ExtraTurnAction::Swap;
+		rules
+	}
+
 	#[test]
 	fn extra_swap_any_allows_non_adjacent_multi_ring() {
-		let mut rules = fight_gain_rules();
+		let mut rules = extra_swap_rules();
 		rules.swap_mode = SwapMode::NormalOnly;
 		let mut game = Game::empty(rules);
 		let center = game.board().center();
@@ -13424,7 +13584,7 @@ mod tests {
 
 	#[test]
 	fn extra_swap_own_rejects_opponent_and_not_center_rejects_origin() {
-		let mut rules = fight_gain_rules();
+		let mut rules = extra_swap_rules();
 		rules.extra_swap_mode = ExtraSwapMode::Own;
 		let mut game = Game::empty(rules);
 		let center = game.board().center();
@@ -13450,7 +13610,7 @@ mod tests {
 
 	#[test]
 	fn extra_swap_stays_a_position_exchange_not_a_conversion() {
-		let mut game = Game::empty(fight_gain_rules());
+		let mut game = Game::empty(extra_swap_rules());
 		let center = game.board().center();
 		let spawn = game.board().spawns()[0];
 		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
@@ -13464,5 +13624,92 @@ mod tests {
 		assert_eq!(game.tile_at(spawn).map(|t| t.id), Some(p2.id));
 		assert_eq!(game.tile_at(center).unwrap().owner, Player::One);
 		assert_eq!(game.tile_at(spawn).unwrap().owner, Player::Two);
+	}
+
+	#[test]
+	fn extra_convert_flips_opponent_in_place_including_center() {
+		let mut game = Game::empty(fight_gain_rules());
+		let center = game.board().center();
+		let spawn = game.board().spawns()[0];
+		put(&mut game, spawn, Player::One, TileColor::Green, 3, 1);
+		put(&mut game, center, Player::Two, TileColor::Orange, 3, 1);
+		let stolen_id = game.tile_at(center).unwrap().id;
+		game.set_current(Player::One);
+		assert!(game.legal_converts().is_empty());
+		game.set_extra_turn_active(true);
+		assert!(game.legal_converts().contains(&Action::Convert { node: center }));
+		game.apply(Action::Convert { node: center }).unwrap();
+		assert_eq!(game.tile_at(center).map(|t| t.id), Some(stolen_id));
+		assert_eq!(game.tile_at(center).map(|t| t.owner), Some(Player::One));
+		assert_eq!(game.tile_at(spawn).map(|t| t.owner), Some(Player::One));
+	}
+
+	#[test]
+	fn extra_convert_not_center_and_inner_filters() {
+		let mut rules = fight_gain_rules();
+		rules.extra_convert_mode = ExtraConvertMode::NotCenter;
+		let mut game = Game::empty(rules);
+		let center = game.board().center();
+		let inner = game.board().inner_ring()[0];
+		let spawn = game.board().spawns()[0];
+		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
+		put(&mut game, inner, Player::Two, TileColor::Blue, 2, 1);
+		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
+		game.set_current(Player::One);
+		game.set_extra_turn_active(true);
+		assert!(!game.legal_converts().contains(&Action::Convert { node: center }));
+		assert!(game.legal_converts().contains(&Action::Convert { node: inner }));
+		assert!(game.legal_converts().contains(&Action::Convert { node: spawn }));
+
+		game.set_extra_convert_mode(ExtraConvertMode::Inner);
+		assert!(!game.legal_converts().contains(&Action::Convert { node: center }));
+		assert!(game.legal_converts().contains(&Action::Convert { node: inner }));
+		assert!(!game.legal_converts().contains(&Action::Convert { node: spawn }));
+	}
+
+	#[test]
+	fn extra_convert_off_or_swap_action_has_no_convert() {
+		let mut game = Game::empty(fight_gain_rules());
+		let center = game.board().center();
+		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
+		game.set_current(Player::One);
+		game.set_extra_turn_active(true);
+		assert!(game.legal_converts().contains(&Action::Convert { node: center }));
+		game.set_extra_turn_action(ExtraTurnAction::Swap);
+		assert!(game.legal_converts().is_empty());
+		game.set_extra_turn_action(ExtraTurnAction::Convert);
+		game.set_cascade_winner_swap(false);
+		assert!(game.legal_converts().is_empty());
+	}
+
+	#[test]
+	fn extra_convert_off_turn_rejects_apply() {
+		let mut game = Game::empty(fight_gain_rules());
+		let center = game.board().center();
+		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
+		game.set_current(Player::One);
+		assert!(game.apply(Action::Convert { node: center }).is_err());
+	}
+
+	#[test]
+	fn extra_convert_jsonl_roundtrip_keeps_owner_flip() {
+		let mut game = Game::empty(fight_gain_rules());
+		let center = game.board().center();
+		put(&mut game, center, Player::Two, TileColor::Orange, 3, 1);
+		let stolen_id = game.tile_at(center).unwrap().id;
+		let mut replay = game.clone();
+		game.set_current(Player::One);
+		game.set_extra_turn_active(true);
+		let action = Action::Convert { node: center };
+		let piece = crate::bench_log::piece_for_action(&game, action);
+		let outcome = game.apply(action).unwrap();
+		let rec = crate::bench_log::ActionLog::record(action, piece, &outcome, &game);
+		assert_eq!(rec.kind, "CONVERT");
+		assert_eq!(rec.to_action().unwrap(), action);
+		replay.set_current(Player::One);
+		replay.set_extra_turn_active(true);
+		replay.apply(rec.to_action().unwrap()).unwrap();
+		assert_eq!(replay.tile_at(center).map(|t| t.id), Some(stolen_id));
+		assert_eq!(replay.tile_at(center).map(|t| t.owner), Some(Player::One));
 	}
 }

@@ -164,6 +164,7 @@ pub struct HistoryTable {
 	adds: Vec<i32>,
 	claims: Vec<i32>,
 	swaps: Vec<i32>,
+	converts: Vec<i32>,
 }
 
 impl HistoryTable {
@@ -173,6 +174,7 @@ impl HistoryTable {
 			adds: vec![0; crate::game::KIND_COUNT * 2 * 32],
 			claims: vec![0; 32],
 			swaps: vec![0; 32 * 32],
+			converts: vec![0; 32],
 		}
 	}
 
@@ -188,6 +190,7 @@ impl HistoryTable {
 			SearchMove::Add { kind, node } => self.adds[Self::add_ix(kind, node)],
 			SearchMove::Claim { node } => self.claims[node as usize],
 			SearchMove::Swap { from, to } => self.swaps[from as usize * 32 + to as usize],
+			SearchMove::Convert { node } => self.converts[node as usize],
 			SearchMove::Pass => 0,
 		}
 	}
@@ -209,6 +212,10 @@ impl HistoryTable {
 			}
 			SearchMove::Swap { from, to } => {
 				let slot = &mut self.swaps[from as usize * 32 + to as usize];
+				*slot = (*slot + inc).min(20_000);
+			}
+			SearchMove::Convert { node } => {
+				let slot = &mut self.converts[node as usize];
 				*slot = (*slot + inc).min(20_000);
 			}
 			SearchMove::Pass => {}
@@ -316,6 +323,7 @@ impl Searcher {
 		self.minimax.last_move = match action {
 			Action::Move { from, to } => Some(SearchMove::Move { from, to }),
 			Action::Swap { from, to } => Some(SearchMove::Swap { from, to }),
+			Action::Convert { node } => Some(SearchMove::Convert { node }),
 			_ => None,
 		};
 		action
@@ -384,6 +392,9 @@ pub struct BranchingReport {
 	pub swap_n: u64,
 	pub swap_sum: u64,
 	pub swap_max: u32,
+	pub convert_n: u64,
+	pub convert_sum: u64,
+	pub convert_max: u32,
 	pub all_n: u64,
 	pub all_sum: u64,
 	pub all_max: u32,
@@ -423,6 +434,14 @@ impl BranchingReport {
 		}
 	}
 
+	pub fn convert_avg(&self) -> f64 {
+		if self.convert_n == 0 {
+			0.0
+		} else {
+			self.convert_sum as f64 / self.convert_n as f64
+		}
+	}
+
 	pub fn all_avg(&self) -> f64 {
 		if self.all_n == 0 {
 			0.0
@@ -456,6 +475,12 @@ impl BranchingReport {
 			self.swap_n += 1;
 			self.swap_sum += u64::from(swaps);
 			self.swap_max = self.swap_max.max(swaps);
+		}
+		let converts = game.legal_converts().len() as u32;
+		if converts > 0 {
+			self.convert_n += 1;
+			self.convert_sum += u64::from(converts);
+			self.convert_max = self.convert_max.max(converts);
 		}
 		self.all_n += 1;
 		self.all_sum += u64::from(all);

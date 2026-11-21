@@ -26,6 +26,9 @@ pub enum SearchMove {
 		from: NodeId,
 		to: NodeId,
 	},
+	Convert {
+		node: NodeId,
+	},
 	Pass,
 }
 
@@ -43,6 +46,7 @@ impl SearchMove {
 			Action::Move { from, to } => SearchMove::Move { from, to },
 			Action::Claim { node } => SearchMove::Claim { node },
 			Action::Swap { from, to } => SearchMove::Swap { from, to },
+			Action::Convert { node } => SearchMove::Convert { node },
 			Action::Pass => SearchMove::Pass,
 		}
 	}
@@ -59,14 +63,15 @@ impl SearchMove {
 			SearchMove::Move { from, to } => Some(Action::Move { from, to }),
 			SearchMove::Claim { node } => Some(Action::Claim { node }),
 			SearchMove::Swap { from, to } => Some(Action::Swap { from, to }),
+			SearchMove::Convert { node } => Some(Action::Convert { node }),
 			SearchMove::Pass => Some(Action::Pass),
 		}
 	}
 
 	/// Packed TT key: 0 = MOVE, u16::MAX = PASS, u16::MAX-1 = CLAIM,
-	/// u16::MAX-3 = SWAP, 1..=COLOR_STATES = ADD color-state.
-	/// (`u16::MAX-2` is reserved as the empty-TT dummy in minimax.)
-	/// `b` is `dots | (capture_bit << 2) | (emblem << 3)`.
+	/// u16::MAX-3 = SWAP, u16::MAX-4 = CONVERT, 1..=COLOR_STATES = ADD
+	/// color-state. (`u16::MAX-2` is reserved as the empty-TT dummy in
+	/// minimax.) `b` is `dots | (capture_bit << 2) | (emblem << 3)`.
 	pub fn pack(self) -> (u16, u8, u8) {
 		match self {
 			SearchMove::Add { kind, node } => {
@@ -81,6 +86,7 @@ impl SearchMove {
 			SearchMove::Move { from, to } => (0, from, to),
 			SearchMove::Claim { node } => (u16::MAX - 1, node, 0),
 			SearchMove::Swap { from, to } => (u16::MAX - 3, from, to),
+			SearchMove::Convert { node } => (u16::MAX - 4, node, 0),
 			SearchMove::Pass => (u16::MAX, 0, 0),
 		}
 	}
@@ -90,6 +96,7 @@ impl SearchMove {
 			u16::MAX => Some(SearchMove::Pass),
 			k if k == u16::MAX - 1 => Some(SearchMove::Claim { node: a }),
 			k if k == u16::MAX - 3 => Some(SearchMove::Swap { from: a, to: b }),
+			k if k == u16::MAX - 4 => Some(SearchMove::Convert { node: a }),
 			0 => Some(SearchMove::Move { from: a, to: b }),
 			state
 				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
@@ -165,6 +172,9 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	for sw in game.legal_swaps() {
 		out.push(SearchMove::from_action(game, sw));
 	}
+	for conv in game.legal_converts() {
+		out.push(SearchMove::from_action(game, conv));
+	}
 	for claim in game.legal_claims() {
 		out.push(SearchMove::from_action(game, claim));
 	}
@@ -196,6 +206,7 @@ pub fn is_tactical(game: &Game, mv: SearchMove, outcome: &crate::game::ActionOut
 			let center = game.board().center();
 			from == center || to == center
 		}
+		SearchMove::Convert { .. } => true,
 		_ => false,
 	}
 }
@@ -376,6 +387,19 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 			}
 			s
 		}
+		SearchMove::Convert { node } => {
+			let mut s = 600;
+			let center = game.board().center();
+			if node == center {
+				s += 2800;
+			} else if game.board().inner_ring().contains(&node) {
+				s += 500;
+			}
+			if let Some(tile) = game.tile_at(node) {
+				s += 40 * i32::from(tile.weight);
+			}
+			s
+		}
 		SearchMove::Pass => -1_000,
 	}
 }
@@ -474,6 +498,10 @@ mod tests {
 		assert_ne!(packed.0, u16::MAX);
 		assert_ne!(packed.0, u16::MAX - 1);
 		assert_ne!(packed.0, u16::MAX - 2);
+		let conv = SearchMove::Convert { node: 0 };
+		let packed = conv.pack();
+		assert_eq!(SearchMove::unpack(packed.0, packed.1, packed.2), Some(conv));
+		assert_ne!(packed.0, sw.pack().0);
 	}
 
 	#[test]

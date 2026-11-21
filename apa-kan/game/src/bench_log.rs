@@ -7,9 +7,10 @@ use crate::game::{
 	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
 	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
 	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule,
-	ExtraSwapMode, Game, GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution,
-	PassThroughRingCmp, PathConstraint, Player, RingCountWeights, RingType, RuleSet,
-	SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	ExtraConvertMode, ExtraSwapMode, ExtraTurnAction, Game, GameStatus, HopWeightCmp,
+	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player,
+	RingCountWeights, RingType, RuleSet, SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind,
+	ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -381,10 +382,20 @@ pub struct RulesLog {
 	/// Absent on older logs; replay uses off (PR #74).
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cascade_turn_gain: bool,
-	/// Extra turn when a pre-action center occupant is captured, with
-	/// permissive extra-turn SWAP. Absent/false on older logs.
+	/// Extra turn when a pre-action center occupant is captured. Absent/false
+	/// on older logs.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cascade_winner_swap: bool,
+	/// Extra-turn CONVERT (ownership flip) or SWAP (position exchange).
+	/// Absent on older logs; replay uses convert.
+	#[serde(
+		default = "default_extra_turn_convert",
+		skip_serializing_if = "skip_extra_turn_convert"
+	)]
+	pub extra_turn_action: String,
+	/// CONVERT target filter. Absent on older logs; replay uses any.
+	#[serde(default = "default_extra_convert_any", skip_serializing_if = "skip_extra_convert_any")]
+	pub extra_convert_mode: String,
 	/// Extra-turn SWAP partner filter. Absent on older logs; replay uses any.
 	#[serde(default = "default_extra_swap_any", skip_serializing_if = "skip_extra_swap_any")]
 	pub extra_swap_mode: String,
@@ -500,6 +511,22 @@ fn skip_extra_swap_any(v: &String) -> bool {
 	*v == ExtraSwapMode::Any.name()
 }
 
+fn default_extra_turn_convert() -> String {
+	ExtraTurnAction::Convert.name().to_string()
+}
+
+fn skip_extra_turn_convert(v: &String) -> bool {
+	*v == ExtraTurnAction::Convert.name()
+}
+
+fn default_extra_convert_any() -> String {
+	ExtraConvertMode::Any.name().to_string()
+}
+
+fn skip_extra_convert_any(v: &String) -> bool {
+	*v == ExtraConvertMode::Any.name()
+}
+
 impl RulesLog {
 	pub fn from_rules(r: RuleSet) -> Self {
 		Self {
@@ -537,6 +564,8 @@ impl RulesLog {
 			endgame_rule: r.endgame_rule.name().into(),
 			cascade_turn_gain: r.cascade_turn_gain,
 			cascade_winner_swap: r.cascade_winner_swap,
+			extra_turn_action: r.extra_turn_action.name().into(),
+			extra_convert_mode: r.extra_convert_mode.name().into(),
 			extra_swap_mode: r.extra_swap_mode.name().into(),
 			center_mismatch: r.center_mismatch,
 			insufficient_tiles_loss: r.insufficient_tiles_loss.name().into(),
@@ -598,6 +627,10 @@ impl RulesLog {
 			endgame_rule: EndgameRule::parse(&self.endgame_rule)?,
 			cascade_turn_gain: self.cascade_turn_gain,
 			cascade_winner_swap: self.cascade_winner_swap,
+			extra_turn_action: ExtraTurnAction::parse(&self.extra_turn_action)
+				.unwrap_or(ExtraTurnAction::Convert),
+			extra_convert_mode: ExtraConvertMode::parse(&self.extra_convert_mode)
+				.unwrap_or(ExtraConvertMode::Any),
 			extra_swap_mode: ExtraSwapMode::parse(&self.extra_swap_mode)
 				.unwrap_or(ExtraSwapMode::Any),
 			center_mismatch: self.center_mismatch,
@@ -837,6 +870,7 @@ impl ActionLog {
 			Action::Move { from, to } => ("MOVE".to_string(), Some(from), Some(to), None),
 			Action::Claim { node } => ("CLAIM".to_string(), None, Some(node), None),
 			Action::Swap { from, to } => ("SWAP".to_string(), Some(from), Some(to), None),
+			Action::Convert { node } => ("CONVERT".to_string(), None, Some(node), None),
 			Action::Pass => ("PASS".to_string(), None, None, None),
 		};
 		let capture = outcome.removals.iter().filter(|r| r.tile.owner != player).count() as u8;
@@ -942,6 +976,10 @@ impl ActionLog {
 				let to = self.to.ok_or("SWAP missing to")?;
 				Ok(Action::Swap { from, to })
 			}
+			"CONVERT" => {
+				let node = self.to.ok_or("CONVERT missing to")?;
+				Ok(Action::Convert { node })
+			}
 			"PASS" => Ok(Action::Pass),
 			other => Err(format!("unknown action kind '{other}'")),
 		}
@@ -954,6 +992,7 @@ impl ActionLog {
 			"MOVE" => tags.push("MOVE"),
 			"CLAIM" => tags.push("CLAIM"),
 			"SWAP" => tags.push("SWAP"),
+			"CONVERT" => tags.push("CONVERT"),
 			"PASS" => tags.push("PASS"),
 			_ => {}
 		}
@@ -1649,6 +1688,7 @@ pub fn piece_for_action(game: &Game, action: Action) -> Option<Tile> {
 		Action::Move { from, .. } => game.tile_at(from),
 		Action::Claim { node } => game.tile_at(node),
 		Action::Swap { from, .. } => game.tile_at(from),
+		Action::Convert { node } => game.tile_at(node),
 		Action::Pass => None,
 	}
 }
@@ -1792,7 +1832,7 @@ mod tests {
 		assert!(!log.actions.is_empty());
 		for act in &log.actions {
 			assert!(
-				matches!(act.kind.as_str(), "ADD" | "MOVE" | "CLAIM" | "SWAP" | "PASS"),
+				matches!(act.kind.as_str(), "ADD" | "MOVE" | "CLAIM" | "SWAP" | "CONVERT" | "PASS"),
 				"unexpected kind {}",
 				act.kind
 			);
@@ -1817,7 +1857,7 @@ mod tests {
 						assert!(act.partner_owner.is_some());
 					}
 				}
-				"CLAIM" => {
+				"CLAIM" | "CONVERT" => {
 					assert!(act.to.is_some());
 				}
 				"PASS" => {
@@ -2014,15 +2054,23 @@ mod tests {
 		assert!(!parsed.cascade_winner_swap);
 		assert!(!parsed.center_mismatch);
 		assert_eq!(parsed.to_rules().unwrap().extra_swap_mode, ExtraSwapMode::Any);
+		assert_eq!(parsed.to_rules().unwrap().extra_turn_action, ExtraTurnAction::Convert);
+		assert_eq!(parsed.to_rules().unwrap().extra_convert_mode, ExtraConvertMode::Any);
+		assert!(!json.contains("extra_turn_action"), "{json}");
+		assert!(!json.contains("extra_convert_mode"), "{json}");
 		let mut on = RuleSet::default();
 		on.cascade_winner_swap = true;
 		on.center_mismatch = true;
+		on.extra_turn_action = ExtraTurnAction::Swap;
+		on.extra_convert_mode = ExtraConvertMode::Inner;
 		on.extra_swap_mode = ExtraSwapMode::Own;
 		let written = RulesLog::from_rules(on);
 		let json = serde_json::to_string(&written).unwrap();
 		assert!(json.contains("cascade_winner_swap"), "{json}");
 		assert!(json.contains("center_mismatch"), "{json}");
 		assert!(json.contains("own"), "{json}");
+		assert!(json.contains("swap"), "{json}");
+		assert!(json.contains("inner"), "{json}");
 	}
 
 	#[test]

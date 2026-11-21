@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Cascade-winner extra swap + center-mismatch exactplay self-play.
+# Cascade-winner extra CONVERT (ownership flip) + center-mismatch exactplay
+# self-play. `--cascade-winner-swap on` defaults `--extra-turn-action convert`.
+# Position-exchange extra SWAP is `--extra-turn-action swap` (not benched here).
 # Live RuleSet defaults otherwise (flags default off). Light budget matches
 # PR #85 exactplay self-play.
 #

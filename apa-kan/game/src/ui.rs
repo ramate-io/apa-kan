@@ -718,6 +718,10 @@ fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
 			_ => {}
 		}
 		if let Some(tile) = play.game.tile_at(node) {
+			if play.game.legal_converts().contains(&Action::Convert { node }) {
+				apply_action(play, Action::Convert { node });
+				return;
+			}
 			if play.game.rules().capture_mode.allows_claim() && play.game.is_overwhelmed(node) {
 				apply_action(play, Action::Claim { node });
 				return;
@@ -966,6 +970,15 @@ fn refresh_view(
 		Selection::Piece(n) => play.game.legal_swap_partners(n),
 		_ => Vec::new(),
 	};
+	let convert_targets: Vec<NodeId> = play
+		.game
+		.legal_converts()
+		.into_iter()
+		.filter_map(|a| match a {
+			Action::Convert { node } => Some(node),
+			_ => None,
+		})
+		.collect();
 
 	for arc in board.arcs() {
 		spawn_arc(
@@ -1015,6 +1028,18 @@ fn refresh_view(
 				layout.tile_radius + 4.0,
 				layout.tile_radius + 7.0,
 				rgb(visual::SWAP_RGB),
+				visual::Z_HIGHLIGHT,
+			);
+		}
+		if convert_targets.contains(&id) {
+			spawn_ring(
+				&mut commands,
+				&mut meshes,
+				&mut materials,
+				p,
+				layout.tile_radius + 4.0,
+				layout.tile_radius + 7.0,
+				rgb(visual::CONVERT_RGB),
 				visual::Z_HIGHLIGHT,
 			);
 		}
@@ -2256,6 +2281,8 @@ fn view_fingerprint(play: &PlayState, layout: &ViewLayout) -> u64 {
 	let mut h = DefaultHasher::new();
 	play.game.turn_count().hash(&mut h);
 	play.game.current_player().hash(&mut h);
+	play.game.extra_convert_active().hash(&mut h);
+	play.game.extra_swap_active().hash(&mut h);
 	play.selection.hash(&mut h);
 	((layout.width * 10.0) as i32).hash(&mut h);
 	((layout.height * 10.0) as i32).hash(&mut h);

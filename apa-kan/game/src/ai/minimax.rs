@@ -573,6 +573,11 @@ fn quiesce(
 		{
 			gain = gain.saturating_add(2);
 		}
+		if matches!(mv, SearchMove::Convert { node } if node == game.board().center()) {
+			gain = gain.saturating_add(4);
+		} else if matches!(mv, SearchMove::Convert { .. }) {
+			gain = gain.saturating_add(3);
+		}
 		captures.push((gain, mv, child));
 	}
 	captures.sort_by(|a, b| b.0.cmp(&a.0));
@@ -627,9 +632,9 @@ fn center_relevant(game: &Game, mv: SearchMove) -> bool {
 		SearchMove::Swap { from, to } => {
 			from == center || to == center || inner.contains(&from) || inner.contains(&to)
 		}
-		SearchMove::Add { node, .. } | SearchMove::Claim { node } => {
-			node == center || inner.contains(&node)
-		}
+		SearchMove::Add { node, .. }
+		| SearchMove::Claim { node }
+		| SearchMove::Convert { node } => node == center || inner.contains(&node),
 		SearchMove::Pass => false,
 	}
 }
@@ -725,6 +730,16 @@ fn capture_hint(game: &Game, mv: SearchMove) -> i32 {
 				160_000
 			} else {
 				40_000
+			}
+		}
+		SearchMove::Convert { node } => {
+			let center = game.board().center();
+			if node == center {
+				320_000
+			} else if game.board().inner_ring().contains(&node) {
+				220_000
+			} else {
+				180_000
 			}
 		}
 		SearchMove::Pass => 0,

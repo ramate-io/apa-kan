@@ -588,6 +588,7 @@ struct SeatStats {
 	fight_gain_awarded: u32,
 	fight_gain_mover: u32,
 	fight_gain_opponent: u32,
+	extra_used_convert: u32,
 	extra_used_swap: u32,
 	extra_used_move: u32,
 	extra_used_add: u32,
@@ -629,6 +630,8 @@ struct SeatStats {
 	claim_opp: u32,
 	swaps: u32,
 	center_swaps: u32,
+	converts: u32,
+	center_converts: u32,
 	healed: u32,
 	crescent_saves: u32,
 	zs_bonuses: u32,
@@ -727,7 +730,7 @@ fn run(cfg: BenchConfig) {
 		));
 	}
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} extra_swap_mode={} center_mismatch={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} extra_turn_action={} extra_convert_mode={} extra_swap_mode={} center_mismatch={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -744,6 +747,8 @@ fn run(cfg: BenchConfig) {
 		rules.endgame_rule.name(),
 		on_off(rules.cascade_turn_gain),
 		on_off(rules.cascade_winner_swap),
+		rules.extra_turn_action.name(),
+		rules.extra_convert_mode.name(),
 		rules.extra_swap_mode.name(),
 		on_off(rules.center_mismatch),
 		rules.insufficient_tiles_loss.name(),
@@ -939,6 +944,7 @@ fn run(cfg: BenchConfig) {
 	let mut fight_gain_awarded = 0u32;
 	let mut fight_gain_mover = 0u32;
 	let mut fight_gain_opponent = 0u32;
+	let mut extra_used_convert = 0u32;
 	let mut extra_used_swap = 0u32;
 	let mut extra_used_move = 0u32;
 	let mut extra_used_add = 0u32;
@@ -969,6 +975,8 @@ fn run(cfg: BenchConfig) {
 	let mut claim_opp = 0u32;
 	let mut swaps = 0u32;
 	let mut center_swaps = 0u32;
+	let mut converts = 0u32;
+	let mut center_converts = 0u32;
 	let mut healed = 0u32;
 	let mut crescent_saves = 0u32;
 	let mut zs_bonuses = 0u32;
@@ -1012,6 +1020,7 @@ fn run(cfg: BenchConfig) {
 		fight_gain_awarded += stats.fight_gain_awarded;
 		fight_gain_mover += stats.fight_gain_mover;
 		fight_gain_opponent += stats.fight_gain_opponent;
+		extra_used_convert += stats.extra_used_convert;
 		extra_used_swap += stats.extra_used_swap;
 		extra_used_move += stats.extra_used_move;
 		extra_used_add += stats.extra_used_add;
@@ -1042,6 +1051,8 @@ fn run(cfg: BenchConfig) {
 		claim_opp += stats.claim_opp;
 		swaps += stats.swaps;
 		center_swaps += stats.center_swaps;
+		converts += stats.converts;
+		center_converts += stats.center_converts;
 		healed += stats.healed;
 		crescent_saves += stats.crescent_saves;
 		zs_bonuses += stats.zs_bonuses;
@@ -1125,6 +1136,12 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!(
 		"# swaps  total={swaps} avg_per_game={avg_swaps:.2}  center={center_swaps} avg_center_per_game={avg_center_swaps:.2}"
 	));
+	let avg_converts = if games_n == 0 { 0.0 } else { f64::from(converts) / f64::from(games_n) };
+	let avg_center_converts =
+		if games_n == 0 { 0.0 } else { f64::from(center_converts) / f64::from(games_n) };
+	lines.push(format!(
+		"# converts  total={converts} avg_per_game={avg_converts:.2}  center={center_converts} avg_center_per_game={avg_center_converts:.2}"
+	));
 	let avg_gain =
 		if games_n == 0 { 0.0 } else { f64::from(turn_gain_awarded) / f64::from(games_n) };
 	let ended_extra = ended_on_extra + ended_after_extra;
@@ -1137,10 +1154,10 @@ fn run(cfg: BenchConfig) {
 	let avg_fight =
 		if games_n == 0 { 0.0 } else { f64::from(fight_gain_awarded) / f64::from(games_n) };
 	lines.push(format!(
-		"# fight_gain  awarded={fight_gain_awarded} avg_per_game={avg_fight:.2}  mover={fight_gain_mover} opponent={fight_gain_opponent}  extra_used swap={extra_used_swap} move={extra_used_move} add={extra_used_add} claim={extra_used_claim}"
+		"# fight_gain  awarded={fight_gain_awarded} avg_per_game={avg_fight:.2}  mover={fight_gain_mover} opponent={fight_gain_opponent}  extra_used convert={extra_used_convert} swap={extra_used_swap} move={extra_used_move} add={extra_used_add} claim={extra_used_claim}"
 	));
 	println!(
-		"# fight_gain  awarded={fight_gain_awarded} avg_per_game={avg_fight:.2}  mover={fight_gain_mover} opponent={fight_gain_opponent}  extra_used swap={extra_used_swap} move={extra_used_move} add={extra_used_add} claim={extra_used_claim}"
+		"# fight_gain  awarded={fight_gain_awarded} avg_per_game={avg_fight:.2}  mover={fight_gain_mover} opponent={fight_gain_opponent}  extra_used convert={extra_used_convert} swap={extra_used_swap} move={extra_used_move} add={extra_used_add} claim={extra_used_claim}"
 	);
 	let avg_moon = if games_n == 0 { 0.0 } else { f64::from(crescent_saves) / f64::from(games_n) };
 	let avg_zs = if games_n == 0 { 0.0 } else { f64::from(zs_bonuses) / f64::from(games_n) };
@@ -1303,6 +1320,9 @@ fn run(cfg: BenchConfig) {
 	);
 	println!(
 		"# swaps  total={swaps} avg_per_game={avg_swaps:.2}  center={center_swaps} avg_center_per_game={avg_center_swaps:.2}"
+	);
+	println!(
+		"# converts  total={converts} avg_per_game={avg_converts:.2}  center={center_converts} avg_center_per_game={avg_center_converts:.2}"
 	);
 	println!(
 		"# emblems  crescent_saves={crescent_saves} avg_per_game={avg_moon:.2}  zs_bonuses={zs_bonuses} avg_per_game={avg_zs:.2}"
@@ -1514,6 +1534,7 @@ fn push_branching(
 	lines.push(format!("MOVE      {:<12} {:<6.2} {}", b.move_n, b.move_avg(), b.move_max));
 	lines.push(format!("CLAIM     {:<12} {:<6.2} {}", b.claim_n, b.claim_avg(), b.claim_max));
 	lines.push(format!("SWAP      {:<12} {:<6.2} {}", b.swap_n, b.swap_avg(), b.swap_max));
+	lines.push(format!("CONVERT   {:<12} {:<6.2} {}", b.convert_n, b.convert_avg(), b.convert_max));
 	lines.push(format!("ALL       {:<12} {:<6.2} {}", b.all_n, b.all_avg(), b.all_max));
 }
 
@@ -1635,6 +1656,8 @@ fn summarize_pairing(
 		stats.claim_opp += result.claim_opp;
 		stats.swaps += result.swaps;
 		stats.center_swaps += result.center_swaps;
+		stats.converts += result.converts;
+		stats.center_converts += result.center_converts;
 		stats.healed += result.healed;
 		stats.crescent_saves += result.crescent_saves;
 		stats.zs_bonuses += result.zs_bonuses;
@@ -1647,6 +1670,7 @@ fn summarize_pairing(
 		stats.fight_gain_awarded += result.fight_gain_awarded;
 		stats.fight_gain_mover += result.fight_gain_mover;
 		stats.fight_gain_opponent += result.fight_gain_opponent;
+		stats.extra_used_convert += result.extra_used_convert;
 		stats.extra_used_swap += result.extra_used_swap;
 		stats.extra_used_move += result.extra_used_move;
 		stats.extra_used_add += result.extra_used_add;
@@ -2065,6 +2089,8 @@ struct PlayResult {
 	claim_opp: u32,
 	swaps: u32,
 	center_swaps: u32,
+	converts: u32,
+	center_converts: u32,
 	healed: u32,
 	crescent_saves: u32,
 	zs_bonuses: u32,
@@ -2077,6 +2103,7 @@ struct PlayResult {
 	fight_gain_awarded: u32,
 	fight_gain_mover: u32,
 	fight_gain_opponent: u32,
+	extra_used_convert: u32,
 	extra_used_swap: u32,
 	extra_used_move: u32,
 	extra_used_add: u32,
@@ -2202,6 +2229,9 @@ fn play_game(
 	let mut claim_opp = 0u32;
 	let mut swaps = 0u32;
 	let mut center_swaps = 0u32;
+	let mut converts = 0u32;
+	let mut center_converts = 0u32;
+	let mut extra_used_convert = 0u32;
 	let mut extra_used_swap = 0u32;
 	let mut extra_used_move = 0u32;
 	let mut extra_used_add = 0u32;
@@ -2310,6 +2340,12 @@ fn play_game(
 					center_swaps += 1;
 				}
 			}
+			Action::Convert { node } => {
+				converts += 1;
+				if node == center {
+					center_converts += 1;
+				}
+			}
 			Action::Claim { .. } | Action::Pass => {}
 		}
 		let before_overwhelmed: Vec<(u8, u32)> = game
@@ -2362,6 +2398,7 @@ fn play_game(
 				}
 				if game.last_played_as_extra() {
 					match action {
+						Action::Convert { .. } => extra_used_convert += 1,
 						Action::Swap { .. } => extra_used_swap += 1,
 						Action::Move { .. } => extra_used_move += 1,
 						Action::Add { .. } => extra_used_add += 1,
@@ -2502,6 +2539,8 @@ fn play_game(
 		claim_opp,
 		swaps,
 		center_swaps,
+		converts,
+		center_converts,
 		healed,
 		crescent_saves,
 		zs_bonuses,
@@ -2514,6 +2553,7 @@ fn play_game(
 		fight_gain_awarded: game.fight_gain_awarded(),
 		fight_gain_mover: game.fight_gain_mover(),
 		fight_gain_opponent: game.fight_gain_opponent(),
+		extra_used_convert,
 		extra_used_swap,
 		extra_used_move,
 		extra_used_add,

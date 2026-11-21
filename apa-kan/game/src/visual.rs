@@ -186,6 +186,8 @@ pub const HIGHLIGHT_RGB: [f32; 3] = [0.95, 0.85, 0.25];
 pub const DEST_RGB: [f32; 3] = [0.55, 0.85, 1.00];
 /// Occupied SWAP partner highlight. Distinct from MOVE-dest cyan.
 pub const SWAP_RGB: [f32; 3] = [0.95, 0.45, 0.75];
+/// Extra-turn CONVERT target (opponent tile, stays put). Distinct from SWAP pink.
+pub const CONVERT_RGB: [f32; 3] = [0.45, 0.95, 0.55];
 /// Amber outline on a tile that just landed (token stack or bench) after
 /// a capture. Distinct from selection gold.
 pub const CAPTURE_GLOW_RGB: [f32; 3] = [1.00, 0.72, 0.28];
@@ -2805,6 +2807,11 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 					extra.push_str(&format!(
 						"{HUD_SEP}+turn swap-{}",
 						game.rules().extra_swap_mode.name()
+					));
+				} else if game.extra_convert_active() {
+					extra.push_str(&format!(
+						"{HUD_SEP}+turn convert-{}",
+						game.rules().extra_convert_mode.name()
 					));
 				} else {
 					extra.push_str(&format!("{HUD_SEP}+turn"));

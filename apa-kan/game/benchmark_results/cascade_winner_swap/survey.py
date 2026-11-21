@@ -8,6 +8,7 @@ leader win rate.
 
 from __future__ import annotations
 
+import math
 import statistics
 import sys
 from collections import Counter
@@ -26,6 +27,18 @@ def median(xs: list[float]) -> float:
     return float(statistics.median(xs)) if xs else 0.0
 
 
+def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float, float]:
+    """Wilson 95% interval for k successes in n trials. Returns (p, lo, hi)."""
+    if n <= 0:
+        return 0.0, 0.0, 0.0
+    p = k / n
+    z2 = z * z
+    den = 1.0 + z2 / n
+    centre = (p + z2 / (2.0 * n)) / den
+    margin = z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * n)) / n) / den
+    return p, max(0.0, centre - margin), min(1.0, centre + margin)
+
+
 def extra_survey(games: list[dict]) -> None:
     n = len(games)
     turns = [g.get("turns") or 0 for g in games]
@@ -34,9 +47,11 @@ def extra_survey(games: list[dict]) -> None:
     p1_w = winners.get(1, 0)
     p1_d = winners.get(None, 0) + winners.get(0, 0)
     p1_l = winners.get(2, 0)
+    win_p, win_lo, win_hi = wilson_ci(p1_w, n)
     print("\n# length / seat")
     print(
         f"  P1 {p1_w}-{p1_d}-{p1_l}  games={n}  "
+        f"P1 win {win_p:.1%} [{win_lo:.1%}, {win_hi:.1%}]  "
         f"mean {base.mean(turns):.2f}  median {median(turns):.1f}  "
         f"p90 {sorted(turns)[int(0.9 * (n - 1))] if n else 0}"
     )
@@ -70,6 +85,12 @@ def extra_survey(games: list[dict]) -> None:
     extra_swaps_control = 0
     extra_swaps_outer = 0
     extra_examples = []
+    extra_converts_center = 0
+    extra_converts_inner = 0
+    extra_converts_outer = 0
+    extra_converts_self_pop = 0
+    extra_converts_rings = Counter()
+    extra_convert_examples = []
     first_cascade_leader_wins = 0
     first_cascade_games = 0
     first_cascade_comebacks = 0
@@ -134,6 +155,35 @@ def extra_survey(games: list[dict]) -> None:
                             "reason": end.get("reason"),
                         }
                     )
+                elif kind == "CONVERT":
+                    node = act.get("to")
+                    piece = act.get("piece") or {}
+                    if node == CENTER:
+                        extra_converts_center += 1
+                    elif node in INNER:
+                        extra_converts_inner += 1
+                    else:
+                        extra_converts_outer += 1
+                    extra_converts_rings[piece.get("n_rings") or 0] += 1
+                    self_pop = int(act.get("self_capture") or 0) > 0
+                    if self_pop:
+                        extra_converts_self_pop += 1
+                    extra_convert_examples.append(
+                        {
+                            "pairing": pairing,
+                            "game": game_n,
+                            "turn": act.get("turn"),
+                            "player": act.get("player"),
+                            "node": node,
+                            "n_rings": piece.get("n_rings"),
+                            "self_pop": self_pop,
+                            "capture": int(act.get("capture") or 0),
+                            "center": node == CENTER,
+                            "winner": winner,
+                            "turns": g.get("turns"),
+                            "reason": end.get("reason"),
+                        }
+                    )
         if first_leader is not None:
             first_cascade_games += 1
             won = winner == first_leader
@@ -168,6 +218,11 @@ def extra_survey(games: list[dict]) -> None:
         f"multi_ring_initiator={extra_swaps_multi}"
     )
     print(
+        f"  extra CONVERT center={extra_converts_center} inner={extra_converts_inner} "
+        f"outer={extra_converts_outer} self_pop={extra_converts_self_pop}  "
+        f"rings={dict(extra_converts_rings)}"
+    )
+    print(
         f"  leader after first cascade/fight: games={first_cascade_games}  "
         f"leader_wins={first_cascade_leader_wins} "
         f"({base.pct(first_cascade_leader_wins, first_cascade_games)})  "
@@ -184,6 +239,18 @@ def extra_survey(games: list[dict]) -> None:
             f"end={ex['reason']} W={ex['winner']} turns={ex['turns']}"
         )
     if not extra_examples:
+        print("  (none)")
+
+    print("\n# extra CONVERT examples")
+    for ex in extra_convert_examples[:16]:
+        loc = "center" if ex["center"] else f"node {ex['node']}"
+        print(
+            f"  {ex['pairing']} game {ex['game']} t{ex['turn']} P{ex['player']} "
+            f"CONVERT {loc} rings={ex['n_rings']} self_pop={ex['self_pop']} "
+            f"opp_caps={ex['capture']} "
+            f"end={ex['reason']} W={ex['winner']} turns={ex['turns']}"
+        )
+    if not extra_convert_examples:
         print("  (none)")
 
     print("\n# first-cascade leader examples (losses = comebacks)")
