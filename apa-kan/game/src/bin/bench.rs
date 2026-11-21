@@ -74,8 +74,8 @@ fn usage() -> &'static str {
 	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
 	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
 	                        Each search stays single-threaded unless --search-threads > 1.\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay>\n\
-	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay>\n\
+	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest, playtest)\n\
 	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced defaults)\n\
 	   --list-search-profiles    Print named presets and their labels\n\
 	   --search <k=v,...>   Overlay any knob (ordering, tt, lmr, pvs, q-depth, pw, puct, priors,\n\
@@ -767,6 +767,8 @@ fn run(cfg: BenchConfig) {
 		let mut job_setup = setup;
 		job_setup.p1_deck = job.p1_deck;
 		job_setup.p2_deck = job.p2_deck;
+		job_setup.p1_search = p1_search;
+		job_setup.p2_search = p2_search;
 		let result = play_game(
 			rules,
 			job.seed,
@@ -2954,6 +2956,18 @@ mod tests {
 		let cfg = parse(vec!["--search-profile".to_string(), "counterplay".to_string()]).unwrap();
 		assert_eq!(cfg.search, SearchConfig::counterplay());
 		assert_eq!(cfg.search.profile_name(), "counterplay");
+		let cfg = parse(vec!["--search-profile".to_string(), "exactplay".to_string()]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::exactplay());
+		assert_eq!(cfg.search.profile_name(), "exactplay");
+		let mixed = parse(vec![
+			"--p1-search-profile".to_string(),
+			"exactplay".to_string(),
+			"--p2-search-profile".to_string(),
+			"counterplay".to_string(),
+		])
+		.unwrap();
+		assert_eq!(seat_search(&mixed, true), SearchConfig::exactplay());
+		assert_eq!(seat_search(&mixed, false), SearchConfig::counterplay());
 	}
 
 	#[test]

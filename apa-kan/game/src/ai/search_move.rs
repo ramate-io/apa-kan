@@ -186,15 +186,29 @@ pub fn is_capture(outcome: &crate::game::ActionOutcome, _mover: crate::game::Pla
 }
 
 /// Captures, plus SWAPs that seize or vacate the center. Used so LMR and
-/// qsearch do not prune the saboteur dislodge.
-pub fn is_tactical(game: &Game, mv: SearchMove, outcome: &crate::game::ActionOutcome) -> bool {
+/// qsearch do not prune the saboteur dislodge. `q_include_swaps` /
+/// `q_include_braid_hits` extend this to every SWAP and to 1-slot exact
+/// braid landings that have not yet popped a tile.
+pub fn is_tactical(
+	game: &Game,
+	mv: SearchMove,
+	outcome: &crate::game::ActionOutcome,
+	config: SearchConfig,
+) -> bool {
 	if is_capture(outcome, game.current_player()) {
 		return true;
 	}
 	match mv {
 		SearchMove::Swap { from, to } => {
 			let center = game.board().center();
-			from == center || to == center
+			from == center || to == center || config.q_include_swaps
+		}
+		SearchMove::Move { from, to } => {
+			config.q_include_braid_hits
+				&& game.tile_at(from).is_some_and(|t| braid_hit_at(game, t, to))
+		}
+		SearchMove::Add { kind, node } => {
+			config.q_include_braid_hits && add_braid_hit(game, kind, node)
 		}
 		_ => false,
 	}
@@ -226,7 +240,14 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 				s -= tax;
 			}
 			s += center_threat_bonus(game, to, config);
+			s += zero_budget_walk_tax(game, from, to, config);
 			if let Some(tile) = game.tile_at(from) {
+				if config.order_single_braid != 0 && braid_hit_at(game, tile, to) {
+					s += config.order_single_braid;
+					if tile.is_single_braid() {
+						s += config.order_single_braid;
+					}
+				}
 				for nb in game.board().incident_others(to) {
 					if let Some(other) = game.tile_at(nb) {
 						if other.owner != tile.owner {
@@ -269,6 +290,7 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 			if node == center || game.board().inner_ring().contains(&node) {
 				s += config.order_claim_center;
 			}
+			s += config.order_claim;
 			s
 		}
 		SearchMove::Add { kind, node } => {
@@ -304,6 +326,12 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 						view.bead != 0 && (view.bead & other.non_zag_color_mask()) != view.bead;
 					if braid_hit {
 						s += 14 + i32::from(view.braid_size);
+						if config.order_single_braid != 0 {
+							s += config.order_single_braid;
+							if view.braid_size == 1 {
+								s += config.order_single_braid;
+							}
+						}
 					} else if bead_unmatched {
 						s += 20;
 					} else if other.normal_mask() & view.normal != 0 {
@@ -328,7 +356,7 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 			s
 		}
 		SearchMove::Swap { from, to } => {
-			let mut s = 80;
+			let mut s = 80 + config.order_swap;
 			let center = game.board().center();
 			let inner = game.board().inner_ring();
 			if to == center {
@@ -378,6 +406,61 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 		}
 		SearchMove::Pass => -1_000,
 	}
+}
+
+fn braid_hit_at(game: &Game, tile: crate::game::Tile, dest: crate::board::NodeId) -> bool {
+	let scoring = game.rules().braid_scoring;
+	if tile.braid_ring_count() < scoring.min_slots() {
+		return false;
+	}
+	game.board().incident_others(dest).any(|nb| {
+		game.tile_at(nb)
+			.is_some_and(|other| tile.braid_fulfilled_by_with(other, scoring).is_some())
+	})
+}
+
+fn add_braid_hit(game: &Game, kind: u32, node: crate::board::NodeId) -> bool {
+	let view = crate::game::decode_color_state(kind_index_of(kind) / KIND_DOTS);
+	let scoring = game.rules().braid_scoring;
+	if view.braid_size < scoring.min_slots() {
+		return false;
+	}
+	game.board().incident_others(node).any(|nb| {
+		let Some(other) = game.tile_at(nb) else {
+			return false;
+		};
+		let have = other.non_zag_colors_multiset();
+		if scoring.exact_match() {
+			(0..6).all(|i| view.braid_counts[i] == 0 || have[i] == view.braid_counts[i])
+		} else {
+			(0..6).all(|i| have[i] >= view.braid_counts[i])
+		}
+	})
+}
+
+fn zero_budget_walk_tax(
+	game: &Game,
+	from: crate::board::NodeId,
+	to: crate::board::NodeId,
+	config: SearchConfig,
+) -> i32 {
+	if config.order_zero_budget_walk == 0 {
+		return 0;
+	}
+	if game.budget(game.current_player()) > 0 {
+		return 0;
+	}
+	let center = game.board().center();
+	if to == center {
+		return 0;
+	}
+	if center_threat_bonus(game, to, config) > 0 {
+		return 0;
+	}
+	if from == center && game.is_overwhelmed(from) {
+		return 0;
+	}
+	-config.order_zero_budget_walk
 }
 
 fn center_threat_bonus(game: &Game, dest: crate::board::NodeId, config: SearchConfig) -> i32 {
@@ -515,8 +598,37 @@ mod tests {
 				draws: 0,
 				log_line: String::new(),
 				emblem: crate::game::EmblemTrigger::default(),
-			}
+			},
+			cfg,
 		));
+	}
+
+	#[test]
+	fn qsearch_treats_non_center_swaps_when_configured() {
+		let mut game = Game::empty(RuleSet::default());
+		let inner = game.board().inner_ring()[0];
+		let outer = *game
+			.board()
+			.neighbors(inner)
+			.iter()
+			.find(|&&n| n != game.board().center())
+			.expect("inner node has a non-center neighbor");
+		let a = game.alloc_tile(crate::game::Player::One, crate::game::TileColor::Green, 1, 1);
+		game.place_tile(inner, a);
+		let b = game.alloc_tile(crate::game::Player::One, crate::game::TileColor::Blue, 1, 1);
+		game.place_tile(outer, b);
+		game.set_current(crate::game::Player::One);
+		let rotate = SearchMove::Swap { from: inner, to: outer };
+		let quiet = crate::game::ActionOutcome {
+			action: crate::game::Action::Swap { from: inner, to: outer },
+			player: crate::game::Player::One,
+			removals: Vec::new(),
+			draws: 0,
+			log_line: String::new(),
+			emblem: crate::game::EmblemTrigger::default(),
+		};
+		assert!(!is_tactical(&game, rotate, &quiet, SearchConfig::enhanced()));
+		assert!(is_tactical(&game, rotate, &quiet, SearchConfig::exactplay()));
 	}
 
 	#[test]
@@ -552,6 +664,11 @@ mod tests {
 		let miss_mv = SearchMove::Add { kind: search_kind(miss), node: spawn };
 		let cfg = crate::ai::SearchConfig::enhanced();
 		assert!(cheap_order(&game, hit, cfg) > cheap_order(&game, miss_mv, cfg));
+		let exact = crate::ai::SearchConfig::exactplay();
+		assert!(
+			cheap_order(&game, hit, exact) - cheap_order(&game, miss_mv, exact)
+				> cheap_order(&game, hit, cfg) - cheap_order(&game, miss_mv, cfg)
+		);
 	}
 
 	#[test]

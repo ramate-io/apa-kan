@@ -209,6 +209,8 @@ impl GameConfig {
 		if cfg.setup.deck_seed.is_none() {
 			cfg.setup.deck_seed = Some(cfg.seed);
 		}
+		cfg.setup.p1_search = cfg.search;
+		cfg.setup.p2_search = cfg.search;
 		Ok(cfg)
 	}
 
@@ -477,8 +479,8 @@ pub fn usage() -> &'static str {
 	 Options:\n\
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay>\n\
-	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay>\n\
+	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest, playtest)\n\
 	   --bot-config <path.toml>                   Load a SearchConfig TOML (overlays missing keys with enhanced defaults)\n\
 	   --list-search-profiles                     Print named presets and their labels\n\
 	   --search <k=v,...>                         Overlay any knob: ordering, tt, lmr, pvs, q-depth, pw, puct,\n\
@@ -611,6 +613,11 @@ mod tests {
 		let cfg = GameConfig::parse(["--search-profile", "counterplay"]).unwrap();
 		assert_eq!(cfg.search, SearchConfig::counterplay());
 		assert_eq!(cfg.search.profile_name(), "counterplay");
+		let cfg = GameConfig::parse(["--search-profile", "exactplay"]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::exactplay());
+		assert_eq!(cfg.search.profile_name(), "exactplay");
+		assert_eq!(cfg.setup.p1_search, cfg.search);
+		assert_eq!(cfg.setup.p2_search, cfg.search);
 	}
 
 	#[test]

@@ -13,7 +13,7 @@ use rand::Rng;
 
 use crate::game::{Action, Game, Player, RuleSet};
 
-pub use eval::{evaluate, terminal_score, WIN};
+pub use eval::{evaluate, evaluate_with, terminal_score, WIN};
 pub use search_config::SearchConfig;
 pub use search_move::legal_search_moves;
 pub use zobrist::{hash as visible_hash, occupancy_hash};
