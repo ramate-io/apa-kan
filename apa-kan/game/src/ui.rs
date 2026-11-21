@@ -319,6 +319,7 @@ impl SetupSession {
 					self.cfg.pick,
 					self.cfg.limit,
 					self.cfg.deck_seed(self.seed) ^ 0x0707,
+					self.cfg.search_for(p),
 				);
 				self.pick7[p.index()] = indices_of(&self.decks[p.index()], &tiles);
 				self.selected.clear();
@@ -339,6 +340,7 @@ impl SetupSession {
 					self.cfg.pick,
 					self.cfg.limit,
 					self.cfg.deck_seed(self.seed) ^ 0xE4E4,
+					self.cfg.search_for(p),
 				);
 				self.extend[p.index()] = indices_of(&self.decks[p.index()], &tiles);
 				self.selected.clear();

@@ -11,6 +11,11 @@
 //!   tree reuse + solver (focused MCTS; extra PW / low PUCT lost strength)
 //! - `counterplay`: downweight sitting on center, score overwhelm-pressure on
 //!   the center holder under control_win, boost claims/threats, higher PUCT
+//! - `exactplay`: same search shape as `enhanced`, but the leaf match/mismatch
+//!   term is rescaled for live braid-only-exact (only braid matches score;
+//!   1-slot exact +1). Coordinate descent over the existing eval knobs did
+//!   not move this point. No extra qsearch, pick bonuses, or move-ordering
+//!   tactics. Missing TOML keys still take `enhanced` defaults.
 //!
 //! Overlay any field with `--search k=v,...`. Load a TOML file with `--bot-config`.
 
@@ -128,6 +133,13 @@ pub struct SearchConfig {
 	pub order_vacate_center: i32,
 	/// Penalty for vacating an overwhelmed center occupant (0 = no flee tax).
 	pub order_vacate_overwhelmed: i32,
+
+	/// Percent scale on the leaf `8 * (matches − mismatches)` term from
+	/// [`crate::game::Game::tile_score`] (100 = live enhanced). Under
+	/// braid-only-exact the match count is only fulfilled braids (1-slot
+	/// exact +1); this restores that scoring term against material/geometry
+	/// without adding new eval features. Clamped to 1..=400.
+	pub eval_margin_scale: i32,
 }
 
 impl SearchConfig {
@@ -178,6 +190,7 @@ impl SearchConfig {
 			order_center_threat: 0,
 			order_vacate_center: 1_200,
 			order_vacate_overwhelmed: 1_200,
+			eval_margin_scale: 100,
 		}
 	}
 
@@ -278,6 +291,21 @@ impl SearchConfig {
 		cfg
 	}
 
+	/// Live braid-only-exact scoring in the existing leaf: same tree as
+	/// `enhanced` (no extra qsearch, priors, or pick/move tactics). The
+	/// match/mismatch term is scaled up because only fulfilled braids add
+	/// to the match total (1-slot exact +1); non-braid matches occupy and
+	/// score 0 already via [`crate::game::Game::tile_score`].
+	///
+	/// Coordinate descent from this point (seed 7, 40-game neighbor
+	/// samples, promote if net W−L ≥ 4) did not move `eval_margin_scale`,
+	/// `eval_center_occ`, `eval_inner_ring`, or `eval_center_pressure`.
+	pub fn exactplay() -> Self {
+		let mut cfg = Self::enhanced();
+		cfg.eval_margin_scale = 200;
+		cfg
+	}
+
 	pub fn parse_profile(s: &str) -> Result<Self, String> {
 		match s.trim().to_ascii_lowercase().as_str() {
 			"enhanced" | "new" | "full" | "pruned" | "default" => Ok(Self::enhanced()),
@@ -288,8 +316,9 @@ impl SearchConfig {
 			"explorative" | "explore" | "curious" => Ok(Self::explorative()),
 			"deep_mcts" | "deep-mcts" | "deep" | "focused" => Ok(Self::deep_mcts()),
 			"counterplay" | "counter" | "contest" => Ok(Self::counterplay()),
+			"exactplay" | "exact" | "playtest" | "liveplay" => Ok(Self::exactplay()),
 			other => Err(format!(
-				"unknown --search-profile '{other}' (expected enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay)"
+				"unknown --search-profile '{other}' (expected enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay)"
 			)),
 		}
 	}
@@ -304,6 +333,7 @@ impl SearchConfig {
 			"explorative",
 			"deep_mcts",
 			"counterplay",
+			"exactplay",
 		]
 	}
 
@@ -326,6 +356,8 @@ impl SearchConfig {
 			"deep_mcts"
 		} else if core == Self::counterplay() {
 			"counterplay"
+		} else if core == Self::exactplay() {
+			"exactplay"
 		} else {
 			"custom"
 		}
@@ -464,6 +496,9 @@ impl SearchConfig {
 				"order-vacate-overwhelmed" | "order_vacate_overwhelmed" => {
 					self.order_vacate_overwhelmed = parse_i32(&key, val)?;
 				}
+				"eval-margin" | "eval_margin_scale" | "eval-margin-scale" | "margin-scale" => {
+					self.eval_margin_scale = parse_i32(&key, val)?;
+				}
 				other => {
 					return Err(format!(
 						"unknown --search key '{other}' (see --list-search-profiles)"
@@ -531,11 +566,16 @@ impl SearchConfig {
 			self.prior_temperature = 0.05;
 		}
 		self.playout_leaf_depth = self.playout_leaf_depth.min(4);
+		if self.eval_margin_scale <= 0 {
+			self.eval_margin_scale = 100;
+		} else {
+			self.eval_margin_scale = self.eval_margin_scale.clamp(1, 400);
+		}
 	}
 
 	pub fn label(self) -> String {
 		format!(
-			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={} eval_center={} eval_inner={} eval_pressure={} order_claim_c={} order_threat={}",
+			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={} eval_center={} eval_inner={} eval_pressure={} order_claim_c={} order_threat={} eval_margin={}",
 			self.profile_name(),
 			on_off(self.move_ordering),
 			on_off(self.transposition),
@@ -560,7 +600,8 @@ impl SearchConfig {
 			self.eval_inner_ring,
 			self.eval_center_pressure,
 			self.order_claim_center,
-			self.order_center_threat
+			self.order_center_threat,
+			self.eval_margin_scale
 		)
 	}
 }
@@ -680,6 +721,8 @@ mod tests {
 		let counter =
 			SearchConfig::parse_toml(include_str!("../../bots/counterplay.toml")).unwrap();
 		assert_eq!(counter, SearchConfig::counterplay());
+		let exact = SearchConfig::parse_toml(include_str!("../../bots/exactplay.toml")).unwrap();
+		assert_eq!(exact, SearchConfig::exactplay());
 	}
 
 	#[test]
@@ -722,5 +765,24 @@ mod tests {
 		assert!(cfg.mcts_transpositions && cfg.mcts_factored_moves && cfg.mcts_solver);
 		assert_eq!(cfg.playout_leaf_depth, 2);
 		assert_eq!(cfg.profile_name(), "custom");
+	}
+
+	#[test]
+	fn exactplay_profile_is_enhanced_plus_margin_scale() {
+		let cfg = SearchConfig::exactplay();
+		assert_eq!(cfg.profile_name(), "exactplay");
+		assert_eq!(cfg.eval_margin_scale, 200);
+		let mut enhanced = SearchConfig::enhanced();
+		assert_eq!(enhanced.eval_margin_scale, 100);
+		assert_eq!(cfg.q_depth, enhanced.q_depth);
+		assert!(!cfg.mcts_move_priors);
+		assert!(!cfg.prior_widening);
+		assert!(!cfg.mcts_solver);
+		enhanced.eval_margin_scale = 200;
+		assert_eq!(cfg, enhanced);
+		assert_eq!(SearchConfig::parse_profile("playtest").unwrap(), cfg);
+		let overlay = SearchConfig::enhanced().with_spec("eval-margin=250").unwrap();
+		assert_eq!(overlay.eval_margin_scale, 250);
+		assert_eq!(overlay.profile_name(), "custom");
 	}
 }

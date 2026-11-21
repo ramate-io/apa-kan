@@ -1,0 +1,6 @@
+name = "p1"
+description = "hillclimb p1"
+eval_margin_scale = 200
+eval_center_occ = 120
+eval_inner_ring = 55
+eval_center_pressure = 0

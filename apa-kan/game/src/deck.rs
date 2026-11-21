@@ -3,7 +3,7 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use crate::ai::{evaluate, SearchLimit};
+use crate::ai::{evaluate_with, SearchConfig, SearchLimit};
 use crate::game::{
 	base_color_weights, sample_tile_from_rules, sample_tile_from_rules_with_colors, BraidScoring,
 	EmblemWeights, Game, Player, RingType, RuleSet, Tile, BAG_SIZE, MAX_COLOR_RINGS,
@@ -266,7 +266,7 @@ impl PickStrategy {
 }
 
 /// Match-level deck generation and picking (not in-game RuleSet).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SetupConfig {
 	/// RNG seed for collection sampling. `None` uses the game seed.
 	pub deck_seed: Option<u64>,
@@ -281,6 +281,11 @@ pub struct SetupConfig {
 	/// P2 collection bias. When this differs from [`Self::p1_deck`], the
 	/// collections are generated independently even if `identical_bags`.
 	pub p2_deck: DeckArchetype,
+	/// Per-seat leaf eval used by search-pick rollouts. Defaults to
+	/// [`SearchConfig::enhanced`]. Heuristic/greedy pick ignore this
+	/// (no pick-phase bonuses).
+	pub p1_search: SearchConfig,
+	pub p2_search: SearchConfig,
 }
 
 impl Default for SetupConfig {
@@ -292,6 +297,8 @@ impl Default for SetupConfig {
 			limit: SearchLimit::calibrated(),
 			p1_deck: DeckArchetype::Mixed,
 			p2_deck: DeckArchetype::Mixed,
+			p1_search: SearchConfig::enhanced(),
+			p2_search: SearchConfig::enhanced(),
 		}
 	}
 }
@@ -325,6 +332,13 @@ impl SetupConfig {
 
 	pub fn deck_seed(self, game_seed: u64) -> u64 {
 		self.deck_seed.unwrap_or(game_seed)
+	}
+
+	pub fn search_for(self, player: Player) -> SearchConfig {
+		match player {
+			Player::One => self.p1_search,
+			Player::Two => self.p2_search,
+		}
 	}
 }
 
@@ -1054,6 +1068,7 @@ fn rollout_bonus(
 	rules: RuleSet,
 	seed: u64,
 	iters: u32,
+	config: SearchConfig,
 ) -> i32 {
 	if iters == 0 {
 		return 0;
@@ -1087,7 +1102,7 @@ fn rollout_bonus(
 				break;
 			}
 		}
-		sum += evaluate(&game, Player::One, 0);
+		sum += evaluate_with(&game, Player::One, 0, config);
 	}
 	sum / (iters.max(1) as i32)
 }
@@ -1106,6 +1121,7 @@ pub fn pick_from_pool(
 	strategy: PickStrategy,
 	limit: SearchLimit,
 	seed: u64,
+	config: SearchConfig,
 ) -> Vec<Tile> {
 	let braid_scoring = rules.braid_scoring;
 	let mut idx =
@@ -1117,7 +1133,7 @@ pub fn pick_from_pool(
 			let mut trial = prefix.to_vec();
 			trial.extend(combo_tiles(pool, &best));
 			set_score(&trial, opponent, braid_scoring)
-				+ rollout_bonus(&trial, opponent, player, *rules, seed, iters)
+				+ rollout_bonus(&trial, opponent, player, *rules, seed, iters, config)
 		};
 		let n = pool.len();
 		let k = idx.len();
@@ -1141,7 +1157,15 @@ pub fn pick_from_pool(
 					continue;
 				}
 				let sc = set_score(&trial, opponent, braid_scoring)
-					+ rollout_bonus(&trial, opponent, player, *rules, seed ^ cand as u64, iters);
+					+ rollout_bonus(
+						&trial,
+						opponent,
+						player,
+						*rules,
+						seed ^ cand as u64,
+						iters,
+						config,
+					);
 				if sc > best_s || (sc == best_s && trial_idx < best) {
 					best = trial_idx;
 					best_s = sc;
@@ -1191,6 +1215,7 @@ pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) 
 			setup.pick,
 			setup.limit,
 			seed ^ 0x0707,
+			setup.search_for(p),
 		);
 	}
 	let mut extend_picks = [Vec::new(), Vec::new()];
@@ -1212,6 +1237,7 @@ pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) 
 			setup.pick,
 			setup.limit,
 			seed ^ 0xE4E4,
+			setup.search_for(p),
 		);
 	}
 	SetupRecord {

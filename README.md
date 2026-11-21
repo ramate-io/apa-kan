@@ -96,7 +96,7 @@ Playtest (human vs greedy, live defaults, no extra flags):
 cargo run --no-default-features -p apa-kan
 ```
 
-With a desktop window: `nix develop && cargo run -p apa-kan`. Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`. Setup: pick 7, both reveal, then 4 from reserves (cap 6 rings of each non-normal type; a 1-slot braid uses 1 of 6). In play: pink rings are SWAP partners and only appear when you select a **1-ring normal**. A 1-slot braid is a single weave ring. Non-braid matches still paint as matches; they score 0.
+With a desktop window: `nix develop && cargo run -p apa-kan`. Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`. Live search is `--search-profile enhanced`. `--search-profile exactplay` is the same tree with `eval_margin_scale=200` (hillclimbed vs enhanced; [`exactplay`](apa-kan/game/benchmark_results/exactplay/)). Setup: pick 7, both reveal, then 4 from reserves (cap 6 rings of each non-normal type; a 1-slot braid uses 1 of 6). In play: pink rings are SWAP partners and only appear when you select a **1-ring normal**. A 1-slot braid is a single weave ring. Non-braid matches still paint as matches; they score 0.
 
 Deck scenarios (see [`apa-kan/game/scenarios/`](apa-kan/game/scenarios/)): `--scenario same` is the default mirrored generative 27-tile collection; `--scenario independent` samples each player's collection separately; `--scenario complementary` gives P1 green+orange and P2 blue+orange (18 one-ring tiles each, same dots order; weight is ring count; 11-tile bench + 7 reserves); `--scenario complementary-swapped` flips the exclusive colors. Tiles may list `colors = ["green", "teal"]` for multiple normal rings.
 

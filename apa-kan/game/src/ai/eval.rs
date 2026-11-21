@@ -225,7 +225,7 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 				+ 6 * i32::from(tile.dots)
 				+ 10 * i32::from(tile.emblem.cost())); // +1 emblems; Rosette is −1
 		if let Some((matches, mismatches)) = game.tile_score(node) {
-			margin += sign * 8 * (matches - mismatches);
+			margin += sign * 8 * (matches - mismatches) * config.eval_margin_scale / 100;
 			if mismatches >= matches - 1 {
 				at_risk += sign;
 			}
@@ -1043,5 +1043,52 @@ mod tests {
 			counter_delta > enhanced_delta + 200,
 			"counterplay should value pressuring the center holder more (enhanced_delta={enhanced_delta} counter_delta={counter_delta})"
 		);
+	}
+
+	#[test]
+	fn exactplay_scales_the_braid_only_match_mismatch_term() {
+		use crate::game::{BraidScoring, RingType, TileColor};
+		let mut rules = RuleSet::default();
+		rules.center_hold_win = false;
+		rules.control_win = false;
+		rules.petal_majority_win = false;
+		rules.braid_scoring = BraidScoring::BraidOnlyExact;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring()[0];
+		let center = game.board().center();
+		let braid =
+			game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Braid)], 1, 1);
+		let cover = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Blue, RingType::Normal),
+				(TileColor::Green, RingType::Normal),
+			],
+			1,
+			3,
+		);
+		game.place_tile(inner, braid);
+		game.place_tile(center, cover);
+		game.pad_above_low_value();
+		assert_eq!(game.edge_score(braid, cover), (1, 0));
+		let (p1_m, p1_x) = game.tile_score(inner).expect("p1 scores");
+		let (p2_m, p2_x) = game.tile_score(center).expect("p2 scores");
+		let net = (p1_m - p1_x) - (p2_m - p2_x);
+		assert_ne!(net, 0, "unequal weights so the leaf margin is not a wash");
+		let enhanced = SearchConfig::enhanced();
+		let exact = SearchConfig::exactplay();
+		assert_eq!(enhanced.eval_margin_scale, 100);
+		assert_eq!(exact.eval_margin_scale, 200);
+		let e = evaluate_with(&game, Player::One, 0, enhanced);
+		let x = evaluate_with(&game, Player::One, 0, exact);
+		assert_ne!(
+			x, e,
+			"eval_margin_scale must move the leaf when net tile_score is nonzero (enhanced={e} exactplay={x} net={net})"
+		);
+		assert_eq!((x - e).signum(), net.signum());
+		let mut doubled = enhanced;
+		doubled.eval_margin_scale = 200;
+		assert_eq!(evaluate_with(&game, Player::One, 0, doubled), x);
 	}
 }
