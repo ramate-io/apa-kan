@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Shallow exactplay vs counterplay package on live RuleSet defaults.
+# Shallow eval-only exactplay vs counterplay package on live RuleSet defaults.
+# exactplay = enhanced search tree + eval_margin_scale=200 (no pick/qsearch/order tactics).
 #
 # Usage:
 #   run_h2h.sh all          # self-play + both H2H seats
