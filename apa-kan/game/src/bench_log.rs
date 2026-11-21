@@ -2413,6 +2413,17 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_exactplay_shallow_replays() {
+		for rel in [
+			"benchmark_results/exactplay/h2h_self.jsonl.gz",
+			"benchmark_results/exactplay/h2h_exact_as_p1.jsonl.gz",
+			"benchmark_results/exactplay/h2h_exact_as_p2.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
 	fn committed_center_link_once_shallow_replays() {
 		for rel in [
 			"benchmark_results/center_link_once/h2h_431_add_bom.jsonl.gz",
