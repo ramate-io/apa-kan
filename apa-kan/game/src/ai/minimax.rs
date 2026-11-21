@@ -189,7 +189,13 @@ pub fn search(
 		}
 		ctx.abort = false;
 		let mut ordered = legal.clone();
-		order_root(&mut ctx, game, &mut ordered, Some(best_move));
+		if ctx.config.move_ordering {
+			order_root(&mut ctx, game, &mut ordered, Some(best_move));
+		} else {
+			for i in (1..ordered.len()).rev() {
+				ordered.swap(i, rng.gen_range(0..=i));
+			}
+		}
 		let mut alpha = -WIN;
 		let beta = WIN;
 		let mut best = -WIN - 1;
