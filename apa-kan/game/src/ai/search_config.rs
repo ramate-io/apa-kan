@@ -13,7 +13,8 @@
 //!   the center holder under control_win, boost claims/threats, higher PUCT
 //! - `exactplay`: same search shape as `enhanced`, but the leaf match/mismatch
 //!   term is rescaled for live braid-only-exact (only braid matches score;
-//!   1-slot exact +1). No extra qsearch, pick bonuses, or move-ordering
+//!   1-slot exact +1). Coordinate descent over the existing eval knobs did
+//!   not move this point. No extra qsearch, pick bonuses, or move-ordering
 //!   tactics. Missing TOML keys still take `enhanced` defaults.
 //!
 //! Overlay any field with `--search k=v,...`. Load a TOML file with `--bot-config`.
@@ -295,6 +296,10 @@ impl SearchConfig {
 	/// match/mismatch term is scaled up because only fulfilled braids add
 	/// to the match total (1-slot exact +1); non-braid matches occupy and
 	/// score 0 already via [`crate::game::Game::tile_score`].
+	///
+	/// Coordinate descent from this point (seed 7, 40-game neighbor
+	/// samples, promote if net W−L ≥ 4) did not move `eval_margin_scale`,
+	/// `eval_center_occ`, `eval_inner_ring`, or `eval_center_pressure`.
 	pub fn exactplay() -> Self {
 		let mut cfg = Self::enhanced();
 		cfg.eval_margin_scale = 200;
