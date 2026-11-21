@@ -4,7 +4,8 @@
 //! Optional levers ([`SearchConfig`]): progressive widening, heuristic vs
 //! uniform cut-off playouts, move priors + prior-ordered widening, tree
 //! reuse, transposition-aware stats, factored ADDs, 1–2 ply leaf search,
-//! MCTS-solver, and root-parallel independent trees.
+//! MCTS-solver, Dirichlet root noise (`mcts_root_noise`), and
+//! root-parallel independent trees.
 //!
 //! Root-parallel seeding: worker `t` uses `StdRng::seed_from_u64(base ^
 //! (t+1).wrapping_mul(GOLDEN))` where `base` is drawn once from the caller's
@@ -75,12 +76,15 @@ pub struct MctsTree {
 	nodes: Vec<Node>,
 	root: usize,
 	transpo: HashMap<u64, Transpo>,
+	/// Dirichlet sample `η` over current root children (node index → weight).
+	/// Resampled at the start of each search and whenever the child set grows.
+	root_eta: HashMap<usize, f64>,
 }
 
 impl MctsTree {
 	fn new_with(game: &Game, last_move: Option<SearchMove>, config: SearchConfig) -> Self {
 		let root = make_root_with(game, last_move, None, config);
-		Self { nodes: vec![root], root: 0, transpo: HashMap::new() }
+		Self { nodes: vec![root], root: 0, transpo: HashMap::new(), root_eta: HashMap::new() }
 	}
 
 	fn sync(&mut self, game: &Game, last_move: Option<SearchMove>, config: SearchConfig) {
@@ -327,6 +331,7 @@ fn run_iterations(
 	config: SearchConfig,
 	legal: &[SearchMove],
 ) -> (u32, Vec<SearchMove>) {
+	tree.root_eta.clear();
 	let mut iterations = 0u32;
 	let mut snaps: Vec<SearchMove> = Vec::new();
 	const MAX_ITERS: u32 = 8_000;
@@ -690,6 +695,9 @@ fn iterate(
 			break;
 		}
 		if !tree.nodes[idx].children.is_empty() && !should_expand(&tree.nodes[idx], config) {
+			if idx == tree.root && config.mcts_root_noise > 0.0 {
+				ensure_root_dirichlet(tree, rng, config);
+			}
 			let next = puct_child(tree, idx, config, &path);
 			if let Some(edge) = tree.nodes[next].action {
 				if let Edge::Real(mv) = edge {
@@ -935,6 +943,70 @@ fn child_vis_q(tree: &MctsTree, idx: usize, config: SearchConfig) -> (f64, f64) 
 	(vis, q)
 }
 
+/// Gamma(α, 1) via Marsaglia–Tsang (α≥1) and the α<1 reduction.
+fn sample_gamma(rng: &mut impl Rng, alpha: f64) -> f64 {
+	let a = alpha.max(1e-6);
+	if a < 1.0 {
+		let u: f64 = rng.gen::<f64>().max(1e-12);
+		return sample_gamma(rng, a + 1.0) * u.powf(1.0 / a);
+	}
+	let d = a - 1.0 / 3.0;
+	let c = 1.0 / (9.0 * d).sqrt();
+	loop {
+		let u1: f64 = rng.gen::<f64>().max(1e-12);
+		let u2: f64 = rng.gen::<f64>();
+		let x = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+		let v = (1.0 + c * x).powi(3);
+		if v <= 0.0 {
+			continue;
+		}
+		let u: f64 = rng.gen::<f64>().max(1e-12);
+		if u < 1.0 - 0.0331 * x.powi(4) {
+			return d * v;
+		}
+		if u.ln() < 0.5 * x * x + d * (1.0 - v + v.ln()) {
+			return d * v;
+		}
+	}
+}
+
+fn sample_dirichlet(rng: &mut impl Rng, alpha: f64, n: usize) -> Vec<f64> {
+	if n == 0 {
+		return Vec::new();
+	}
+	let mut g: Vec<f64> = (0..n).map(|_| sample_gamma(rng, alpha).max(1e-12)).collect();
+	let s: f64 = g.iter().sum();
+	if s <= 0.0 {
+		let u = 1.0 / n as f64;
+		return vec![u; n];
+	}
+	for x in &mut g {
+		*x /= s;
+	}
+	g
+}
+
+fn ensure_root_dirichlet(tree: &mut MctsTree, rng: &mut impl Rng, config: SearchConfig) {
+	if config.mcts_root_noise <= 0.0 {
+		return;
+	}
+	let children = tree.nodes[tree.root].children.clone();
+	if children.is_empty() {
+		return;
+	}
+	if tree.root_eta.len() == children.len()
+		&& children.iter().all(|c| tree.root_eta.contains_key(c))
+	{
+		return;
+	}
+	let alpha = f64::from(config.mcts_root_dirichlet_alpha).max(0.01);
+	let weights = sample_dirichlet(rng, alpha, children.len());
+	tree.root_eta.clear();
+	for (&c, w) in children.iter().zip(weights.iter()) {
+		tree.root_eta.insert(c, *w);
+	}
+}
+
 fn puct_child(tree: &MctsTree, idx: usize, config: SearchConfig, path: &[usize]) -> usize {
 	let chooser = tree.nodes[idx].to_move;
 	let children = &tree.nodes[idx].children;
@@ -983,7 +1055,12 @@ fn puct_child(tree: &MctsTree, idx: usize, config: SearchConfig, path: &[usize])
 		let (rv, rn) = rave_q(n, n.action);
 		let beta = if vis + rn <= 0.0 { 0.0 } else { rn / (vis + rn + 4.0 * vis * rn / rave_eq) };
 		let mixed = (1.0 - beta) * q + beta * rv;
-		let p = n.prior.max(0.05) / prior_sum;
+		let mut p = n.prior.max(0.05) / prior_sum;
+		if idx == tree.root && config.mcts_root_noise > 0.0 {
+			let eps = f64::from(config.mcts_root_noise).clamp(0.0, 1.0);
+			let eta = tree.root_eta.get(&c).copied().unwrap_or(0.0);
+			p = (1.0 - eps) * p + eps * eta;
+		}
 		let u = c_puct * p * parent_n.sqrt() / (1.0 + vis);
 		let score = mixed + u;
 		if score > best {
@@ -1544,5 +1621,32 @@ mod tests {
 		assert!(st.root_eff_branch >= 1.0);
 		assert!(st.root_top1_share > 0.0 && st.root_top1_share <= 1.0 + 1e-3);
 		assert!(st.root_entropy >= 0.0);
+	}
+
+	#[test]
+	fn dirichlet_samples_are_a_simplex() {
+		let mut rng = StdRng::seed_from_u64(11);
+		let p = sample_dirichlet(&mut rng, 0.3, 8);
+		assert_eq!(p.len(), 8);
+		let s: f64 = p.iter().sum();
+		assert!((s - 1.0).abs() < 1e-9, "sum={s}");
+		assert!(p.iter().all(|&x| x > 0.0));
+	}
+
+	#[test]
+	fn root_noise_search_returns_a_legal_move() {
+		let game = Game::new(RuleSet::default(), 9);
+		let mut cfg = SearchConfig::exactplay();
+		cfg.mcts_root_noise = 0.25;
+		cfg.mcts_root_dirichlet_alpha = 0.3;
+		cfg.puct = 8.0;
+		cfg.move_ordering = false;
+		cfg.mcts_untried_random = 1.0;
+		let mut rng = StdRng::seed_from_u64(9);
+		let mut tree = None;
+		let (action, stats) =
+			search(&mut tree, &game, &[], None, &mut rng, SearchLimit::work(200, 48), cfg);
+		assert_ne!(action, Action::Pass);
+		assert!(stats.iterations > 0);
 	}
 }
