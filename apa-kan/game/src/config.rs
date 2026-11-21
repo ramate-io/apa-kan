@@ -484,7 +484,8 @@ pub fn usage() -> &'static str {
 	   --bot-config <path.toml>                   Load a SearchConfig TOML (overlays missing keys with enhanced defaults)\n\
 	   --list-search-profiles                     Print named presets and their labels\n\
 	   --search <k=v,...>                         Overlay any knob: ordering, tt, lmr, pvs, q-depth, pw, puct,\n\
-	                                              priors, pw-order, reuse, mcts-tt, factored, leaf, solver, threads, ...\n\
+	                                              priors, pw-order, reuse, mcts-tt, factored, leaf, solver, threads,\n\
+	                                              eval-margin, ...\n\
 	   --search-threads <1..32>                   MCTS root-parallel trees (default: 1; 1 keeps benches deterministic)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\

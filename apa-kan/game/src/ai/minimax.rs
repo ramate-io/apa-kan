@@ -200,7 +200,7 @@ pub fn search(
 				completed = false;
 				break;
 			}
-			let Some((mut child, capture)) = child_pos(game, mv, ctx.config) else {
+			let Some((mut child, capture)) = child_pos(game, mv) else {
 				continue;
 			};
 			ctx.path.push(zobrist::hash(&child));
@@ -276,7 +276,7 @@ fn value_at_depth(game: &Game, depth: u8, played: &[u64], config: SearchConfig) 
 	let beta = WIN;
 	let mut best = -WIN - 1;
 	for (i, &mv) in ordered.iter().enumerate() {
-		let Some((mut child, capture)) = child_pos(game, mv, ctx.config) else {
+		let Some((mut child, capture)) = child_pos(game, mv) else {
 			continue;
 		};
 		ctx.path.push(zobrist::hash(&child));
@@ -311,10 +311,10 @@ fn value_at_depth(game: &Game, depth: u8, played: &[u64], config: SearchConfig) 
 	}
 }
 
-fn child_pos(game: &Game, mv: SearchMove, config: SearchConfig) -> Option<(Game, bool)> {
+fn child_pos(game: &Game, mv: SearchMove) -> Option<(Game, bool)> {
 	let mut child = game.clone();
 	let out = apply_move(&mut child, mv).ok()?;
-	let cap = is_tactical(game, mv, &out, config);
+	let cap = is_tactical(game, mv, &out);
 	Some((child, cap))
 }
 
@@ -400,7 +400,7 @@ fn negamax(
 		if ctx.exhausted() {
 			break;
 		}
-		let Some((mut child, capture)) = child_pos(game, mv, ctx.config) else {
+		let Some((mut child, capture)) = child_pos(game, mv) else {
 			continue;
 		};
 		ctx.path.push(zobrist::hash(&child));
@@ -565,17 +565,13 @@ fn quiesce(
 		let Ok(out) = apply_move(&mut child, mv) else {
 			continue;
 		};
-		if !is_tactical(game, mv, &out, ctx.config) {
+		if !is_tactical(game, mv, &out) {
 			continue;
 		}
 		let mut gain = out.removals.iter().filter(|r| r.tile.owner != me).count() as i32;
 		if matches!(mv, SearchMove::Swap { from, to } if from == game.board().center() || to == game.board().center())
 		{
 			gain = gain.saturating_add(2);
-		} else if matches!(mv, SearchMove::Swap { .. }) {
-			gain = gain.saturating_add(1);
-		} else if matches!(mv, SearchMove::Move { .. } | SearchMove::Add { .. }) {
-			gain = gain.saturating_add(1);
 		}
 		captures.push((gain, mv, child));
 	}

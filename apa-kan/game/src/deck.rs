@@ -281,8 +281,9 @@ pub struct SetupConfig {
 	/// P2 collection bias. When this differs from [`Self::p1_deck`], the
 	/// collections are generated independently even if `identical_bags`.
 	pub p2_deck: DeckArchetype,
-	/// Per-seat pick personality (`pick_single_braid` and friends). Defaults
-	/// to [`SearchConfig::enhanced`] (all pick knobs 0).
+	/// Per-seat leaf eval used by search-pick rollouts. Defaults to
+	/// [`SearchConfig::enhanced`]. Heuristic/greedy pick ignore this
+	/// (no pick-phase bonuses).
 	pub p1_search: SearchConfig,
 	pub p2_search: SearchConfig,
 }
@@ -670,7 +671,7 @@ fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3], u8, u8) {
 	t.collection_kind()
 }
 
-fn tile_score(tile: Tile, config: SearchConfig) -> i32 {
+fn tile_score(tile: Tile) -> i32 {
 	let mut s = 24 * i32::from(tile.weight) + 8 * i32::from(tile.dots);
 	s += 6 * i32::from(tile.normal_ring_count());
 	s += 4 * i32::from(tile.zag_ring_count());
@@ -698,25 +699,11 @@ fn tile_score(tile: Tile, config: SearchConfig) -> i32 {
 			_ => 2,
 		};
 	}
-	if tile.n_rings == 1 {
-		s += config.pick_one_ring;
-	}
-	if tile.is_single_braid() {
-		s += config.pick_single_braid;
-	}
-	if tile.is_single_normal() {
-		s += config.pick_single_normal;
-	}
 	s
 }
 
-fn set_score(
-	tiles: &[Tile],
-	opponent: &[Tile],
-	braid_scoring: BraidScoring,
-	config: SearchConfig,
-) -> i32 {
-	let mut s: i32 = tiles.iter().map(|t| tile_score(*t, config)).sum();
+fn set_score(tiles: &[Tile], opponent: &[Tile], braid_scoring: BraidScoring) -> i32 {
+	let mut s: i32 = tiles.iter().map(|t| tile_score(*t)).sum();
 	let mut colors = [false; 6];
 	let mut dots = [false; 4];
 	for t in tiles {
@@ -747,7 +734,6 @@ fn set_score(
 			s -= 50;
 		}
 	}
-	s += set_role_bonus(tiles, config);
 	if !opponent.is_empty() {
 		for &mine in tiles {
 			for &opp in opponent {
@@ -775,22 +761,6 @@ fn set_score(
 	s
 }
 
-/// Set-level bonus so the first 1-slot braid / 1-ring normal is worth
-/// keeping even when a 3-ring outscores it on raw `tile_score`. Extra
-/// copies are worth half, capped at two extras.
-fn set_role_bonus(tiles: &[Tile], config: SearchConfig) -> i32 {
-	let n_b = tiles.iter().filter(|t| t.is_single_braid()).count() as i32;
-	let n_n = tiles.iter().filter(|t| t.is_single_normal()).count() as i32;
-	let taper = |n: i32, unit: i32| {
-		if n <= 0 || unit == 0 {
-			0
-		} else {
-			unit + unit * (n - 1).min(2) / 2
-		}
-	};
-	taper(n_b, config.pick_single_braid) + taper(n_n, config.pick_single_normal)
-}
-
 fn combo_tiles(pool: &[Tile], idx: &[usize]) -> Vec<Tile> {
 	idx.iter().map(|&i| pool[i]).collect()
 }
@@ -814,15 +784,14 @@ fn greedy_indices(
 	k: usize,
 	prefix: &[Tile],
 	need_extend: usize,
-	config: SearchConfig,
 ) -> Option<Vec<usize>> {
 	if k == 0 {
 		return Some(Vec::new());
 	}
 	let mut order: Vec<usize> = (0..pool.len()).collect();
 	order.sort_by(|a, b| {
-		tile_score(pool[*b], config)
-			.cmp(&tile_score(pool[*a], config))
+		tile_score(pool[*b])
+			.cmp(&tile_score(pool[*a]))
 			.then_with(|| kind_key(pool[*a]).cmp(&kind_key(pool[*b])))
 			.then_with(|| a.cmp(b))
 	});
@@ -956,7 +925,6 @@ fn best_enumerated(
 	need_extend: usize,
 	max_combos: u64,
 	braid_scoring: BraidScoring,
-	config: SearchConfig,
 ) -> Option<Vec<usize>> {
 	let n = pool.len();
 	if enumerate_limit(n, k) > max_combos {
@@ -981,7 +949,7 @@ fn best_enumerated(
 				return true;
 			}
 		}
-		let score = set_score(&trial, opponent, braid_scoring, config);
+		let score = set_score(&trial, opponent, braid_scoring);
 		let cand = idx.to_vec();
 		match &best {
 			None => best = Some((score, cand)),
@@ -1004,7 +972,6 @@ fn hill_climb(
 	need_extend: usize,
 	nodes: u64,
 	braid_scoring: BraidScoring,
-	config: SearchConfig,
 ) -> Vec<usize> {
 	let n = pool.len();
 	let mut best = start;
@@ -1012,7 +979,7 @@ fn hill_climb(
 	let score_of = |idx: &[usize]| {
 		let mut trial = prefix.to_vec();
 		trial.extend(combo_tiles(pool, idx));
-		set_score(&trial, opponent, braid_scoring, config)
+		set_score(&trial, opponent, braid_scoring)
 	};
 	let legal = |idx: &[usize]| {
 		let mut trial = prefix.to_vec();
@@ -1074,32 +1041,24 @@ fn pick_indices(
 	strategy: PickStrategy,
 	limit: SearchLimit,
 	braid_scoring: BraidScoring,
-	config: SearchConfig,
 ) -> Vec<usize> {
 	if k == 0 || pool.is_empty() {
 		return Vec::new();
 	}
 	let k = k.min(pool.len());
 	let nodes = work_nodes(limit);
-	if let Some(idx) = best_enumerated(
-		pool,
-		k,
-		prefix,
-		opponent,
-		need_extend,
-		nodes.max(8_000),
-		braid_scoring,
-		config,
-	) {
+	if let Some(idx) =
+		best_enumerated(pool, k, prefix, opponent, need_extend, nodes.max(8_000), braid_scoring)
+	{
 		return idx;
 	}
-	let greedy = greedy_indices(pool, k, prefix, need_extend, config)
+	let greedy = greedy_indices(pool, k, prefix, need_extend)
 		.or_else(|| find_legal_subset(pool, k))
 		.unwrap_or_else(|| (0..k).collect());
 	if strategy == PickStrategy::Greedy {
 		return greedy;
 	}
-	hill_climb(pool, greedy, k, prefix, opponent, need_extend, nodes, braid_scoring, config)
+	hill_climb(pool, greedy, k, prefix, opponent, need_extend, nodes, braid_scoring)
 }
 
 fn rollout_bonus(
@@ -1165,24 +1124,15 @@ pub fn pick_from_pool(
 	config: SearchConfig,
 ) -> Vec<Tile> {
 	let braid_scoring = rules.braid_scoring;
-	let mut idx = pick_indices(
-		pool,
-		k,
-		prefix,
-		opponent,
-		need_extend,
-		strategy,
-		limit,
-		braid_scoring,
-		config,
-	);
+	let mut idx =
+		pick_indices(pool, k, prefix, opponent, need_extend, strategy, limit, braid_scoring);
 	if strategy == PickStrategy::Search && k > 0 && !idx.is_empty() {
 		let iters = work_iters(limit);
 		let mut best = idx.clone();
 		let mut best_s = {
 			let mut trial = prefix.to_vec();
 			trial.extend(combo_tiles(pool, &best));
-			set_score(&trial, opponent, braid_scoring, config)
+			set_score(&trial, opponent, braid_scoring)
 				+ rollout_bonus(&trial, opponent, player, *rules, seed, iters, config)
 		};
 		let n = pool.len();
@@ -1206,7 +1156,7 @@ pub fn pick_from_pool(
 				if !respects_type_cap(&trial) {
 					continue;
 				}
-				let sc = set_score(&trial, opponent, braid_scoring, config)
+				let sc = set_score(&trial, opponent, braid_scoring)
 					+ rollout_bonus(
 						&trial,
 						opponent,
@@ -1464,14 +1414,13 @@ mod tests {
 			.collect();
 		let all_tri: Vec<Tile> =
 			(0..11).map(|i| normal_tile(i + 41, TileColor::ALL[i as usize % 6])).collect();
-		let enhanced = SearchConfig::enhanced();
 		assert!(
-			set_score(&mixed, &[], BraidScoring::Current, enhanced)
-				> set_score(&all_dot, &[], BraidScoring::Current, enhanced)
+			set_score(&mixed, &[], BraidScoring::Current)
+				> set_score(&all_dot, &[], BraidScoring::Current)
 		);
 		assert!(
-			set_score(&mixed, &[], BraidScoring::Current, enhanced)
-				> set_score(&all_tri, &[], BraidScoring::Current, enhanced)
+			set_score(&mixed, &[], BraidScoring::Current)
+				> set_score(&all_tri, &[], BraidScoring::Current)
 		);
 	}
 
@@ -1703,69 +1652,5 @@ mod tests {
 		assert_eq!(rose.cost(), rose.n_rings.saturating_sub(1));
 		let wall = rec.decks[0].iter().find(|t| t.emblem.is_blocker()).unwrap();
 		assert_eq!(wall.cost(), wall.n_rings + 1);
-	}
-
-	#[test]
-	fn exactplay_pick_keeps_a_single_braid_that_enhanced_dumps() {
-		use crate::game::RingType;
-		let single =
-			Tile::with_typed_rings(1, Player::One, &[(TileColor::Orange, RingType::Braid)], 1, 1);
-		assert!(single.is_single_braid());
-		let heavies: Vec<Tile> = (0..10)
-			.map(|i| {
-				Tile::with_typed_rings(
-					10 + i,
-					Player::One,
-					&[
-						(TileColor::ALL[i as usize % 6], RingType::Normal),
-						(TileColor::ALL[(i as usize + 1) % 6], RingType::Normal),
-						(TileColor::ALL[(i as usize + 2) % 6], RingType::Normal),
-					],
-					3,
-					1,
-				)
-			})
-			.collect();
-		let mut pool = vec![single];
-		pool.extend(heavies);
-		let rules = RuleSet::default();
-		let enhanced = pick_from_pool(
-			&pool,
-			7,
-			&[],
-			&[],
-			4,
-			Player::One,
-			&rules,
-			PickStrategy::Heuristic,
-			SearchLimit::work(256, 2),
-			1,
-			SearchConfig::enhanced(),
-		);
-		let exact = pick_from_pool(
-			&pool,
-			7,
-			&[],
-			&[],
-			4,
-			Player::One,
-			&rules,
-			PickStrategy::Heuristic,
-			SearchLimit::work(256, 2),
-			1,
-			SearchConfig::exactplay(),
-		);
-		assert!(
-			!enhanced.iter().any(|t| t.is_single_braid()),
-			"enhanced pick still dumps the 1-slot braid"
-		);
-		assert!(
-			exact.iter().any(|t| t.is_single_braid()),
-			"exactplay pick should keep the 1-slot braid"
-		);
-		assert!(
-			tile_score(single, SearchConfig::exactplay())
-				> tile_score(single, SearchConfig::enhanced()) + 40
-		);
 	}
 }

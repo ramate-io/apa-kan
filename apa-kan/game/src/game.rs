@@ -1522,16 +1522,6 @@ impl Tile {
 			.count() as u8
 	}
 
-	/// 1-ring lone braid (the exact-match +1 piece under braid-only-exact).
-	pub fn is_single_braid(self) -> bool {
-		self.n_rings == 1 && self.braid_ring_count() == 1
-	}
-
-	/// 1-ring normal (the only SWAP initiator under [`SwapMode::NormalOnly`]).
-	pub fn is_single_normal(self) -> bool {
-		self.n_rings == 1 && self.normal_ring_count() == 1
-	}
-
 	/// Piece value under `weights`: `dots * w.dots + normal_rings * w.normal_ring
 	/// + zag_rings * w.zag_ring + braid_rings * w.braid_ring + bead_rings *
 	/// w.bead_ring + emblem_cost * w.emblem`. Used by the low-value end

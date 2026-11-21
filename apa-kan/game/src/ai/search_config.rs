@@ -11,9 +11,10 @@
 //!   tree reuse + solver (focused MCTS; extra PW / low PUCT lost strength)
 //! - `counterplay`: downweight sitting on center, score overwhelm-pressure on
 //!   the center holder under control_win, boost claims/threats, higher PUCT
-//! - `exactplay`: retune counterplay for live braid-only-exact + double-count
-//!   (single-braid / swap-normal pick, occupy-block eval, swap/braid qsearch,
-//!   focused MCTS priors). Missing TOML keys still take `enhanced` defaults.
+//! - `exactplay`: same search shape as `enhanced`, but the leaf match/mismatch
+//!   term is rescaled for live braid-only-exact (only braid matches score;
+//!   1-slot exact +1). No extra qsearch, pick bonuses, or move-ordering
+//!   tactics. Missing TOML keys still take `enhanced` defaults.
 //!
 //! Overlay any field with `--search k=v,...`. Load a TOML file with `--bot-config`.
 
@@ -132,55 +133,12 @@ pub struct SearchConfig {
 	/// Penalty for vacating an overwhelmed center occupant (0 = no flee tax).
 	pub order_vacate_overwhelmed: i32,
 
-	/// Extra eval per fulfilled braid slot (signed by the braid owner).
-	/// 0 = live `tile_score` margin only.
-	pub eval_braid_fulfill: i32,
-	/// Extra eval when a non-braid channel occupies (paints a match) under
-	/// braid-only scoring, where that channel does not add to the match total.
-	/// Signed for the occupant: occupying protects our tile, protects theirs.
-	pub eval_occupy_block: i32,
-	/// Extra mismatch tax on center + inner-ring tiles, percent of
-	/// `8 * mismatches` (100 = one extra margin-scale tax). 0 = none.
-	pub eval_mismatch_control: i32,
-	/// Extra points per control-set node we hold closer to `control_need`
-	/// than the opponent. 0 = race_score's existing 240/−280 only.
-	pub eval_control_race: i32,
-	/// Extra value folded into each local-claim overwhelmed tile
-	/// (`48 + 10*weight + this`). 0 = current claimable term.
-	pub eval_claim: i32,
-	/// Extra points per usable budget token (added to the existing 90).
-	pub eval_budget: i32,
-	/// Bonus for a 1-slot braid on the board; doubled when it touches center.
-	pub eval_single_braid: i32,
-	/// Bonus for a 1-ring normal (the only SWAP initiator under normal-only).
-	pub eval_swap_piece: i32,
-	/// Bonus for a clean (non-mutual) threat to pop the opponent's center
-	/// via overwhelm, a 1-slot exact braid hit, or a legal SWAP onto it.
-	pub eval_clean_pop: i32,
-
-	/// Treat every SWAP as a qsearch tactic, not only center SWAPs.
-	pub q_include_swaps: bool,
-	/// Treat a 1-slot exact-match braid ADD/MOVE as a qsearch tactic even
-	/// when the landing does not yet remove a tile.
-	pub q_include_braid_hits: bool,
-
-	/// Extra `cheap_order` for SWAP (on top of the center-kick bonuses).
-	pub order_swap: i32,
-	/// Extra `cheap_order` for a 1-slot braid ADD/MOVE that exact-matches.
-	pub order_single_braid: i32,
-	/// Extra `cheap_order` for CLAIM (any node; `order_claim_center` still
-	/// stacks on center/inner).
-	pub order_claim: i32,
-	/// Penalty for a zero-budget MOVE that does not threaten or seize the
-	/// center (late-game inner-ring walking).
-	pub order_zero_budget_walk: i32,
-
-	/// Tile-pick: extra `tile_score` for a 1-slot braid.
-	pub pick_single_braid: i32,
-	/// Tile-pick: extra `tile_score` for a 1-ring normal.
-	pub pick_single_normal: i32,
-	/// Tile-pick: extra `tile_score` for any 1-ring tile (stacks).
-	pub pick_one_ring: i32,
+	/// Percent scale on the leaf `8 * (matches − mismatches)` term from
+	/// [`crate::game::Game::tile_score`] (100 = live enhanced). Under
+	/// braid-only-exact the match count is only fulfilled braids (1-slot
+	/// exact +1); this restores that scoring term against material/geometry
+	/// without adding new eval features. Clamped to 1..=400.
+	pub eval_margin_scale: i32,
 }
 
 impl SearchConfig {
@@ -231,24 +189,7 @@ impl SearchConfig {
 			order_center_threat: 0,
 			order_vacate_center: 1_200,
 			order_vacate_overwhelmed: 1_200,
-			eval_braid_fulfill: 0,
-			eval_occupy_block: 0,
-			eval_mismatch_control: 0,
-			eval_control_race: 0,
-			eval_claim: 0,
-			eval_budget: 0,
-			eval_single_braid: 0,
-			eval_swap_piece: 0,
-			eval_clean_pop: 0,
-			q_include_swaps: false,
-			q_include_braid_hits: false,
-			order_swap: 0,
-			order_single_braid: 0,
-			order_claim: 0,
-			order_zero_budget_walk: 0,
-			pick_single_braid: 0,
-			pick_single_normal: 0,
-			pick_one_ring: 0,
+			eval_margin_scale: 100,
 		}
 	}
 
@@ -349,44 +290,14 @@ impl SearchConfig {
 		cfg
 	}
 
-	/// Live playtest rules: braid-only-exact, double-count center links,
-	/// 1-slot braids, normal-only SWAP. Keeps counterplay's center/inner
-	/// reweight, then values exact braid hits, occupy-without-score, the
-	/// race to 5 of 9, CLAIM, and 1-ring roles; extends qsearch; focuses
-	/// MCTS with move-ordering priors so a shallow work budget spends
-	/// visits on pops instead of sitting.
+	/// Live braid-only-exact scoring in the existing leaf: same tree as
+	/// `enhanced` (no extra qsearch, priors, or pick/move tactics). The
+	/// match/mismatch term is scaled up because only fulfilled braids add
+	/// to the match total (1-slot exact +1); non-braid matches occupy and
+	/// score 0 already via [`crate::game::Game::tile_score`].
 	pub fn exactplay() -> Self {
-		let mut cfg = Self::counterplay();
-		cfg.eval_center_occ = 50;
-		cfg.eval_inner_ring = 90;
-		cfg.eval_center_pressure = 120;
-		cfg.eval_braid_fulfill = 14;
-		cfg.eval_occupy_block = 8;
-		cfg.eval_mismatch_control = 80;
-		cfg.eval_control_race = 80;
-		cfg.eval_claim = 36;
-		cfg.eval_budget = 50;
-		cfg.eval_single_braid = 40;
-		cfg.eval_swap_piece = 28;
-		cfg.eval_clean_pop = 220;
-		cfg.q_depth = 6;
-		cfg.q_include_swaps = true;
-		cfg.q_include_braid_hits = true;
-		cfg.order_swap = 500;
-		cfg.order_single_braid = 90;
-		cfg.order_claim = 240;
-		cfg.order_claim_center = 6_000;
-		cfg.order_center_threat = 4_500;
-		cfg.order_zero_budget_walk = 180;
-		cfg.pick_single_braid = 48;
-		cfg.pick_single_normal = 32;
-		cfg.pick_one_ring = 10;
-		cfg.mcts_move_priors = true;
-		cfg.prior_temperature = 1.25;
-		cfg.prior_widening = true;
-		cfg.mcts_untried_random = 0.1;
-		cfg.mcts_solver = true;
-		cfg.puct = 1.7;
+		let mut cfg = Self::enhanced();
+		cfg.eval_margin_scale = 200;
 		cfg
 	}
 
@@ -580,50 +491,9 @@ impl SearchConfig {
 				"order-vacate-overwhelmed" | "order_vacate_overwhelmed" => {
 					self.order_vacate_overwhelmed = parse_i32(&key, val)?;
 				}
-				"eval-braid" | "eval_braid_fulfill" | "eval-braid-fulfill" => {
-					self.eval_braid_fulfill = parse_i32(&key, val)?;
+				"eval-margin" | "eval_margin_scale" | "eval-margin-scale" | "margin-scale" => {
+					self.eval_margin_scale = parse_i32(&key, val)?;
 				}
-				"eval-occupy" | "eval_occupy_block" | "eval-occupy-block" => {
-					self.eval_occupy_block = parse_i32(&key, val)?;
-				}
-				"eval-mismatch-control" | "eval_mismatch_control" => {
-					self.eval_mismatch_control = parse_i32(&key, val)?;
-				}
-				"eval-control-race" | "eval_control_race" => {
-					self.eval_control_race = parse_i32(&key, val)?;
-				}
-				"eval-claim" | "eval_claim" => self.eval_claim = parse_i32(&key, val)?,
-				"eval-budget" | "eval_budget" => self.eval_budget = parse_i32(&key, val)?,
-				"eval-single-braid" | "eval_single_braid" => {
-					self.eval_single_braid = parse_i32(&key, val)?;
-				}
-				"eval-swap-piece" | "eval_swap_piece" => {
-					self.eval_swap_piece = parse_i32(&key, val)?;
-				}
-				"eval-clean-pop" | "eval_clean_pop" => {
-					self.eval_clean_pop = parse_i32(&key, val)?;
-				}
-				"q-swaps" | "q_include_swaps" | "q-include-swaps" => {
-					self.q_include_swaps = parse_on_off(&key, val)?;
-				}
-				"q-braid" | "q_include_braid_hits" | "q-include-braid-hits" => {
-					self.q_include_braid_hits = parse_on_off(&key, val)?;
-				}
-				"order-swap" | "order_swap" => self.order_swap = parse_i32(&key, val)?,
-				"order-single-braid" | "order_single_braid" => {
-					self.order_single_braid = parse_i32(&key, val)?;
-				}
-				"order-claim" | "order_claim" => self.order_claim = parse_i32(&key, val)?,
-				"order-zero-budget" | "order_zero_budget_walk" | "order-zero-budget-walk" => {
-					self.order_zero_budget_walk = parse_i32(&key, val)?;
-				}
-				"pick-single-braid" | "pick_single_braid" => {
-					self.pick_single_braid = parse_i32(&key, val)?;
-				}
-				"pick-single-normal" | "pick_single_normal" => {
-					self.pick_single_normal = parse_i32(&key, val)?;
-				}
-				"pick-one-ring" | "pick_one_ring" => self.pick_one_ring = parse_i32(&key, val)?,
 				other => {
 					return Err(format!(
 						"unknown --search key '{other}' (see --list-search-profiles)"
@@ -691,11 +561,16 @@ impl SearchConfig {
 			self.prior_temperature = 0.05;
 		}
 		self.playout_leaf_depth = self.playout_leaf_depth.min(4);
+		if self.eval_margin_scale <= 0 {
+			self.eval_margin_scale = 100;
+		} else {
+			self.eval_margin_scale = self.eval_margin_scale.clamp(1, 400);
+		}
 	}
 
 	pub fn label(self) -> String {
 		format!(
-			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={} eval_center={} eval_inner={} eval_pressure={} order_claim_c={} order_threat={} braid={} occupy={} pick_1b={} q_swaps={}",
+			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={} eval_center={} eval_inner={} eval_pressure={} order_claim_c={} order_threat={} eval_margin={}",
 			self.profile_name(),
 			on_off(self.move_ordering),
 			on_off(self.transposition),
@@ -721,10 +596,7 @@ impl SearchConfig {
 			self.eval_center_pressure,
 			self.order_claim_center,
 			self.order_center_threat,
-			self.eval_braid_fulfill,
-			self.eval_occupy_block,
-			self.pick_single_braid,
-			on_off(self.q_include_swaps)
+			self.eval_margin_scale
 		)
 	}
 }
@@ -891,25 +763,21 @@ mod tests {
 	}
 
 	#[test]
-	fn exactplay_profile_retunes_pick_eval_and_qsearch() {
+	fn exactplay_profile_is_enhanced_plus_margin_scale() {
 		let cfg = SearchConfig::exactplay();
 		assert_eq!(cfg.profile_name(), "exactplay");
-		assert_eq!(cfg.eval_center_occ, 50);
-		assert_eq!(cfg.eval_inner_ring, 90);
-		assert_eq!(cfg.eval_center_pressure, 120);
-		assert_eq!(cfg.eval_braid_fulfill, 14);
-		assert_eq!(cfg.eval_occupy_block, 8);
-		assert_eq!(cfg.pick_single_braid, 48);
-		assert_eq!(cfg.pick_single_normal, 32);
-		assert!(cfg.q_include_swaps && cfg.q_include_braid_hits);
-		assert!(cfg.mcts_move_priors && cfg.prior_widening && cfg.mcts_solver);
+		assert_eq!(cfg.eval_margin_scale, 200);
+		let mut enhanced = SearchConfig::enhanced();
+		assert_eq!(enhanced.eval_margin_scale, 100);
+		assert_eq!(cfg.q_depth, enhanced.q_depth);
+		assert!(!cfg.mcts_move_priors);
+		assert!(!cfg.prior_widening);
+		assert!(!cfg.mcts_solver);
+		enhanced.eval_margin_scale = 200;
+		assert_eq!(cfg, enhanced);
 		assert_eq!(SearchConfig::parse_profile("playtest").unwrap(), cfg);
-		let overlay = SearchConfig::counterplay()
-			.with_spec("pick-single-braid=48,q-swaps=on,eval-braid=14")
-			.unwrap();
-		assert_eq!(overlay.pick_single_braid, 48);
-		assert!(overlay.q_include_swaps);
-		assert_eq!(overlay.eval_braid_fulfill, 14);
+		let overlay = SearchConfig::enhanced().with_spec("eval-margin=250").unwrap();
+		assert_eq!(overlay.eval_margin_scale, 250);
 		assert_eq!(overlay.profile_name(), "custom");
 	}
 }

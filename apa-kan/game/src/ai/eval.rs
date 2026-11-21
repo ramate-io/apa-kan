@@ -217,11 +217,6 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 	let center = board.center();
 
 	let mut contact_pairs = 0i32;
-	let mut braid_fulfill = 0i32;
-	let mut occupy_block = 0i32;
-	let mut role_bonus = 0i32;
-	let braid_scoring = game.rules().braid_scoring;
-	let only_braid = braid_scoring.only_braid_match();
 	for (node, tile) in game.tiles() {
 		let sign = if tile.owner == me { 1 } else { -1 };
 		material += sign
@@ -230,34 +225,10 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 				+ 6 * i32::from(tile.dots)
 				+ 10 * i32::from(tile.emblem.cost())); // +1 emblems; Rosette is −1
 		if let Some((matches, mismatches)) = game.tile_score(node) {
-			margin += sign * 8 * (matches - mismatches);
+			margin += sign * 8 * (matches - mismatches) * config.eval_margin_scale / 100;
 			if mismatches >= matches - 1 {
 				at_risk += sign;
 			}
-			if config.eval_mismatch_control != 0
-				&& (node == center || board.inner_ring().contains(&node))
-			{
-				margin -= sign * mismatches * 8 * config.eval_mismatch_control / 100;
-			}
-		}
-		if config.eval_braid_fulfill != 0
-			|| config.eval_occupy_block != 0
-			|| config.eval_single_braid != 0
-			|| config.eval_swap_piece != 0
-		{
-			personality_tile(
-				game,
-				node,
-				tile,
-				sign,
-				center,
-				only_braid,
-				braid_scoring,
-				config,
-				&mut braid_fulfill,
-				&mut occupy_block,
-				&mut role_bonus,
-			);
 		}
 		let mut enemy_nbs = 0i32;
 		for &nb in board.neighbors(node) {
@@ -335,7 +306,7 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 	}
 	bench_score += capture_mix_score(game, me) - capture_mix_score(game, opp);
 	// Usable budget only (min(tokens, remaining deck)); surplus tokens are not ADD permission.
-	let budget = (90 + config.eval_budget) * (game.budget(me) as i32 - game.budget(opp) as i32);
+	let budget = 90 * (game.budget(me) as i32 - game.budget(opp) as i32);
 	let presence = 32 * (my_board - opp_board);
 	let mobility = 4 * (mobility_of(game, me) - mobility_of(game, opp));
 
@@ -343,7 +314,7 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 	if game.rules().capture_mode.is_local_claim() {
 		for node in game.overwhelmed_nodes() {
 			if let Some(tile) = game.tile_at(node) {
-				let v = 48 + 10 * i32::from(tile.weight) + config.eval_claim;
+				let v = 48 + 10 * i32::from(tile.weight);
 				if tile.owner == me {
 					claimable -= v;
 				} else {
@@ -362,13 +333,9 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 			+ spawn_control
 			+ mobility
 			+ claimable
-			+ braid_fulfill
-			+ occupy_block
-			+ role_bonus
 			- 22 * at_risk;
 
 	score += race_score(game, me, opp, config);
-	score += clean_pop_score(game, me, opp, config);
 
 	if contact_pairs == 0 && my_board > 0 && opp_board > 0 {
 		score -= 70 * (material + presence).signum();
@@ -454,17 +421,6 @@ fn race_score(game: &Game, me: Player, opp: Player, config: SearchConfig) -> i32
 		let my_ctl = i32::from(game.control_count(me));
 		let opp_ctl = i32::from(game.control_count(opp));
 		s += 240 * my_ctl - 280 * opp_ctl;
-		if config.eval_control_race != 0 {
-			s += config.eval_control_race * (my_ctl.min(need) - opp_ctl.min(need));
-			let gap_me = (need - my_ctl).max(0);
-			let gap_opp = (need - opp_ctl).max(0);
-			if gap_opp == 1 {
-				s -= config.eval_control_race * 2;
-			}
-			if gap_me == 1 {
-				s += config.eval_control_race;
-			}
-		}
 		s += (WIN / 4) * i32::from(game.control_hold(me)) / n;
 		s -= (WIN / 3) * i32::from(game.control_hold(opp)) / n;
 		if my_ctl >= need {
@@ -526,107 +482,6 @@ fn race_score(game: &Game, me: Player, opp: Player, config: SearchConfig) -> i32
 		}
 	}
 	s
-}
-
-fn personality_tile(
-	game: &Game,
-	node: crate::board::NodeId,
-	tile: crate::game::Tile,
-	sign: i32,
-	center: crate::board::NodeId,
-	only_braid: bool,
-	braid_scoring: crate::game::BraidScoring,
-	config: SearchConfig,
-	braid_fulfill: &mut i32,
-	occupy_block: &mut i32,
-	role_bonus: &mut i32,
-) {
-	let touches_center =
-		node == center || game.board().incident_others(node).any(|nb| nb == center);
-	if config.eval_single_braid != 0 && tile.is_single_braid() {
-		let mut v = config.eval_single_braid;
-		if touches_center {
-			v += config.eval_single_braid;
-		}
-		*role_bonus += sign * v;
-	}
-	if config.eval_swap_piece != 0 && tile.is_single_normal() {
-		let mut v = config.eval_swap_piece;
-		if touches_center {
-			v += config.eval_swap_piece / 2;
-		}
-		*role_bonus += sign * v;
-	}
-	if config.eval_braid_fulfill == 0 && config.eval_occupy_block == 0 {
-		return;
-	}
-	for nb in scoring_nbs(game, node) {
-		let Some(other) = game.tile_at(nb) else {
-			continue;
-		};
-		if config.eval_braid_fulfill != 0 {
-			if let Some(slots) = tile.braid_fulfilled_by_with(other, braid_scoring) {
-				*braid_fulfill += sign * config.eval_braid_fulfill * i32::from(slots);
-			}
-		}
-		if config.eval_occupy_block != 0 && only_braid && sign > 0 {
-			let ch = game.edge_channels(tile, other);
-			let occupy = ch.normal_match + ch.bead_match;
-			if occupy > 0 {
-				*occupy_block += config.eval_occupy_block * occupy;
-			}
-		}
-	}
-}
-
-fn scoring_nbs(game: &Game, node: crate::board::NodeId) -> Vec<crate::board::NodeId> {
-	if game.rules().score_unique_neighbors {
-		game.board().neighbors(node).to_vec()
-	} else {
-		game.board().incident_others(node).collect()
-	}
-}
-
-fn clean_pop_score(game: &Game, me: Player, opp: Player, config: SearchConfig) -> i32 {
-	if config.eval_clean_pop == 0 {
-		return 0;
-	}
-	let center = game.board().center();
-	let Some(occ) = game.tile_at(center) else {
-		return 0;
-	};
-	let threatened = center_clean_threat(game, if occ.owner == me { opp } else { me }, occ);
-	if !threatened {
-		return 0;
-	}
-	if occ.owner == opp {
-		config.eval_clean_pop
-	} else {
-		-config.eval_clean_pop
-	}
-}
-
-fn center_clean_threat(game: &Game, attacker: Player, occ: crate::game::Tile) -> bool {
-	let center = game.board().center();
-	if game.is_overwhelmed(center) {
-		return true;
-	}
-	let scoring = game.rules().braid_scoring;
-	for nb in game.board().incident_others(center) {
-		let Some(tile) = game.tile_at(nb) else {
-			continue;
-		};
-		if tile.owner != attacker {
-			continue;
-		}
-		if tile.is_single_braid() && tile.braid_fulfilled_by_with(occ, scoring).is_some() {
-			return true;
-		}
-		if game.rules().swap_mode.allows_initiator(tile) {
-			return true;
-		}
-	}
-	false
 }
 
 fn can_reach_center(game: &Game, player: Player) -> bool {
@@ -1191,66 +1046,49 @@ mod tests {
 	}
 
 	#[test]
-	fn exactplay_values_a_single_braid_on_the_inner_ring() {
-		use crate::game::{RingType, TileColor};
-		let mut rules = RuleSet::default();
-		rules.center_hold_win = false;
-		rules.control_win = true;
-		let mut bare = Game::empty(rules);
-		let mut braid = Game::empty(rules);
-		let inner = bare.board().inner_ring()[0];
-		let spawn = bare.board().spawns()[0];
-		let p2s = bare.board().spawns()[4];
-		let occ = bare.alloc_tile(Player::Two, TileColor::Orange, 2, 1);
-		bare.place_tile(p2s, occ);
-		braid.place_tile(p2s, occ);
-		let normal = bare.alloc_tile(Player::One, TileColor::Green, 1, 1);
-		bare.place_tile(spawn, normal);
-		let hit = crate::game::Tile::with_typed_rings(
-			braid.alloc_tile(Player::One, TileColor::Orange, 1, 1).id,
-			Player::One,
-			&[(TileColor::Orange, RingType::Braid)],
-			1,
-			1,
-		);
-		braid.place_tile(inner, hit);
-		bare.pad_above_low_value();
-		braid.pad_above_low_value();
-		let enhanced = SearchConfig::enhanced();
-		let exact = SearchConfig::exactplay();
-		let e_delta = evaluate_with(&braid, Player::One, 0, enhanced)
-			- evaluate_with(&bare, Player::One, 0, enhanced);
-		let x_delta = evaluate_with(&braid, Player::One, 0, exact)
-			- evaluate_with(&bare, Player::One, 0, exact);
-		assert!(
-			x_delta > e_delta + 30,
-			"exactplay should value a 1-slot braid on the inner ring more (enhanced_delta={e_delta} exact_delta={x_delta})"
-		);
-	}
-
-	#[test]
-	fn exactplay_values_occupy_without_score_on_our_tile() {
-		use crate::game::{BraidScoring, TileColor};
+	fn exactplay_scales_the_braid_only_match_mismatch_term() {
+		use crate::game::{BraidScoring, RingType, TileColor};
 		let mut rules = RuleSet::default();
 		rules.center_hold_win = false;
 		rules.control_win = false;
+		rules.petal_majority_win = false;
 		rules.braid_scoring = BraidScoring::BraidOnlyExact;
-		let mut occupy = Game::empty(rules);
-		let a = occupy.board().spawns()[0];
-		let b = *occupy.board().neighbors(a).first().expect("spawn neighbor");
-		let mine = occupy.alloc_tile(Player::One, TileColor::Green, 2, 1);
-		let enemy = occupy.alloc_tile(Player::Two, TileColor::Green, 2, 1);
-		occupy.place_tile(a, mine);
-		occupy.place_tile(b, enemy);
-		occupy.pad_above_low_value();
-		let enhanced = SearchConfig::enhanced();
-		let mut occupy_cfg = enhanced;
-		occupy_cfg.eval_occupy_block = 8;
-		let base = evaluate_with(&occupy, Player::One, 0, enhanced);
-		let with = evaluate_with(&occupy, Player::One, 0, occupy_cfg);
-		assert!(
-			with > base,
-			"occupy-block should raise eval when a non-braid match occupies (base={base} with={with})"
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring()[0];
+		let center = game.board().center();
+		let braid =
+			game.alloc_typed_rings(Player::One, &[(TileColor::Orange, RingType::Braid)], 1, 1);
+		let cover = game.alloc_typed_rings(
+			Player::Two,
+			&[
+				(TileColor::Orange, RingType::Normal),
+				(TileColor::Blue, RingType::Normal),
+				(TileColor::Green, RingType::Normal),
+			],
+			1,
+			3,
 		);
+		game.place_tile(inner, braid);
+		game.place_tile(center, cover);
+		game.pad_above_low_value();
+		assert_eq!(game.edge_score(braid, cover), (1, 0));
+		let (p1_m, p1_x) = game.tile_score(inner).expect("p1 scores");
+		let (p2_m, p2_x) = game.tile_score(center).expect("p2 scores");
+		let net = (p1_m - p1_x) - (p2_m - p2_x);
+		assert_ne!(net, 0, "unequal weights so the leaf margin is not a wash");
+		let enhanced = SearchConfig::enhanced();
+		let exact = SearchConfig::exactplay();
+		assert_eq!(enhanced.eval_margin_scale, 100);
+		assert_eq!(exact.eval_margin_scale, 200);
+		let e = evaluate_with(&game, Player::One, 0, enhanced);
+		let x = evaluate_with(&game, Player::One, 0, exact);
+		assert_ne!(
+			x, e,
+			"eval_margin_scale must move the leaf when net tile_score is nonzero (enhanced={e} exactplay={x} net={net})"
+		);
+		assert_eq!((x - e).signum(), net.signum());
+		let mut doubled = enhanced;
+		doubled.eval_margin_scale = 200;
+		assert_eq!(evaluate_with(&game, Player::One, 0, doubled), x);
 	}
 }

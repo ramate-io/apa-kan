@@ -1,40 +1,8 @@
-# Exact-play personality for live braid-only-exact + double-count rules.
-# Built on counterplay: contest the 9-node control set, then value 1-slot
-# exact braids and 1-ring swap-normals in pick and eval, occupy-without-score
-# blocking, CLAIM, clean center pops, swap/braid qsearch, and focused MCTS
-# priors. Missing keys take the `enhanced` defaults (LMR/PVS/qsearch on).
+# Exact-play personality: same search tree as `enhanced`, with the leaf
+# match/mismatch term scaled for live braid-only-exact scoring (only
+# fulfilled braids add to the match total; 1-slot exact +1). Missing keys
+# take the `enhanced` defaults. No pick bonuses, extra qsearch, or
+# move-ordering tactics.
 name = "exactplay"
-description = "Braid-only-exact center contest"
-eval_center_occ = 50
-eval_inner_ring = 90
-eval_center_pressure = 120
-eval_braid_fulfill = 14
-eval_occupy_block = 8
-eval_mismatch_control = 80
-eval_control_race = 80
-eval_claim = 36
-eval_budget = 50
-eval_single_braid = 40
-eval_swap_piece = 28
-eval_clean_pop = 220
-order_center_bonus = 4000
-order_claim_center = 6000
-order_center_threat = 4500
-order_vacate_center = 800
-order_vacate_overwhelmed = 0
-q_depth = 6
-q_include_swaps = true
-q_include_braid_hits = true
-order_swap = 500
-order_single_braid = 90
-order_claim = 240
-order_zero_budget_walk = 180
-pick_single_braid = 48
-pick_single_normal = 32
-pick_one_ring = 10
-mcts_move_priors = true
-prior_temperature = 1.25
-prior_widening = true
-mcts_untried_random = 0.1
-mcts_solver = true
-puct = 1.7
+description = "Braid-only-exact leaf margin scale"
+eval_margin_scale = 200

@@ -79,7 +79,7 @@ fn usage() -> &'static str {
 	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced defaults)\n\
 	   --list-search-profiles    Print named presets and their labels\n\
 	   --search <k=v,...>   Overlay any knob (ordering, tt, lmr, pvs, q-depth, pw, puct, priors,\n\
-	                        pw-order, reuse, mcts-tt, factored, leaf, solver, threads, ...)\n\
+	                        pw-order, reuse, mcts-tt, factored, leaf, solver, threads, eval-margin, ...)\n\
 	   --p1-search-profile / --p2-search-profile  Per-seat profile (default: --search-profile)\n\
 	   --p1-bot-config / --p2-bot-config          Per-seat TOML profile\n\
 	   --p1-search / --p2-search                  Per-seat overlay\n\
