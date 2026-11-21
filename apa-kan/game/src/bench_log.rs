@@ -1177,6 +1177,15 @@ pub struct GameLog {
 	pub budget_nodes: Option<u64>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub budget_iters: Option<u32>,
+	/// In-game work budget for P1 when it differs from search-pick (`budget_*`).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub p1_budget_nodes: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub p1_budget_iters: Option<u32>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub p2_budget_nodes: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub p2_budget_iters: Option<u32>,
 	pub scenario: String,
 	pub rules: RulesLog,
 	pub opening: OpeningLog,
@@ -1252,6 +1261,10 @@ impl GameLog {
 			think_ms,
 			budget_nodes: None,
 			budget_iters: None,
+			p1_budget_nodes: None,
+			p1_budget_iters: None,
+			p2_budget_nodes: None,
+			p2_budget_iters: None,
 			scenario: scenario.into(),
 			rules: RulesLog::from_rules(*live.rules()),
 			opening: OpeningLog::from_game(live),
@@ -2428,6 +2441,18 @@ mod tests {
 			"benchmark_results/exactplay/h2h_counter_vs_enh_p2.jsonl.gz",
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 50);
+		}
+	}
+
+	#[test]
+	fn committed_exactplay_deep_replays() {
+		for rel in [
+			"benchmark_results/exactplay/h2h_deep4x_self.jsonl.gz",
+			"benchmark_results/exactplay/h2h_deep4x_vs_light_p1.jsonl.gz",
+			"benchmark_results/exactplay/h2h_deep4x_vs_light_p2.jsonl.gz",
+			"benchmark_results/exactplay/h2h_deep8x_self.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 10);
 		}
 	}
 

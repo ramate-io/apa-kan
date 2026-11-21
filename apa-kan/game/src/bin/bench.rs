@@ -55,6 +55,10 @@ struct BenchConfig {
 	search: SearchConfig,
 	p1_search: Option<SearchConfig>,
 	p2_search: Option<SearchConfig>,
+	/// In-game work budget for P1 (default: `--budget`). Search-pick stays on `limit`.
+	p1_limit: Option<SearchLimit>,
+	/// In-game work budget for P2 (default: `--budget`).
+	p2_limit: Option<SearchLimit>,
 	/// Opening/midgame depth table for each search lever, then exit.
 	ablate: bool,
 	/// Time a handful of positions trying to complete this minimax ID depth.
@@ -71,6 +75,9 @@ fn usage() -> &'static str {
 	   --budget <spec>      Work budget: nodes:N,iters:M (default: calibrated 1000 ms)\n\
 	                        nodes caps minimax nodes/move; iters caps MCTS iterations/move.\n\
 	                        Pass `calibrated` for the documented 1000 ms single-thread means.\n\
+	                        Also used for search-pick. Per-seat in-game overrides: --p1-budget / --p2-budget.\n\
+	   --p1-budget / --p2-budget <spec>  Per-seat in-game work budget (default: --budget).\n\
+	                        Search-pick still uses --budget so mixed-depth H2H keeps the same draft.\n\
 	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
 	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
 	                        Each search stays single-threaded unless --search-threads > 1.\n\
@@ -132,9 +139,12 @@ where
 	let mut games_log_set = false;
 	let mut think_ms_set = false;
 	let mut budget_set = false;
+	let mut seat_budget_set = false;
 	let mut think = Duration::from_millis(1000);
 	let mut budget_nodes = CALIBRATED_NODES_PER_MOVE;
 	let mut budget_iters = CALIBRATED_ITERS_PER_MOVE;
+	let mut p1_budget_spec: Option<(Option<u64>, Option<u32>)> = None;
+	let mut p2_budget_spec: Option<(Option<u64>, Option<u32>)> = None;
 	let mut cfg = BenchConfig {
 		games: 6,
 		limit: SearchLimit::calibrated(),
@@ -156,6 +166,8 @@ where
 		search: SearchConfig::enhanced(),
 		p1_search: None,
 		p2_search: None,
+		p1_limit: None,
+		p2_limit: None,
 		ablate: false,
 		ply_probe: None,
 		same_deck: false,
@@ -188,6 +200,14 @@ where
 				if let Some(i) = iters {
 					budget_iters = i;
 				}
+			}
+			"--p1-budget" => {
+				seat_budget_set = true;
+				p1_budget_spec = Some(parse_budget(&need("--p1-budget", it.next())?)?);
+			}
+			"--p2-budget" => {
+				seat_budget_set = true;
+				p2_budget_spec = Some(parse_budget(&need("--p2-budget", it.next())?)?);
 			}
 			"--jobs" => {
 				let n = parse_u64("--jobs", &need("--jobs", it.next())?)?;
@@ -340,6 +360,9 @@ where
 	if think_ms_set && budget_set {
 		return Err("use either --think-ms or --budget, not both".into());
 	}
+	if think_ms_set && seat_budget_set {
+		return Err("use either --think-ms or --p1-budget/--p2-budget, not both".into());
+	}
 	if cfg.calibrate && budget_set {
 		return Err("--calibrate measures wall-clock --think-ms; do not pass --budget".into());
 	}
@@ -348,6 +371,8 @@ where
 	} else {
 		SearchLimit::work(budget_nodes, budget_iters)
 	};
+	cfg.p1_limit = overlay_work_limit(cfg.limit, p1_budget_spec)?;
+	cfg.p2_limit = overlay_work_limit(cfg.limit, p2_budget_spec)?;
 	cfg.setup.limit = cfg.limit;
 	if cfg.same_deck {
 		cfg.rules.identical_bags = true;
@@ -364,6 +389,27 @@ where
 
 fn default_jobs() -> usize {
 	std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+fn overlay_work_limit(
+	base: SearchLimit,
+	spec: Option<(Option<u64>, Option<u32>)>,
+) -> Result<Option<SearchLimit>, String> {
+	let Some((nodes, iters)) = spec else {
+		return Ok(None);
+	};
+	let SearchLimit::Work { nodes: bn, iters: bi } = base else {
+		return Err("--p1-budget/--p2-budget require a work --budget (not --think-ms)".into());
+	};
+	Ok(Some(SearchLimit::work(nodes.unwrap_or(bn), iters.unwrap_or(bi))))
+}
+
+fn seat_limit(cfg: &BenchConfig, p1: bool) -> SearchLimit {
+	if p1 {
+		cfg.p1_limit.unwrap_or(cfg.limit)
+	} else {
+		cfg.p2_limit.unwrap_or(cfg.limit)
+	}
 }
 
 fn parse_budget(spec: &str) -> Result<(Option<u64>, Option<u32>), String> {
@@ -662,6 +708,16 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, true).label(),
 		seat_search(&cfg, false).label()
 	));
+	let p1_lim = seat_limit(&cfg, true);
+	let p2_lim = seat_limit(&cfg, false);
+	if p1_lim != cfg.limit || p2_lim != cfg.limit {
+		lines.push(format!(
+			"# in_game_budget  p1={}  p2={}  pick={}",
+			p1_lim.label(),
+			p2_lim.label(),
+			cfg.limit.label()
+		));
+	}
 	lines.push(format!(
 		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
@@ -759,10 +815,11 @@ fn run(cfg: BenchConfig) {
 		cfg.limit.label()
 	);
 	let scenario = cfg.scenario.clone();
-	let limit = cfg.limit;
 	let setup = cfg.setup;
 	let p1_search = seat_search(&cfg, true);
 	let p2_search = seat_search(&cfg, false);
+	let p1_limit = seat_limit(&cfg, true);
+	let p2_limit = seat_limit(&cfg, false);
 	let outs = run_parallel(cfg.jobs, jobs, |job| {
 		let mut job_setup = setup;
 		job_setup.p1_deck = job.p1_deck;
@@ -774,7 +831,8 @@ fn run(cfg: BenchConfig) {
 			job.seed,
 			job.p1,
 			job.p2,
-			limit,
+			p1_limit,
+			p2_limit,
 			job.want_record,
 			keep_log,
 			scenario.as_ref(),
@@ -2011,7 +2069,8 @@ fn play_game(
 	seed: u64,
 	p1: Actor,
 	p2: Actor,
-	limit: SearchLimit,
+	p1_limit: SearchLimit,
+	p2_limit: SearchLimit,
 	keep_record: bool,
 	keep_log: bool,
 	scenario: Option<&Scenario>,
@@ -2064,12 +2123,20 @@ fn play_game(
 			String::new(),
 			p1.name(),
 			p2.name(),
-			limit.think_ms(),
+			p1_limit.think_ms(),
 			scenario.map(|s| s.name.as_str()).unwrap_or("default"),
 			&game,
 		);
-		log.budget_nodes = limit.nodes();
-		log.budget_iters = limit.iters();
+		log.budget_nodes = setup.limit.nodes();
+		log.budget_iters = setup.limit.iters();
+		if p1_limit != setup.limit {
+			log.p1_budget_nodes = p1_limit.nodes();
+			log.p1_budget_iters = p1_limit.iters();
+		}
+		if p2_limit != setup.limit {
+			log.p2_budget_nodes = p2_limit.nodes();
+			log.p2_budget_iters = p2_limit.iters();
+		}
 		log.p1_search = p1_search.label();
 		log.p2_search = p2_search.label();
 		log
@@ -2147,7 +2214,11 @@ fn play_game(
 			Player::One => &mut s1,
 			Player::Two => &mut s2,
 		};
-		let action = searcher.choose_with(&game, actor, &mut rng, limit);
+		let seat_limit = match game.current_player() {
+			Player::One => p1_limit,
+			Player::Two => p2_limit,
+		};
+		let action = searcher.choose_with(&game, actor, &mut rng, seat_limit);
 		let piece = bench_log::piece_for_action(&game, action);
 		let partner = bench_log::partner_for_action(&game, action);
 		let st = searcher.stats();
@@ -2294,7 +2365,7 @@ fn play_game(
 			p1,
 			p2,
 			seed,
-			limit,
+			limit: p1_limit,
 			lines: record_lines,
 			status: game.status(),
 			turns: game.turn_count(),
@@ -2897,6 +2968,40 @@ mod tests {
 		assert_eq!(parse_budget("iters:8").unwrap(), (None, Some(8)));
 		assert!(parse_budget("nodes:0").is_err());
 		assert!(parse_budget("foo:1").is_err());
+	}
+
+	#[test]
+	fn parse_per_seat_budget_overrides_in_game_only() {
+		let cfg = parse(vec![
+			"--budget".to_string(),
+			"nodes:33000,iters:650".to_string(),
+			"--p1-budget".to_string(),
+			"nodes:132000,iters:2600".to_string(),
+			"--p2-budget".to_string(),
+			"nodes:33000,iters:650".to_string(),
+		])
+		.unwrap();
+		assert_eq!(cfg.limit, SearchLimit::work(33_000, 650));
+		assert_eq!(cfg.setup.limit, SearchLimit::work(33_000, 650));
+		assert_eq!(seat_limit(&cfg, true), SearchLimit::work(132_000, 2_600));
+		assert_eq!(seat_limit(&cfg, false), SearchLimit::work(33_000, 650));
+	}
+
+	#[test]
+	fn parse_both_seat_budgets_keep_search_pick() {
+		let cfg = parse(vec![
+			"--budget".to_string(),
+			"nodes:33000,iters:650".to_string(),
+			"--p1-budget".to_string(),
+			"nodes:264000,iters:5200".to_string(),
+			"--p2-budget".to_string(),
+			"nodes:264000,iters:5200".to_string(),
+		])
+		.unwrap();
+		assert_eq!(cfg.limit, SearchLimit::work(33_000, 650));
+		assert_eq!(cfg.setup.limit, SearchLimit::work(33_000, 650));
+		assert_eq!(seat_limit(&cfg, true), SearchLimit::work(264_000, 5_200));
+		assert_eq!(seat_limit(&cfg, false), SearchLimit::work(264_000, 5_200));
 	}
 
 	#[test]

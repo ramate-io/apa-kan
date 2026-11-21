@@ -21,7 +21,8 @@ starts from `enhanced`, not `counterplay`. Missing TOML keys still take
 
 Reproduce with [`run_h2h.sh`](run_h2h.sh) (vs counterplay),
 [`run_isolation.sh`](run_isolation.sh) (vs enhanced + cheap counter vs
-enhanced), and [`tune_eval.py`](tune_eval.py) (coordinate descent). Survey:
+enhanced), [`tune_eval.py`](tune_eval.py) (coordinate descent), and
+[`run_deep.sh`](run_deep.sh) (4x/8x budget probe). Survey:
 [`survey.py`](survey.py) (first center *take* counts only if the landing
 piece is still there after that action’s captures resolve).
 
@@ -73,6 +74,10 @@ Live `RuleSet::default()` (no extra rule flags). 50 games × 2 pairings =
 | [`h2h_counter_vs_enh_p1`](h2h_counter_vs_enh_p1.txt) | counterplay | enhanced | 50 games; geometry 70 vs 180 |
 | [`h2h_counter_vs_enh_p2`](h2h_counter_vs_enh_p2.txt) | enhanced | counterplay | 50 games |
 | [#83 live defaults](../single_braid_exact_swap/h2h_defaults.txt) | counterplay | counterplay | old vs old on the same rules |
+| [`h2h_deep4x_self`](h2h_deep4x_self.txt) | exactplay 4x | exactplay 4x | `nodes:132000,iters:2600` both seats |
+| [`h2h_deep4x_vs_light_p1`](h2h_deep4x_vs_light_p1.txt) | exactplay 4x | exactplay light | deep P1 vs light P2 |
+| [`h2h_deep4x_vs_light_p2`](h2h_deep4x_vs_light_p2.txt) | exactplay light | exactplay 4x | light P1 vs deep P2 |
+| [`h2h_deep8x_self`](h2h_deep8x_self.txt) | exactplay 8x | exactplay 8x | `nodes:264000,iters:5200` both seats |
 
 JSONL.gz logs reconstruct each game. Same-deck 27 identical=100/100 on every
 log. Search labels show `eval_margin=200`, `q=on/4`, priors off, `eval_center=180`.
@@ -358,6 +363,169 @@ Playstyle matches `enhanced` / #83, not a scripted contester. The extra
 wins vs enhanced are the same sit-and-win and lockout-after-fight lines
 with a leaf that values fulfilled-braid margin more.
 
+## Deep-search probe (does sitting win only because search is shallow?)
+
+Liam’s question: sit-and-win at light budget (MCTS ~1.8 ply, minimax ~3.5)
+might be a horizon artifact. This probe raises **in-game** work only.
+Search-pick stays on `nodes:33000,iters:650` so the 11-tile benches match
+the committed 100-game self-play cell. No new tactics, priors, or
+ordering. `--p1-budget` / `--p2-budget` overlay the seat’s `SearchLimit`
+after pick.
+
+```bash
+APA_KAN_BENCH=target/release/apa-kan-bench \
+  bash apa-kan/game/benchmark_results/exactplay/run_deep.sh all
+```
+
+`--games 5` × 2 pairings = **10 games per cell**, 4 cells = **40 games**.
+4x = `nodes:132000,iters:2600`. 8x = `nodes:264000,iters:5200`. Same
+live #83 defaults, SUM, `--seed 1`, `--same-deck on`, `--no-default-features`,
+release. 4x self txt omits `# in_game_budget` because both seats match
+each other (later benches print it whenever either seat differs from
+pick); pairing rows show `avg_iters=2600` / `5200`.
+
+### Metrics vs light baseline
+
+Sit-and-win is never-left *and* the first-taker’s side won, among games
+with a surviving take. Contested = holders>1 or a center opponent-pop or
+a vacate. The seed-1 first-10 slice of [`h2h_self`](h2h_self.jsonl.gz) is
+the same 10 deals as the deep cells (5 per pairing).
+
+| Cell | Games | P1 W-D-L | Turns | Never-left | Sit-and-win | Contested | Vacates/g | Center rem/g | Swaps/g | Lockouts | CLAIM | SB pops | mm / mcts |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| exactplay self (light) | 100 | 48-2-50 | 58.41 | **24.7%** | **22.6%** | 75.3% | 1.33 | 0.47 | 0.02 | 24 | 0 | 0 | 3.48 / 1.78 |
+| light self, seed-1 first 10 | 10 | 3-0-7 | 54.00 | **33%** (3/9) | **33%** (3/9) | 67% | 1.10 | 0.60 | 0.00 | 2 | 0 | 0 | (subset) |
+| **4x self** | 10 | 5-1-4 | **101.00** | **0%** | **0%** | **100%** | **3.70** | 0.20 | 0.10 | 2 | 0 | 0 | **4.84 / 2.24** |
+| **8x self** | 10 | 4-1-5 | **112.10** | **10%** | **10%** | **90%** | **4.30** | 0.70 | 0.00 | 2 | 0 | 0 | **5.39 / 2.54** |
+| 4x vs light (deep P1) | 10 | **7-0-3** | 63.00 | 10% | 10% | 90% | 1.90 | 0.40 | 0.10 | 1 | 0 | 0 | 4.03 / 1.99 |
+| 4x vs light (deep P2) | 10 | 2-0-8 | 86.60 | 10% | 0% | 90% | 3.20 | 0.50 | 0.00 | 3 | 0 | 0 | 4.28 / 2.07 |
+
+**Deep 4x vs light exactplay, combined: 15-0-5** in 20 games. Extra ply
+is a real strength gain, not just a style shift.
+
+Never-left / sit-and-win collapse in self-play (24.7% / 22.6% → 0% at
+4x; 10% / 10% at 8x). Vacates/game 1.33 → 3.70 / 4.30. Center
+*pops* do not explode (0.47 → 0.20 at 4x, 0.70 at 8x): the extra ply
+mostly **walks off and retakes**, plus some inner MOVEs that mismatch
+the occupant. CLAIM stays 0. Single-braid center pops stay 0. SWAP
+stays ~0 (one own-rotate at 4x). Lockouts stay ~20%. Games get much
+longer (58 → 101 / 112 turns); zero-budget share 27% → 41% / 36%.
+1-ring benches stay ~9.1% (same pick budget).
+
+MCTS is still shallow: 1.78 → 2.24 → 2.54 ply. Minimax 3.48 → 4.84 →
+5.39. 8x is about **+1.4 ID ply / +0.8 MCTS ply**, not a different
+engine.
+
+### Qualitative (same deals, light vs deep)
+
+Citations are `log` / `pairing` / `game` / `turns`. Inner-ring node ids
+are `{9,1,12,3,16,6,18,21}`; center is 0. First take is MOVE in every
+deep game. CLAIM is 0.
+
+#### Matched seed-1 game 1: light sits, deep fights
+
+Light [`h2h_self.jsonl.gz`](h2h_self.jsonl.gz) / mcts vs minimax / game 1
+/ 32. P2 MOVEs onto 0 at t18 with a 2-normal and **never leaves**.
+Control-5. This is the README’s sit-and-win example.
+
+Same deal at 4x:
+[`h2h_deep4x_self.jsonl.gz`](h2h_deep4x_self.jsonl.gz) / mcts vs minimax /
+game 1 / 144. P2 MOVEs 23→0 at t16 (2-normal), **sits until t72**, then
+vacates 0→8. P1’s 3-ring onto 0 at t73 self-pops. P2 retakes t78, walks
+off t84. P1’s 3-zag onto 0 at t91 self-pops. More 0↔inner walking. P1
+wins control. Not a pop war (0 opponent center caps); a leave/retake
+fight.
+
+Same deal at 8x:
+[`h2h_deep8x_self.jsonl.gz`](h2h_deep8x_self.jsonl.gz) / mcts vs minimax /
+game 1 / 145. P2 takes t16, **leaves at t28** (not t72), walks 0↔inner
+on a 2-braid, ends with empty-center self-pops. P2 wins control. Deeper
+search leaves *earlier*.
+
+#### Deep self-play wins by leave / inner-pop / retake, not by sitting
+
+[`h2h_deep4x_self.jsonl.gz`](h2h_deep4x_self.jsonl.gz) / mcts vs minimax /
+game 3 / 84. P2 takes 6→0 at t10, **vacates t14** onto 18 (inner cap).
+Then 0↔21 walks at budget 0. P1 finally takes 6→0 at t63. Lockout, P1.
+Holders=6, vacates=5, 0 center pops.
+
+[`h2h_deep4x_self.jsonl.gz`](h2h_deep4x_self.jsonl.gz) / minimax vs mcts /
+game 4 / 60. P1 takes t5, vacates t35, retakes t45. P2’s inner MOVE
+23→21 at t46 **pops the occupant** (mutual). P1’s t59 onto 0 self-pops.
+P2 retakes t60 and lockout-wins. This is the inner-mismatch fight, not
+SWAP.
+
+[`h2h_deep8x_self.jsonl.gz`](h2h_deep8x_self.jsonl.gz) / mcts vs minimax /
+game 3 / 57. P2 takes t16. P1 pops from inner 6 at t19 (mutual). P2
+retakes t22, walks. P1 retakes t47. P2 pops from 14→12 at t56. P1
+retakes t57 and lockout-wins. Four occupancy changes, two opponent pops.
+
+#### Sitting is not dead — it is rarer, and sometimes still correct
+
+[`h2h_deep8x_self.jsonl.gz`](h2h_deep8x_self.jsonl.gz) / mcts vs minimax /
+game 2 / 39. P2 MOVEs 11→0 at t6 with a 2-braid and **never leaves**.
+Control-5. 1/10 8x games is sit-and-win.
+
+[`h2h_deep4x_vs_light_p1.jsonl.gz`](h2h_deep4x_vs_light_p1.jsonl.gz) /
+mcts vs minimax / game 2 / 53. **Deep** P1 MOVEs 20→0 at t11 with a
+2-braid and never leaves. The leftover sit-and-win in the vs-light
+cells is the *deep* bot sitting on a healthy occupant, not the light
+bot.
+
+Leaving can also lose:
+[`h2h_deep4x_vs_light_p1.jsonl.gz`](h2h_deep4x_vs_light_p1.jsonl.gz) /
+mcts vs minimax / game 1 / 44. Deep P1 takes t7, vacates t11, retakes
+t15. Light P2 pops from 17→18 at t16, takes t20, wins control. Extra
+ply is not a scripted “always contest.”
+
+#### Deep vs light: depth punches the sitter and still lockout-fights
+
+[`h2h_deep4x_vs_light_p2.jsonl.gz`](h2h_deep4x_vs_light_p2.jsonl.gz) /
+mcts vs minimax / game 4 / 32. Deep P2 takes 3→0 at t18, brief leave
+t20 (inner cap on 23), retakes t22, lockout. 32 turns.
+
+[`h2h_deep4x_vs_light_p2.jsonl.gz`](h2h_deep4x_vs_light_p2.jsonl.gz) /
+minimax vs mcts / game 5 / 57. Light P1 takes t5. Deep P2 pops from
+inner 9 at t10, retakes t12. Light retakes t51. Lockout, **light**
+wins this one — one of the 5/20 light wins.
+
+### Distillation proposal (not implemented)
+
+Depth clearly finds **leave / inner-pop / retake** lines that light
+search misses on the same deals. It does *not* find SWAP steals, CLAIM
+origin takes, or single-braid snipes. Do not program those tactics.
+Do not hand-set `order_vacate_center` / MCTS priors.
+
+`enhanced` already **penalizes** vacating a healthy occupant
+(`order_vacate_center = 1200`, `order_vacate_overwhelmed = 1200`) and
+gives no extra `order_center_threat`. At ~3.5 ply that tax can bury the
+leave move; at ~5 ply the PV still finds it. A data-driven fit should
+reweight existing `cheap_order` knobs from deep-vs-light disagreements,
+not add a “always vacate” bonus.
+
+Proposed (next PR, not this one):
+
+1. **Paired roots.** Replay the committed seed-1 deals at light and at
+   4x. At every overlapping position, log the legal list with current
+   `cheap_order` features (capture, center, vacate, threat, claim, TT,
+   killer), plus a few binary flags the knobs already mean: MOVE onto
+   0, MOVE off 0, inner MOVE that captures 0, SWAP involving 0.
+2. **Target.** Deep’s chosen action is the label. Train only where light
+   and deep disagree, with extra weight on center-touching moves. Pairwise
+   ranking / softmax loss over the existing `SearchConfig` order_*
+   integers (and, if MCTS, the same logits as `mcts_move_priors`).
+3. **Hold out.** Fit on pairings `{mcts vs minimax}` games 1–3; confirm
+   on games 4–5 and on a new seed. Promote a TOML only if light-budget
+   sit-and-win drops *and* the 15-0-5 vs-light gap shrinks, without
+   wrecking exactplay vs enhanced.
+4. **Refuse new features** unless the residual is a recapture-after-vacate
+   pattern the current knobs cannot express. If sitting remains correct
+   on some healthy occupants (8x game 2; 4x-vs-light game 2), the fit
+   must be allowed to keep a vacate penalty there.
+
+Raising the live budget is the other lever. 8x still has MCTS at 2.54
+ply; a fitted prior may be cheaper than 8x nodes.
+
 ## Open design questions
 
 - **Scale vs geometry is now measured.** Exactplay vs enhanced 108-2-90;
@@ -373,14 +541,23 @@ with a leaf that values fulfilled-braid margin more.
   bench, budget, presence, mobility, and claimable in `eval.rs` are not
   `SearchConfig` knobs. `order_vacate_*` is move ordering, not eval, so
   it stayed off-limits.
-- **Self-play still does not contest more.** Never-left / sit-and-win /
-  SWAP / pick match #83. If the playtest goal is “fight for origin,” a
-  scoring-faithful leaf is not sufficient at this budget — and
-  programming that fight is the circular argument Liam flagged.
+- **Self-play at light still does not contest more.** Never-left /
+  sit-and-win / SWAP / pick match #83. Extra ply *does* contest: 4x
+  self sit-and-win 0/10, 8x 1/10, vacates 1.33 → 3.7–4.3. Sitting is
+  mostly a horizon artifact, not *only* one (8x game 2 still sits).
+  Programming that fight by hand is still the circular argument; see
+  the distillation proposal above.
 - **CLAIM still dead** (3/200 vs enhanced, 0/300 vs counterplay + self).
   Overwhelm is still resolved by MOVE. The three CLAIMs are own-tile or
   inner, not origin steals.
-- **MCTS ~1.8 ply.** Same as #83. No priors.
+- **MCTS ~1.8 ply at light, ~2.5 at 8x.** Extra nodes buy less than a
+  ply of MCTS depth. Distill ordering, or raise the live budget?
+- **n=10 per deep cell.** Sit-and-win 0/10 vs 1/10 is noisy. A 50-game
+  4x cell would tighten never-left. 8x vs light was skipped to keep
+  runtime reasonable.
+- **Center pops did not rise with 4x** (0.47 → 0.20). Contest is
+  vacate/retake, not dislodge. Fitting `order_center_threat` from these
+  logs may do nothing; fitting `order_vacate_center` might.
 - **Search pick still dumps 1-rings** (9.5% on the 11 vs ~49% generated).
   Existing heuristic, not a new bias.
 - **One SWAP-walk draw dominates swap stats.** Quote swaps/g from
