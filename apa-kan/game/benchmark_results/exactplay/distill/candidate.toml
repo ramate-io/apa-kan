@@ -1,0 +1,7 @@
+name = "exactplay_distill"
+description = "Fitted cheap_order knobs from 4x-vs-light root disagreements (vacate=1200, threat=0)"
+eval_margin_scale = 200
+order_vacate_center = 1200
+order_vacate_overwhelmed = 1200
+order_center_threat = 0
+order_claim_center = 0
