@@ -14159,5 +14159,4 @@ mod tests {
 		assert_eq!(game.current_player(), Player::One);
 		assert_eq!(game.opening_stays_left(Player::Two), 0);
 	}
-
 }
