@@ -2824,6 +2824,9 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 			if game.extra_turn_active() && !game.ratchet_reward_active() {
 				extra.push_str(&format!("{HUD_SEP}+turn"));
 			}
+			if game.opening_double_pending() && !game.ratchet_reward_active() {
+				extra.push_str(&format!("{HUD_SEP}open-2"));
+			}
 			for player in [Player::One, Player::Two] {
 				let n = game.extra_turns(player);
 				if n > 0 {
@@ -4766,6 +4769,17 @@ mod tests {
 		assert_eq!(game.control_need(), 4, "HUD target must not rise with recovered material");
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("ctl P1 4/4 0/1 P2 0/4 0/1"), "{turn}");
+	}
+
+	#[test]
+	fn hud_shows_opening_double_pending() {
+		let mut rules = RuleSet::default();
+		rules.opening_double = true;
+		let game = Game::empty(rules);
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("open-2"), "pending 2-2-1-1 opening: {turn}");
+		let off = format_turn_line(&Game::empty(RuleSet::default()), "human");
+		assert!(!off.contains("open-2"), "{off}");
 	}
 
 	#[test]

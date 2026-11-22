@@ -403,6 +403,9 @@ pub struct RulesLog {
 	/// Unmatched center occupant scores +1 mismatch. Absent/false on older logs.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub center_mismatch: bool,
+	/// 2-2-1-1 opening. Absent/false on older logs.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub opening_double: bool,
 	pub insufficient_tiles_loss: String,
 	pub path_constraint: String,
 	pub counted_pass_through: bool,
@@ -570,6 +573,7 @@ impl RulesLog {
 			extra_convert_mode: r.extra_convert_mode.name().into(),
 			extra_swap_mode: r.extra_swap_mode.name().into(),
 			center_mismatch: r.center_mismatch,
+			opening_double: r.opening_double,
 			insufficient_tiles_loss: r.insufficient_tiles_loss.name().into(),
 			path_constraint: r.path_constraint.name().into(),
 			counted_pass_through: r.counted_pass_through,
@@ -635,6 +639,7 @@ impl RulesLog {
 			extra_swap_mode: ExtraSwapMode::parse(&self.extra_swap_mode)
 				.unwrap_or(ExtraSwapMode::Any),
 			center_mismatch: self.center_mismatch,
+			opening_double: self.opening_double,
 			insufficient_tiles_loss: InsufficientTilesLoss::parse(&self.insufficient_tiles_loss)?,
 			path_constraint: PathConstraint::parse(&self.path_constraint)?,
 			counted_pass_through: self.counted_pass_through,
@@ -849,6 +854,9 @@ pub struct ActionLog {
 	/// True when this action was the immediate post-ratchet reward move.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub played_as_ratchet: bool,
+	/// True when this action was one of a 2-2-1-1 opening pair.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub played_as_opening: bool,
 }
 
 /// One captured tile: original owner and where it went.
@@ -948,6 +956,7 @@ impl ActionLog {
 				.map(str::to_string),
 			played_as_extra: game_after.last_played_as_extra(),
 			played_as_ratchet: game_after.last_played_as_ratchet_reward(),
+			played_as_opening: game_after.last_played_as_opening(),
 		}
 	}
 
@@ -2089,6 +2098,8 @@ mod tests {
 		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
 		assert!(!parsed.cascade_winner_swap);
 		assert!(!parsed.center_mismatch);
+		assert!(!parsed.opening_double);
+		assert!(!json.contains("opening_double"), "{json}");
 		assert_eq!(parsed.to_rules().unwrap().extra_swap_mode, ExtraSwapMode::Any);
 		assert!(parsed.to_rules().unwrap().ratchet_cascade);
 		assert_eq!(parsed.to_rules().unwrap().extra_convert_mode, ExtraConvertMode::Any);
@@ -2098,6 +2109,7 @@ mod tests {
 		let mut on = RuleSet::default();
 		on.cascade_winner_swap = true;
 		on.center_mismatch = true;
+		on.opening_double = true;
 		on.ratchet_cascade = false;
 		on.extra_convert_mode = ExtraConvertMode::Inner;
 		on.extra_swap_mode = ExtraSwapMode::Own;
@@ -2105,6 +2117,7 @@ mod tests {
 		let json = serde_json::to_string(&written).unwrap();
 		assert!(json.contains("cascade_winner_swap"), "{json}");
 		assert!(json.contains("center_mismatch"), "{json}");
+		assert!(json.contains("opening_double"), "{json}");
 		assert!(json.contains("own"), "{json}");
 		assert!(json.contains("inner"), "{json}");
 		assert!(json.contains("ratchet_cascade"), "{json}");

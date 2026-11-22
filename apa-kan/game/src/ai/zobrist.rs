@@ -40,6 +40,8 @@ pub struct Zobrist {
 	ratchet_reward_active: u64,
 	ratchet_tier: [u64; 2],
 	ratchet_count: [u64; 16],
+	opening_stays: [[u64; 4]; 2],
+	opening_double_active: u64,
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
 	last_swap_none: [u64; 2],
@@ -74,6 +76,8 @@ impl Zobrist {
 			ratchet_reward_active: next(),
 			ratchet_tier: [next(), next()],
 			ratchet_count: [0; 16],
+			opening_stays: [[0; 4]; 2],
+			opening_double_active: 0,
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
 			last_swap_none: [next(), next()],
@@ -133,6 +137,14 @@ impl Zobrist {
 			z.control_ratchet[n] = next();
 			z.ratchet_count[n] = next();
 		}
+		// Appended after the live key stream so off-by-default 2-2-1-1
+		// positions keep the same hash as before this flag existed.
+		for player in 0..2 {
+			for n in 0..4 {
+				z.opening_stays[player][n] = next();
+			}
+		}
+		z.opening_double_active = next();
 		z
 	}
 }
@@ -252,6 +264,15 @@ pub fn hash(game: &Game) -> u64 {
 		}];
 	}
 	h ^= z.ratchet_count[game.ratchet_count().min(15) as usize];
+	for player in [Player::One, Player::Two] {
+		let n = game.opening_stays_left(player).min(3) as usize;
+		if n > 0 {
+			h ^= z.opening_stays[player.index()][n];
+		}
+	}
+	if game.opening_double_pending() {
+		h ^= z.opening_double_active;
+	}
 	h
 }
 
@@ -467,5 +488,22 @@ mod tests {
 		let mut later = Game::empty(RuleSet::default());
 		later.set_ratchet_reward(crate::game::RatchetTier::Later);
 		assert_ne!(hash(&reward), hash(&later), "first vs later ratchet tiers must not collide");
+	}
+
+	#[test]
+	fn hash_distinguishes_opening_double_stays() {
+		use crate::game::Game;
+
+		let none = Game::empty(RuleSet::default());
+		let mut doubled = Game::empty(RuleSet::default());
+		doubled.set_opening_double(true);
+		assert_eq!(none.opening_stays_left(crate::game::Player::One), 0);
+		assert_eq!(doubled.opening_stays_left(crate::game::Player::One), 1);
+		assert_ne!(
+			hash(&none),
+			hash(&doubled),
+			"TT key must include remaining 2-2-1-1 opening stays"
+		);
+		assert_eq!(occupancy_hash(&none), occupancy_hash(&doubled));
 	}
 }

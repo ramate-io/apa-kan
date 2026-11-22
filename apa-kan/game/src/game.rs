@@ -2777,6 +2777,17 @@ fn initial_control_ratchet(rules: &RuleSet) -> u8 {
 	rules.control_n.max(1).min(9)
 }
 
+/// Extra consecutive 1-action seating each player still has in a 2-2-1-1
+/// opening. `1` means "stay after your first action"; `0` means the double
+/// is spent or the flag is off.
+fn initial_opening_stays(rules: &RuleSet) -> [u8; 2] {
+	if rules.opening_double {
+		[1, 1]
+	} else {
+		[0, 0]
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GameStatus {
 	InProgress,
@@ -3006,6 +3017,14 @@ pub struct RuleSet {
 	/// Unmatched center occupant scores a synthetic +1 mismatch (no edge
 	/// match from neighbors). Default false. Missing JSONL replays as off.
 	pub center_mismatch: bool,
+	/// 2-2-1-1 opening: each player's first seating is two consecutive
+	/// 1-action turns, then play alternates singly. Default false.
+	/// `--opening-double on` / `--opening 2-2-1-1`. Missing JSONL replays
+	/// as off. Independent of [`Self::actions_per_turn`] (each opening
+	/// action is still one `finish_turn`). Ratchet / extra-turn seating
+	/// has priority and consumes or forfeits the leftover opening stay;
+	/// see [`Game::finish_turn`].
+	pub opening_double: bool,
 }
 
 impl Default for RuleSet {
@@ -3064,6 +3083,7 @@ impl Default for RuleSet {
 			extra_convert_mode: ExtraConvertMode::Any,
 			extra_swap_mode: ExtraSwapMode::Any,
 			center_mismatch: false,
+			opening_double: false,
 		}
 	}
 }
@@ -3250,6 +3270,12 @@ pub struct Game {
 	last_played_as_ratchet_reward: bool,
 	last_ratchet_tier: Option<RatchetTier>,
 	last_ratchet_kind: Option<RatchetKind>,
+	/// Extra consecutive opening actions still owed (`1` = stay after the
+	/// next completed action). Initialized from [`RuleSet::opening_double`].
+	opening_stays_left: [u8; 2],
+	/// Side to move is taking the second action of their 2-2-1-1 opening.
+	playing_opening_double: bool,
+	last_played_as_opening: bool,
 	extra_turns_played: u32,
 	ended_on_extra: bool,
 	ended_after_extra: bool,
@@ -3384,6 +3410,9 @@ impl Game {
 			last_played_as_ratchet_reward: false,
 			last_ratchet_tier: None,
 			last_ratchet_kind: None,
+			opening_stays_left: initial_opening_stays(&rules),
+			playing_opening_double: false,
+			last_played_as_opening: false,
 			extra_turns_played: 0,
 			ended_on_extra: false,
 			ended_after_extra: false,
@@ -3463,6 +3492,9 @@ impl Game {
 			last_played_as_ratchet_reward: false,
 			last_ratchet_tier: None,
 			last_ratchet_kind: None,
+			opening_stays_left: initial_opening_stays(&rules),
+			playing_opening_double: false,
+			last_played_as_opening: false,
 			extra_turns_played: 0,
 			ended_on_extra: false,
 			ended_after_extra: false,
@@ -3544,6 +3576,9 @@ impl Game {
 			last_played_as_ratchet_reward: false,
 			last_ratchet_tier: None,
 			last_ratchet_kind: None,
+			opening_stays_left: initial_opening_stays(&rules),
+			playing_opening_double: false,
+			last_played_as_opening: false,
 			extra_turns_played: 0,
 			ended_on_extra: false,
 			ended_after_extra: false,
@@ -3770,6 +3805,23 @@ impl Game {
 		self.last_ratchet_kind
 	}
 
+	/// Extra consecutive opening actions `player` still has under 2-2-1-1.
+	pub fn opening_stays_left(&self, player: Player) -> u8 {
+		self.opening_stays_left[player.index()]
+	}
+
+	/// True when the side to move is taking the second action of a 2-2-1-1
+	/// opening (or still owes that stay).
+	pub fn opening_double_pending(&self) -> bool {
+		self.rules.opening_double
+			&& (self.playing_opening_double || self.opening_stays_left[self.current.index()] > 0)
+	}
+
+	/// True when the last applied action was one of a 2-2-1-1 opening pair.
+	pub fn last_played_as_opening(&self) -> bool {
+		self.last_played_as_opening
+	}
+
 	/// True when the last applied action was taken as a consumed extra turn.
 	pub fn last_played_as_extra(&self) -> bool {
 		self.last_played_as_extra
@@ -3848,6 +3900,15 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn set_ratchet_cascade(&mut self, on: bool) {
 		self.rules.ratchet_cascade = on;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_opening_double(&mut self, on: bool) {
+		self.rules.opening_double = on;
+		self.opening_stays_left = initial_opening_stays(&self.rules);
+		if !on {
+			self.playing_opening_double = false;
+		}
 	}
 
 	/// Ratcheted cascade checkpoint (`2..=control_n`) when
@@ -5395,6 +5456,11 @@ impl Game {
 		self.last_played_as_extra = self.playing_extra_turn;
 		self.last_played_as_ratchet_reward = self.playing_ratchet_reward;
 		self.last_ratchet_tier = self.active_ratchet_tier;
+		self.last_played_as_opening = self.rules.opening_double
+			&& (self.playing_opening_double
+				|| (self.opening_stays_left[self.current.index()] > 0
+					&& !self.playing_ratchet_reward
+					&& !self.playing_extra_turn));
 		let pre_p1_mat = self.total_material(Player::One);
 		let pre_p2_mat = self.total_material(Player::Two);
 		let pre_p1_tok = self.budget_token_count(Player::One);
@@ -5503,6 +5569,11 @@ impl Game {
 			|| self.status.is_over()
 			|| !self.has_add_or_move();
 		if turn_done && !self.status.is_over() {
+			if action.is_pass() || !self.has_add_or_move() {
+				// Passing or having no follow-up action ends the opening
+				// double; the leftover stay is unused.
+				self.forfeit_opening_stay(player);
+			}
 			self.finish_turn(player);
 		}
 		if self.status.is_over() {
@@ -5536,13 +5607,20 @@ impl Game {
 		}
 		if let Some((winner, tier)) = self.pending_ratchet.take() {
 			if winner == who {
+				// Mover already goes next: the leftover opening stay is this
+				// reward action (no third go).
+				self.consume_opening_stay(who);
 				self.playing_extra_turn = true;
 				self.extra_turns_played = self.extra_turns_played.saturating_add(1);
 				self.current = who;
+				self.playing_opening_double = false;
 			} else {
+				// Opponent interrupt forfeits the unused second opening action.
+				self.forfeit_opening_stay(who);
 				self.prev_finished_extra = self.playing_extra_turn;
 				self.playing_extra_turn = false;
 				self.current = who.other();
+				self.playing_opening_double = false;
 			}
 			self.playing_ratchet_reward = true;
 			self.active_ratchet_tier = Some(tier);
@@ -5550,13 +5628,21 @@ impl Game {
 			self.playing_ratchet_reward = false;
 			self.active_ratchet_tier = None;
 			if self.extra_turns[who.index()] > 0 {
+				self.consume_opening_stay(who);
 				self.extra_turns[who.index()] -= 1;
 				self.playing_extra_turn = true;
 				self.extra_turns_played = self.extra_turns_played.saturating_add(1);
 				self.current = who;
+				self.playing_opening_double = false;
+			} else if self.take_opening_stay(who) {
+				self.prev_finished_extra = self.playing_extra_turn;
+				self.playing_extra_turn = false;
+				self.current = who;
+				self.playing_opening_double = true;
 			} else {
 				self.prev_finished_extra = self.playing_extra_turn;
 				self.playing_extra_turn = false;
+				self.playing_opening_double = false;
 				self.current = who.other();
 			}
 		}
@@ -5566,6 +5652,27 @@ impl Game {
 		}
 		if !self.status.is_over() {
 			self.check_low_value();
+		}
+	}
+
+	fn consume_opening_stay(&mut self, who: Player) {
+		let i = who.index();
+		if self.opening_stays_left[i] > 0 {
+			self.opening_stays_left[i] -= 1;
+		}
+	}
+
+	fn forfeit_opening_stay(&mut self, who: Player) {
+		self.opening_stays_left[who.index()] = 0;
+	}
+
+	fn take_opening_stay(&mut self, who: Player) -> bool {
+		let i = who.index();
+		if self.opening_stays_left[i] > 0 {
+			self.opening_stays_left[i] -= 1;
+			true
+		} else {
+			false
 		}
 	}
 
@@ -6467,6 +6574,7 @@ mod tests {
 		assert_eq!(rules.extra_convert_mode, ExtraConvertMode::Any);
 		assert_eq!(rules.extra_swap_mode, ExtraSwapMode::Any);
 		assert!(!rules.center_mismatch);
+		assert!(!rules.opening_double);
 		assert_eq!(rules.ring_count_weights, LIVE_RING_COUNT_WEIGHTS);
 		assert_eq!(rules.color_drift, color_drift_diagonal(COLOR_DRIFT_DEFAULT));
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
@@ -13935,4 +14043,121 @@ mod tests {
 		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
 		assert!(!game.ratchet_reward_active());
 	}
+
+	fn opening_double_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.opening_double = true;
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.cascade_turn_gain = false;
+		rules.no_moves_loses = false;
+		rules
+	}
+
+	fn seating_game(mut rules: RuleSet) -> Game {
+		rules.control_win = false;
+		rules.center_hold_win = false;
+		rules.petal_majority_win = false;
+		rules.cascade_turn_gain = false;
+		rules.no_moves_loses = false;
+		let mut game = Game::empty(rules);
+		stock_bench(&mut game, Player::One, 6);
+		stock_bench(&mut game, Player::Two, 6);
+		game.set_current(Player::One);
+		game
+	}
+
+	fn add_on_empty_spawn(game: &mut Game) -> NodeId {
+		let dest = game
+			.board()
+			.spawns()
+			.iter()
+			.copied()
+			.find(|&s| game.tile_at(s).is_none() && game.occupied_adjacency_count(s) == 0)
+			.or_else(|| game.board().spawns().iter().copied().find(|&s| game.tile_at(s).is_none()))
+			.expect("empty spawn");
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		dest
+	}
+
+	#[test]
+	fn opening_double_off_alternates_after_one_action() {
+		let game_off = seating_game(RuleSet::default());
+		assert!(!game_off.rules().opening_double);
+		let mut game = game_off;
+		add_on_empty_spawn(&mut game);
+		assert_eq!(game.current_player(), Player::Two);
+		assert!(!game.last_played_as_opening());
+		assert!(!game.opening_double_pending());
+		assert!(!game.status().is_over());
+	}
+
+	#[test]
+	fn opening_double_is_two_two_then_singles() {
+		let mut game = seating_game(opening_double_rules());
+		assert_eq!(game.opening_stays_left(Player::One), 1);
+		assert_eq!(game.opening_stays_left(Player::Two), 1);
+		assert!(game.opening_double_pending());
+		add_on_empty_spawn(&mut game);
+		assert_eq!(game.current_player(), Player::One, "P1 plays twice at the start");
+		assert!(game.last_played_as_opening());
+		assert!(game.opening_double_pending());
+		assert_eq!(game.opening_stays_left(Player::One), 0);
+		add_on_empty_spawn(&mut game);
+		assert_eq!(game.current_player(), Player::Two);
+		assert!(game.last_played_as_opening());
+		assert!(game.opening_double_pending(), "P2 still owes a double");
+		add_on_empty_spawn(&mut game);
+		assert_eq!(game.current_player(), Player::Two, "P2 plays twice");
+		assert!(game.last_played_as_opening());
+		add_on_empty_spawn(&mut game);
+		assert_eq!(game.current_player(), Player::One, "then singles");
+		assert!(game.last_played_as_opening(), "P2's second action is still the opening pair");
+		assert!(!game.opening_double_pending());
+		add_on_empty_spawn(&mut game);
+		assert_eq!(game.current_player(), Player::Two);
+		assert!(!game.last_played_as_opening());
+	}
+
+	#[test]
+	fn opening_double_mover_ratchet_fills_the_second_action() {
+		let (mut game, center) = fight_gain_claim_center(4, 2);
+		game.set_opening_double(true);
+		assert_eq!(game.opening_stays_left(Player::One), 1);
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert_eq!(game.last_fight_gain(), Some(TurnGainKind::Mover));
+		assert_eq!(game.current_player(), Player::One);
+		assert!(game.ratchet_reward_active());
+		assert_eq!(game.opening_stays_left(Player::One), 0, "reward consumed the leftover stay");
+		stock_bench(&mut game, Player::One, 1);
+		let dest = game.isolated_empty_spawn();
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.current_player(), Player::Two, "no third P1 action");
+		assert!(!game.ratchet_reward_active());
+		assert_eq!(game.opening_stays_left(Player::Two), 1);
+	}
+
+	#[test]
+	fn opening_double_opponent_ratchet_forfeits_leftover_and_p2_keeps_double() {
+		let (mut game, center) = fight_gain_claim_center(2, 4);
+		game.set_opening_double(true);
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert_eq!(game.last_fight_gain(), Some(TurnGainKind::Opponent));
+		assert_eq!(game.current_player(), Player::Two);
+		assert!(game.ratchet_reward_active());
+		assert_eq!(game.opening_stays_left(Player::One), 0, "P1 leftover forfeited");
+		assert_eq!(game.opening_stays_left(Player::Two), 1, "P2 double still owed");
+		stock_bench(&mut game, Player::Two, 1);
+		let dest = game.isolated_empty_spawn();
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.current_player(), Player::Two, "P2 still takes the opening stay");
+		assert!(!game.ratchet_reward_active());
+		stock_bench(&mut game, Player::Two, 1);
+		let dest2 = game.isolated_empty_spawn();
+		game.apply(Action::Add { bench_index: 0, node: dest2 }).unwrap();
+		assert_eq!(game.current_player(), Player::One);
+		assert_eq!(game.opening_stays_left(Player::Two), 0);
+	}
+
 }

@@ -245,6 +245,14 @@ fn parse_bool(flag: &str, value: &str) -> Result<bool, String> {
 	}
 }
 
+fn parse_opening(value: &str) -> Result<bool, String> {
+	match value.to_ascii_lowercase().as_str() {
+		"2-2-1-1" | "2211" | "double" | "on" | "true" | "yes" => Ok(true),
+		"1-1-1-1" | "1111" | "single" | "off" | "false" | "no" => Ok(false),
+		other => Err(format!("invalid --opening '{other}' (expected 2-2-1-1|1-1-1-1, or on|off)")),
+	}
+}
+
 fn parse_u32(flag: &str, value: &str) -> Result<u32, String> {
 	let n = parse_u64(flag, value)?;
 	if n < 320 || n > 7680 {
@@ -345,6 +353,12 @@ where
 		}
 		"--center-mismatch" => {
 			rules.center_mismatch = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--opening-double" => {
+			rules.opening_double = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--opening" => {
+			rules.opening_double = parse_opening(&require_value(arg, it.next())?)?;
 		}
 		"--insufficient-tiles-loss" => {
 			rules.insufficient_tiles_loss =
@@ -548,6 +562,8 @@ pub fn usage() -> &'static str {
 	   --extra-convert-mode <any|not-center|inner> CONVERT target filter on 2nd+ ratchet rewards (default: any opponent piece, including center)\n\
 	   --extra-swap-mode <any|own|not-center>     Post-ratchet SWAP partner filter (default: any)\n\
 	   --center-mismatch <on|off>                 Unmatched center occupant scores +1 mismatch (default: off)\n\
+	   --opening-double <on|off>                  2-2-1-1 opening: P1 two actions, P2 two, then singles (default: off)\n\
+	   --opening <2-2-1-1|1-1-1-1>                Alias for --opening-double on|off\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
@@ -769,6 +785,7 @@ mod tests {
 		assert_eq!(def.rules.extra_convert_mode, crate::game::ExtraConvertMode::Any);
 		assert_eq!(def.rules.extra_swap_mode, crate::game::ExtraSwapMode::Any);
 		assert!(!def.rules.center_mismatch);
+		assert!(!def.rules.opening_double);
 		let on = GameConfig::parse(["--cascade-winner-swap", "on"]).unwrap();
 		assert!(on.rules.cascade_winner_swap);
 		assert!(on.rules.ratchet_cascade);
@@ -790,6 +807,14 @@ mod tests {
 		assert!(GameConfig::parse(["--extra-turn-action", "swap"]).is_err());
 		assert!(GameConfig::parse(["--extra-convert-mode", "outer"]).is_err());
 		assert!(GameConfig::parse(["--extra-swap-mode", "adjacent"]).is_err());
+		let open = GameConfig::parse(["--opening-double", "on"]).unwrap();
+		assert!(open.rules.opening_double);
+		let alias = GameConfig::parse(["--opening", "2-2-1-1"]).unwrap();
+		assert!(alias.rules.opening_double);
+		let off = GameConfig::parse(["--opening", "1-1-1-1"]).unwrap();
+		assert!(!off.rules.opening_double);
+		assert!(GameConfig::parse(["--opening", "3-3-1-1"]).is_err());
+		assert!(GameConfig::parse(["--opening-double", "maybe"]).is_err());
 	}
 
 	#[test]
@@ -814,6 +839,7 @@ mod tests {
 		assert_eq!(cfg.rules.extra_convert_mode, crate::game::ExtraConvertMode::Any);
 		assert_eq!(cfg.rules.extra_swap_mode, crate::game::ExtraSwapMode::Any);
 		assert!(!cfg.rules.center_mismatch);
+		assert!(!cfg.rules.opening_double);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);
@@ -848,6 +874,7 @@ mod tests {
 		assert_eq!(cfg.rules.swap_mode, crate::game::SwapMode::NormalOnly);
 		assert!(!cfg.rules.cascade_winner_swap);
 		assert!(!cfg.rules.center_mismatch);
+		assert!(!cfg.rules.opening_double);
 	}
 
 	#[test]
