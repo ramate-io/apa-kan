@@ -8,13 +8,14 @@ ADD       461          39.58  112
 MOVE      693          21.58  56
 CLAIM     0            0.00   0
 SWAP      1            1.00   1
+CONVERT   0            0.00   0
 ALL       742          44.75  112
 
 # cascade_winner_swap h2h_deep4x_baseline
 # budget=nodes:33000,iters:650 jobs=4 games_per_pairing_per_seat=10 seed_base=1 turn_limit=200
 # search  p1=profile=exactplay ordering=on tt=on/18 lmr=on pvs=on q=on/4 pw=off heur_playouts=on puct=1.60 cutoff=12 threads=1 priors=off pw_order=off reuse=on mcts_tt=off factored=off leaf=0 solver=off eval_center=180 eval_inner=55 eval_pressure=0 order_claim_c=0 order_threat=0 eval_margin=200  p2=profile=exactplay ordering=on tt=on/18 lmr=on pvs=on q=on/4 pw=off heur_playouts=on puct=1.60 cutoff=12 threads=1 priors=off pw_order=off reuse=on mcts_tt=off factored=off leaf=0 solver=off eval_center=180 eval_inner=55 eval_pressure=0 order_claim_c=0 order_threat=0 eval_margin=200
 # in_game_budget  p1=budget=nodes:132000,iters:2600  p2=budget=nodes:132000,iters:2600  pick=budget=nodes:33000,iters:650
-# rules: no_moves_loses=on center_hold_win=off center_hold_n=5 no_same_piece_twice=off color_restricted_hops=on hop_weight_cmp=le counted_pass_through=on pass_through_ring_cmp=ge petal_majority_win=off petal_majority_n=1 control_win=on control_n=5 control_hold_turns=1 endgame_rule=control-cascade cascade_turn_gain=on cascade_winner_swap=off extra_swap_mode=any center_mismatch=off insufficient_tiles_loss=off starting_bench=7 bag_size=11 deck_size=27 pick=search deck_noise=0 self_capture_budget=on max_rings=3 ring_count_weights=4,3,1 color_drift=160 zag_numer=1 braid_numer=1 bead_numer=1 bead_scoring=independent braid_scoring=braid-only-exact score_unique_neighbors=off channel_mode=additive capture_mode=local-claim singles_swap=normal-only single_braids=on dot_percent=50 emblem_weights=200,1,1,1,1 blocker_blocks=traversal zag_mismatch=sum path_constraint=no-edge-revisit scenario=default
+# rules: no_moves_loses=on center_hold_win=off center_hold_n=5 no_same_piece_twice=off color_restricted_hops=on hop_weight_cmp=le counted_pass_through=on pass_through_ring_cmp=ge petal_majority_win=off petal_majority_n=1 control_win=on control_n=5 control_hold_turns=1 endgame_rule=control-cascade cascade_turn_gain=on cascade_winner_swap=off extra_turn_action=convert extra_convert_mode=any extra_swap_mode=any center_mismatch=off insufficient_tiles_loss=off starting_bench=7 bag_size=11 deck_size=27 pick=search deck_noise=0 self_capture_budget=on max_rings=3 ring_count_weights=4,3,1 color_drift=160 zag_numer=1 braid_numer=1 bead_numer=1 bead_scoring=independent braid_scoring=braid-only-exact score_unique_neighbors=off channel_mode=additive capture_mode=local-claim singles_swap=normal-only single_braids=on dot_percent=50 emblem_weights=200,1,1,1,1 blocker_blocks=traversal zag_mismatch=sum path_constraint=no-edge-revisit scenario=default
 # ring_process  sample=20000 max_rings=3 zag_numer=1 braid_numer=1 bead_numer=1  n1=9907 n2=7517 n3=2576
 # ring_process_zags  rings=32669 zags=8500 rate=0.2602
 # ring_process_braids  pieces=20000 braided=5377 tile_rate=0.2688 single_braid=3732 single_rate=0.1866 rings=32669 braid_rings=7154 ring_rate=0.2190
@@ -41,8 +42,9 @@ mcts            vs minimax          mixed vs mixed  P1  7-1-2  98.10  1  3  0  0
 # bead_captures  contrib=125 needed=41 spawn_two_ring_single_bead=1  of_total=128
 # claims  total=0 avg_per_game=0.00  own=0 opponent=0  healed=0 healed_avg_per_game=0.00
 # swaps  total=3 avg_per_game=0.15  center=2 avg_center_per_game=0.10
+# converts  total=0 avg_per_game=0.00  center=0 avg_center_per_game=0.00
 # turn_gain  awarded=12 avg_per_game=0.60  mover=10 opponent=2  played=12  ended_on=1 ended_after=2 ended_on_or_after=3
-# fight_gain  awarded=0 avg_per_game=0.00  mover=0 opponent=0  extra_used swap=0 move=7 add=5 claim=0
+# fight_gain  awarded=0 avg_per_game=0.00  mover=0 opponent=0  extra_used convert=0 swap=0 move=7 add=5 claim=0
 # emblems  crescent_saves=2 avg_per_game=0.10  zs_bonuses=0 avg_per_game=0.00
 # search_depth  mm_avg=4.78 mm_max=16 mm_n=785  mcts_avg=2.19 mcts_max=11 mcts_n=783
 # root_spread  entropy=2.51 eff_branch=18.1 top1=0.32 near_q=18.4 q_spread10=0.101 stability=0.58 legal=41.9 n=783
@@ -104,4 +106,4 @@ mcts            vs minimax          mixed vs mixed  P1  7-1-2  98.10  1  3  0  0
 # Minimax: iterative deepening alpha-beta, Zobrist TT, TT/capture/killer/history ordering, quiescence on capture sequences.
 # game_record=apa-kan/game/benchmark_results/cascade_winner_swap/h2h_deep4x_baseline_record.txt
 # games_log=apa-kan/game/benchmark_results/cascade_winner_swap/h2h_deep4x_baseline.jsonl.gz
-# elapsed_sec=1072.8
+# elapsed_sec=1048.2
