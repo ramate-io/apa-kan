@@ -7,8 +7,8 @@ use crate::game::{
 	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
 	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
 	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule,
-	ExtraConvertMode, ExtraSwapMode, ExtraTurnAction, Game, GameStatus, HopWeightCmp,
-	InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint, Player,
+	ExtraConvertMode, ExtraSwapMode, Game, GameStatus, HopWeightCmp, InsufficientTilesLoss,
+	LowValueResolution, PassThroughRingCmp, PathConstraint, Player, RatchetKind, RatchetTier,
 	RingCountWeights, RingType, RuleSet, SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind,
 	ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
@@ -382,21 +382,22 @@ pub struct RulesLog {
 	/// Absent on older logs; replay uses off (PR #74).
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cascade_turn_gain: bool,
-	/// Extra turn when a pre-action center occupant is captured. Absent/false
-	/// on older logs.
+	/// Next-move ratchet reward when a center occupant is captured (and,
+	/// by default, on a non-winning cascade drop). Absent/false on older logs.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cascade_winner_swap: bool,
-	/// Extra-turn CONVERT (ownership flip) or SWAP (position exchange).
-	/// Absent on older logs; replay uses convert.
-	#[serde(
-		default = "default_extra_turn_convert",
-		skip_serializing_if = "skip_extra_turn_convert"
-	)]
+	/// Count non-winning control-cascade drops as ratchets. Absent on older
+	/// logs; replay uses on.
+	#[serde(default = "default_true", skip_serializing_if = "skip_true")]
+	pub ratchet_cascade: bool,
+	/// Historical extra-turn CONVERT vs SWAP. Ignored on replay (the
+	/// ratchet tiers always use SWAP then CONVERT). Absent; not written.
+	#[serde(default, skip_serializing)]
 	pub extra_turn_action: String,
 	/// CONVERT target filter. Absent on older logs; replay uses any.
 	#[serde(default = "default_extra_convert_any", skip_serializing_if = "skip_extra_convert_any")]
 	pub extra_convert_mode: String,
-	/// Extra-turn SWAP partner filter. Absent on older logs; replay uses any.
+	/// Post-ratchet SWAP partner filter. Absent on older logs; replay uses any.
 	#[serde(default = "default_extra_swap_any", skip_serializing_if = "skip_extra_swap_any")]
 	pub extra_swap_mode: String,
 	/// Unmatched center occupant scores +1 mismatch. Absent/false on older logs.
@@ -511,12 +512,12 @@ fn skip_extra_swap_any(v: &String) -> bool {
 	*v == ExtraSwapMode::Any.name()
 }
 
-fn default_extra_turn_convert() -> String {
-	ExtraTurnAction::Convert.name().to_string()
+fn default_true() -> bool {
+	true
 }
 
-fn skip_extra_turn_convert(v: &String) -> bool {
-	*v == ExtraTurnAction::Convert.name()
+fn skip_true(v: &bool) -> bool {
+	*v
 }
 
 fn default_extra_convert_any() -> String {
@@ -564,7 +565,8 @@ impl RulesLog {
 			endgame_rule: r.endgame_rule.name().into(),
 			cascade_turn_gain: r.cascade_turn_gain,
 			cascade_winner_swap: r.cascade_winner_swap,
-			extra_turn_action: r.extra_turn_action.name().into(),
+			ratchet_cascade: r.ratchet_cascade,
+			extra_turn_action: String::new(),
 			extra_convert_mode: r.extra_convert_mode.name().into(),
 			extra_swap_mode: r.extra_swap_mode.name().into(),
 			center_mismatch: r.center_mismatch,
@@ -627,8 +629,7 @@ impl RulesLog {
 			endgame_rule: EndgameRule::parse(&self.endgame_rule)?,
 			cascade_turn_gain: self.cascade_turn_gain,
 			cascade_winner_swap: self.cascade_winner_swap,
-			extra_turn_action: ExtraTurnAction::parse(&self.extra_turn_action)
-				.unwrap_or(ExtraTurnAction::Convert),
+			ratchet_cascade: self.ratchet_cascade,
 			extra_convert_mode: ExtraConvertMode::parse(&self.extra_convert_mode)
 				.unwrap_or(ExtraConvertMode::Any),
 			extra_swap_mode: ExtraSwapMode::parse(&self.extra_swap_mode)
@@ -830,12 +831,24 @@ pub struct ActionLog {
 	/// `mover` or `opponent` when this action awarded cascade turn gain.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub turn_gain: Option<String>,
-	/// `mover` or `opponent` when this action awarded a center-fight extra turn.
+	/// `mover` or `opponent` when this action awarded a ratchet.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub fight_gain: Option<String>,
+	/// `fight`, `cascade`, or `both`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ratchet_kind: Option<String>,
+	/// Awarded ratchets after this action.
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub ratchet_count: u32,
+	/// `first` or `later` when this action was the immediate post-ratchet reward.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ratchet_tier: Option<String>,
 	/// True when this action was taken as a consumed extra turn.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub played_as_extra: bool,
+	/// True when this action was the immediate post-ratchet reward move.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub played_as_ratchet: bool,
 }
 
 /// One captured tile: original owner and where it went.
@@ -926,7 +939,15 @@ impl ActionLog {
 			extra_turn_active: game_after.extra_turn_active(),
 			turn_gain: game_after.last_turn_gain().map(TurnGainKind::name).map(str::to_string),
 			fight_gain: game_after.last_fight_gain().map(TurnGainKind::name).map(str::to_string),
+			ratchet_kind: game_after.last_ratchet_kind().map(RatchetKind::name).map(str::to_string),
+			ratchet_count: game_after.ratchet_count(),
+			ratchet_tier: game_after
+				.last_ratchet_tier()
+				.filter(|_| game_after.last_played_as_ratchet_reward())
+				.map(RatchetTier::name)
+				.map(str::to_string),
 			played_as_extra: game_after.last_played_as_extra(),
+			played_as_ratchet: game_after.last_played_as_ratchet_reward(),
 		}
 	}
 
@@ -1069,6 +1090,8 @@ pub struct EndLog {
 	pub fight_gain_mover: u32,
 	#[serde(default, skip_serializing_if = "skip_zero_u32")]
 	pub fight_gain_opponent: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub ratchet_count: u32,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub ended_on_extra: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1095,6 +1118,7 @@ impl EndLog {
 				fight_gain_awarded: 0,
 				fight_gain_mover: 0,
 				fight_gain_opponent: 0,
+				ratchet_count: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
 			},
@@ -1114,6 +1138,7 @@ impl EndLog {
 				fight_gain_awarded: 0,
 				fight_gain_mover: 0,
 				fight_gain_opponent: 0,
+				ratchet_count: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
 			},
@@ -1133,6 +1158,7 @@ impl EndLog {
 				fight_gain_awarded: 0,
 				fight_gain_mover: 0,
 				fight_gain_opponent: 0,
+				ratchet_count: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
 			},
@@ -1220,6 +1246,12 @@ pub struct FinalLog {
 	pub extra_turns_p2: u8,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub extra_turn_active: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub ratchet_reward_active: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ratchet_tier: Option<String>,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub ratchet_count: u32,
 }
 
 impl FinalLog {
@@ -1245,6 +1277,9 @@ impl FinalLog {
 			extra_turns_p1: game.extra_turns(Player::One),
 			extra_turns_p2: game.extra_turns(Player::Two),
 			extra_turn_active: game.extra_turn_active(),
+			ratchet_reward_active: game.ratchet_reward_active(),
+			ratchet_tier: game.active_ratchet_tier().map(RatchetTier::name).map(str::to_string),
+			ratchet_count: game.ratchet_count(),
 		}
 	}
 }
@@ -1454,6 +1489,7 @@ impl GameLog {
 		self.end.fight_gain_awarded = live.fight_gain_awarded();
 		self.end.fight_gain_mover = live.fight_gain_mover();
 		self.end.fight_gain_opponent = live.fight_gain_opponent();
+		self.end.ratchet_count = live.ratchet_count();
 		self.end.ended_on_extra = live.ended_on_extra_turn();
 		self.end.ended_after_extra = live.ended_after_extra_turn();
 		self.final_state = Some(FinalLog::from_game(live));
@@ -2054,14 +2090,15 @@ mod tests {
 		assert!(!parsed.cascade_winner_swap);
 		assert!(!parsed.center_mismatch);
 		assert_eq!(parsed.to_rules().unwrap().extra_swap_mode, ExtraSwapMode::Any);
-		assert_eq!(parsed.to_rules().unwrap().extra_turn_action, ExtraTurnAction::Convert);
+		assert!(parsed.to_rules().unwrap().ratchet_cascade);
 		assert_eq!(parsed.to_rules().unwrap().extra_convert_mode, ExtraConvertMode::Any);
 		assert!(!json.contains("extra_turn_action"), "{json}");
 		assert!(!json.contains("extra_convert_mode"), "{json}");
+		assert!(!json.contains("ratchet_cascade"), "{json}");
 		let mut on = RuleSet::default();
 		on.cascade_winner_swap = true;
 		on.center_mismatch = true;
-		on.extra_turn_action = ExtraTurnAction::Swap;
+		on.ratchet_cascade = false;
 		on.extra_convert_mode = ExtraConvertMode::Inner;
 		on.extra_swap_mode = ExtraSwapMode::Own;
 		let written = RulesLog::from_rules(on);
@@ -2069,8 +2106,8 @@ mod tests {
 		assert!(json.contains("cascade_winner_swap"), "{json}");
 		assert!(json.contains("center_mismatch"), "{json}");
 		assert!(json.contains("own"), "{json}");
-		assert!(json.contains("swap"), "{json}");
 		assert!(json.contains("inner"), "{json}");
+		assert!(json.contains("ratchet_cascade"), "{json}");
 	}
 
 	#[test]

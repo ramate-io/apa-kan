@@ -2311,35 +2311,55 @@ impl SwapMode {
 	}
 }
 
-/// What the cascade-winner extra turn may do besides ordinary ADD/MOVE/CLAIM
-/// (and live SWAP). Default [`Self::Convert`]: flip one opponent tile to the
-/// extra-taker's side; the piece stays on its node. [`Self::Swap`] keeps the
-/// earlier position-exchange reading (`--extra-turn-action swap`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum ExtraTurnAction {
-	#[default]
-	Convert,
-	Swap,
+/// Privilege on the move immediately after a ratchet under
+/// [`RuleSet::cascade_winner_swap`]. First ratchet of the game: loosened
+/// SWAP. Second and every later ratchet: loosened SWAP plus CONVERT (flip).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RatchetTier {
+	First,
+	Later,
 }
 
-impl ExtraTurnAction {
-	pub fn parse(s: &str) -> Result<Self, String> {
-		match s.to_ascii_lowercase().as_str() {
-			"convert" | "flip" | "turn-over" | "turnover" => Ok(Self::Convert),
-			"swap" | "exchange" | "position" => Ok(Self::Swap),
-			other => Err(format!("unknown extra-turn-action '{other}' (expected convert|swap)")),
-		}
-	}
-
+impl RatchetTier {
 	pub fn name(self) -> &'static str {
 		match self {
-			Self::Convert => "convert",
-			Self::Swap => "swap",
+			Self::First => "first",
+			Self::Later => "later",
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"first" | "1" | "swap" => Ok(Self::First),
+			"later" | "second" | "2" | "flip" | "convert" => Ok(Self::Later),
+			other => Err(format!("unknown ratchet-tier '{other}' (expected first|later)")),
+		}
+	}
+
+	pub fn allows_convert(self) -> bool {
+		matches!(self, Self::Later)
+	}
+}
+
+/// What resolved as a ratchet (at most one per applied action).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RatchetKind {
+	Fight,
+	Cascade,
+	Both,
+}
+
+impl RatchetKind {
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Fight => "fight",
+			Self::Cascade => "cascade",
+			Self::Both => "both",
 		}
 	}
 }
 
-/// Which opponent tiles an extra-turn [`Action::Convert`] may flip.
+/// Which opponent tiles a post-ratchet [`Action::Convert`] may flip.
 /// Default [`Self::Any`]: any opponent piece, including the origin.
 /// `--extra-convert-mode not-center` skips the origin; `inner` is inner-ring
 /// only.
@@ -2372,13 +2392,12 @@ impl ExtraConvertMode {
 	}
 }
 
-/// Permissive SWAP used on a cascade-winner extra turn when
-/// [`RuleSet::cascade_winner_swap`] is on **and**
-/// [`RuleSet::extra_turn_action`] is [`ExtraTurnAction::Swap`]. Default
-/// [`Self::Any`]: any of the mover's pieces may exchange positions with any
-/// occupied tile (own or opponent, not necessarily adjacent). Still a
-/// position swap, not a conversion of the partner; vacant nodes are never
-/// partners; the one-move no-echo guardrail still applies.
+/// Permissive SWAP on the move immediately after a ratchet when
+/// [`RuleSet::cascade_winner_swap`] is on. Default [`Self::Any`]: any of the
+/// mover's pieces may exchange positions with any occupied tile (own or
+/// opponent, not necessarily adjacent). Still a position swap, not a
+/// conversion of the partner; vacant nodes are never partners; the one-move
+/// no-echo guardrail still applies.
 ///
 /// `--extra-swap-mode own` keeps only own partners; `not-center` is `any`
 /// except neither node may be the origin. Enum default stays [`Self::Any`].
@@ -2960,25 +2979,29 @@ pub struct RuleSet {
 	/// `--singles-swap on` restores any-1-ring initiators. Echoing either
 	/// player's last SWAP pair is illegal for one action.
 	pub swap_mode: SwapMode,
-	/// When a pre-action center occupant is captured, the player who
-	/// entered that action with higher material (tie-break: more spawn
-	/// tokens / "capture hold") gets an extra turn. Default false. Missing
-	/// JSONL `cascade_winner_swap` replays as off.
-	///
-	/// On that extra turn (and any extra from [`Self::cascade_turn_gain`]
-	/// while this flag is on), [`Self::extra_turn_action`] is
-	/// [`ExtraTurnAction::Convert`] (ownership flip) or
-	/// [`ExtraTurnAction::Swap`] (permissive position exchange).
+	/// After a ratchet (center-occupant capture and, by default, a
+	/// non-winning control-cascade drop), the next move goes to the ratchet
+	/// winner: higher pre-action material, then spawn-token count. If that
+	/// player would move next anyway, play continues with no extra seating.
+	/// The winner's immediately following action may use loosened SWAP
+	/// (first ratchet of the game) or loosened SWAP plus CONVERT (second
+	/// and later). Default false. Missing JSONL `cascade_winner_swap`
+	/// replays as off. While this flag is on, [`Self::cascade_turn_gain`]
+	/// extras are not banked for drops that this flag already counts as
+	/// ratchets ([`Self::ratchet_cascade`]).
 	pub cascade_winner_swap: bool,
-	/// Extra-turn action when [`Self::cascade_winner_swap`] is on. Default
-	/// [`ExtraTurnAction::Convert`]. Missing JSONL replays as convert.
-	pub extra_turn_action: ExtraTurnAction,
-	/// Opponent-tile filter for extra-turn [`Action::Convert`]. Default
+	/// When [`Self::cascade_winner_swap`] is on, non-winning control-cascade
+	/// checkpoint drops also count as ratchets (same winner rule, same
+	/// 1st/2nd+ privilege tiers). Default true. `--ratchet-cascade off`
+	/// keeps live [`Self::cascade_turn_gain`] extras for drops and only
+	/// treats center fights as ratchets. Missing JSONL replays as on.
+	pub ratchet_cascade: bool,
+	/// Opponent-tile filter for post-ratchet [`Action::Convert`]. Default
 	/// [`ExtraConvertMode::Any`]. Missing JSONL replays as any.
 	pub extra_convert_mode: ExtraConvertMode,
-	/// Partner filter for extra-turn SWAP when [`Self::cascade_winner_swap`]
-	/// is on and [`Self::extra_turn_action`] is [`ExtraTurnAction::Swap`].
-	/// Default [`ExtraSwapMode::Any`]. Missing JSONL replays as any.
+	/// Partner filter for post-ratchet SWAP when
+	/// [`Self::cascade_winner_swap`] is on. Default [`ExtraSwapMode::Any`].
+	/// Missing JSONL replays as any.
 	pub extra_swap_mode: ExtraSwapMode,
 	/// Unmatched center occupant scores a synthetic +1 mismatch (no edge
 	/// match from neighbors). Default false. Missing JSONL replays as off.
@@ -3037,7 +3060,7 @@ impl Default for RuleSet {
 			capture_mode: CaptureMode::LocalClaim,
 			swap_mode: SwapMode::NormalOnly,
 			cascade_winner_swap: false,
-			extra_turn_action: ExtraTurnAction::Convert,
+			ratchet_cascade: true,
 			extra_convert_mode: ExtraConvertMode::Any,
 			extra_swap_mode: ExtraSwapMode::Any,
 			center_mismatch: false,
@@ -3095,19 +3118,18 @@ pub enum Action {
 	},
 	/// Exchange the initiator at `from` (own tile) with the partner at `to`.
 	/// Live SWAP requires [`RuleSet::swap_mode`] (single-ring initiator,
-	/// adjacent partner). A cascade-winner extra turn with
-	/// [`ExtraTurnAction::Swap`] uses [`RuleSet::extra_swap_mode`] instead.
-	/// Does not spend a spawn token. Local-claim captures fire on both
-	/// landing nodes and their neighbors.
+	/// adjacent partner). A post-ratchet reward move uses
+	/// [`RuleSet::extra_swap_mode`] instead. Does not spend a spawn token.
+	/// Local-claim captures fire on both landing nodes and their neighbors.
 	Swap {
 		from: NodeId,
 		to: NodeId,
 	},
 	/// Flip ownership of the opponent tile at `node` to the mover. The
-	/// piece stays put. Extra-turn only, when [`RuleSet::cascade_winner_swap`]
-	/// is on and [`RuleSet::extra_turn_action`] is
-	/// [`ExtraTurnAction::Convert`]. Local-claim captures then fire on that
-	/// node and its neighbors (the stolen piece can self-pop if unmatched).
+	/// piece stays put. Legal only on the move immediately after the second
+	/// or a later ratchet when [`RuleSet::cascade_winner_swap`] is on.
+	/// Local-claim captures then fire on that node and its neighbors (the
+	/// stolen piece can self-pop if unmatched).
 	Convert {
 		node: NodeId,
 	},
@@ -3216,6 +3238,18 @@ pub struct Game {
 	fight_gain_awarded: u32,
 	fight_gain_mover: u32,
 	fight_gain_opponent: u32,
+	/// Awarded ratchets this game (had a winner). 1st vs 2nd+ privilege.
+	ratchet_count: u32,
+	/// Non-winning cascade drop this action; consumed by [`Self::award_ratchet`].
+	cascade_drop_nonwin: bool,
+	/// Winner + tier of a ratchet resolved this action; consumed in finish_turn.
+	pending_ratchet: Option<(Player, RatchetTier)>,
+	/// Side to move is taking the immediate post-ratchet reward action.
+	playing_ratchet_reward: bool,
+	active_ratchet_tier: Option<RatchetTier>,
+	last_played_as_ratchet_reward: bool,
+	last_ratchet_tier: Option<RatchetTier>,
+	last_ratchet_kind: Option<RatchetKind>,
 	extra_turns_played: u32,
 	ended_on_extra: bool,
 	ended_after_extra: bool,
@@ -3342,6 +3376,14 @@ impl Game {
 			fight_gain_awarded: 0,
 			fight_gain_mover: 0,
 			fight_gain_opponent: 0,
+			ratchet_count: 0,
+			cascade_drop_nonwin: false,
+			pending_ratchet: None,
+			playing_ratchet_reward: false,
+			active_ratchet_tier: None,
+			last_played_as_ratchet_reward: false,
+			last_ratchet_tier: None,
+			last_ratchet_kind: None,
 			extra_turns_played: 0,
 			ended_on_extra: false,
 			ended_after_extra: false,
@@ -3413,6 +3455,14 @@ impl Game {
 			fight_gain_awarded: 0,
 			fight_gain_mover: 0,
 			fight_gain_opponent: 0,
+			ratchet_count: 0,
+			cascade_drop_nonwin: false,
+			pending_ratchet: None,
+			playing_ratchet_reward: false,
+			active_ratchet_tier: None,
+			last_played_as_ratchet_reward: false,
+			last_ratchet_tier: None,
+			last_ratchet_kind: None,
 			extra_turns_played: 0,
 			ended_on_extra: false,
 			ended_after_extra: false,
@@ -3486,6 +3536,14 @@ impl Game {
 			fight_gain_awarded: 0,
 			fight_gain_mover: 0,
 			fight_gain_opponent: 0,
+			ratchet_count: 0,
+			cascade_drop_nonwin: false,
+			pending_ratchet: None,
+			playing_ratchet_reward: false,
+			active_ratchet_tier: None,
+			last_played_as_ratchet_reward: false,
+			last_ratchet_tier: None,
+			last_ratchet_kind: None,
 			extra_turns_played: 0,
 			ended_on_extra: false,
 			ended_after_extra: false,
@@ -3686,6 +3744,32 @@ impl Game {
 		self.fight_gain_opponent
 	}
 
+	/// Awarded ratchets this game (center fight and/or cascade drop with a winner).
+	pub fn ratchet_count(&self) -> u32 {
+		self.ratchet_count
+	}
+
+	/// True when the side to move is taking the immediate post-ratchet reward.
+	pub fn ratchet_reward_active(&self) -> bool {
+		self.playing_ratchet_reward
+	}
+
+	pub fn active_ratchet_tier(&self) -> Option<RatchetTier> {
+		self.active_ratchet_tier
+	}
+
+	pub fn last_played_as_ratchet_reward(&self) -> bool {
+		self.last_played_as_ratchet_reward
+	}
+
+	pub fn last_ratchet_tier(&self) -> Option<RatchetTier> {
+		self.last_ratchet_tier
+	}
+
+	pub fn last_ratchet_kind(&self) -> Option<RatchetKind> {
+		self.last_ratchet_kind
+	}
+
 	/// True when the last applied action was taken as a consumed extra turn.
 	pub fn last_played_as_extra(&self) -> bool {
 		self.last_played_as_extra
@@ -3699,19 +3783,19 @@ impl Game {
 		self.ended_after_extra
 	}
 
-	/// Extra-turn SWAP uses [`RuleSet::extra_swap_mode`] instead of
-	/// [`RuleSet::swap_mode`].
+	/// Post-ratchet SWAP uses [`RuleSet::extra_swap_mode`] instead of
+	/// [`RuleSet::swap_mode`]. Legal on the first ratchet reward and on
+	/// every later one.
 	pub fn extra_swap_active(&self) -> bool {
-		self.rules.cascade_winner_swap
-			&& self.playing_extra_turn
-			&& self.rules.extra_turn_action == ExtraTurnAction::Swap
+		self.rules.cascade_winner_swap && self.playing_ratchet_reward
 	}
 
-	/// Extra-turn [`Action::Convert`] is legal.
+	/// Post-ratchet [`Action::Convert`] is legal on the second and later
+	/// ratchet rewards.
 	pub fn extra_convert_active(&self) -> bool {
 		self.rules.cascade_winner_swap
-			&& self.playing_extra_turn
-			&& self.rules.extra_turn_action == ExtraTurnAction::Convert
+			&& self.playing_ratchet_reward
+			&& self.active_ratchet_tier.is_some_and(RatchetTier::allows_convert)
 	}
 
 	#[cfg(test)]
@@ -3722,6 +3806,17 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn set_extra_turn_active(&mut self, active: bool) {
 		self.playing_extra_turn = active;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_ratchet_reward(&mut self, tier: RatchetTier) {
+		self.rules.cascade_winner_swap = true;
+		self.playing_ratchet_reward = true;
+		self.active_ratchet_tier = Some(tier);
+		self.ratchet_count = match tier {
+			RatchetTier::First => 1,
+			RatchetTier::Later => 2,
+		};
 	}
 
 	#[cfg(test)]
@@ -3746,13 +3841,13 @@ impl Game {
 	}
 
 	#[cfg(test)]
-	pub(crate) fn set_extra_turn_action(&mut self, action: ExtraTurnAction) {
-		self.rules.extra_turn_action = action;
+	pub(crate) fn set_extra_convert_mode(&mut self, mode: ExtraConvertMode) {
+		self.rules.extra_convert_mode = mode;
 	}
 
 	#[cfg(test)]
-	pub(crate) fn set_extra_convert_mode(&mut self, mode: ExtraConvertMode) {
-		self.rules.extra_convert_mode = mode;
+	pub(crate) fn set_ratchet_cascade(&mut self, on: bool) {
+		self.rules.ratchet_cascade = on;
 	}
 
 	/// Ratcheted cascade checkpoint (`2..=control_n`) when
@@ -4880,7 +4975,7 @@ impl Game {
 		acts
 	}
 
-	/// Extra-turn CONVERT of opponent tiles. Empty unless
+	/// Post-ratchet CONVERT of opponent tiles. Empty unless
 	/// [`Self::extra_convert_active`].
 	pub fn legal_converts(&self) -> Vec<Action> {
 		if self.status.is_over() || !self.extra_convert_active() {
@@ -4905,7 +5000,7 @@ impl Game {
 	}
 
 	/// Legal SWAP actions for the side to move. Empty when SWAP is off
-	/// unless an extra-turn permissive SWAP is active.
+	/// unless a post-ratchet permissive SWAP is active.
 	pub fn legal_swaps(&self) -> Vec<Action> {
 		if self.status.is_over() || !self.swap_is_available() {
 			return Vec::new();
@@ -5295,7 +5390,11 @@ impl Game {
 		}
 		self.last_turn_gain = None;
 		self.last_fight_gain = None;
+		self.last_ratchet_kind = None;
+		self.cascade_drop_nonwin = false;
 		self.last_played_as_extra = self.playing_extra_turn;
+		self.last_played_as_ratchet_reward = self.playing_ratchet_reward;
+		self.last_ratchet_tier = self.active_ratchet_tier;
 		let pre_p1_mat = self.total_material(Player::One);
 		let pre_p2_mat = self.total_material(Player::Two);
 		let pre_p1_tok = self.budget_token_count(Player::One);
@@ -5381,7 +5480,7 @@ impl Game {
 			self.check_immediate_control_drop();
 		}
 		if !self.status.is_over() {
-			self.award_center_fight_gain(
+			self.award_ratchet(
 				pre_p1_mat,
 				pre_p2_mat,
 				pre_p1_tok,
@@ -5435,15 +5534,31 @@ impl Game {
 			self.status = GameStatus::Draw { reason: EndReason::TurnLimit };
 			return;
 		}
-		if self.extra_turns[who.index()] > 0 {
-			self.extra_turns[who.index()] -= 1;
-			self.playing_extra_turn = true;
-			self.extra_turns_played = self.extra_turns_played.saturating_add(1);
-			self.current = who;
+		if let Some((winner, tier)) = self.pending_ratchet.take() {
+			if winner == who {
+				self.playing_extra_turn = true;
+				self.extra_turns_played = self.extra_turns_played.saturating_add(1);
+				self.current = who;
+			} else {
+				self.prev_finished_extra = self.playing_extra_turn;
+				self.playing_extra_turn = false;
+				self.current = who.other();
+			}
+			self.playing_ratchet_reward = true;
+			self.active_ratchet_tier = Some(tier);
 		} else {
-			self.prev_finished_extra = self.playing_extra_turn;
-			self.playing_extra_turn = false;
-			self.current = who.other();
+			self.playing_ratchet_reward = false;
+			self.active_ratchet_tier = None;
+			if self.extra_turns[who.index()] > 0 {
+				self.extra_turns[who.index()] -= 1;
+				self.playing_extra_turn = true;
+				self.extra_turns_played = self.extra_turns_played.saturating_add(1);
+				self.current = who;
+			} else {
+				self.prev_finished_extra = self.playing_extra_turn;
+				self.playing_extra_turn = false;
+				self.current = who.other();
+			}
 		}
 		if self.rules.no_moves_loses && !self.has_add_or_move() {
 			self.status =
@@ -5573,8 +5688,17 @@ impl Game {
 
 	/// One extra turn for the strict material leader after a non-winning
 	/// checkpoint drop. Multi-step drops (5→3) still award at most one.
+	/// When [`RuleSet::cascade_winner_swap`] and [`RuleSet::ratchet_cascade`]
+	/// are on, the drop is a ratchet instead (no extra-turn bank).
 	fn award_cascade_turn_gain(&mut self) {
-		if !self.rules.cascade_turn_gain || self.status.is_over() {
+		if self.status.is_over() {
+			return;
+		}
+		if self.rules.cascade_winner_swap && self.rules.ratchet_cascade {
+			self.cascade_drop_nonwin = true;
+			return;
+		}
+		if !self.rules.cascade_turn_gain {
 			return;
 		}
 		let p1 = self.total_material(Player::One);
@@ -5585,13 +5709,12 @@ impl Game {
 		self.bank_extra_turn(leader);
 	}
 
-	/// Extra turn when the tile that occupied the center *before* this
-	/// action is among the removals. Leader is pre-action material, then
-	/// spawn-token count (capture hold). Does not fire on a self-pop of a
-	/// newly landed unmatched piece (center was empty). If cascade turn
-	/// gain already banked an extra turn this action, the fight is still
-	/// counted but not stacked.
-	fn award_center_fight_gain(
+	/// Ratchet when a pre-action center occupant is captured and/or a
+	/// non-winning cascade drop was marked this action. Winner is
+	/// pre-action material, then spawn-token count. One action yields at
+	/// most one ratchet. No extra-turn bank: the winner is seated next,
+	/// which is an extra go only when the mover won.
+	fn award_ratchet(
 		&mut self,
 		p1_mat: usize,
 		p2_mat: usize,
@@ -5600,13 +5723,13 @@ impl Game {
 		pre_center_id: Option<u32>,
 		removals: &[Removal],
 	) {
+		let cascade = self.cascade_drop_nonwin;
+		self.cascade_drop_nonwin = false;
 		if !self.rules.cascade_winner_swap || self.status.is_over() {
 			return;
 		}
-		let Some(id) = pre_center_id else {
-			return;
-		};
-		if !removals.iter().any(|r| r.tile.id == id) {
+		let fight = pre_center_id.is_some_and(|id| removals.iter().any(|r| r.tile.id == id));
+		if !fight && !cascade {
 			return;
 		}
 		let Some(leader) = Self::fight_leader(p1_mat, p2_mat, p1_tok, p2_tok) else {
@@ -5621,9 +5744,16 @@ impl Game {
 		} else {
 			self.fight_gain_opponent = self.fight_gain_opponent.saturating_add(1);
 		}
-		if self.last_turn_gain.is_none() {
-			self.bank_extra_turn(leader);
-		}
+		self.last_ratchet_kind = Some(if fight && cascade {
+			RatchetKind::Both
+		} else if fight {
+			RatchetKind::Fight
+		} else {
+			RatchetKind::Cascade
+		});
+		self.ratchet_count = self.ratchet_count.saturating_add(1);
+		let tier = if self.ratchet_count == 1 { RatchetTier::First } else { RatchetTier::Later };
+		self.pending_ratchet = Some((leader, tier));
 	}
 
 	fn bank_extra_turn(&mut self, leader: Player) {
@@ -5891,7 +6021,7 @@ impl Game {
 
 	fn apply_convert(&mut self, node: NodeId) -> Result<(), String> {
 		if !self.extra_convert_active() {
-			return Err("CONVERT is only legal on a cascade-winner extra turn".into());
+			return Err("CONVERT is only legal after the second (or later) ratchet".into());
 		}
 		let mut tile = self.tile_at(node).ok_or_else(|| "no tile to convert".to_string())?;
 		if tile.owner == self.current {
@@ -6333,7 +6463,7 @@ mod tests {
 		assert_eq!(rules.channel_mode, ChannelMode::Additive);
 		assert_eq!(rules.swap_mode, SwapMode::NormalOnly);
 		assert!(!rules.cascade_winner_swap);
-		assert_eq!(rules.extra_turn_action, ExtraTurnAction::Convert);
+		assert!(rules.ratchet_cascade);
 		assert_eq!(rules.extra_convert_mode, ExtraConvertMode::Any);
 		assert_eq!(rules.extra_swap_mode, ExtraSwapMode::Any);
 		assert!(!rules.center_mismatch);
@@ -13509,9 +13639,11 @@ mod tests {
 		assert_eq!(game.last_fight_gain(), Some(TurnGainKind::Mover));
 		assert_eq!(game.fight_gain_awarded(), 1);
 		assert_eq!(game.fight_gain_mover(), 1);
-		assert_eq!(game.last_turn_gain(), Some(TurnGainKind::Mover));
+		assert_eq!(game.last_turn_gain(), None, "ratchet seating is not a banked extra");
 		assert_eq!(game.current_player(), Player::One);
 		assert!(game.extra_turn_active());
+		assert!(game.ratchet_reward_active());
+		assert_eq!(game.active_ratchet_tier(), Some(RatchetTier::First));
 		assert!(!game.last_played_as_extra());
 	}
 
@@ -13549,9 +13681,7 @@ mod tests {
 	}
 
 	fn extra_swap_rules() -> RuleSet {
-		let mut rules = fight_gain_rules();
-		rules.extra_turn_action = ExtraTurnAction::Swap;
-		rules
+		fight_gain_rules()
 	}
 
 	#[test]
@@ -13572,10 +13702,10 @@ mod tests {
 			!game.legal_swaps().contains(&Action::Swap { from: spawn, to: center }),
 			"normal-only adjacent SWAP must reject a 2-ring non-adjacent"
 		);
-		game.set_extra_turn_active(true);
+		game.set_ratchet_reward(RatchetTier::First);
 		assert!(
 			game.legal_swaps().contains(&Action::Swap { from: spawn, to: center }),
-			"extra-turn any SWAP may exchange any own piece with any occupied tile"
+			"first-ratchet any SWAP may exchange any own piece with any occupied tile"
 		);
 		game.apply(Action::Swap { from: spawn, to: center }).unwrap();
 		assert_eq!(game.tile_at(center).map(|t| t.owner), Some(Player::One));
@@ -13599,7 +13729,7 @@ mod tests {
 		put(&mut game, outer, Player::One, TileColor::Blue, 2, 1);
 		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
 		game.set_current(Player::One);
-		game.set_extra_turn_active(true);
+		game.set_ratchet_reward(RatchetTier::First);
 		assert!(game.legal_swaps().contains(&Action::Swap { from: inner, to: outer }));
 		assert!(!game.legal_swaps().contains(&Action::Swap { from: inner, to: center }));
 
@@ -13618,7 +13748,7 @@ mod tests {
 		let p1 = game.tile_at(spawn).unwrap();
 		let p2 = game.tile_at(center).unwrap();
 		game.set_current(Player::One);
-		game.set_extra_turn_active(true);
+		game.set_ratchet_reward(RatchetTier::First);
 		game.apply(Action::Swap { from: spawn, to: center }).unwrap();
 		assert_eq!(game.tile_at(center).map(|t| t.id), Some(p1.id));
 		assert_eq!(game.tile_at(spawn).map(|t| t.id), Some(p2.id));
@@ -13636,7 +13766,7 @@ mod tests {
 		let stolen_id = game.tile_at(center).unwrap().id;
 		game.set_current(Player::One);
 		assert!(game.legal_converts().is_empty());
-		game.set_extra_turn_active(true);
+		game.set_ratchet_reward(RatchetTier::Later);
 		assert!(game.legal_converts().contains(&Action::Convert { node: center }));
 		game.apply(Action::Convert { node: center }).unwrap();
 		assert_eq!(game.tile_at(center).map(|t| t.id), Some(stolen_id));
@@ -13656,7 +13786,7 @@ mod tests {
 		put(&mut game, inner, Player::Two, TileColor::Blue, 2, 1);
 		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
 		game.set_current(Player::One);
-		game.set_extra_turn_active(true);
+		game.set_ratchet_reward(RatchetTier::Later);
 		assert!(!game.legal_converts().contains(&Action::Convert { node: center }));
 		assert!(game.legal_converts().contains(&Action::Convert { node: inner }));
 		assert!(game.legal_converts().contains(&Action::Convert { node: spawn }));
@@ -13668,18 +13798,20 @@ mod tests {
 	}
 
 	#[test]
-	fn extra_convert_off_or_swap_action_has_no_convert() {
+	fn first_ratchet_has_swap_not_convert_second_has_both() {
 		let mut game = Game::empty(fight_gain_rules());
 		let center = game.board().center();
 		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
 		game.set_current(Player::One);
-		game.set_extra_turn_active(true);
-		assert!(game.legal_converts().contains(&Action::Convert { node: center }));
-		game.set_extra_turn_action(ExtraTurnAction::Swap);
+		game.set_ratchet_reward(RatchetTier::First);
+		assert!(game.extra_swap_active());
 		assert!(game.legal_converts().is_empty());
-		game.set_extra_turn_action(ExtraTurnAction::Convert);
+		game.set_ratchet_reward(RatchetTier::Later);
+		assert!(game.extra_swap_active());
+		assert!(game.legal_converts().contains(&Action::Convert { node: center }));
 		game.set_cascade_winner_swap(false);
 		assert!(game.legal_converts().is_empty());
+		assert!(!game.extra_swap_active());
 	}
 
 	#[test]
@@ -13699,7 +13831,7 @@ mod tests {
 		let stolen_id = game.tile_at(center).unwrap().id;
 		let mut replay = game.clone();
 		game.set_current(Player::One);
-		game.set_extra_turn_active(true);
+		game.set_ratchet_reward(RatchetTier::Later);
 		let action = Action::Convert { node: center };
 		let piece = crate::bench_log::piece_for_action(&game, action);
 		let outcome = game.apply(action).unwrap();
@@ -13707,9 +13839,100 @@ mod tests {
 		assert_eq!(rec.kind, "CONVERT");
 		assert_eq!(rec.to_action().unwrap(), action);
 		replay.set_current(Player::One);
-		replay.set_extra_turn_active(true);
+		replay.set_ratchet_reward(RatchetTier::Later);
 		replay.apply(rec.to_action().unwrap()).unwrap();
 		assert_eq!(replay.tile_at(center).map(|t| t.id), Some(stolen_id));
 		assert_eq!(replay.tile_at(center).map(|t| t.owner), Some(Player::One));
+	}
+
+	#[test]
+	fn ratchet_opponent_winner_does_not_bank_an_extra_turn() {
+		let (mut game, center) = fight_gain_claim_center(2, 4);
+		assert!(game.total_material(Player::Two) > game.total_material(Player::One));
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert_eq!(game.last_fight_gain(), Some(TurnGainKind::Opponent));
+		assert_eq!(game.current_player(), Player::Two);
+		assert!(!game.extra_turn_active());
+		assert_eq!(game.extra_turns(Player::Two), 0);
+		assert!(game.ratchet_reward_active());
+		assert_eq!(game.active_ratchet_tier(), Some(RatchetTier::First));
+		assert!(game.extra_swap_active());
+		assert!(!game.extra_convert_active());
+		assert_eq!(game.ratchet_count(), 1);
+	}
+
+	#[test]
+	fn ratchet_second_award_unlocks_convert() {
+		let (mut game, center) = fight_gain_claim_center(4, 2);
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert_eq!(game.ratchet_count(), 1);
+		assert_eq!(game.active_ratchet_tier(), Some(RatchetTier::First));
+		assert!(!game.extra_convert_active());
+		assert!(game.extra_swap_active());
+		let dest = game.isolated_empty_spawn();
+		stock_bench(&mut game, Player::One, 1);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(!game.ratchet_reward_active(), "reward is only the immediate next move");
+		assert_eq!(game.current_player(), Player::Two);
+		put(&mut game, center, Player::Two, TileColor::Blue, 1, 1);
+		assert!(game.is_overwhelmed(center));
+		game.pin_total_material(Player::Two, 6);
+		game.pin_total_material(Player::One, 4);
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert_eq!(game.last_fight_gain(), Some(TurnGainKind::Mover));
+		assert_eq!(game.ratchet_count(), 2);
+		assert_eq!(game.current_player(), Player::Two);
+		assert!(game.extra_turn_active());
+		assert_eq!(game.active_ratchet_tier(), Some(RatchetTier::Later));
+		assert!(game.extra_convert_active());
+		assert!(game.extra_swap_active());
+	}
+
+	#[test]
+	fn cascade_drop_counts_as_ratchet_and_does_not_bank_extra() {
+		let (mut game, dest) = Game::cascade_turn_gain_mover_add_drop();
+		game.set_cascade_winner_swap(true);
+		assert!(game.rules().cascade_turn_gain);
+		assert!(
+			game.total_material(Player::Two) > game.total_material(Player::One),
+			"fixture enters with P2 ahead; live cascade extras use post-capture P1 lead"
+		);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.last_turn_gain(), None, "cascade extra is replaced by the ratchet");
+		assert_eq!(game.extra_turns(Player::One), 0);
+		assert_eq!(game.last_fight_gain(), Some(TurnGainKind::Opponent));
+		assert_eq!(game.last_ratchet_kind(), Some(RatchetKind::Cascade));
+		assert_eq!(game.current_player(), Player::Two, "opponent already moves next; no extra go");
+		assert!(!game.extra_turn_active());
+		assert!(game.ratchet_reward_active());
+		assert_eq!(game.active_ratchet_tier(), Some(RatchetTier::First));
+		assert!(game.extra_swap_active());
+		assert!(!game.extra_convert_active());
+	}
+
+	#[test]
+	fn ratchet_cascade_off_keeps_cascade_turn_gain_extras() {
+		let (mut game, dest) = Game::cascade_turn_gain_mover_add_drop();
+		game.set_cascade_winner_swap(true);
+		game.set_ratchet_cascade(false);
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert_eq!(game.last_turn_gain(), Some(TurnGainKind::Mover));
+		assert_eq!(game.last_fight_gain(), None);
+		assert_eq!(game.current_player(), Player::One);
+		assert!(game.extra_turn_active());
+		assert!(!game.ratchet_reward_active());
+	}
+
+	#[test]
+	fn ratchet_reward_still_allows_add() {
+		let (mut game, center) = fight_gain_claim_center(4, 2);
+		stock_bench(&mut game, Player::One, 2);
+		game.apply(Action::Claim { node: center }).unwrap();
+		assert!(game.ratchet_reward_active());
+		assert!(!game.legal_adds().is_empty());
+		let dest = game.isolated_empty_spawn();
+		game.apply(Action::Add { bench_index: 0, node: dest }).unwrap();
+		assert!(!game.ratchet_reward_active());
 	}
 }

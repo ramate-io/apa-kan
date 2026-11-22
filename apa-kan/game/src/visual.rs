@@ -2802,20 +2802,27 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 					));
 				}
 			}
-			if game.extra_turn_active() {
-				if game.extra_swap_active() {
+			if game.ratchet_reward_active() {
+				let tier = match game.active_ratchet_tier() {
+					Some(crate::game::RatchetTier::Later) => "2+",
+					_ => "1",
+				};
+				if game.extra_convert_active() {
 					extra.push_str(&format!(
-						"{HUD_SEP}+turn swap-{}",
-						game.rules().extra_swap_mode.name()
-					));
-				} else if game.extra_convert_active() {
-					extra.push_str(&format!(
-						"{HUD_SEP}+turn convert-{}",
+						"{HUD_SEP}ratchet-{tier} flip-{}",
 						game.rules().extra_convert_mode.name()
 					));
+				} else if game.extra_swap_active() {
+					extra.push_str(&format!(
+						"{HUD_SEP}ratchet-{tier} swap-{}",
+						game.rules().extra_swap_mode.name()
+					));
 				} else {
-					extra.push_str(&format!("{HUD_SEP}+turn"));
+					extra.push_str(&format!("{HUD_SEP}ratchet-{tier}"));
 				}
+			}
+			if game.extra_turn_active() && !game.ratchet_reward_active() {
+				extra.push_str(&format!("{HUD_SEP}+turn"));
 			}
 			for player in [Player::One, Player::Two] {
 				let n = game.extra_turns(player);

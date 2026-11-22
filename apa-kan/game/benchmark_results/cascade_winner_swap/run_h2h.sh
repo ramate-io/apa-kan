@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Cascade-winner extra CONVERT (ownership flip) + center-mismatch exactplay
-# self-play. `--cascade-winner-swap on` defaults `--extra-turn-action convert`.
-# Position-exchange extra SWAP is `--extra-turn-action swap` (not benched here).
-# Live RuleSet defaults otherwise (flags default off). Light budget matches
+# Next-move ratchet reward (`--cascade-winner-swap on`): after a center fight
+# or non-winning cascade drop, the winner (higher entering material, then
+# tokens) moves next. First reward: loosened SWAP. Second and later: SWAP
+# plus CONVERT. No extra-turn bank. Center +1 mismatch is not in this cell.
+# Live RuleSet defaults otherwise (flag default off). Light budget matches
 # PR #85 exactplay self-play.
 #
 # Usage:
-#   run_h2h.sh all            # four light 100-game cells
-#   run_h2h.sh baseline|r1|r2|both
-#   run_h2h.sh deep_baseline|deep_r1|deep_r2|deep_both   # 4x, 20 games
+#   run_h2h.sh all            # light 100-game baseline + r1
+#   run_h2h.sh baseline|r1
+#   run_h2h.sh deep_baseline|deep_r1   # 4x, 20 games
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../../../.." && pwd)"
 cd "$repo"
@@ -60,12 +61,6 @@ case "$cfg" in
   r1)
     run_one h2h_r1 --budget "$LIGHT" --games 50 --cascade-winner-swap on
     ;;
-  r2)
-    run_one h2h_r2 --budget "$LIGHT" --games 50 --center-mismatch on
-    ;;
-  both)
-    run_one h2h_both --budget "$LIGHT" --games 50 --cascade-winner-swap on --center-mismatch on
-    ;;
   deep_baseline)
     run_one h2h_deep4x_baseline --budget "$LIGHT" --games 10 \
       --p1-budget "$DEEP4" --p2-budget "$DEEP4"
@@ -74,23 +69,12 @@ case "$cfg" in
     run_one h2h_deep4x_r1 --budget "$LIGHT" --games 10 \
       --p1-budget "$DEEP4" --p2-budget "$DEEP4" --cascade-winner-swap on
     ;;
-  deep_r2)
-    run_one h2h_deep4x_r2 --budget "$LIGHT" --games 10 \
-      --p1-budget "$DEEP4" --p2-budget "$DEEP4" --center-mismatch on
-    ;;
-  deep_both)
-    run_one h2h_deep4x_both --budget "$LIGHT" --games 10 \
-      --p1-budget "$DEEP4" --p2-budget "$DEEP4" \
-      --cascade-winner-swap on --center-mismatch on
-    ;;
   all)
     run_one h2h_baseline --budget "$LIGHT" --games 50
     run_one h2h_r1 --budget "$LIGHT" --games 50 --cascade-winner-swap on
-    run_one h2h_r2 --budget "$LIGHT" --games 50 --center-mismatch on
-    run_one h2h_both --budget "$LIGHT" --games 50 --cascade-winner-swap on --center-mismatch on
     ;;
   *)
-    echo "usage: $0 [all|baseline|r1|r2|both|deep_baseline|deep_r1|deep_r2|deep_both]" >&2
+    echo "usage: $0 [all|baseline|r1|deep_baseline|deep_r1]" >&2
     exit 2
     ;;
 esac

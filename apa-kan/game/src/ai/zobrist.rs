@@ -37,6 +37,9 @@ pub struct Zobrist {
 	control_ratchet: [u64; 16],
 	extra_turns: [[u64; 16]; 2],
 	extra_turn_active: u64,
+	ratchet_reward_active: u64,
+	ratchet_tier: [u64; 2],
+	ratchet_count: [u64; 16],
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
 	last_swap_none: [u64; 2],
@@ -68,6 +71,9 @@ impl Zobrist {
 			control_ratchet: [0; 16],
 			extra_turns: [[0; 16]; 2],
 			extra_turn_active: next(),
+			ratchet_reward_active: next(),
+			ratchet_tier: [next(), next()],
+			ratchet_count: [0; 16],
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
 			last_swap_none: [next(), next()],
@@ -125,6 +131,7 @@ impl Zobrist {
 		}
 		for n in 0..16 {
 			z.control_ratchet[n] = next();
+			z.ratchet_count[n] = next();
 		}
 		z
 	}
@@ -235,6 +242,16 @@ pub fn hash(game: &Game) -> u64 {
 	if game.extra_turn_active() {
 		h ^= z.extra_turn_active;
 	}
+	if game.ratchet_reward_active() {
+		h ^= z.ratchet_reward_active;
+	}
+	if let Some(tier) = game.active_ratchet_tier() {
+		h ^= z.ratchet_tier[match tier {
+			crate::game::RatchetTier::First => 0,
+			crate::game::RatchetTier::Later => 1,
+		}];
+	}
+	h ^= z.ratchet_count[game.ratchet_count().min(15) as usize];
 	h
 }
 
@@ -443,5 +460,12 @@ mod tests {
 		active.set_extra_turn_active(true);
 		assert_ne!(hash(&none), hash(&active), "TT key must include an active extra turn");
 		assert_ne!(hash(&banked), hash(&active));
+
+		let mut reward = Game::empty(RuleSet::default());
+		reward.set_ratchet_reward(crate::game::RatchetTier::First);
+		assert_ne!(hash(&none), hash(&reward), "TT key must include an active post-ratchet reward");
+		let mut later = Game::empty(RuleSet::default());
+		later.set_ratchet_reward(crate::game::RatchetTier::Later);
+		assert_ne!(hash(&reward), hash(&later), "first vs later ratchet tiers must not collide");
 	}
 }

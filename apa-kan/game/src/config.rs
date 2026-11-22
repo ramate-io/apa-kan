@@ -9,9 +9,9 @@ use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	color_drift_diagonal, BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, CaptureMode,
-	ChannelMode, EmblemWeights, EndgameRule, ExtraConvertMode, ExtraSwapMode, ExtraTurnAction,
-	HopWeightCmp, InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RingCountWeights,
-	RuleSet, SamePieceTwice, SwapMode, ZagMismatchCount, BAG_SIZE,
+	ChannelMode, EmblemWeights, EndgameRule, ExtraConvertMode, ExtraSwapMode, HopWeightCmp,
+	InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet,
+	SamePieceTwice, SwapMode, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -328,8 +328,14 @@ where
 		"--cascade-winner-swap" => {
 			rules.cascade_winner_swap = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--ratchet-cascade" => {
+			rules.ratchet_cascade = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--extra-turn-action" => {
-			rules.extra_turn_action = ExtraTurnAction::parse(&require_value(arg, it.next())?)?;
+			let _ = require_value(arg, it.next())?;
+			return Err(
+				"--extra-turn-action was removed: --cascade-winner-swap now awards loosened SWAP after the first ratchet and CONVERT (flip) after the second and later".into(),
+			);
 		}
 		"--extra-convert-mode" => {
 			rules.extra_convert_mode = ExtraConvertMode::parse(&require_value(arg, it.next())?)?;
@@ -537,10 +543,10 @@ pub fn usage() -> &'static str {
 	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --endgame-rule <control-cascade|low-value>  One-way ratchet 5→2 with max material, then low-value at ≤1 (default: control-cascade)\n\
 	   --cascade-turn-gain <on|off>               Extra turn for the material leader on a non-winning cascade drop (default: on)\n\
-	   --cascade-winner-swap <on|off>             Extra turn when a pre-action center occupant is captured (default: off)\n\
-	   --extra-turn-action <convert|swap>         Extra-turn CONVERT (ownership flip, default) or permissive position-exchange SWAP\n\
-	   --extra-convert-mode <any|not-center|inner> CONVERT target filter (default: any opponent piece, including center)\n\
-	   --extra-swap-mode <any|own|not-center>     Extra-turn SWAP partner filter when --extra-turn-action swap\n\
+	   --cascade-winner-swap <on|off>             After a ratchet, next move to the winner (higher entering material, then tokens); first reward SWAP, second+ also CONVERT (default: off)\n\
+	   --ratchet-cascade <on|off>                 Count non-winning control-cascade drops as ratchets when --cascade-winner-swap is on (default: on)\n\
+	   --extra-convert-mode <any|not-center|inner> CONVERT target filter on 2nd+ ratchet rewards (default: any opponent piece, including center)\n\
+	   --extra-swap-mode <any|own|not-center>     Post-ratchet SWAP partner filter (default: any)\n\
 	   --center-mismatch <on|off>                 Unmatched center occupant scores +1 mismatch (default: off)\n\
 	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
 	                                              Can't-reach-control loss (default: off)\n\
@@ -759,17 +765,17 @@ mod tests {
 	fn parses_cascade_winner_swap_and_center_mismatch() {
 		let def = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert!(!def.rules.cascade_winner_swap);
-		assert_eq!(def.rules.extra_turn_action, crate::game::ExtraTurnAction::Convert);
+		assert!(def.rules.ratchet_cascade);
 		assert_eq!(def.rules.extra_convert_mode, crate::game::ExtraConvertMode::Any);
 		assert_eq!(def.rules.extra_swap_mode, crate::game::ExtraSwapMode::Any);
 		assert!(!def.rules.center_mismatch);
 		let on = GameConfig::parse(["--cascade-winner-swap", "on"]).unwrap();
 		assert!(on.rules.cascade_winner_swap);
-		assert_eq!(on.rules.extra_turn_action, crate::game::ExtraTurnAction::Convert);
+		assert!(on.rules.ratchet_cascade);
 		let off = GameConfig::parse(["--cascade-winner-swap", "off"]).unwrap();
 		assert!(!off.rules.cascade_winner_swap);
-		let swap = GameConfig::parse(["--extra-turn-action", "swap"]).unwrap();
-		assert_eq!(swap.rules.extra_turn_action, crate::game::ExtraTurnAction::Swap);
+		let no_cas = GameConfig::parse(["--ratchet-cascade", "off"]).unwrap();
+		assert!(!no_cas.rules.ratchet_cascade);
 		let inner = GameConfig::parse(["--extra-convert-mode", "inner"]).unwrap();
 		assert_eq!(inner.rules.extra_convert_mode, crate::game::ExtraConvertMode::Inner);
 		let nc_c = GameConfig::parse(["--extra-convert-mode", "not-center"]).unwrap();
@@ -781,7 +787,7 @@ mod tests {
 		let mm = GameConfig::parse(["--center-mismatch", "on"]).unwrap();
 		assert!(mm.rules.center_mismatch);
 		assert!(GameConfig::parse(["--cascade-winner-swap", "maybe"]).is_err());
-		assert!(GameConfig::parse(["--extra-turn-action", "teleport"]).is_err());
+		assert!(GameConfig::parse(["--extra-turn-action", "swap"]).is_err());
 		assert!(GameConfig::parse(["--extra-convert-mode", "outer"]).is_err());
 		assert!(GameConfig::parse(["--extra-swap-mode", "adjacent"]).is_err());
 	}
@@ -804,7 +810,7 @@ mod tests {
 		assert_eq!(cfg.rules.endgame_rule, crate::game::EndgameRule::ControlCascade);
 		assert!(cfg.rules.cascade_turn_gain);
 		assert!(!cfg.rules.cascade_winner_swap);
-		assert_eq!(cfg.rules.extra_turn_action, crate::game::ExtraTurnAction::Convert);
+		assert!(cfg.rules.ratchet_cascade);
 		assert_eq!(cfg.rules.extra_convert_mode, crate::game::ExtraConvertMode::Any);
 		assert_eq!(cfg.rules.extra_swap_mode, crate::game::ExtraSwapMode::Any);
 		assert!(!cfg.rules.center_mismatch);
