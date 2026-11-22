@@ -119,7 +119,7 @@ def extra_survey(games: list[dict]) -> None:
         fight_awarded += int(end.get("fight_gain_awarded") or 0)
         fight_mover += int(end.get("fight_gain_mover") or 0)
         fight_opp += int(end.get("fight_gain_opponent") or 0)
-        rc = int(end.get("ratchet_count") or fight_awarded or 0)
+        rc = int(end.get("ratchet_count") or end.get("fight_gain_awarded") or 0)
         ratchet_counts.append(rc)
 
         first_leader = None
@@ -140,7 +140,7 @@ def extra_survey(games: list[dict]) -> None:
                     first_leader = 2 if player == 1 else 1
                 first_leader_kind = rk or ("fight" if fg else "cascade")
                 first_leader_turn = act.get("turn")
-            reward = bool(act.get("played_as_ratchet") or act.get("played_as_extra"))
+            reward = bool(act.get("played_as_ratchet"))
             if not reward:
                 continue
             kind = act.get("kind") or "?"
