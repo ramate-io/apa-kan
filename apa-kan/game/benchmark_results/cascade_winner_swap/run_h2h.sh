@@ -7,8 +7,10 @@
 # PR #85 exactplay self-play.
 #
 # Usage:
-#   run_h2h.sh all            # light 100-game baseline + r1
+#   run_h2h.sh all            # light 100-game baseline + r1 (--seed 1)
 #   run_h2h.sh baseline|r1
+#   run_h2h.sh n300           # light 300-game baseline + r1 (--seed 300)
+#   run_h2h.sh n300_baseline|n300_r1
 #   run_h2h.sh deep_baseline|deep_r1   # 4x, 20 games
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../../../.." && pwd)"
@@ -24,6 +26,10 @@ fi
 
 LIGHT="nodes:33000,iters:650"
 DEEP4="nodes:132000,iters:2600"
+# Independent of the seed-1 100-game cell (pairing 0 seeds 1..50,
+# pairing 1 seeds 10001..10050). n=300 uses seed_base=300, games 0..149:
+# pairing 0 seeds 300..449, pairing 1 seeds 10300..10449.
+N300_SEED=300
 
 common=(
   --zags on
@@ -69,12 +75,24 @@ case "$cfg" in
     run_one h2h_deep4x_r1 --budget "$LIGHT" --games 10 \
       --p1-budget "$DEEP4" --p2-budget "$DEEP4" --cascade-winner-swap on
     ;;
+  n300_baseline)
+    run_one h2h_n300_baseline --budget "$LIGHT" --games 150 --seed "$N300_SEED"
+    ;;
+  n300_r1)
+    run_one h2h_n300_r1 --budget "$LIGHT" --games 150 --seed "$N300_SEED" \
+      --cascade-winner-swap on
+    ;;
+  n300)
+    run_one h2h_n300_baseline --budget "$LIGHT" --games 150 --seed "$N300_SEED"
+    run_one h2h_n300_r1 --budget "$LIGHT" --games 150 --seed "$N300_SEED" \
+      --cascade-winner-swap on
+    ;;
   all)
     run_one h2h_baseline --budget "$LIGHT" --games 50
     run_one h2h_r1 --budget "$LIGHT" --games 50 --cascade-winner-swap on
     ;;
   *)
-    echo "usage: $0 [all|baseline|r1|deep_baseline|deep_r1]" >&2
+    echo "usage: $0 [all|baseline|r1|n300|n300_baseline|n300_r1|deep_baseline|deep_r1]" >&2
     exit 2
     ;;
 esac

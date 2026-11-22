@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import statistics
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -63,6 +63,26 @@ def extra_survey(games: list[dict]) -> None:
         f"mean {base.mean(turns):.2f}  median {median(turns):.1f}  "
         f"p90 {sorted(turns)[int(0.9 * (n - 1))] if n else 0}"
     )
+    by_pair: dict[str, list[dict]] = defaultdict(list)
+    for g in games:
+        by_pair[str(g.get("pairing") or "?")].append(g)
+    print("  by pairing:")
+    for pairing, subset in sorted(by_pair.items()):
+        w = sum(1 for g in subset if (g.get("end") or {}).get("winner") == 1)
+        d = sum(
+            1
+            for g in subset
+            if (g.get("end") or {}).get("winner") in (None, 0)
+        )
+        l = sum(1 for g in subset if (g.get("end") or {}).get("winner") == 2)
+        nn = len(subset)
+        p, lo, hi = wilson_ci(w, nn)
+        pt = [g.get("turns") or 0 for g in subset]
+        print(
+            f"    {pairing:22s} n={nn:3d} P1 {w}-{d}-{l}  "
+            f"win {p:.1%} [{lo:.1%}, {hi:.1%}]  "
+            f"mean {base.mean(pt):.2f}  median {median(pt):.1f}"
+        )
     buckets = Counter()
     for t in turns:
         if t <= 20:
@@ -294,6 +314,16 @@ def extra_survey(games: list[dict]) -> None:
         f"comebacks={first_cascade_comebacks} "
         f"({base.pct(first_cascade_comebacks, first_cascade_games)})"
     )
+    pair_come: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    for e in cascade_examples:
+        slot = pair_come[str(e["pairing"] or "?")]
+        slot[0] += 1
+        if not e["won"] and e["winner"] not in (None, 0):
+            slot[1] += 1
+    if pair_come:
+        print("  comebacks by pairing:")
+        for pairing, (ng, nc) in sorted(pair_come.items()):
+            print(f"    {pairing:22s} {nc}/{ng} ({base.pct(nc, ng)})")
 
     print("\n# lockouts immediately after a reward flip/swap")
     for ex in lockout_after_examples[:8]:
