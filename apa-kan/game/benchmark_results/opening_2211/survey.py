@@ -9,16 +9,32 @@ punished P1 (P2 takes 0 during/right after its double).
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "cascade_winner_swap"))
-import survey as ratchet  # noqa: E402
 
-sys.path.insert(0, str(HERE.parent / "exactplay"))
-import survey as base  # noqa: E402
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+base = _load("exactplay_survey", HERE.parent / "exactplay" / "survey.py")
+# cascade_winner_swap/survey.py does `import survey as base`; the script dir
+# is this folder, so pin exactplay's survey before loading that file.
+sys.modules["survey"] = base
+ratchet = _load(
+    "cascade_winner_swap_survey",
+    HERE.parent / "cascade_winner_swap" / "survey.py",
+)
 
 CENTER = base.CENTER
 INNER = base.INNER
