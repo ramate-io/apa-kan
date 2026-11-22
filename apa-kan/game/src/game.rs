@@ -2043,14 +2043,14 @@ impl BraidFailMismatch {
 
 /// How the braid channel matches and how match totals treat other channels.
 ///
-/// CLI: `--braid-scoring`. Enum default [`Self::Current`] is the JSONL
-/// missing-field replay (coverage, size ≥ 2). Live [`RuleSet`] default is
-/// [`Self::BraidOnlyExact`].
+/// Enum default [`Self::Current`] is the JSONL missing-field replay
+/// (coverage, size ≥ 2). Live [`RuleSet`] default is [`Self::BraidOnlyExact`].
+/// The `--braid-scoring` CLI flag was removed; variants remain for JSONL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum BraidScoring {
-	/// Coverage match, size ≥ 2; other channels still contribute. Restore
-	/// with `--braid-scoring current`. JSONL missing `braid_scoring` replays
-	/// as this. Failed braids use [`RuleSet::braid_fail_mismatch`].
+	/// Coverage match, size ≥ 2; other channels still contribute. JSONL
+	/// missing `braid_scoring` replays as this. Failed braids use
+	/// [`RuleSet::braid_fail_mismatch`].
 	#[default]
 	Current,
 	/// Legacy: only braid-channel matches add to the edge **match** total.
@@ -2058,13 +2058,13 @@ pub enum BraidScoring {
 	/// and still occupies the channel (it does not become a hitch /
 	/// mismatch) but contributes 0 to the match score. Mismatches are
 	/// unchanged. Fulfillment is the coverage rule. Kept so #82 JSONL
-	/// replays; `--braid-scoring braid-only-match`.
+	/// replays.
 	BraidOnlyMatch,
 	/// Live default. Like [`Self::BraidOnlyMatch`], but fulfillment is
 	/// **exact**: a braid matches only if the neighbor has exactly the
 	/// braid's count of each color present on the braid. Extra neighbor
 	/// colors the braid does not use are allowed. 1-slot braids may match
-	/// and score +1. CLI: `--braid-scoring braid-only-exact`.
+	/// and score +1.
 	BraidOnlyExact,
 }
 
@@ -2117,16 +2117,16 @@ impl BraidScoring {
 /// and is unchanged by this flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum BeadScoring {
-	/// Rule A (default): normal and bead add. Unmatched beads +1 each; a
-	/// matched bead is −1 at most once, like normals. Beads-plus-normals on
-	/// the same Additive edge is a 2-match event. CLI:
-	/// `--bead-scoring independent`.
+	/// Rule A (live Additive default): normal and bead add. Unmatched beads
+	/// +1 each; a matched bead is −1 at most once, like normals.
+	/// Beads-plus-normals on the same Additive edge is a 2-match event.
+	/// JSONL missing `bead_scoring` replays as this.
 	#[default]
 	Independent,
-	/// Rule B (`--bead-scoring shared`): beads and normals share one Additive
-	/// channel. The normal/bead contribution is `max(normal, bead)` per match
-	/// and per mismatch instead of their sum. IndependentMax scores are the
-	/// same either way (max is associative).
+	/// Rule B: beads and normals share one Additive channel. The normal/bead
+	/// contribution is `max(normal, bead)` per match and per mismatch instead
+	/// of their sum. IndependentMax scores are the same either way (max is
+	/// associative). Kept for JSONL.
 	SharedChannel,
 }
 
@@ -2153,22 +2153,21 @@ impl BeadScoring {
 /// Channel *components* ([`EdgeChannels`]) are always independent. This flag
 /// only changes aggregation. Tile generation always uses IndependentMax
 /// clustering (per-slot heavy coin + 5:3:1 light election) regardless of
-/// mode, so `--channel-mode additive` does not stuff 2–3 braid/bead groups.
+/// mode, so Additive scoring does not stuff 2–3 braid/bead groups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ChannelMode {
 	/// Independent channels; the edge takes the **maximum** match and the
 	/// **maximum** mismatch of any single channel. Beads fold into the
-	/// normal channel for HUD kind and paint. CLI: `--channel-mode
-	/// independent-max` / `--independent-channels on`. Enum default only;
-	/// live [`RuleSet`] default is [`Self::Additive`].
+	/// normal channel for HUD kind and paint. Enum default only; live
+	/// [`RuleSet`] default is [`Self::Additive`]. Kept for JSONL.
 	#[default]
 	IndependentMax,
 	/// Live default. RFC 001-001-002 additive stacking: each channel
 	/// (normal, bead, zag, braid) contributes its weight.
 	/// [`BeadScoring::Independent`] sums them, so a normal match and a bead
-	/// match on the same edge is 2. `--bead-scoring shared` restores
-	/// `max(normal, bead)` folding. Generation is the same clustering as
-	/// IndependentMax. CLI: `--channel-mode additive`.
+	/// match on the same edge is 2. Shared-channel bead scoring
+	/// (`max(normal, bead)`) remains for JSONL. Generation is the same
+	/// clustering as IndependentMax.
 	Additive,
 }
 
@@ -2355,77 +2354,6 @@ impl RatchetKind {
 			Self::Fight => "fight",
 			Self::Cascade => "cascade",
 			Self::Both => "both",
-		}
-	}
-}
-
-/// Which opponent tiles a post-ratchet [`Action::Convert`] may flip.
-/// Default [`Self::Any`]: any opponent piece, including the origin.
-/// `--extra-convert-mode not-center` skips the origin; `inner` is inner-ring
-/// only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum ExtraConvertMode {
-	#[default]
-	Any,
-	NotCenter,
-	Inner,
-}
-
-impl ExtraConvertMode {
-	pub fn parse(s: &str) -> Result<Self, String> {
-		match s.to_ascii_lowercase().as_str() {
-			"any" | "all" | "unrestricted" | "on" => Ok(Self::Any),
-			"not-center" | "not_center" | "no-center" | "no_center" => Ok(Self::NotCenter),
-			"inner" | "inner-ring" | "inner_ring" | "control-inner" => Ok(Self::Inner),
-			other => {
-				Err(format!("unknown extra-convert-mode '{other}' (expected any|not-center|inner)"))
-			}
-		}
-	}
-
-	pub fn name(self) -> &'static str {
-		match self {
-			Self::Any => "any",
-			Self::NotCenter => "not-center",
-			Self::Inner => "inner",
-		}
-	}
-}
-
-/// Permissive SWAP on the move immediately after a ratchet when
-/// [`RuleSet::cascade_winner_swap`] is on. Default [`Self::Any`]: any of the
-/// mover's pieces may exchange positions with any occupied tile (own or
-/// opponent, not necessarily adjacent). Still a position swap, not a
-/// conversion of the partner; vacant nodes are never partners; the one-move
-/// no-echo guardrail still applies.
-///
-/// `--extra-swap-mode own` keeps only own partners; `not-center` is `any`
-/// except neither node may be the origin. Enum default stays [`Self::Any`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum ExtraSwapMode {
-	#[default]
-	Any,
-	Own,
-	NotCenter,
-}
-
-impl ExtraSwapMode {
-	pub fn parse(s: &str) -> Result<Self, String> {
-		match s.to_ascii_lowercase().as_str() {
-			"any" | "all" | "unrestricted" | "on" => Ok(Self::Any),
-			"own" | "own-only" | "own_only" | "self" => Ok(Self::Own),
-			"not-center" | "not_center" | "no-center" | "no_center" => Ok(Self::NotCenter),
-			other => {
-				Err(format!("unknown extra-swap-mode '{other}' (expected any|own|not-center)"))
-			}
-		}
-	}
-
-	pub fn name(self) -> &'static str {
-		match self {
-			Self::Any => "any",
-			Self::Own => "own",
-			Self::NotCenter => "not-center",
 		}
 	}
 }
@@ -2801,9 +2729,10 @@ impl GameStatus {
 	}
 }
 
-/// Configurable rules. Live defaults are the playtest package (4:3:1 Additive
-/// braid-only-exact, single braids on, normal-only SWAP, color-drift 160,
-/// per-arc double-count). Each field is listed in
+/// Configurable rules. Live defaults are the locked base package: 4:3:1
+/// Additive braid-only-exact, single braids on, normal-only SWAP, color-drift
+/// 160, per-arc double-count, next-move ratchet reward (flips anywhere after
+/// the second ratchet), and a 2-2-1-1 opening. Each field is listed in
 /// `rfc/rfc-001-001-001-rosette-redesign`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSet {
@@ -2952,7 +2881,7 @@ pub struct RuleSet {
 	/// research variants (issue #39).
 	pub braid_fail_mismatch: BraidFailMismatch,
 	/// Braid match rule. Live default [`BraidScoring::BraidOnlyExact`].
-	/// `--braid-scoring current` restores coverage. CLI: `--braid-scoring`.
+	/// Coverage / braid-only-match remain for JSONL replay.
 	pub braid_scoring: BraidScoring,
 	/// If true, a lone heavy slot (including a 1-ring tile) becomes a 1-slot
 	/// braid instead of falling through to light election. Live default true.
@@ -2962,18 +2891,17 @@ pub struct RuleSet {
 	/// How normal and bead channels combine under [`ChannelMode::Additive`].
 	/// Default [`BeadScoring::Independent`] (rule A): beads are a separate
 	/// channel and sum with normals. [`BeadScoring::SharedChannel`] is rule B
-	/// (`--bead-scoring shared`, `max` instead of sum). IndependentMax still
-	/// takes max of the four components (associative with the fold).
+	/// (`max` instead of sum), kept for JSONL. IndependentMax still takes
+	/// max of the four components (associative with the fold).
 	pub bead_scoring: BeadScoring,
 	/// How channel totals combine. Live default [`ChannelMode::Additive`]
-	/// (beads separate). `--channel-mode independent-max` restores max of
-	/// any one channel. Does not change tile generation.
+	/// (beads separate). Independent-max remains for JSONL. Does not change
+	/// tile generation.
 	pub channel_mode: ChannelMode,
 	/// If true, each unique node pair contributes once to match/mismatch
 	/// scoring. The two generating-circle petals between the center and an
 	/// inner-ring node collapse to one scoring edge. Default false (each
-	/// petal is a scoring edge). CLI: `--score-unique-neighbors` /
-	/// `--link-once`.
+	/// petal is a scoring edge). The `--link-once` CLI flag was removed.
 	pub score_unique_neighbors: bool,
 	/// RFC 000 ColorPass.drift. After drawing color *i*, add `color_drift[i][j]`
 	/// to color *j*'s running weight. Live default diagonal
@@ -2995,11 +2923,12 @@ pub struct RuleSet {
 	/// winner: higher pre-action material, then spawn-token count. If that
 	/// player would move next anyway, play continues with no extra seating.
 	/// The winner's immediately following action may use loosened SWAP
-	/// (first ratchet of the game) or loosened SWAP plus CONVERT (second
-	/// and later). Default false. Missing JSONL `cascade_winner_swap`
-	/// replays as off. While this flag is on, [`Self::cascade_turn_gain`]
-	/// extras are not banked for drops that this flag already counts as
-	/// ratchets ([`Self::ratchet_cascade`]).
+	/// (first ratchet of the game) or loosened SWAP plus CONVERT of any
+	/// opponent piece (second and later). Default true. Missing JSONL
+	/// `cascade_winner_swap` replays as off. While this flag is on,
+	/// [`Self::cascade_turn_gain`] extras are not banked for drops that
+	/// this flag already counts as ratchets ([`Self::ratchet_cascade`]).
+	/// `--cascade-winner-swap off` restores the pre-ratchet comparison.
 	pub cascade_winner_swap: bool,
 	/// When [`Self::cascade_winner_swap`] is on, non-winning control-cascade
 	/// checkpoint drops also count as ratchets (same winner rule, same
@@ -3007,23 +2936,13 @@ pub struct RuleSet {
 	/// keeps live [`Self::cascade_turn_gain`] extras for drops and only
 	/// treats center fights as ratchets. Missing JSONL replays as on.
 	pub ratchet_cascade: bool,
-	/// Opponent-tile filter for post-ratchet [`Action::Convert`]. Default
-	/// [`ExtraConvertMode::Any`]. Missing JSONL replays as any.
-	pub extra_convert_mode: ExtraConvertMode,
-	/// Partner filter for post-ratchet SWAP when
-	/// [`Self::cascade_winner_swap`] is on. Default [`ExtraSwapMode::Any`].
-	/// Missing JSONL replays as any.
-	pub extra_swap_mode: ExtraSwapMode,
-	/// Unmatched center occupant scores a synthetic +1 mismatch (no edge
-	/// match from neighbors). Default false. Missing JSONL replays as off.
-	pub center_mismatch: bool,
 	/// 2-2-1-1 opening: each player's first seating is two consecutive
-	/// 1-action turns, then play alternates singly. Default false.
-	/// `--opening-double on` / `--opening 2-2-1-1`. Missing JSONL replays
-	/// as off. Independent of [`Self::actions_per_turn`] (each opening
-	/// action is still one `finish_turn`). Ratchet / extra-turn seating
-	/// has priority and consumes or forfeits the leftover opening stay;
-	/// see [`Game::finish_turn`].
+	/// 1-action turns, then play alternates singly. Default true.
+	/// `--opening-double off` / `--opening 1-1-1-1` restores singles.
+	/// Missing JSONL replays as off. Independent of [`Self::actions_per_turn`]
+	/// (each opening action is still one `finish_turn`). Ratchet / extra-turn
+	/// seating has priority and consumes or forfeits the leftover opening
+	/// stay; see [`Game::finish_turn`].
 	pub opening_double: bool,
 }
 
@@ -3078,12 +2997,9 @@ impl Default for RuleSet {
 			color_drift: color_drift_diagonal(COLOR_DRIFT_DEFAULT),
 			capture_mode: CaptureMode::LocalClaim,
 			swap_mode: SwapMode::NormalOnly,
-			cascade_winner_swap: false,
+			cascade_winner_swap: true,
 			ratchet_cascade: true,
-			extra_convert_mode: ExtraConvertMode::Any,
-			extra_swap_mode: ExtraSwapMode::Any,
-			center_mismatch: false,
-			opening_double: false,
+			opening_double: true,
 		}
 	}
 }
@@ -3106,7 +3022,6 @@ impl RuleSet {
 	}
 
 	/// Independent-max aggregation on top of the live playtest generation.
-	/// `--channel-mode independent-max` / `--independent-channels on`.
 	pub fn independent_max() -> Self {
 		let mut rules = Self::default();
 		rules.channel_mode = ChannelMode::IndependentMax;
@@ -3138,9 +3053,10 @@ pub enum Action {
 	},
 	/// Exchange the initiator at `from` (own tile) with the partner at `to`.
 	/// Live SWAP requires [`RuleSet::swap_mode`] (single-ring initiator,
-	/// adjacent partner). A post-ratchet reward move uses
-	/// [`RuleSet::extra_swap_mode`] instead. Does not spend a spawn token.
-	/// Local-claim captures fire on both landing nodes and their neighbors.
+	/// adjacent partner). A post-ratchet reward move loosens that: any own
+	/// piece may exchange with any occupied tile. Does not spend a spawn
+	/// token. Local-claim captures fire on both landing nodes and their
+	/// neighbors.
 	Swap {
 		from: NodeId,
 		to: NodeId,
@@ -3835,9 +3751,8 @@ impl Game {
 		self.ended_after_extra
 	}
 
-	/// Post-ratchet SWAP uses [`RuleSet::extra_swap_mode`] instead of
-	/// [`RuleSet::swap_mode`]. Legal on the first ratchet reward and on
-	/// every later one.
+	/// Post-ratchet SWAP is loosened (any own piece, any occupied partner).
+	/// Legal on the first ratchet reward and on every later one.
 	pub fn extra_swap_active(&self) -> bool {
 		self.rules.cascade_winner_swap && self.playing_ratchet_reward
 	}
@@ -3879,22 +3794,6 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn set_cascade_winner_swap(&mut self, on: bool) {
 		self.rules.cascade_winner_swap = on;
-	}
-
-	#[cfg(test)]
-	#[allow(dead_code)]
-	pub(crate) fn set_center_mismatch(&mut self, on: bool) {
-		self.rules.center_mismatch = on;
-	}
-
-	#[cfg(test)]
-	pub(crate) fn set_extra_swap_mode(&mut self, mode: ExtraSwapMode) {
-		self.rules.extra_swap_mode = mode;
-	}
-
-	#[cfg(test)]
-	pub(crate) fn set_extra_convert_mode(&mut self, mode: ExtraConvertMode) {
-		self.rules.extra_convert_mode = mode;
 	}
 
 	#[cfg(test)]
@@ -4031,6 +3930,8 @@ impl Game {
 		rules.control_hold_turns = 1;
 		rules.endgame_rule = EndgameRule::ControlCascade;
 		rules.cascade_turn_gain = true;
+		rules.cascade_winner_swap = false;
+		rules.opening_double = false;
 		rules.swap_mode = SwapMode::Off;
 		let mut game = Self::empty(rules);
 		let center = game.board.center();
@@ -4107,6 +4008,8 @@ impl Game {
 		rules.control_hold_turns = 1;
 		rules.endgame_rule = EndgameRule::ControlCascade;
 		rules.cascade_turn_gain = true;
+		rules.cascade_winner_swap = false;
+		rules.opening_double = false;
 		rules.swap_mode = SwapMode::Off;
 		let mut game = Self::empty(rules);
 		let inners = game.board.inner_ring().to_vec();
@@ -4555,8 +4458,9 @@ impl Game {
 	/// [`RuleSet::channel_mode`]: live default [`ChannelMode::Additive`]
 	/// sums every channel ([`BeadScoring::Independent`]).
 	/// [`ChannelMode::IndependentMax`] takes max match and max mismatch of
-	/// any one channel. `--bead-scoring shared` folds Additive normal/bead
-	/// with `max`. IndependentMax HUD still paints beads on the normal lane.
+	/// any one channel. Shared-channel bead scoring folds Additive
+	/// normal/bead with `max`. IndependentMax HUD still paints beads on the
+	/// normal lane.
 	///
 	/// - **Normal:** match 1 if some normal-ring color of either tile is in
 	///   the other tile's [`Tile::non_zag_colors_multiset`]; otherwise
@@ -4634,34 +4538,7 @@ impl Game {
 				effective += self.edge_channels(tile, other).effective_for_rules(&self.rules);
 			}
 		}
-		effective + self.center_unmatched_penalty(node, tile)
-	}
-
-	/// +1 mismatch on an unmatched center occupant. "Matched" means some
-	/// neighbor edge has a normal, braid, or bead match (HUD match), even
-	/// when braid-only-exact scores that match as 0. Mismatches alone do
-	/// not clear the penalty.
-	fn center_unmatched_penalty(&self, node: NodeId, tile: Tile) -> i32 {
-		if !self.rules.center_mismatch || node != self.board.center() {
-			return 0;
-		}
-		if self.center_has_channel_match(node, tile) {
-			return 0;
-		}
-		1
-	}
-
-	fn center_has_channel_match(&self, node: NodeId, tile: Tile) -> bool {
-		for nb in self.scoring_neighbors(node) {
-			let Some(other) = self.tile_at(nb) else {
-				continue;
-			};
-			let ch = self.edge_channels(tile, other);
-			if ch.normal_match > 0 || ch.braid_match > 0 || ch.bead_match > 0 {
-				return true;
-			}
-		}
-		false
+		effective
 	}
 
 	/// Two Zag Zs +1 count for `tile` at `node`: incident scoring edges whose
@@ -4761,7 +4638,6 @@ impl Game {
 				mismatches += x;
 			}
 		}
-		mismatches += self.center_unmatched_penalty(node, tile);
 		Some((matches, mismatches))
 	}
 
@@ -5044,20 +4920,11 @@ impl Game {
 		}
 		let mut acts = Vec::new();
 		for (node, tile) in self.tiles() {
-			if tile.owner != self.current && self.extra_convert_ok(node) {
+			if tile.owner != self.current {
 				acts.push(Action::Convert { node });
 			}
 		}
 		acts
-	}
-
-	fn extra_convert_ok(&self, node: NodeId) -> bool {
-		let center = self.board.center();
-		match self.rules.extra_convert_mode {
-			ExtraConvertMode::Any => true,
-			ExtraConvertMode::NotCenter => node != center,
-			ExtraConvertMode::Inner => self.board.inner_ring().contains(&node),
-		}
 	}
 
 	/// Legal SWAP actions for the side to move. Empty when SWAP is off
@@ -5079,7 +4946,7 @@ impl Game {
 	}
 
 	/// Occupied nodes the tile at `from` may SWAP with under the live
-	/// [`RuleSet::swap_mode`] (or extra-turn [`RuleSet::extra_swap_mode`]).
+	/// [`RuleSet::swap_mode`] (or a loosened post-ratchet SWAP).
 	pub fn legal_swap_partners(&self, from: NodeId) -> Vec<NodeId> {
 		let Some(init) = self.tile_at(from) else {
 			return Vec::new();
@@ -5119,11 +4986,7 @@ impl Game {
 		if !self.swap_is_available() {
 			return false;
 		}
-		if self.extra_swap_active() {
-			if !self.extra_swap_partner_ok(from, to, init, partner) {
-				return false;
-			}
-		} else if !self.board.neighbors(from).contains(&to) {
+		if !self.extra_swap_active() && !self.board.neighbors(from).contains(&to) {
 			return false;
 		}
 		let key = swap_pair_key(init.id, partner.id);
@@ -5134,15 +4997,6 @@ impl Game {
 			return false;
 		}
 		true
-	}
-
-	fn extra_swap_partner_ok(&self, from: NodeId, to: NodeId, init: Tile, partner: Tile) -> bool {
-		let center = self.board.center();
-		match self.rules.extra_swap_mode {
-			ExtraSwapMode::Any => true,
-			ExtraSwapMode::Own => partner.owner == init.owner,
-			ExtraSwapMode::NotCenter => from != center && to != center,
-		}
 	}
 
 	/// True if swapping `from` with `to` would remove at least one opponent
@@ -6134,9 +5988,6 @@ impl Game {
 		if tile.owner == self.current {
 			return Err("CONVERT targets an opponent tile".into());
 		}
-		if !self.extra_convert_ok(node) {
-			return Err("CONVERT target is outside the extra-convert filter".into());
-		}
 		tile.owner = self.current;
 		self.tiles[node as usize] = Some(tile);
 		Ok(())
@@ -6569,12 +6420,9 @@ mod tests {
 		assert!(!rules.score_unique_neighbors);
 		assert_eq!(rules.channel_mode, ChannelMode::Additive);
 		assert_eq!(rules.swap_mode, SwapMode::NormalOnly);
-		assert!(!rules.cascade_winner_swap);
+		assert!(rules.cascade_winner_swap);
 		assert!(rules.ratchet_cascade);
-		assert_eq!(rules.extra_convert_mode, ExtraConvertMode::Any);
-		assert_eq!(rules.extra_swap_mode, ExtraSwapMode::Any);
-		assert!(!rules.center_mismatch);
-		assert!(!rules.opening_double);
+		assert!(rules.opening_double);
 		assert_eq!(rules.ring_count_weights, LIVE_RING_COUNT_WEIGHTS);
 		assert_eq!(rules.color_drift, color_drift_diagonal(COLOR_DRIFT_DEFAULT));
 		assert_eq!(rules.emblem_weights, EmblemWeights::default());
@@ -7363,6 +7211,7 @@ mod tests {
 	#[test]
 	fn center_hold_wins_at_exactly_n() {
 		let mut rules = RuleSet::default();
+		rules.opening_double = false;
 		rules.center_hold_win = true;
 		rules.center_hold_n = 2;
 		let mut game = Game::empty(rules);
@@ -7414,6 +7263,7 @@ mod tests {
 	#[test]
 	fn center_hold_resets_when_vacated() {
 		let mut rules = RuleSet::default();
+		rules.opening_double = false;
 		rules.center_hold_win = true;
 		rules.center_hold_n = 5;
 		rules.no_same_piece_twice = SamePieceTwice::Off;
@@ -7497,6 +7347,7 @@ mod tests {
 	#[test]
 	fn petal_majority_n_three_requires_three_own_turns() {
 		let mut rules = RuleSet::default();
+		rules.opening_double = false;
 		rules.center_hold_win = false;
 		rules.control_win = false;
 		rules.petal_majority_win = true;
@@ -7660,6 +7511,7 @@ mod tests {
 	#[test]
 	fn control_hold_t_three_requires_three_own_turns() {
 		let mut rules = RuleSet::default();
+		rules.opening_double = false;
 		rules.center_hold_win = false;
 		rules.control_win = true;
 		rules.control_n = 5;
@@ -7749,6 +7601,9 @@ mod tests {
 		rules.control_n = 5;
 		rules.control_hold_turns = 1;
 		rules.endgame_rule = EndgameRule::ControlCascade;
+		// Isolate extra-turn / checkpoint tests from the live ratchet + 2-2-1-1 seating.
+		rules.cascade_winner_swap = false;
+		rules.opening_double = false;
 		rules
 	}
 
@@ -8338,7 +8193,9 @@ mod tests {
 	#[test]
 	fn no_same_piece_twice_defaults_to_off() {
 		assert_eq!(RuleSet::default().no_same_piece_twice, SamePieceTwice::Off);
-		let mut game = Game::empty(RuleSet::additive());
+		let mut rules = RuleSet::additive();
+		rules.opening_double = false;
+		let mut game = Game::empty(rules);
 		let inner = inner_ring(&game);
 		let a = inner[0];
 		let center = game.board().center();
@@ -8363,6 +8220,7 @@ mod tests {
 	#[test]
 	fn no_same_piece_twice_blocks_repeat_unless_capture() {
 		let mut rules = RuleSet::default();
+		rules.opening_double = false;
 		rules.no_same_piece_twice = SamePieceTwice::Always;
 		let mut game = Game::empty(rules);
 		let inner = inner_ring(&game);
@@ -8493,6 +8351,7 @@ mod tests {
 	#[test]
 	fn no_same_piece_twice_when_deck_empty_only() {
 		let mut rules = RuleSet::default();
+		rules.opening_double = false;
 		rules.no_same_piece_twice = SamePieceTwice::WhenDeckEmpty;
 		let mut game = Game::empty(rules);
 		let inner = inner_ring(&game);
@@ -12230,7 +12089,9 @@ mod tests {
 
 	#[test]
 	fn lockout_beats_low_value() {
-		let mut game = Game::empty(low_value_rules());
+		let mut rules = low_value_rules();
+		rules.opening_double = false;
+		let mut game = Game::empty(rules);
 		place_isolated_dot(&mut game, 0, Player::One, false, 1);
 		// P2 is alive on the bench but cannot ADD (budget 0) and has no board
 		// tile, so they lock out after P1's turn.
@@ -13553,7 +13414,8 @@ mod tests {
 
 	#[test]
 	fn swap_no_immediate_back_blocks_the_opponent_echo() {
-		let rules = swap_on();
+		let mut rules = swap_on();
+		rules.opening_double = false;
 		let mut game = Game::empty(rules);
 		let (from, to) = adjacent_pair(&game);
 		put(&mut game, from, Player::One, TileColor::Green, 1, 1);
@@ -13601,6 +13463,7 @@ mod tests {
 		let mut rules = RuleSet::default();
 		rules.cascade_winner_swap = true;
 		rules.cascade_turn_gain = false;
+		rules.opening_double = false;
 		rules.control_win = false;
 		rules.center_hold_win = false;
 		rules.petal_majority_win = false;
@@ -13652,82 +13515,14 @@ mod tests {
 	}
 
 	#[test]
-	fn center_mismatch_off_lets_unmatched_single_sit() {
+	fn unmatched_center_single_sits_without_synthetic_mismatch() {
 		let mut game = Game::empty(RuleSet::default());
 		let center = game.board().center();
 		put(&mut game, center, Player::One, TileColor::Green, 1, 1);
-		assert!(!game.rules().center_mismatch);
 		assert!(!game.is_overwhelmed(center));
 		let (m, x) = game.tile_score(center).unwrap();
 		assert_eq!(m, 1);
 		assert_eq!(x, 0);
-	}
-
-	#[test]
-	fn center_mismatch_pops_unmatched_single_on_empty_origin() {
-		let mut rules = RuleSet::default();
-		rules.center_mismatch = true;
-		let mut game = Game::empty(rules);
-		let center = game.board().center();
-		put(&mut game, center, Player::One, TileColor::Green, 1, 1);
-		assert!(game.is_overwhelmed(center));
-		let (m, x) = game.tile_score(center).unwrap();
-		assert_eq!(m, 1);
-		assert_eq!(x, 1);
-	}
-
-	#[test]
-	fn center_mismatch_spares_a_matched_center_occupant() {
-		let mut rules = RuleSet::default();
-		rules.center_mismatch = true;
-		let mut game = Game::empty(rules);
-		let center = game.board().center();
-		let inner = game.board().inner_ring()[0];
-		put_rings(
-			&mut game,
-			center,
-			Player::One,
-			&[TileColor::Green, TileColor::Blue, TileColor::Orange],
-			1,
-		);
-		put_rings(
-			&mut game,
-			inner,
-			Player::One,
-			&[TileColor::Green, TileColor::Blue, TileColor::Orange],
-			1,
-		);
-		assert!(!game.is_overwhelmed(center), "matching inner neighbor is a match");
-		let (_m, x) = game.tile_score(center).unwrap();
-		assert_eq!(x, 0, "matched occupant must not take the synthetic mismatch");
-	}
-
-	#[test]
-	fn center_mismatch_two_ring_unmatched_is_not_overwhelmed() {
-		let mut rules = RuleSet::default();
-		rules.center_mismatch = true;
-		let mut game = Game::empty(rules);
-		let center = game.board().center();
-		put_rings(&mut game, center, Player::One, &[TileColor::Green, TileColor::Blue], 1);
-		assert!(!game.is_overwhelmed(center), "weight 2 vs +1 mismatch");
-		let (_m, x) = game.tile_score(center).unwrap();
-		assert_eq!(x, 1);
-	}
-
-	#[test]
-	fn unmatched_center_walk_self_pops_and_does_not_award_fight_gain() {
-		let mut rules = fight_gain_rules();
-		rules.center_mismatch = true;
-		let mut game = Game::empty(rules);
-		let center = game.board().center();
-		let inner = game.board().inner_ring()[0];
-		put(&mut game, inner, Player::One, TileColor::Green, 1, 1);
-		game.set_current(Player::One);
-		game.apply(Action::Move { from: inner, to: center }).unwrap();
-		assert!(game.tile_at(center).is_none(), "unmatched single must self-pop");
-		assert_eq!(game.last_fight_gain(), None);
-		assert_eq!(game.fight_gain_awarded(), 0);
-		assert!(!game.extra_turn_active());
 	}
 
 	#[test]
@@ -13821,32 +13616,6 @@ mod tests {
 	}
 
 	#[test]
-	fn extra_swap_own_rejects_opponent_and_not_center_rejects_origin() {
-		let mut rules = extra_swap_rules();
-		rules.extra_swap_mode = ExtraSwapMode::Own;
-		let mut game = Game::empty(rules);
-		let center = game.board().center();
-		let inner = game.board().inner_ring()[0];
-		let outer = *game
-			.board()
-			.neighbors(inner)
-			.iter()
-			.find(|&&n| n != center)
-			.expect("inner has a non-center neighbor");
-		put(&mut game, inner, Player::One, TileColor::Green, 2, 1);
-		put(&mut game, outer, Player::One, TileColor::Blue, 2, 1);
-		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
-		game.set_current(Player::One);
-		game.set_ratchet_reward(RatchetTier::First);
-		assert!(game.legal_swaps().contains(&Action::Swap { from: inner, to: outer }));
-		assert!(!game.legal_swaps().contains(&Action::Swap { from: inner, to: center }));
-
-		game.set_extra_swap_mode(ExtraSwapMode::NotCenter);
-		assert!(!game.legal_swaps().contains(&Action::Swap { from: inner, to: center }));
-		assert!(game.legal_swaps().contains(&Action::Swap { from: inner, to: outer }));
-	}
-
-	#[test]
 	fn extra_swap_stays_a_position_exchange_not_a_conversion() {
 		let mut game = Game::empty(extra_swap_rules());
 		let center = game.board().center();
@@ -13880,29 +13649,6 @@ mod tests {
 		assert_eq!(game.tile_at(center).map(|t| t.id), Some(stolen_id));
 		assert_eq!(game.tile_at(center).map(|t| t.owner), Some(Player::One));
 		assert_eq!(game.tile_at(spawn).map(|t| t.owner), Some(Player::One));
-	}
-
-	#[test]
-	fn extra_convert_not_center_and_inner_filters() {
-		let mut rules = fight_gain_rules();
-		rules.extra_convert_mode = ExtraConvertMode::NotCenter;
-		let mut game = Game::empty(rules);
-		let center = game.board().center();
-		let inner = game.board().inner_ring()[0];
-		let spawn = game.board().spawns()[0];
-		put(&mut game, spawn, Player::Two, TileColor::Green, 2, 1);
-		put(&mut game, inner, Player::Two, TileColor::Blue, 2, 1);
-		put(&mut game, center, Player::Two, TileColor::Orange, 2, 1);
-		game.set_current(Player::One);
-		game.set_ratchet_reward(RatchetTier::Later);
-		assert!(!game.legal_converts().contains(&Action::Convert { node: center }));
-		assert!(game.legal_converts().contains(&Action::Convert { node: inner }));
-		assert!(game.legal_converts().contains(&Action::Convert { node: spawn }));
-
-		game.set_extra_convert_mode(ExtraConvertMode::Inner);
-		assert!(!game.legal_converts().contains(&Action::Convert { node: center }));
-		assert!(game.legal_converts().contains(&Action::Convert { node: inner }));
-		assert!(!game.legal_converts().contains(&Action::Convert { node: spawn }));
 	}
 
 	#[test]
@@ -14083,7 +13829,9 @@ mod tests {
 
 	#[test]
 	fn opening_double_off_alternates_after_one_action() {
-		let game_off = seating_game(RuleSet::default());
+		let mut rules = RuleSet::default();
+		rules.opening_double = false;
+		let game_off = seating_game(rules);
 		assert!(!game_off.rules().opening_double);
 		let mut game = game_off;
 		add_on_empty_spawn(&mut game);

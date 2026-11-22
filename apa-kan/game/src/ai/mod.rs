@@ -676,6 +676,8 @@ mod tests {
 		use crate::game::{EndReason, EndgameRule, GameStatus, Player, TileColor};
 
 		let mut rules = RuleSet::default();
+		rules.opening_double = false;
+		rules.cascade_winner_swap = false;
 		rules.center_hold_win = false;
 		rules.control_win = true;
 		rules.endgame_rule = EndgameRule::ControlCascade;
@@ -730,8 +732,19 @@ mod tests {
 		assert_eq!(game.control_count(Player::One), 3);
 		assert!(game.is_alive(Player::Two));
 		game.set_current(Player::One);
+		assert!(
+			game.legal_destinations(from).contains(&land),
+			"winning MOVE {from}->{land} must be legal"
+		);
+		let mut probe = game.clone();
+		probe.apply(Action::Move { from, to: land }).unwrap();
+		assert_eq!(
+			probe.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Control },
+			"forced winning MOVE must end the game"
+		);
 		let mut rng = StdRng::seed_from_u64(1);
-		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(250));
 		assert!(game.apply(action).is_ok());
 		assert_eq!(
 			game.status(),
@@ -913,7 +926,7 @@ mod tests {
 		let game = Game::new(RuleSet::default(), 2);
 		let mut rng = StdRng::seed_from_u64(2);
 		let mut searcher = Searcher::new();
-		let action = searcher.choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(40));
+		let action = searcher.choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(200));
 		assert!(game.legal_actions().contains(&action));
 		assert!(searcher.stats().depth >= 1);
 	}

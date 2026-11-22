@@ -8,10 +8,9 @@ use std::time::Duration;
 use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
-	color_drift_diagonal, BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, CaptureMode,
-	ChannelMode, EmblemWeights, EndgameRule, ExtraConvertMode, ExtraSwapMode, HopWeightCmp,
-	InsufficientTilesLoss, PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet,
-	SamePieceTwice, SwapMode, ZagMismatchCount, BAG_SIZE,
+	color_drift_diagonal, BlockerBlocks, CaptureMode, EmblemWeights, EndgameRule, HopWeightCmp,
+	PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet, SamePieceTwice, SwapMode,
+	ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -271,15 +270,25 @@ where
 		"--no-moves-loses" => {
 			rules.no_moves_loses = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
-		"--center-hold-win" => {
-			rules.center_hold_win = parse_bool(arg, &require_value(arg, it.next())?)?;
-		}
-		"--center-hold-n" => {
-			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
-			if n == 0 || n > 64 {
-				return Err("invalid --center-hold-n (expected 1..64)".into());
-			}
-			rules.center_hold_n = n as u8;
+		"--center-hold-win"
+		| "--center-hold-n"
+		| "--petal-majority-win"
+		| "--petal-majority-n"
+		| "--control-hold-turns"
+		| "--insufficient-tiles-loss"
+		| "--extra-convert-mode"
+		| "--extra-swap-mode"
+		| "--center-mismatch"
+		| "--extra-turn-action"
+		| "--braid-scoring"
+		| "--bead-scoring"
+		| "--channel-mode"
+		| "--independent-channels"
+		| "--score-unique-neighbors"
+		| "--link-once"
+		| "--braid-fail-mismatch" => {
+			let _ = it.next();
+			return Err(removed_rule_flag(arg));
 		}
 		"--no-same-piece-twice" => {
 			rules.no_same_piece_twice = SamePieceTwice::parse(&require_value(arg, it.next())?)?;
@@ -300,16 +309,6 @@ where
 		"--hop-weight-cmp" => {
 			rules.hop_weight_cmp = HopWeightCmp::parse(&require_value(arg, it.next())?)?;
 		}
-		"--petal-majority-win" => {
-			rules.petal_majority_win = parse_bool(arg, &require_value(arg, it.next())?)?;
-		}
-		"--petal-majority-n" => {
-			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
-			if n == 0 || n > 64 {
-				return Err("invalid --petal-majority-n (expected 1..64)".into());
-			}
-			rules.petal_majority_n = n as u8;
-		}
 		"--control-win" => {
 			rules.control_win = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
@@ -319,13 +318,6 @@ where
 				return Err("invalid --control-n (expected 1..9)".into());
 			}
 			rules.control_n = n as u8;
-		}
-		"--control-hold-turns" => {
-			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
-			if n == 0 || n > 64 {
-				return Err("invalid --control-hold-turns (expected 1..64)".into());
-			}
-			rules.control_hold_turns = n as u8;
 		}
 		"--endgame-rule" => {
 			rules.endgame_rule = EndgameRule::parse(&require_value(arg, it.next())?)?;
@@ -339,30 +331,11 @@ where
 		"--ratchet-cascade" => {
 			rules.ratchet_cascade = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
-		"--extra-turn-action" => {
-			let _ = require_value(arg, it.next())?;
-			return Err(
-				"--extra-turn-action was removed: --cascade-winner-swap now awards loosened SWAP after the first ratchet and CONVERT (flip) after the second and later".into(),
-			);
-		}
-		"--extra-convert-mode" => {
-			rules.extra_convert_mode = ExtraConvertMode::parse(&require_value(arg, it.next())?)?;
-		}
-		"--extra-swap-mode" => {
-			rules.extra_swap_mode = ExtraSwapMode::parse(&require_value(arg, it.next())?)?;
-		}
-		"--center-mismatch" => {
-			rules.center_mismatch = parse_bool(arg, &require_value(arg, it.next())?)?;
-		}
 		"--opening-double" => {
 			rules.opening_double = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
 		"--opening" => {
 			rules.opening_double = parse_opening(&require_value(arg, it.next())?)?;
-		}
-		"--insufficient-tiles-loss" => {
-			rules.insufficient_tiles_loss =
-				InsufficientTilesLoss::parse(&require_value(arg, it.next())?)?;
 		}
 		"--starting-bench" | "--starting-tokens" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
@@ -421,17 +394,6 @@ where
 			}
 			rules.bead_numer = n as u8;
 		}
-		"--bead-scoring" => {
-			rules.bead_scoring = BeadScoring::parse(&require_value(arg, it.next())?)?;
-		}
-		"--channel-mode" => {
-			rules.channel_mode = ChannelMode::parse(&require_value(arg, it.next())?)?;
-		}
-		"--independent-channels" => {
-			let on = parse_bool(arg, &require_value(arg, it.next())?)?;
-			rules.channel_mode =
-				if on { ChannelMode::IndependentMax } else { ChannelMode::Additive };
-		}
 		"--ring-count-weights" => {
 			rules.ring_count_weights = RingCountWeights::parse(&require_value(arg, it.next())?)?;
 		}
@@ -474,17 +436,8 @@ where
 		"--zag-mismatch" => {
 			rules.zag_mismatch = ZagMismatchCount::parse(&require_value(arg, it.next())?)?;
 		}
-		"--braid-fail-mismatch" => {
-			rules.braid_fail_mismatch = BraidFailMismatch::parse(&require_value(arg, it.next())?)?;
-		}
-		"--braid-scoring" => {
-			rules.braid_scoring = BraidScoring::parse(&require_value(arg, it.next())?)?;
-		}
 		"--single-braids" => {
 			rules.allow_single_braids = parse_bool(arg, &require_value(arg, it.next())?)?;
-		}
-		"--score-unique-neighbors" | "--link-once" => {
-			rules.score_unique_neighbors = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
 		"--path-constraint" => {
 			rules.path_constraint = PathConstraint::parse(&require_value(arg, it.next())?)?;
@@ -506,6 +459,12 @@ where
 /// Cross-field RuleSet checks that cannot run inside a single flag parse.
 pub fn validate_rule_flags(_rules: &RuleSet) -> Result<(), String> {
 	Ok(())
+}
+
+fn removed_rule_flag(arg: &str) -> String {
+	format!(
+		"{arg} was removed: the locked ruleset is ratchet reward (flips anywhere after the second ratchet) + 2-2-1-1 opening on the 4:3:1 additive braid-only-exact package. Use --cascade-winner-swap off and/or --opening-double off to compare."
+	)
 }
 
 pub fn usage() -> &'static str {
@@ -540,9 +499,7 @@ pub fn usage() -> &'static str {
 	   --from-start                               With --screenshot, capture the opening deal\n\
 	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
 	   --list-scenarios                           Print builtin deck scenarios\n\
-	   --no-moves-loses <on|off>                  No ADD/MOVE/SWAP/CLAIM loses (default: on)\n\
-	   --center-hold-win <on|off>                 Center-hold win (default: off)\n\
-	   --center-hold-n <1..64>                    Turns to hold center (default: 5)\n\
+	   --no-moves-loses <on|off>                  No ADD/MOVE/SWAP/CLAIM/CONVERT loses (default: on)\n\
 	   --no-same-piece-twice <off|always|when-deck-empty>\n\
 	                                              Repeat-piece rule (default: off)\n\
 	   --color-restricted-hops <on|off>           Hop only own color (default: on; hops off by default)\n\
@@ -550,22 +507,14 @@ pub fn usage() -> &'static str {
 	   --counted-pass-through <on|off>            Pass through occupied tiles at 1/step (default: on)\n\
 	   --graph-hops <on|off>                      Restore graph hops (alias: counted-pass-through off)\n\
 	   --pass-through-ring-cmp <ge|gt>            Pass-through ring gate (default: ge)\n\
-	   --petal-majority-win <on|off>              Inner-ring majority win (default: off)\n\
-	   --petal-majority-n <1..64>                 Turns to hold majority (default: 1)\n\
 	   --control-win <on|off>                     Center+inner-ring control win (default: on)\n\
 	   --control-n <1..9>                         Control-set occupancy cap (default: 5)\n\
-	   --control-hold-turns <1..64>               Turns to hold control (default: 1)\n\
 	   --endgame-rule <control-cascade|low-value>  One-way ratchet 5→2 with max material, then low-value at ≤1 (default: control-cascade)\n\
-	   --cascade-turn-gain <on|off>               Extra turn for the material leader on a non-winning cascade drop (default: on)\n\
-	   --cascade-winner-swap <on|off>             After a ratchet, next move to the winner (higher entering material, then tokens); first reward SWAP, second+ also CONVERT (default: off)\n\
+	   --cascade-turn-gain <on|off>               Extra turn for the material leader on a non-winning cascade drop when the ratchet reward is off (default: on)\n\
+	   --cascade-winner-swap <on|off>             After a ratchet, next move to the winner (higher entering material, then tokens); first reward SWAP, second+ also CONVERT (default: on)\n\
 	   --ratchet-cascade <on|off>                 Count non-winning control-cascade drops as ratchets when --cascade-winner-swap is on (default: on)\n\
-	   --extra-convert-mode <any|not-center|inner> CONVERT target filter on 2nd+ ratchet rewards (default: any opponent piece, including center)\n\
-	   --extra-swap-mode <any|own|not-center>     Post-ratchet SWAP partner filter (default: any)\n\
-	   --center-mismatch <on|off>                 Unmatched center occupant scores +1 mismatch (default: off)\n\
-	   --opening-double <on|off>                  2-2-1-1 opening: P1 two actions, P2 two, then singles (default: off)\n\
+	   --opening-double <on|off>                  2-2-1-1 opening: P1 two actions, P2 two, then singles (default: on)\n\
 	   --opening <2-2-1-1|1-1-1-1>                Alias for --opening-double on|off\n\
-	   --insufficient-tiles-loss <off|strict|no-recapture>\n\
-	                                              Can't-reach-control loss (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
 	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
 	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
@@ -575,14 +524,7 @@ pub fn usage() -> &'static str {
 	   --braid-chance <0..7>                      A piece forms a braid with k/7 chance (default: 1)\n\
 	   --braids <on|off>                          Alias for --braid-chance 1 or 0 (default: on)\n\
 	   --bead-chance <0..7>                       Bead light-election weight (default: 1; 0 disables)\n\
-	   --bead-scoring <independent|shared>        Additive-mode normal/bead combine (default independent = beads separate; shared = max fold)\n\
-	   --braid-scoring <current|braid-only-match|braid-only-exact>\n\
-	                                              Braid match total (default: braid-only-exact = only exact braid matches score, 1-slot +1, other matches still paint; current = coverage; braid-only-match = legacy coverage-only)\n\
 	   --single-braids <on|off>                   Lone heavies (incl. 1-ring) become 1-slot braids (default: on; same heavy coin, no extra roll)\n\
-	   --score-unique-neighbors <on|off>          Legacy unique-neighbor scoring (default: off; alias --link-once). Live scoring is per-arc double-count\n\
-	   --link-once <on|off>                       Alias for --score-unique-neighbors\n\
-	   --channel-mode <independent-max|additive>  Edge combine only (default: additive). Generation is always clustering\n\
-	   --independent-channels <on|off>            Alias: on = independent-max, off = additive scoring\n\
 	   --ring-count-weights <s,d,t>               Singles:doubles:triples generation weights (default: 4,3,1)\n\
 	   --color-drift <n>                          RFC ColorPass.drift diagonal (default 160; 0 restores uniqueness)\n\
 	   --capture-mode <local-claim|cascade>       Local ADD/MOVE/SWAP captures + Claim (default: local-claim; cascade = PR #70)\n\
@@ -593,7 +535,6 @@ pub fn usage() -> &'static str {
 	   --emblems <on|off>                         Alias for default weights or 1,0,0,0,0 (skip RNG)\n\
 	   --blocker-blocks <traversal|pass|hop|off>  What Blocker stops as a MOVE intermediate (default: traversal)\n\
 	   --zag-mismatch <sum|max>                   Zag edge count (default: sum)\n\
-	   --braid-fail-mismatch <one|weight|sum>     Failed-braid mismatch (default: one)\n\
 	   --path-constraint <no-node-revisit|no-edge-revisit|both>\n\
 	                                              MOVE path uniqueness (default: no-edge-revisit)\n\
 	   --no-repeated-edge <on|off>                Alias for path-constraint edge/node\n\
@@ -708,10 +649,6 @@ mod tests {
 		let cfg = GameConfig::parse([
 			"--no-moves-loses",
 			"off",
-			"--center-hold-win",
-			"on",
-			"--center-hold-n",
-			"3",
 			"--no-same-piece-twice",
 			"always",
 			"--color-restricted-hops",
@@ -725,8 +662,8 @@ mod tests {
 		])
 		.unwrap();
 		assert!(!cfg.rules.no_moves_loses);
-		assert!(cfg.rules.center_hold_win);
-		assert_eq!(cfg.rules.center_hold_n, 3);
+		assert!(!cfg.rules.center_hold_win);
+		assert_eq!(cfg.rules.center_hold_n, 5);
 		assert_eq!(cfg.rules.no_same_piece_twice, SamePieceTwice::Always);
 		assert!(cfg.rules.color_restricted_hops);
 		assert_eq!(cfg.rules.hop_weight_cmp, HopWeightCmp::Le);
@@ -735,27 +672,11 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_control_and_insufficient_flags() {
-		let cfg = GameConfig::parse([
-			"--control-win",
-			"on",
-			"--control-n",
-			"5",
-			"--control-hold-turns",
-			"3",
-			"--insufficient-tiles-loss",
-			"no-recapture",
-			"--center-hold-win",
-			"off",
-		])
-		.unwrap();
+	fn parses_control_flags() {
+		let cfg = GameConfig::parse(["--control-win", "on", "--control-n", "5"]).unwrap();
 		assert!(cfg.rules.control_win);
 		assert_eq!(cfg.rules.control_n, 5);
-		assert_eq!(cfg.rules.control_hold_turns, 3);
-		assert_eq!(
-			cfg.rules.insufficient_tiles_loss,
-			crate::game::InsufficientTilesLoss::NoRecapture
-		);
+		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert!(!cfg.rules.center_hold_win);
 	}
 
@@ -778,14 +699,11 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_cascade_winner_swap_and_center_mismatch() {
+	fn parses_cascade_winner_swap_and_opening() {
 		let def = GameConfig::parse([] as [&str; 0]).unwrap();
-		assert!(!def.rules.cascade_winner_swap);
+		assert!(def.rules.cascade_winner_swap);
 		assert!(def.rules.ratchet_cascade);
-		assert_eq!(def.rules.extra_convert_mode, crate::game::ExtraConvertMode::Any);
-		assert_eq!(def.rules.extra_swap_mode, crate::game::ExtraSwapMode::Any);
-		assert!(!def.rules.center_mismatch);
-		assert!(!def.rules.opening_double);
+		assert!(def.rules.opening_double);
 		let on = GameConfig::parse(["--cascade-winner-swap", "on"]).unwrap();
 		assert!(on.rules.cascade_winner_swap);
 		assert!(on.rules.ratchet_cascade);
@@ -793,26 +711,19 @@ mod tests {
 		assert!(!off.rules.cascade_winner_swap);
 		let no_cas = GameConfig::parse(["--ratchet-cascade", "off"]).unwrap();
 		assert!(!no_cas.rules.ratchet_cascade);
-		let inner = GameConfig::parse(["--extra-convert-mode", "inner"]).unwrap();
-		assert_eq!(inner.rules.extra_convert_mode, crate::game::ExtraConvertMode::Inner);
-		let nc_c = GameConfig::parse(["--extra-convert-mode", "not-center"]).unwrap();
-		assert_eq!(nc_c.rules.extra_convert_mode, crate::game::ExtraConvertMode::NotCenter);
-		let own = GameConfig::parse(["--extra-swap-mode", "own"]).unwrap();
-		assert_eq!(own.rules.extra_swap_mode, crate::game::ExtraSwapMode::Own);
-		let nc = GameConfig::parse(["--extra-swap-mode", "not-center"]).unwrap();
-		assert_eq!(nc.rules.extra_swap_mode, crate::game::ExtraSwapMode::NotCenter);
-		let mm = GameConfig::parse(["--center-mismatch", "on"]).unwrap();
-		assert!(mm.rules.center_mismatch);
 		assert!(GameConfig::parse(["--cascade-winner-swap", "maybe"]).is_err());
-		assert!(GameConfig::parse(["--extra-turn-action", "swap"]).is_err());
-		assert!(GameConfig::parse(["--extra-convert-mode", "outer"]).is_err());
-		assert!(GameConfig::parse(["--extra-swap-mode", "adjacent"]).is_err());
+		let err = GameConfig::parse(["--extra-turn-action", "swap"]).unwrap_err();
+		assert!(err.contains("removed"), "{err}");
+		let err = GameConfig::parse(["--extra-convert-mode", "any"]).unwrap_err();
+		assert!(err.contains("removed"), "{err}");
+		let err = GameConfig::parse(["--center-mismatch", "on"]).unwrap_err();
+		assert!(err.contains("removed"), "{err}");
 		let open = GameConfig::parse(["--opening-double", "on"]).unwrap();
 		assert!(open.rules.opening_double);
 		let alias = GameConfig::parse(["--opening", "2-2-1-1"]).unwrap();
 		assert!(alias.rules.opening_double);
-		let off = GameConfig::parse(["--opening", "1-1-1-1"]).unwrap();
-		assert!(!off.rules.opening_double);
+		let singles = GameConfig::parse(["--opening", "1-1-1-1"]).unwrap();
+		assert!(!singles.rules.opening_double);
 		assert!(GameConfig::parse(["--opening", "3-3-1-1"]).is_err());
 		assert!(GameConfig::parse(["--opening-double", "maybe"]).is_err());
 	}
@@ -834,12 +745,9 @@ mod tests {
 		assert_eq!(cfg.rules.control_hold_turns, 1);
 		assert_eq!(cfg.rules.endgame_rule, crate::game::EndgameRule::ControlCascade);
 		assert!(cfg.rules.cascade_turn_gain);
-		assert!(!cfg.rules.cascade_winner_swap);
+		assert!(cfg.rules.cascade_winner_swap);
 		assert!(cfg.rules.ratchet_cascade);
-		assert_eq!(cfg.rules.extra_convert_mode, crate::game::ExtraConvertMode::Any);
-		assert_eq!(cfg.rules.extra_swap_mode, crate::game::ExtraSwapMode::Any);
-		assert!(!cfg.rules.center_mismatch);
-		assert!(!cfg.rules.opening_double);
+		assert!(cfg.rules.opening_double);
 		assert_eq!(cfg.rules.insufficient_tiles_loss, crate::game::InsufficientTilesLoss::Off);
 		assert_eq!(cfg.rules.starting_bench_size, 7);
 		assert_eq!(cfg.rules.bag_size, crate::game::BAG_SIZE_DEFAULT as u8);
@@ -872,9 +780,8 @@ mod tests {
 		assert_eq!(cfg.rules.zag_mismatch, crate::game::ZagMismatchCount::Sum);
 		assert_eq!(cfg.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::One);
 		assert_eq!(cfg.rules.swap_mode, crate::game::SwapMode::NormalOnly);
-		assert!(!cfg.rules.cascade_winner_swap);
-		assert!(!cfg.rules.center_mismatch);
-		assert!(!cfg.rules.opening_double);
+		assert!(cfg.rules.cascade_winner_swap);
+		assert!(cfg.rules.opening_double);
 	}
 
 	#[test]
@@ -890,41 +797,21 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_braid_scoring_and_link_once() {
+	fn parses_single_braids_and_rejects_removed_scoring_flags() {
 		let def = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(def.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyExact);
 		assert!(!def.rules.score_unique_neighbors);
 		assert!(def.rules.allow_single_braids);
-		let only = GameConfig::parse(["--braid-scoring", "braid-only-match"]).unwrap();
-		assert_eq!(only.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyMatch);
-		let exact = GameConfig::parse(["--braid-scoring", "braid-only-exact"]).unwrap();
-		assert_eq!(exact.rules.braid_scoring, crate::game::BraidScoring::BraidOnlyExact);
-		let current = GameConfig::parse(["--braid-scoring", "current"]).unwrap();
-		assert_eq!(current.rules.braid_scoring, crate::game::BraidScoring::Current);
 		let gone = GameConfig::parse(["--braid-exact", "on"]).unwrap_err();
 		assert!(gone.contains("unknown argument") || gone.contains("--braid-exact"), "{gone}");
-		let err = GameConfig::parse(["--braid-scoring", "product"]).unwrap_err();
-		assert!(err.contains("braid-scoring"));
+		let err = GameConfig::parse(["--braid-scoring", "braid-only-match"]).unwrap_err();
+		assert!(err.contains("removed"), "{err}");
 		let singles = GameConfig::parse(["--single-braids", "off"]).unwrap();
 		assert!(!singles.rules.allow_single_braids);
-		let once = GameConfig::parse(["--link-once", "on"]).unwrap();
-		assert!(once.rules.score_unique_neighbors);
-		let unique = GameConfig::parse(["--score-unique-neighbors", "on"]).unwrap();
-		assert!(unique.rules.score_unique_neighbors);
-		let off = GameConfig::parse(["--link-once", "off"]).unwrap();
-		assert!(!off.rules.score_unique_neighbors);
-	}
-
-	#[test]
-	fn parses_braid_fail_mismatch() {
-		let one = GameConfig::parse(["--braid-fail-mismatch", "one"]).unwrap();
-		assert_eq!(one.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::One);
-		let weight = GameConfig::parse(["--braid-fail-mismatch", "weight"]).unwrap();
-		assert_eq!(weight.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::Weight);
-		let sum = GameConfig::parse(["--braid-fail-mismatch", "sum"]).unwrap();
-		assert_eq!(sum.rules.braid_fail_mismatch, crate::game::BraidFailMismatch::Sum);
-		let err = GameConfig::parse(["--braid-fail-mismatch", "product"]).unwrap_err();
-		assert!(err.contains("braid-fail-mismatch"));
+		let once = GameConfig::parse(["--link-once", "on"]).unwrap_err();
+		assert!(once.contains("removed"), "{once}");
+		let fail = GameConfig::parse(["--braid-fail-mismatch", "sum"]).unwrap_err();
+		assert!(fail.contains("removed"), "{fail}");
 	}
 
 	#[test]
@@ -1000,36 +887,19 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_bead_scoring_and_deck_archetypes() {
-		let shared = GameConfig::parse(["--bead-scoring", "shared"]).unwrap();
-		assert_eq!(shared.rules.bead_scoring, crate::game::BeadScoring::SharedChannel);
-		let ind = GameConfig::parse(["--bead-scoring", "independent"]).unwrap();
-		assert_eq!(ind.rules.bead_scoring, crate::game::BeadScoring::Independent);
+	fn parses_deck_archetypes_and_rejects_removed_channel_flags() {
 		let def = GameConfig::parse([] as [&str; 0]).unwrap();
 		assert_eq!(def.rules.bead_scoring, crate::game::BeadScoring::Independent);
-		let err = GameConfig::parse(["--bead-scoring", "average"]).unwrap_err();
-		assert!(err.contains("bead-scoring"));
+		assert_eq!(def.rules.channel_mode, crate::game::ChannelMode::Additive);
+		let err = GameConfig::parse(["--bead-scoring", "shared"]).unwrap_err();
+		assert!(err.contains("removed"), "{err}");
+		let err = GameConfig::parse(["--channel-mode", "independent-max"]).unwrap_err();
+		assert!(err.contains("removed"), "{err}");
+		let err = GameConfig::parse(["--independent-channels", "on"]).unwrap_err();
+		assert!(err.contains("removed"), "{err}");
 		let decks = GameConfig::parse(["--p1-deck", "braid", "--p2-deck", "bead"]).unwrap();
 		assert_eq!(decks.setup.p1_deck, crate::deck::DeckArchetype::BraidHeavy);
 		assert_eq!(decks.setup.p2_deck, crate::deck::DeckArchetype::BeadHeavy);
-	}
-
-	#[test]
-	fn parses_channel_mode() {
-		let def = GameConfig::parse([] as [&str; 0]).unwrap();
-		assert_eq!(def.rules.channel_mode, crate::game::ChannelMode::Additive);
-		let max = GameConfig::parse(["--channel-mode", "independent-max"]).unwrap();
-		assert_eq!(max.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
-		let add = GameConfig::parse(["--channel-mode", "additive"]).unwrap();
-		assert_eq!(add.rules.channel_mode, crate::game::ChannelMode::Additive);
-		let legacy = GameConfig::parse(["--channel-mode", "legacy"]).unwrap();
-		assert_eq!(legacy.rules.channel_mode, crate::game::ChannelMode::Additive);
-		let err = GameConfig::parse(["--channel-mode", "average"]).unwrap_err();
-		assert!(err.contains("channel-mode"));
-		let on = GameConfig::parse(["--independent-channels", "on"]).unwrap();
-		assert_eq!(on.rules.channel_mode, crate::game::ChannelMode::IndependentMax);
-		let off = GameConfig::parse(["--independent-channels", "off"]).unwrap();
-		assert_eq!(off.rules.channel_mode, crate::game::ChannelMode::Additive);
 	}
 
 	#[test]

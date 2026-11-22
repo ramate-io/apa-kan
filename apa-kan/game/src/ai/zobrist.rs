@@ -408,6 +408,7 @@ mod tests {
 		use crate::game::{Game, Player, SamePieceTwice, TileColor};
 
 		let mut rules = RuleSet::default();
+		rules.opening_double = false;
 		rules.center_hold_win = true;
 		rules.center_hold_n = 5;
 		rules.no_same_piece_twice = SamePieceTwice::Always;
@@ -494,9 +495,10 @@ mod tests {
 	fn hash_distinguishes_opening_double_stays() {
 		use crate::game::Game;
 
-		let none = Game::empty(RuleSet::default());
-		let mut doubled = Game::empty(RuleSet::default());
-		doubled.set_opening_double(true);
+		let mut off = RuleSet::default();
+		off.opening_double = false;
+		let none = Game::empty(off);
+		let doubled = Game::empty(RuleSet::default());
 		assert_eq!(none.opening_stays_left(crate::game::Player::One), 0);
 		assert_eq!(doubled.opening_stays_left(crate::game::Player::One), 1);
 		assert_ne!(

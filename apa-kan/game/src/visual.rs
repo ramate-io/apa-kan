@@ -170,7 +170,7 @@ pub const SIDE_MARGIN_PX: f32 = 16.0;
 pub const HUD_SEP: &str = " | ";
 
 pub const HELP_TEXT: &str =
-	"Click a spawn then any unplaced deck tile to ADD (costs 1 spawn token). MOVE your tile. Click a 1-ring normal then an adjacent tile to SWAP (same pair cannot swap back next; no empty center). Click an overwhelmed tile to CLAIM it (always a spawn token). Only exact braids score (1-slot +1); other matches still paint, score 0. Win: 5 of 9 ratcheting 4-3-2 with max board+usable (never rises), then lowest pieces if both <=1.";
+	"Opening is 2-2-1-1 (P1 twice, P2 twice, then singles). ADD a bench tile onto a spawn (costs 1 token). MOVE your tile. SWAP a 1-ring normal with an adjacent occupied tile (same pair cannot swap back next). CLAIM any overwhelmed tile for a token. After a ratchet the winner goes next: first reward may SWAP any piece with any occupied tile; after the second they may also FLIP an opponent's piece. Only exact braids score (1-slot +1); other matches still paint, score 0. Win: 5 of 9 ratcheting 4-3-2 with max board+usable (never rises), then lowest pieces if both <=1. No legal add/move/swap/claim/flip loses.";
 
 pub const SETUP_HELP_TEXT: &str =
 	"Pick 7, both reveal, then 4 from reserves. Cap: 6 rings of each non-normal type on the 11-tile bench (zag, braid, bead; a 3-braid uses 3 of 6, a 1-slot braid uses 1). Normal uncapped.";
@@ -2808,15 +2808,9 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 					_ => "1",
 				};
 				if game.extra_convert_active() {
-					extra.push_str(&format!(
-						"{HUD_SEP}ratchet-{tier} flip-{}",
-						game.rules().extra_convert_mode.name()
-					));
+					extra.push_str(&format!("{HUD_SEP}ratchet-{tier} flip"));
 				} else if game.extra_swap_active() {
-					extra.push_str(&format!(
-						"{HUD_SEP}ratchet-{tier} swap-{}",
-						game.rules().extra_swap_mode.name()
-					));
+					extra.push_str(&format!("{HUD_SEP}ratchet-{tier} swap"));
 				} else {
 					extra.push_str(&format!("{HUD_SEP}ratchet-{tier}"));
 				}
@@ -4773,12 +4767,12 @@ mod tests {
 
 	#[test]
 	fn hud_shows_opening_double_pending() {
-		let mut rules = RuleSet::default();
-		rules.opening_double = true;
-		let game = Game::empty(rules);
+		let game = Game::empty(RuleSet::default());
 		let turn = format_turn_line(&game, "human");
 		assert!(turn.contains("open-2"), "pending 2-2-1-1 opening: {turn}");
-		let off = format_turn_line(&Game::empty(RuleSet::default()), "human");
+		let mut off_rules = RuleSet::default();
+		off_rules.opening_double = false;
+		let off = format_turn_line(&Game::empty(off_rules), "human");
 		assert!(!off.contains("open-2"), "{off}");
 	}
 

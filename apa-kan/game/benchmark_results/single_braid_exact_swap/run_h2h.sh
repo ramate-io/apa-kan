@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Archived: `--link-once` / `--braid-scoring` CLI were removed. Do not re-run
+# against current binaries. Logs in this directory still replay.
 # Full counterplay package: 4:3:1 Additive, braid-only-exact, single braids,
 # normal-only singles-swap. Cells: link-once vs double-count, plus optional
 # ablations (no-swap / no-single-braids) at one link setting.

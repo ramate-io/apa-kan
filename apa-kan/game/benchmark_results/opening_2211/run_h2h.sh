@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 2-2-1-1 opening (`--opening-double on` / `--opening 2-2-1-1`): P1 two
-# consecutive 1-action turns, then P2 two, then singles. Off by default.
-# Same light exactplay minimax-vs-minimax package as
-# cascade_winner_swap/mirror/. Headline arm is ratchet on + 2-2-1-1.
+# consecutive 1-action turns, then P2 two, then singles. Now the live
+# default. Same light exactplay minimax-vs-minimax package as
+# cascade_winner_swap/mirror/. Headline arm is the locked ratchet + 2-2-1-1.
 #
 # Usage:
 #   run_h2h.sh r1            # 300-game mm-mm, ratchet + 2-2-1-1 (--seed 300)
@@ -58,15 +58,15 @@ cfg="${1:-r1}"
 case "$cfg" in
   r1)
     run_one h2h_n300_mm_r1 \
-      --cascade-winner-swap on --ratchet-cascade on --extra-convert-mode any
+      --cascade-winner-swap on --ratchet-cascade on
     ;;
   baseline)
-    run_one h2h_n300_mm_baseline
+    run_one h2h_n300_mm_baseline --cascade-winner-swap off
     ;;
   all)
     run_one h2h_n300_mm_r1 \
-      --cascade-winner-swap on --ratchet-cascade on --extra-convert-mode any
-    run_one h2h_n300_mm_baseline
+      --cascade-winner-swap on --ratchet-cascade on
+    run_one h2h_n300_mm_baseline --cascade-winner-swap off
     ;;
   *)
     echo "usage: $0 [r1|baseline|all]" >&2

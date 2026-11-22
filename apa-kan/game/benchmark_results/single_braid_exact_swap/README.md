@@ -1,5 +1,10 @@
 # Single-braid exact match, normal-only swap, link-once vs double-count
 
+> **Partially archived.** Exact braids, single braids, and normal-only swap
+> are live. `--link-once` / `--braid-scoring` CLI were removed. See
+> [`../archive/`](../archive/).
+
+
 Stacked on PR #82 (center link-once, Additive beads unfolded, braid-only-match)
 after merging PR #80 (adjacent singles-swap). Liam wants to test the most
 promising setup for restoring counterplay around the center: the first

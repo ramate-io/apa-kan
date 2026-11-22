@@ -116,16 +116,13 @@ fn usage() -> &'static str {
 	   --list-scenarios     Print builtin deck scenarios\n\
 	   Doubles allowed (--no-same-piece-twice off) is the locked default and the only\n\
 	   H2H-benchmarked configuration. Other --no-same-piece-twice values remain as CLI variants.\n\
-	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
-	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
+	   Rule flags (same as apa-kan): --no-moves-loses, --no-same-piece-twice, --color-restricted-hops,\n\
 	   --hop-weight-cmp, --counted-pass-through, --graph-hops, --pass-through-ring-cmp,\n\
-	   --petal-majority-win, --petal-majority-n,\n\
-	   --control-win, --control-n, --control-hold-turns, --endgame-rule, --cascade-turn-gain,\n\
-	   --cascade-winner-swap, --ratchet-cascade, --extra-convert-mode, --extra-swap-mode, --center-mismatch,\n\
-	   --opening-double, --opening,\n\
-	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
+	   --control-win, --control-n, --endgame-rule, --cascade-turn-gain,\n\
+	   --cascade-winner-swap, --ratchet-cascade, --opening-double, --opening,\n\
+	   --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
 	   --max-rings, --ring-count-weights, --color-drift, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --braid-scoring, --single-braids, --score-unique-neighbors, --link-once, --bead-scoring, --channel-mode, --independent-channels, --capture-mode, --singles-swap, --dot-chance,\n\
+	   --single-braids, --capture-mode, --singles-swap,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -731,7 +728,7 @@ fn run(cfg: BenchConfig) {
 		));
 	}
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} ratchet_cascade={} extra_convert_mode={} extra_swap_mode={} center_mismatch={} opening_double={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} ratchet_cascade={} opening_double={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -749,9 +746,6 @@ fn run(cfg: BenchConfig) {
 		on_off(rules.cascade_turn_gain),
 		on_off(rules.cascade_winner_swap),
 		on_off(rules.ratchet_cascade),
-		rules.extra_convert_mode.name(),
-		rules.extra_swap_mode.name(),
-		on_off(rules.center_mismatch),
 		on_off(rules.opening_double),
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
@@ -3210,20 +3204,14 @@ mod tests {
 			"minimax:mcts,mcts:minimax".to_string(),
 			"--deck-matchups".to_string(),
 			"braid:bead,bead:braid,mixed:mixed".to_string(),
-			"--bead-scoring".to_string(),
-			"shared".to_string(),
 		])
 		.unwrap();
 		assert_eq!(cfg.pairings.as_ref().map(|p| p.len()), Some(2));
 		assert_eq!(cfg.matchups.len(), 3);
 		assert_eq!(cfg.matchups[0], (DeckArchetype::BraidHeavy, DeckArchetype::BeadHeavy));
-		assert_eq!(cfg.rules.bead_scoring, apa_kan::game::BeadScoring::SharedChannel);
-		let link = parse(vec!["--link-once".to_string(), "on".to_string()]).unwrap();
-		assert!(link.rules.score_unique_neighbors);
-		let braid =
-			parse(vec!["--braid-scoring".to_string(), "braid-only-match".to_string()]).unwrap();
-		assert_eq!(braid.rules.braid_scoring, apa_kan::game::BraidScoring::BraidOnlyMatch);
+		assert_eq!(cfg.rules.bead_scoring, apa_kan::game::BeadScoring::Independent);
 		assert_eq!(cfg.rules.channel_mode, apa_kan::game::ChannelMode::Additive);
+		assert_eq!(cfg.rules.braid_scoring, apa_kan::game::BraidScoring::BraidOnlyExact);
 		let emblems = parse(vec![
 			"--deck-matchups".to_string(),
 			"crescent:mixed,zs:emblem,emblem:bead".to_string(),

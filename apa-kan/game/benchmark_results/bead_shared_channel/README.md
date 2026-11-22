@@ -1,5 +1,9 @@
 # Bead scoring: independent vs shared channel
 
+> **Archived.** `--bead-scoring` was removed from the CLI. Live beads are
+> a separate additive channel. See [`../archive/`](../archive/).
+
+
 Compares two bead scoring rules on the same search, pick, and deck package.
 Doubles allowed, zags on. Do not overwrite; quote numbers from the committed
 logs in this directory.

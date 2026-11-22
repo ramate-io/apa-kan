@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Archived: `--link-once` / `--braid-scoring` CLI were removed. Do not re-run
+# against current binaries. Logs in this directory still replay.
 # Same-deck 27 shallow H2H: link-once ON, ColorPass.drift 160.
 # Two matrices, each (4:3:1, 7:5:4) × {independent-max, additive}:
 #   (a) current braid scoring

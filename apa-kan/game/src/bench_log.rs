@@ -6,11 +6,10 @@ use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
 	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
 	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
-	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule,
-	ExtraConvertMode, ExtraSwapMode, Game, GameStatus, HopWeightCmp, InsufficientTilesLoss,
-	LowValueResolution, PassThroughRingCmp, PathConstraint, Player, RatchetKind, RatchetTier,
-	RingCountWeights, RingType, RuleSet, SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind,
-	ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game,
+	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
+	PathConstraint, Player, RatchetKind, RatchetTier, RingCountWeights, RingType, RuleSet,
+	SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -383,7 +382,9 @@ pub struct RulesLog {
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cascade_turn_gain: bool,
 	/// Next-move ratchet reward when a center occupant is captured (and,
-	/// by default, on a non-winning cascade drop). Absent/false on older logs.
+	/// by default, on a non-winning cascade drop). Absent/false on older logs
+	/// so historical JSONL still replays without the reward. Live `RuleSet`
+	/// default is on; new logs write the field.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cascade_winner_swap: bool,
 	/// Count non-winning control-cascade drops as ratchets. Absent on older
@@ -394,16 +395,20 @@ pub struct RulesLog {
 	/// ratchet tiers always use SWAP then CONVERT). Absent; not written.
 	#[serde(default, skip_serializing)]
 	pub extra_turn_action: String,
-	/// CONVERT target filter. Absent on older logs; replay uses any.
-	#[serde(default = "default_extra_convert_any", skip_serializing_if = "skip_extra_convert_any")]
+	/// Historical CONVERT target filter. Ignored on replay (flips are always
+	/// any opponent piece, including the origin). Absent; not written.
+	#[serde(default, skip_serializing)]
 	pub extra_convert_mode: String,
-	/// Post-ratchet SWAP partner filter. Absent on older logs; replay uses any.
-	#[serde(default = "default_extra_swap_any", skip_serializing_if = "skip_extra_swap_any")]
+	/// Historical post-ratchet SWAP partner filter. Ignored on replay
+	/// (reward SWAP is always any occupied partner). Absent; not written.
+	#[serde(default, skip_serializing)]
 	pub extra_swap_mode: String,
-	/// Unmatched center occupant scores +1 mismatch. Absent/false on older logs.
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	/// Historical unmatched-center +1 mismatch. Ignored on replay (always
+	/// off). Absent; not written.
+	#[serde(default, skip_serializing)]
 	pub center_mismatch: bool,
-	/// 2-2-1-1 opening. Absent/false on older logs.
+	/// 2-2-1-1 opening. Absent/false on older logs so historical JSONL still
+	/// replays as 1-1-1-1. Live `RuleSet` default is on; new logs write the field.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub opening_double: bool,
 	pub insufficient_tiles_loss: String,
@@ -507,28 +512,12 @@ fn skip_swap_off(v: &String) -> bool {
 	*v == SwapMode::Off.name()
 }
 
-fn default_extra_swap_any() -> String {
-	ExtraSwapMode::Any.name().to_string()
-}
-
-fn skip_extra_swap_any(v: &String) -> bool {
-	*v == ExtraSwapMode::Any.name()
-}
-
 fn default_true() -> bool {
 	true
 }
 
 fn skip_true(v: &bool) -> bool {
 	*v
-}
-
-fn default_extra_convert_any() -> String {
-	ExtraConvertMode::Any.name().to_string()
-}
-
-fn skip_extra_convert_any(v: &String) -> bool {
-	*v == ExtraConvertMode::Any.name()
 }
 
 impl RulesLog {
@@ -570,9 +559,9 @@ impl RulesLog {
 			cascade_winner_swap: r.cascade_winner_swap,
 			ratchet_cascade: r.ratchet_cascade,
 			extra_turn_action: String::new(),
-			extra_convert_mode: r.extra_convert_mode.name().into(),
-			extra_swap_mode: r.extra_swap_mode.name().into(),
-			center_mismatch: r.center_mismatch,
+			extra_convert_mode: String::new(),
+			extra_swap_mode: String::new(),
+			center_mismatch: false,
 			opening_double: r.opening_double,
 			insufficient_tiles_loss: r.insufficient_tiles_loss.name().into(),
 			path_constraint: r.path_constraint.name().into(),
@@ -634,11 +623,6 @@ impl RulesLog {
 			cascade_turn_gain: self.cascade_turn_gain,
 			cascade_winner_swap: self.cascade_winner_swap,
 			ratchet_cascade: self.ratchet_cascade,
-			extra_convert_mode: ExtraConvertMode::parse(&self.extra_convert_mode)
-				.unwrap_or(ExtraConvertMode::Any),
-			extra_swap_mode: ExtraSwapMode::parse(&self.extra_swap_mode)
-				.unwrap_or(ExtraSwapMode::Any),
-			center_mismatch: self.center_mismatch,
 			opening_double: self.opening_double,
 			insufficient_tiles_loss: InsufficientTilesLoss::parse(&self.insufficient_tiles_loss)?,
 			path_constraint: PathConstraint::parse(&self.path_constraint)?,
@@ -2086,10 +2070,10 @@ mod tests {
 	}
 
 	#[test]
-	fn missing_cascade_winner_swap_and_center_mismatch_replay_as_off() {
+	fn missing_cascade_winner_swap_and_opening_replay_as_off() {
 		let mut r = RuleSet::default();
 		r.cascade_winner_swap = false;
-		r.center_mismatch = false;
+		r.opening_double = false;
 		let log = RulesLog::from_rules(r);
 		let json = serde_json::to_string(&log).unwrap();
 		assert!(!json.contains("cascade_winner_swap"), "{json}");
@@ -2100,26 +2084,20 @@ mod tests {
 		assert!(!parsed.center_mismatch);
 		assert!(!parsed.opening_double);
 		assert!(!json.contains("opening_double"), "{json}");
-		assert_eq!(parsed.to_rules().unwrap().extra_swap_mode, ExtraSwapMode::Any);
+		assert!(!parsed.to_rules().unwrap().cascade_winner_swap);
+		assert!(!parsed.to_rules().unwrap().opening_double);
 		assert!(parsed.to_rules().unwrap().ratchet_cascade);
-		assert_eq!(parsed.to_rules().unwrap().extra_convert_mode, ExtraConvertMode::Any);
 		assert!(!json.contains("extra_turn_action"), "{json}");
 		assert!(!json.contains("extra_convert_mode"), "{json}");
 		assert!(!json.contains("ratchet_cascade"), "{json}");
-		let mut on = RuleSet::default();
-		on.cascade_winner_swap = true;
-		on.center_mismatch = true;
-		on.opening_double = true;
-		on.ratchet_cascade = false;
-		on.extra_convert_mode = ExtraConvertMode::Inner;
-		on.extra_swap_mode = ExtraSwapMode::Own;
-		let written = RulesLog::from_rules(on);
-		let json = serde_json::to_string(&written).unwrap();
+		let live = RulesLog::from_rules(RuleSet::default());
+		let json = serde_json::to_string(&live).unwrap();
 		assert!(json.contains("cascade_winner_swap"), "{json}");
-		assert!(json.contains("center_mismatch"), "{json}");
 		assert!(json.contains("opening_double"), "{json}");
-		assert!(json.contains("own"), "{json}");
-		assert!(json.contains("inner"), "{json}");
+		let mut off_cas = RuleSet::default();
+		off_cas.ratchet_cascade = false;
+		let written = RulesLog::from_rules(off_cas);
+		let json = serde_json::to_string(&written).unwrap();
 		assert!(json.contains("ratchet_cascade"), "{json}");
 	}
 

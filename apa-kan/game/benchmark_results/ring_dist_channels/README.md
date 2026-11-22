@@ -1,5 +1,10 @@
 # Ring distribution, channels, same-deck 27, and ColorPass.drift
 
+> **Archived as a channel-mode experiment.** Live rings are 4:3:1, same-deck
+> 27, drift 160, additive. `--channel-mode` was removed. See
+> [`../archive/`](../archive/).
+
+
 Round 1 (the original `h2h_a_*` / `h2h_b_*` logs) is the 7:5:4 braid:bead
 package. Do not overwrite those files. Round 2 is the same-deck 27 follow-up:
 beads in the normal channel, ChannelMode scoring-only, braid ~10% of **tiles**,

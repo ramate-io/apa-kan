@@ -1,5 +1,9 @@
 # Center link-once, Additive beads, braid-only-match
 
+> **Archived.** `--link-once` and `--braid-scoring` were removed from the
+> CLI. Live scoring is per-arc / braid-only-exact. See [`../archive/`](../archive/).
+
+
 Stacked on PR #79 (same-deck 27, ColorPass.drift). Playtesting and those
 logs showed too little counterplay: the first player onto the center tends
 to sit and win. Liam’s diagnosis is that it is too hard to overwhelm,

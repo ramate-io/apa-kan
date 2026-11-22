@@ -1,8 +1,15 @@
 # Next-move ratchet reward (cascade / center fight)
 
+> **Superseded as the live default** (now on, with 2-2-1-1).
+> `--extra-convert-mode`, `--extra-swap-mode`, `--center-mismatch`, and
+> `--extra-turn-action` were removed. Flips are always any opponent piece.
+> Re-runs of this cell must pin `--opening-double off`. See
+> [`../archive/`](../archive/).
+
 Stacked on PR #85 (`exactplay`) / PR #83 (live playtest `RuleSet`).
-`--cascade-winner-swap` is **off by default**. Live defaults are
-unchanged: braid-only exact, single braids, additive channels,
+`--cascade-winner-swap` is **on** in the locked ruleset. These logs used
+1-1-1-1 seating. Live scoring defaults were already:
+braid-only exact, single braids, additive channels,
 double-counted center↔inner, ring weights 4:3:1, color drift 160,
 same-deck 27-tile start, adjacent normal-only single SWAP with no
 swap-back, `cascade_turn_gain` already on.

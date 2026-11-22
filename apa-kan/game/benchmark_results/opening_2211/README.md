@@ -1,8 +1,12 @@
 # 2-2-1-1 opening (`--opening-double`)
 
+> **Locked live default.** Ratchet reward + 2-2-1-1 is now `RuleSet::default`.
+> `--extra-convert-mode` was removed (flips are always any opponent piece).
+> This directory is the source experiment; numbers below are unchanged.
+
 Stacked on PR #86 (next-move ratchet) / PR #85 (`exactplay`).
-`--opening-double` / `--opening 2-2-1-1` is **off by default**. Live
-defaults are unchanged.
+`--opening-double` / `--opening 2-2-1-1` is **on** in the locked ruleset
+(`--opening 1-1-1-1` is the comparison toggle).
 
 The question is seat balance. On the existing minimax-vs-minimax
 mirror, P1 is **42.0%** with the ratchet on (126-9-165) and **43.7%**
@@ -57,9 +61,8 @@ nodes:33000,iters:650`, `--jobs 4`, `--no-depth-probe`, `--zags on`,
 `--endgame-rule control-cascade`, `--cascade-turn-gain on`,
 `--capture-mode local-claim`, `--pick search`, `--pairings
 minimax:minimax,minimax:minimax`, `--same-deck on`, `--search-profile
-exactplay`. Headline arm adds `--opening-double on --cascade-winner-swap
-on --ratchet-cascade on --extra-convert-mode any`. The cheap extra arm
-is the same package with the ratchet flags off (live extras).
+exactplay`. Headline arm is the locked default (2-2-1-1 + ratchet, flips anywhere).
+The cheap extra arm is the same package with `--cascade-winner-swap off`.
 
 **Seeds.** Same independent draw as
 [`../cascade_winner_swap/mirror/`](../cascade_winner_swap/mirror/):
@@ -71,6 +74,9 @@ only a minimax-vs-mcts game 0, so there is no sample record file here.)
 |---|---|---|---|---|
 | [`h2h_n300_mm_r1`](h2h_n300_mm_r1.txt) | 2-2-1-1 + r1 | **300** | 300 | light |
 | [`h2h_n300_mm_baseline`](h2h_n300_mm_baseline.txt) | 2-2-1-1, live (no ratchet) | **300** | 300 | light |
+| [`sanity_defaults`](sanity_defaults.txt) | **locked defaults** (no extra flags) | **12** | 300 | light |
+
+Sanity cell (release, `--no-default-features`, zags on, doubles allowed, `--zag-mismatch sum`, exactplay minimax mirror, per-game JSONL): P1 **6-1-5**, mean turns **51.92**. In band with 2211 r1 (P1 50.7%, mean 49.36); the 200-turn draw in 12 games pulls the mean up. Header confirms `cascade_winner_swap=on opening_double=on ratchet_cascade=on`.
 
 ## Minimax vs minimax (`--seed 300`, same deals)
 
