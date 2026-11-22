@@ -83,6 +83,31 @@ def extra_survey(games: list[dict]) -> None:
             f"win {p:.1%} [{lo:.1%}, {hi:.1%}]  "
             f"mean {base.mean(pt):.2f}  median {median(pt):.1f}"
         )
+    by_block: dict[str, list[dict]] = defaultdict(list)
+    for g in games:
+        seed = int(g.get("seed") or 0)
+        if 300 <= seed <= 449:
+            by_block["seeds 300-449"].append(g)
+        elif 10300 <= seed <= 10449:
+            by_block["seeds 10300-10449"].append(g)
+    if by_block:
+        print("  by seed block:")
+        for label, subset in sorted(by_block.items()):
+            w = sum(1 for g in subset if (g.get("end") or {}).get("winner") == 1)
+            d = sum(
+                1
+                for g in subset
+                if (g.get("end") or {}).get("winner") in (None, 0)
+            )
+            l = sum(1 for g in subset if (g.get("end") or {}).get("winner") == 2)
+            nn = len(subset)
+            p, lo, hi = wilson_ci(w, nn)
+            pt = [g.get("turns") or 0 for g in subset]
+            print(
+                f"    {label:22s} n={nn:3d} P1 {w}-{d}-{l}  "
+                f"win {p:.1%} [{lo:.1%}, {hi:.1%}]  "
+                f"mean {base.mean(pt):.2f}  median {median(pt):.1f}"
+            )
     buckets = Counter()
     for t in turns:
         if t <= 20:
@@ -124,6 +149,8 @@ def extra_survey(games: list[dict]) -> None:
     extra_converts_rings = Counter()
     extra_convert_examples = []
     lockout_after_flip_swap = 0
+    lockout_after_reward = Counter()
+    lockout_after_extra = Counter()
     lockout_after_examples = []
     first_cascade_leader_wins = 0
     first_cascade_games = 0
@@ -239,16 +266,23 @@ def extra_survey(games: list[dict]) -> None:
         if reason == "locked_out" and actions:
             last = actions[-1]
             last_kind = last.get("kind")
+            ratchet_last = bool(last.get("played_as_ratchet"))
+            extra_last = bool(last.get("played_as_extra"))
+            if ratchet_last:
+                lockout_after_reward[last_kind or "?"] += 1
+            if extra_last:
+                lockout_after_extra[last_kind or "?"] += 1
             if last_kind in ("CONVERT", "SWAP"):
                 lockout_after_flip_swap += 1
+            reward_last = ratchet_last or extra_last
+            if reward_last or last_kind in ("CONVERT", "SWAP"):
                 lockout_after_examples.append(
                     {
                         "pairing": pairing,
                         "game": game_n,
+                        "seed": g.get("seed"),
                         "verb": last_kind,
-                        "reward": bool(
-                            last.get("played_as_ratchet") or last.get("played_as_extra")
-                        ),
+                        "reward": reward_last,
                         "turn": last.get("turn"),
                         "player": last.get("player"),
                         "winner": winner,
@@ -303,9 +337,19 @@ def extra_survey(games: list[dict]) -> None:
         f"rings={dict(extra_converts_rings)}"
     )
     lockouts = reasons.get("locked_out", 0)
+    reward_lock_n = sum(lockout_after_reward.values())
+    extra_lock_n = sum(lockout_after_extra.values())
     print(
         f"  lockouts after flip/swap {lockout_after_flip_swap}/{lockouts} "
         f"({base.pct(lockout_after_flip_swap, lockouts)})"
+    )
+    print(
+        f"  lockouts right after a ratchet reward {reward_lock_n}/{lockouts} "
+        f"({base.pct(reward_lock_n, lockouts)})  by verb {dict(lockout_after_reward)}"
+    )
+    print(
+        f"  lockouts right after a cascade extra {extra_lock_n}/{lockouts} "
+        f"({base.pct(extra_lock_n, lockouts)})  by verb {dict(lockout_after_extra)}"
     )
     print(
         f"  leader after first ratchet: games={first_cascade_games}  "

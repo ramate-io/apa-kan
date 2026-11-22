@@ -11,12 +11,14 @@
 #   run_h2h.sh baseline|r1
 #   run_h2h.sh n300           # light 300-game baseline + r1 (--seed 300)
 #   run_h2h.sh n300_baseline|n300_r1
+#   run_h2h.sh mirror                  # minimax vs minimax, same 300 seeds
+#   run_h2h.sh mirror_baseline|mirror_r1
 #   run_h2h.sh deep_baseline|deep_r1   # 4x, 20 games
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../../../.." && pwd)"
 cd "$repo"
 out="apa-kan/game/benchmark_results/cascade_winner_swap"
-mkdir -p "$out"
+mkdir -p "$out" "$out/mirror"
 
 BIN="${APA_KAN_BENCH:-target/release/apa-kan-bench}"
 if [[ ! -x "$BIN" ]]; then
@@ -87,12 +89,31 @@ case "$cfg" in
     run_one h2h_n300_r1 --budget "$LIGHT" --games 150 --seed "$N300_SEED" \
       --cascade-winner-swap on
     ;;
+  mirror_baseline)
+    # Two identical pairings so pairing-index 0/1 hit seeds 300-449 and
+    # 10300-10449 (same deals as the mixed 300-game cell). Both seats are
+    # exactplay minimax.
+    run_one mirror/h2h_n300_mm_baseline --budget "$LIGHT" --games 150 \
+      --seed "$N300_SEED" --pairings minimax:minimax,minimax:minimax
+    ;;
+  mirror_r1)
+    run_one mirror/h2h_n300_mm_r1 --budget "$LIGHT" --games 150 \
+      --seed "$N300_SEED" --pairings minimax:minimax,minimax:minimax \
+      --cascade-winner-swap on --ratchet-cascade on --extra-convert-mode any
+    ;;
+  mirror)
+    run_one mirror/h2h_n300_mm_baseline --budget "$LIGHT" --games 150 \
+      --seed "$N300_SEED" --pairings minimax:minimax,minimax:minimax
+    run_one mirror/h2h_n300_mm_r1 --budget "$LIGHT" --games 150 \
+      --seed "$N300_SEED" --pairings minimax:minimax,minimax:minimax \
+      --cascade-winner-swap on --ratchet-cascade on --extra-convert-mode any
+    ;;
   all)
     run_one h2h_baseline --budget "$LIGHT" --games 50
     run_one h2h_r1 --budget "$LIGHT" --games 50 --cascade-winner-swap on
     ;;
   *)
-    echo "usage: $0 [all|baseline|r1|n300|n300_baseline|n300_r1|deep_baseline|deep_r1]" >&2
+    echo "usage: $0 [all|baseline|r1|n300|n300_baseline|n300_r1|mirror|mirror_baseline|mirror_r1|deep_baseline|deep_r1]" >&2
     exit 2
     ;;
 esac

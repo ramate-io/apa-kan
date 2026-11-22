@@ -87,6 +87,8 @@ is a **new independent draw**, not an extension: `--seed 300 --games
 |---|---|---|---|---|
 | [`h2h_n300_baseline`](h2h_n300_baseline.txt) | live (flag off) | **300** | 300 | light |
 | [`h2h_n300_r1`](h2h_n300_r1.txt) | `--cascade-winner-swap on` | **300** | 300 | light |
+| [`mirror/h2h_n300_mm_baseline`](mirror/h2h_n300_mm_baseline.txt) | live, **minimax vs minimax** | **300** | 300 | light |
+| [`mirror/h2h_n300_mm_r1`](mirror/h2h_n300_mm_r1.txt) | r1, **minimax vs minimax** | **300** | 300 | light |
 | [`h2h_baseline`](h2h_baseline.txt) | live | 100 | 1 | light |
 | [`h2h_r1`](h2h_r1.txt) | `--cascade-winner-swap on` | 100 | 1 | light |
 | [`h2h_deep4x_baseline`](h2h_deep4x_baseline.txt) | live | 20 | 1 | 4x |
@@ -166,6 +168,66 @@ opponent piece; 20 involve the origin. CLAIM never used as a reward.
 
 Lockouts after a reward CONVERT or SWAP: **42 CONVERT + 4 SWAP** of 115
 (the other 69 lockouts end on MOVE/ADD/etc.).
+
+## Minimax vs minimax mirror (`--seed 300`, same deals)
+
+Same light package, same 300 deals (seeds 300–449 and 10300–10449), but
+`--pairings minimax:minimax,minimax:minimax` so both seats are the
+exactplay minimax used in the mixed cell. r1 arm is `--cascade-winner-swap
+on --ratchet-cascade on --extra-convert-mode any`. JSONL reconstructs
+every action. (`--record` sample dumps only a minimax-vs-mcts game 0, so
+there is no sample record file here.)
+
+This is the check on whether minimax’s 57%→62% as P1 vs MCTS is a **seat
+edge** from the ratchet or just the engine gap.
+
+| | mm-mm baseline | mm-mm r1 |
+|---|---|---|
+| P1 W-D-L | **131-15-154** | **126-9-165** |
+| P1 win CI | 43.7% [38.2, 49.3] | 42.0% [36.6, 47.7] |
+| mean / median turns | 57.90 / 47 | **52.74 / 43** |
+| p90 | 97 | 84 |
+| 200-turn draws | 10 | 7 |
+| lockouts | 35 | **71** |
+| lockouts right after a ratchet reward | 0/35 | **47/71 (66.2%)** — CONVERT 37, SWAP 2, MOVE 5, ADD 3 |
+| lockouts after flip/swap | 0/35 | **39/71 (54.9%)** |
+| lockouts after a live cascade extra | **11/35 (ADD 6, MOVE 5)** | 0 |
+| control | 232 | 208 |
+| never-left | 51/287 (17.8%) | 41/280 (14.6%) |
+| sit-and-win | 30/287 (10.5%) | 30/280 (10.7%) |
+| contested origin | 234/287 (81.5%) | 229/280 (81.8%) |
+| first-taker side won | 41.5% | — |
+| cascade extras /game | 0.70 (172/37) | **0** |
+| ratchet /game (mover/opp) | 0 | **1.73 (348/172)** |
+| games with 1+ / 2+ | 0 / 0 | **241 / 171** |
+| reward SWAP/CONVERT/MOVE/ADD | 0 | **101/168/109/137** |
+| first-reward SWAP/MOVE/ADD | — | **88/60/90** |
+| later-reward CONVERT/SWAP/MOVE/ADD | — | **168/13/49/47** |
+| CONVERT outer/inner/origin | — | **107/45/16** (self_pop=0) |
+| leader after first award | 128/134 (95.5%) cascade extras | 192/241 (79.7%) ratchets |
+| comebacks after that award | **3/134 (2.2%)** | **44/241 (18.3%)** |
+
+Seed-block split (same deals as mixed minimax-P1 vs mcts / mcts-P1 vs minimax):
+
+| | seeds 300–449 (n=150) | seeds 10300–10449 (n=150) |
+|---|---|---|
+| mm-mm baseline | 61-9-80 40.7% [33.1, 48.7] | 70-6-74 46.7% [38.9, 54.6] |
+| mm-mm r1 | 62-7-81 41.3% [33.8, 49.3] | 64-2-84 42.7% [35.0, 50.7] |
+| mixed r1 on those deals | minimax P1 **93-2-55 (62%)** | mcts P1 **46-1-103 (31%)** |
+
+**Verdict.** Mirror P1 is **43.7% → 42.0%**, CIs overlap, both slightly
+*below* 50%. That is consistent with PR #85 exactplay light self-play
+**48-2-50 (48%)** and with this branch’s mixed overall 45.7%/46.3%. The
+57%→62% jump is **not a seat edge**: on the same 300–449 deals, equal
+minimax is 41% as P1 while minimax-vs-MCTS is 62%. Ratchet does not
+create a first-player bonus when the engines match; if anything P1 is a
+hair weaker (131→126 wins).
+
+vs mixed n=300 r1, the mirror **flips the origin more** (16/168 CONVERT
+on 0 vs 3/140) and awards more opponent ratchets (172/520 vs 95/454).
+Sit-and-win is already low (~10.5%) before the flag — minimax vs itself
+contests the origin (81.5%) instead of camping. Lockouts still jump
+35→71, and 37 of those 71 end on a reward CONVERT.
 
 ## Light 100-game exactplay self-play (`--seed 1`)
 
@@ -261,6 +323,24 @@ the stolen piece in `piece` and the node in `to`.
   cell ends on a CONVERT lockout.
 - **First reward still often ADD/MOVE**, not SWAP (94+66 vs 60).
 
+### Minimax vs minimax mirror (same seed-300 deals)
+
+- [`mirror/h2h_n300_mm_r1`](mirror/h2h_n300_mm_r1.jsonl.gz) **game 43 /
+  seed 10342 / 30 turns.** P1 MOVEs onto 0 at t7, vacates t26, retakes
+  t28. P2’s first ratchet is a cascade ADD (not SWAP); second is
+  **CONVERT of the origin 3-ring** on the lockout ply t30. Flip as a
+  finishing steal of 0, not only outer rings.
+- [`mirror/h2h_n300_mm_r1`](mirror/h2h_n300_mm_r1.jsonl.gz) **game 12 /
+  seed 311 / 46 turns.** t16 P2 takes 0; t17 P1’s inner MOVE is an
+  **opponent-won fight** (first reward is P2 MOVE, not SWAP). Origin
+  changes hands again (t19, t29, t43). P1 comes back: t45 fight, t46
+  CONVERT inner 2-ring (`n12`) **lockout**. Counterplay, then a flip
+  finish for the player who was *not* the first-ratchet leader.
+- [`mirror/h2h_n300_mm_r1`](mirror/h2h_n300_mm_r1.jsonl.gz) **game 2 /
+  seed 10301 / 55 turns.** Typical outer-flip chain: cascade ADD, first
+  reward MOVE, then CONVERT `n4` (3-ring) t50 and CONVERT `n22` (2-ring)
+  **on the lockout ply** t55. Three mover-won ratchets, no comeback.
+
 ### n=100, seed 1 (kept for citation)
 
 - [`h2h_r1`](h2h_r1.jsonl.gz) **minimax vs mcts game 13 t20.** P1
@@ -279,10 +359,11 @@ lockout t35. Comebacks **0/12**.
 1. **The next-move rule is real.** n=300: 1.51 ratchets/game, 220/300
    games award at least one, 158/300 reach the flip tier. Live cascade
    extras go to 0 while the flag is on.
-2. **Overall P1 is unchanged** at n=300 (45.7% [40.1, 51.3] → 46.3%
-   [40.8, 52.0]). The n=100 47→58 bump was minimax-as-P1 on 50 deals.
-   Minimax is already a favorite as P1 on live rules (~57%); r1 does
-   not create a first-player effect on top of that.
+2. **Overall P1 is unchanged** in mixed n=300 (45.7% → 46.3%). The
+   minimax-vs-minimax mirror on the **same deals** is **43.7% [38.2,
+   49.3] → 42.0% [36.6, 47.7]**, consistent with exactplay light
+   self-play 48-2-50. The 57%→62% minimax-as-P1 vs MCTS is the engine
+   gap, not a ratchet seat edge.
 3. **Length:** n=300 mean 59.19→56.14, median 42→40 (milder than the
    n=100 59→53 / 43→37). 200-turn draws 5→3. 4x still shortens more
    (69→54 / 58→40) at n=20.
@@ -319,10 +400,9 @@ lockout t35. Comebacks **0/12**.
    self-pop. Observed self_pop=0 even on the six 1-ring flips.
 8. **Center +1 mismatch** is still in the binary, default off, not in
    this cell.
-9. **Same-search pairing.** The n=300 split shows the P1 lean is
-   engine-driven on **both** cells (minimax ~57–62% as P1, MCTS ~31–34%
-   as P1). Overall P1 is ~46% either way. Same-engine pairing would
-   still be the clean seat-balance check.
+9. **Same-search pairing — done.** Minimax vs minimax on the same 300
+   deals is 43.7%→42.0% P1 (CIs cover the 48% exactplay self-play
+   figure). The 57–62% lean is minimax vs MCTS, not first player.
 10. **4x n=20** cannot decide seat balance or the 0/12 comeback hold.
-    Light n=300 already answers seat balance (flat) and comebacks
-    (~14%, n=220).
+    Light mixed n=300 already answers seat balance (flat) and comebacks
+    (~14%, n=220). The mirror comeback rate is higher (44/241 = 18.3%).
