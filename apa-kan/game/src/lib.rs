@@ -10,6 +10,8 @@ pub use apa_kan_core::{
 
 pub mod characters;
 pub mod config;
+#[cfg(feature = "desktop")]
+pub mod platform;
 pub mod render;
 #[cfg(feature = "desktop")]
 pub mod ui;
@@ -60,7 +62,7 @@ pub fn default_rules() -> RuleSet {
 #[cfg(all(feature = "desktop", target_os = "android"))]
 use bevy::prelude::bevy_main;
 
-/// Native-activity entry used by `cargo-apk` on Android.
+/// GameActivity / `cargo-ndk` entry used by the Gradle wrapper on Android.
 #[cfg(all(feature = "desktop", target_os = "android"))]
 #[bevy_main]
 pub fn main() {

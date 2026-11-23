@@ -4,7 +4,12 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Capturing, Screenshot};
+#[cfg(not(target_os = "android"))]
 use bevy::window::WindowResolution;
+#[cfg(target_os = "android")]
+use bevy::window::{MonitorSelection, WindowMode};
+#[cfg(target_os = "android")]
+use bevy::winit::WinitSettings;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -45,54 +50,69 @@ pub fn run_app(cfg: GameConfig) {
 	let height = cfg.height;
 	let search = cfg.search;
 	let deck_slots = game.rules().bag_size as usize;
-	let mut resolution = WindowResolution::new(width, height);
-	resolution.set_scale_factor_override(Some(1.0));
-	App::new()
-		.add_plugins(DefaultPlugins.set(WindowPlugin {
-			primary_window: Some(Window { title: "Apa Kan".into(), resolution, ..default() }),
+	let mut app = App::new();
+	app.add_plugins(
+		DefaultPlugins
+			.set(WindowPlugin { primary_window: Some(primary_window(width, height)), ..default() }),
+	)
+	.add_plugins(crate::platform::PlatformPlugin)
+	.insert_resource(ClearColor(Color::srgb(
+		visual::BG_RGB[0],
+		visual::BG_RGB[1],
+		visual::BG_RGB[2],
+	)))
+	.insert_resource(ConfigRes(cfg))
+	.insert_resource(PlayState {
+		game,
+		setup: setup_session,
+		selection: Selection::None,
+		log: if screenshot.is_some() && !from_start {
+			"P1 ADD orange w2 d2 at center".into()
+		} else {
+			String::new()
+		},
+		warning: String::new(),
+		last_removals: String::new(),
+		flash: visual::CaptureFlash::empty(),
+		fingerprint: 0,
+		search1: ai::Searcher::with_config(search),
+		search2: ai::Searcher::with_config(search),
+	})
+	.insert_resource(RngRes(rng))
+	.insert_resource(BotClock { wait: 0.4 })
+	.insert_resource(UiLayout(ViewLayout::from_window_with_deck(
+		width as f32,
+		height as f32,
+		deck_slots,
+	)))
+	.insert_resource(ShotState { frames: 0, requested_at: 0, requested: false, finished: false })
+	.add_systems(Startup, setup)
+	.add_systems(
+		Update,
+		(sync_layout, handle_click, bot_turn, refresh_view, update_hud, screenshot_capture),
+	);
+	#[cfg(target_os = "android")]
+	app.insert_resource(WinitSettings::mobile());
+	app.run();
+}
+
+fn primary_window(width: u32, height: u32) -> Window {
+	#[cfg(target_os = "android")]
+	{
+		let _ = (width, height);
+		Window {
+			title: "Apa Kan".into(),
+			resizable: false,
+			mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
 			..default()
-		}))
-		.insert_resource(ClearColor(Color::srgb(
-			visual::BG_RGB[0],
-			visual::BG_RGB[1],
-			visual::BG_RGB[2],
-		)))
-		.insert_resource(ConfigRes(cfg))
-		.insert_resource(PlayState {
-			game,
-			setup: setup_session,
-			selection: Selection::None,
-			log: if screenshot.is_some() && !from_start {
-				"P1 ADD orange w2 d2 at center".into()
-			} else {
-				String::new()
-			},
-			warning: String::new(),
-			last_removals: String::new(),
-			flash: visual::CaptureFlash::empty(),
-			fingerprint: 0,
-			search1: ai::Searcher::with_config(search),
-			search2: ai::Searcher::with_config(search),
-		})
-		.insert_resource(RngRes(rng))
-		.insert_resource(BotClock { wait: 0.4 })
-		.insert_resource(UiLayout(ViewLayout::from_window_with_deck(
-			width as f32,
-			height as f32,
-			deck_slots,
-		)))
-		.insert_resource(ShotState {
-			frames: 0,
-			requested_at: 0,
-			requested: false,
-			finished: false,
-		})
-		.add_systems(Startup, setup)
-		.add_systems(
-			Update,
-			(sync_layout, handle_click, bot_turn, refresh_view, update_hud, screenshot_capture),
-		)
-		.run();
+		}
+	}
+	#[cfg(not(target_os = "android"))]
+	{
+		let mut resolution = WindowResolution::new(width, height);
+		resolution.set_scale_factor_override(Some(1.0));
+		Window { title: "Apa Kan".into(), resolution, ..default() }
+	}
 }
 
 #[derive(Resource)]
