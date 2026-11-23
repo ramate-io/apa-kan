@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::clock::{ClockTick, TimeControl};
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
 	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
@@ -131,6 +132,14 @@ fn skip_none(v: &String) -> bool {
 	v == "none"
 }
 
+fn default_faceless() -> String {
+	crate::characters::FACELESS_ID.to_string()
+}
+
+fn skip_faceless(v: &String) -> bool {
+	v == crate::characters::FACELESS_ID
+}
+
 fn default_emblem_weights() -> String {
 	EmblemWeights::default().label()
 }
@@ -169,6 +178,8 @@ fn end_reason_name(reason: EndReason) -> &'static str {
 		EndReason::Control => "control",
 		EndReason::InsufficientTiles => "insufficient_tiles",
 		EndReason::LowValue => "low_value",
+		EndReason::Flag => "flag",
+		EndReason::FlagDraw => "flag_draw",
 	}
 }
 
@@ -183,6 +194,8 @@ fn end_reason_parse(s: &str) -> Result<EndReason, String> {
 		"control" => Ok(EndReason::Control),
 		"insufficient_tiles" => Ok(EndReason::InsufficientTiles),
 		"low_value" => Ok(EndReason::LowValue),
+		"flag" => Ok(EndReason::Flag),
+		"flag_draw" => Ok(EndReason::FlagDraw),
 		other => Err(format!("unknown end reason '{other}'")),
 	}
 }
@@ -221,6 +234,10 @@ pub struct TileLog {
 	/// Emblem slot. Absent on logs from before emblems; those replay as none.
 	#[serde(default = "default_none", skip_serializing_if = "skip_none")]
 	pub emblem: String,
+	/// Cosmetic character id. Absent on logs from before the character pass;
+	/// those replay as [`crate::characters::FACELESS_ID`].
+	#[serde(default = "default_faceless", skip_serializing_if = "skip_faceless")]
+	pub character: String,
 	pub rings: Vec<RingLog>,
 }
 
@@ -249,6 +266,7 @@ impl TileLog {
 			bead_rings: tile.bead_ring_count(),
 			capture: tile.capture.name().to_string(),
 			emblem: tile.emblem.name().to_string(),
+			character: tile.character.as_str().to_string(),
 			rings,
 		}
 	}
@@ -271,9 +289,12 @@ impl TileLog {
 				Ok((TileColor::parse(&r.c)?, typ))
 			})
 			.collect();
+		let character = crate::characters::CharacterId::parse(&self.character)
+			.unwrap_or_else(crate::characters::CharacterId::faceless);
 		let mut tile = Tile::with_typed_rings(self.id, owner, &parts?, self.n_rings, self.dots)
 			.with_capture(CaptureMark::parse(&self.capture).unwrap_or(CaptureMark::Triangle))
-			.with_emblem(Emblem::parse(&self.emblem).unwrap_or(Emblem::None));
+			.with_emblem(Emblem::parse(&self.emblem).unwrap_or(Emblem::None))
+			.with_character(character);
 		tile.id = self.id;
 		debug_assert_eq!(tile.weight, tile.n_rings);
 		Ok(tile)
@@ -774,6 +795,9 @@ pub struct ActionLog {
 	pub budget: usize,
 	#[serde(default, skip_serializing_if = "skip_zero_usize")]
 	pub surplus: usize,
+	/// Wall-time consumed on this ply. Absent on unclocked (historical) logs.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub elapsed_ms: Option<u64>,
 	/// Minimax completed iterative-deepening depth this move. Absent for MCTS.
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub mm_depth: u8,
@@ -911,6 +935,7 @@ impl ActionLog {
 			tokens: game_after.budget_token_count(player),
 			budget: game_after.budget(player),
 			surplus: game_after.budget_surplus(player),
+			elapsed_ms: None,
 			mm_depth: 0,
 			mcts_max_depth: 0,
 			mcts_avg_depth: 0.0,
@@ -1311,6 +1336,9 @@ pub struct GameLog {
 	pub actions: Vec<ActionLog>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub final_state: Option<FinalLog>,
+	/// `"5+0"` / `"2+1"`. Absent on unclocked (historical) logs.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub time_control: Option<String>,
 	/// `braid vs bead`, `mixed vs mixed`, …
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub deck_matchup: Option<String>,
@@ -1388,6 +1416,7 @@ impl GameLog {
 			end: EndLog::from_status(GameStatus::InProgress, None),
 			actions: Vec::new(),
 			final_state: None,
+			time_control: live.clock().map(|c| c.time_control().name().to_string()),
 			deck_matchup: live
 				.setup_record()
 				.map(|r| format!("{} vs {}", r.p1_deck.name(), r.p2_deck.name())),
@@ -1603,13 +1632,31 @@ pub fn replay_center_captures(log: &GameLog) -> Result<(Game, u32, u32), String>
 	game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; log.opening.p1_tokens]);
 	game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; log.opening.p2_tokens]);
 	game.set_current(Player::One);
+	if let Some(name) = &log.time_control {
+		game.set_time_control(TimeControl::parse(name)?);
+	}
 	let center = game.board().center();
 	let mut opp = 0u32;
 	let mut slf = 0u32;
 	for (i, act) in log.actions.iter().enumerate() {
 		let action = act.to_action().map_err(|e| format!("action {i}: {e}"))?;
 		let player = game.current_player();
+		if log.time_control.is_some() {
+			let elapsed = act
+				.elapsed_ms
+				.ok_or_else(|| format!("action {i}: clocked log missing elapsed_ms"))?;
+			if game
+				.apply_elapsed(player, elapsed)
+				.map_err(|e| format!("action {i} clock: {e}"))?
+				== ClockTick::Flagged
+			{
+				break;
+			}
+		}
 		let outcome = game.apply(action).map_err(|e| format!("action {i} apply: {e}"))?;
+		if log.time_control.is_some() {
+			game.credit_increment(player);
+		}
 		for rem in &outcome.removals {
 			if rem.node != center {
 				continue;
@@ -2315,12 +2362,20 @@ mod tests {
 			.all(|t| t.weight == t.n_rings)
 	}
 
+	fn game_crate_dir() -> std::path::PathBuf {
+		std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../game")
+	}
+
+	fn committed_jsonl_path(rel: &str) -> std::path::PathBuf {
+		game_crate_dir().join(rel)
+	}
+
 	fn assert_committed_jsonl_gz_replays(rel: &str) {
 		assert_committed_jsonl_gz_replays_n(rel, 108);
 	}
 
 	fn assert_committed_jsonl_gz_replays_n(rel: &str, expected: usize) {
-		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+		let path = committed_jsonl_path(rel);
 		if !path.exists() {
 			return;
 		}
@@ -2451,6 +2506,24 @@ mod tests {
 	}
 
 	#[test]
+	fn clocked_jsonl_replay_matches_live_remaining_and_status() {
+		let mut live = Game::new(RuleSet::default(), 1).with_time_control(TimeControl::TwoPlusOne);
+		let mut log = GameLog::begin(1, "t", "g", "g", 0, "default", &live);
+		assert_eq!(log.time_control.as_deref(), Some("2+1"));
+		let action = live.legal_actions().into_iter().next().expect("opening action");
+		let piece = piece_for_action(&live, action);
+		let outcome = live.apply_timed(action, 2_500).unwrap();
+		log.push_action(action, piece, &outcome, &live);
+		log.actions.last_mut().unwrap().elapsed_ms = Some(2_500);
+		log.finish(&live, None);
+		let replayed = replay(&log).expect("clocked replay");
+		assert_eq!(replayed.status(), live.status());
+		assert_eq!(replayed.remaining_ms(Player::One), live.remaining_ms(Player::One));
+		assert_eq!(replayed.remaining_ms(Player::One), Some(120_000 - 2_500 + 1_000));
+		assert_eq!(replayed.remaining_ms(Player::Two), Some(120_000));
+	}
+
+	#[test]
 	fn committed_work_budget_doubles_disallowed_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays(
 			"benchmark_results/work_budget_doubles_disallowed/h2h.jsonl.gz",
@@ -2516,8 +2589,7 @@ mod tests {
 	#[test]
 	fn committed_control_cascade_shallow_replays() {
 		// Pre-ratchet live-target log: decode only (ends would diverge).
-		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-			.join("benchmark_results/control_cascade/h2h_shallow.jsonl.gz");
+		let path = committed_jsonl_path("benchmark_results/control_cascade/h2h_shallow.jsonl.gz");
 		if !path.exists() {
 			return;
 		}

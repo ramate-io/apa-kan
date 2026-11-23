@@ -7,6 +7,8 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 
 use crate::board::{Board, NodeId};
+use crate::characters::CharacterId;
+pub use crate::clock::{Clock, ClockTick, TimeControl};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Player {
@@ -44,7 +46,7 @@ impl Player {
 	}
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum TileColor {
 	Green = 0,
@@ -187,7 +189,7 @@ pub const COLOR_STATES: usize = SLOT_KINDS * SLOT_KINDS * SLOT_KINDS;
 /// part of one braid group occupying 1–3 slots (1-slot only when
 /// [`RuleSet::allow_single_braids`] is on), or a bead (a bomb against
 /// non-matching colors on the bead channel).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum RingType {
 	#[default]
@@ -288,6 +290,19 @@ impl TileColor {
 
 	pub fn bit(self) -> u8 {
 		1u8 << (self as u8)
+	}
+
+	/// Display RGB used by the renderer and the character-pass embedding.
+	/// Frozen: changing these values would retarget the v1 aesthetic table.
+	pub fn rgb(self) -> [f32; 3] {
+		match self {
+			TileColor::Green => [0.18, 0.66, 0.32],
+			TileColor::Blue => [0.24, 0.48, 0.90],
+			TileColor::Orange => [0.91, 0.52, 0.16],
+			TileColor::LavenderPink => [0.90, 0.48, 0.74],
+			TileColor::Teal => [0.08, 0.66, 0.64],
+			TileColor::Maroon => [0.52, 0.10, 0.18],
+		}
 	}
 }
 
@@ -719,7 +734,7 @@ pub fn sample_rings_colored(
 /// Capture destination encoded by the marks drawn in place of move-length
 /// dots. Every tile has one: there is no unmarked tile. The **number** of
 /// marks is [`Tile::dots`] (MOVE length 1–3); the **shape** is this mark.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum CaptureMark {
 	/// Captures on a move/ADD made with this tile become spawn tokens (+1
@@ -814,7 +829,7 @@ impl CaptureDest {
 /// [`Tile::cost`]. Rosette subtracts 1, floored at [`TILE_COST_MIN`].
 /// Overwhelm still compares against [`Tile::weight`] (`n_rings`); Crescent
 /// Moon changes that comparison when the piece has one adjacency.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum Emblem {
 	#[default]
@@ -1042,6 +1057,10 @@ pub struct Tile {
 	/// the empty slot. [`Self::cost`] is `n_rings` plus [`Emblem::cost`],
 	/// floored at [`TILE_COST_MIN`].
 	pub emblem: Emblem,
+	/// Cosmetic catalog character. Always a [`CharacterId`], including the
+	/// explicit [`crate::characters::FACELESS_ID`] empty face. Not part of
+	/// [`Self::kind_index`], overwhelm, or deck cost.
+	pub character: CharacterId,
 }
 
 /// Kind space: color-state × dots. Weight is the ring-slot count, already
@@ -1112,6 +1131,7 @@ impl Tile {
 			dots,
 			capture: CaptureMark::Triangle,
 			emblem: Emblem::None,
+			character: CharacterId::faceless(),
 		}
 	}
 
@@ -1124,6 +1144,12 @@ impl Tile {
 	/// Fixtures and constructors default to [`Emblem::None`].
 	pub fn with_emblem(mut self, emblem: Emblem) -> Self {
 		self.emblem = emblem;
+		self
+	}
+
+	/// Fixtures and constructors default to [`CharacterId::faceless`].
+	pub fn with_character(mut self, character: CharacterId) -> Self {
+		self.character = character;
 		self
 	}
 
@@ -1756,6 +1782,12 @@ pub enum EndReason {
 	/// Under [`EndgameRule::ControlCascade`] it is the final tie-breaker once
 	/// `max_mat <= 1` (both sides have at most one total material).
 	LowValue,
+	/// Player to move ran out of clock. OPEN-Q #23: may instead be
+	/// [`Self::FlagDraw`] when [`Game::flag_opponent_cannot_win`] is true.
+	Flag,
+	/// Flag-fall draw: opponent cannot win by cheap checks (issue #50 rec).
+	/// OPEN-Q #23.
+	FlagDraw,
 }
 
 /// Restriction on moving the same tile on two consecutive own turns.
@@ -3205,6 +3237,9 @@ pub struct Game {
 	/// Reconstructible 27-tile collections and 7+4 picks. `None` on
 	/// constructed [`Self::empty`] fixtures.
 	setup: Option<crate::deck::SetupRecord>,
+	/// Match clock. `None` on today's unclocked games and fixtures so
+	/// [`Self::apply`] is unchanged.
+	clock: Option<Clock>,
 }
 
 impl Game {
@@ -3338,6 +3373,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
+			clock: None,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -3420,6 +3456,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
+			clock: None,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -3504,6 +3541,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: None,
+			clock: None,
 		}
 	}
 
@@ -3561,6 +3599,108 @@ impl Game {
 
 	pub fn status(&self) -> GameStatus {
 		self.status
+	}
+
+	pub fn clock(&self) -> Option<&Clock> {
+		self.clock.as_ref()
+	}
+
+	pub fn remaining_ms(&self, player: Player) -> Option<u64> {
+		self.clock.as_ref().map(|c| c.remaining_ms(player))
+	}
+
+	pub fn with_time_control(mut self, time_control: TimeControl) -> Self {
+		self.clock = Some(Clock::new(time_control));
+		self
+	}
+
+	pub fn set_time_control(&mut self, time_control: TimeControl) {
+		self.clock = Some(Clock::new(time_control));
+	}
+
+	/// Deduct `elapsed_ms` from `player`'s remaining time.
+	///
+	/// No-op when this game has no clock. Decision (#58 Q26): core never
+	/// pauses; the caller chooses which elapsed value to pass, including a
+	/// reconnect window that still consumes time.
+	pub fn apply_elapsed(&mut self, player: Player, elapsed_ms: u64) -> Result<ClockTick, String> {
+		if self.clock.is_none() {
+			return Ok(ClockTick::Ok);
+		}
+		if self.status.is_over() {
+			return Err("game is over".into());
+		}
+		if player != self.current {
+			return Err("elapsed applies to the player to move".into());
+		}
+		let tick = self
+			.clock
+			.as_mut()
+			.map(|clock| clock.apply_elapsed(player, elapsed_ms))
+			.unwrap_or(ClockTick::Ok);
+		if tick == ClockTick::Flagged {
+			self.status = self.flag_status(player);
+		}
+		Ok(tick)
+	}
+
+	/// Add the time-control increment after a completed legal action.
+	pub fn credit_increment(&mut self, player: Player) {
+		if let Some(clock) = self.clock.as_mut() {
+			clock.credit_increment(player);
+		}
+	}
+
+	/// Deduct elapsed time, apply `action` if the player has not flagged, then
+	/// credit the increment.
+	pub fn apply_timed(
+		&mut self,
+		action: Action,
+		elapsed_ms: u64,
+	) -> Result<ActionOutcome, String> {
+		let player = self.current;
+		if self.apply_elapsed(player, elapsed_ms)? == ClockTick::Flagged {
+			return Err("flag-fall".into());
+		}
+		let outcome = self.apply(action)?;
+		self.credit_increment(player);
+		Ok(outcome)
+	}
+
+	fn flag_status(&self, flagged: Player) -> GameStatus {
+		if self.flag_opponent_cannot_win(flagged.other()) {
+			GameStatus::Draw { reason: EndReason::FlagDraw }
+		} else {
+			GameStatus::Won { winner: flagged.other(), reason: EndReason::Flag }
+		}
+	}
+
+	/// OPEN-Q #23: cheap checks only (not a search). Issue #50 recommendation.
+	///
+	/// Return `true` when a flag should be a draw because `opponent` cannot
+	/// win from this position. Flip this to always `false` if flag-fall
+	/// becomes a loss in every case.
+	pub fn flag_opponent_cannot_win(&self, opponent: Player) -> bool {
+		if !self.is_alive(opponent) {
+			return true;
+		}
+		if self.rules.no_moves_loses {
+			let mut probe = self.clone();
+			probe.clock = None;
+			probe.status = GameStatus::InProgress;
+			probe.current = opponent;
+			if !probe.has_add_or_move() {
+				return true;
+			}
+		}
+		if self.low_value_applies() {
+			match self.low_value_resolution() {
+				LowValueResolution::Draw => return true,
+				LowValueResolution::Win { winner, .. } if winner != opponent => return true,
+				_ => {}
+			}
+		}
+		false
 	}
 
 	pub fn turn_count(&self) -> u32 {
@@ -3904,8 +4044,9 @@ impl Game {
 	/// P1 occupies 3 of 9. Claiming `extra` drops 5→4 with no unique holder.
 	/// `p1_mat` / `p2_mat` are totals before the claim; afterwards P2 is
 	/// `p2_mat - 1` and P1 stays `p1_mat` (the claim token is surplus).
-	#[cfg(test)]
-	pub(crate) fn cascade_turn_gain_drop_position(p1_mat: usize, p2_mat: usize) -> (Self, NodeId) {
+	#[cfg(any(test, feature = "test-helpers"))]
+	#[doc(hidden)]
+	pub fn cascade_turn_gain_drop_position(p1_mat: usize, p2_mat: usize) -> (Self, NodeId) {
 		let mut game = Self::cascade_turn_gain_base(3);
 		let extra = Self::overwhelmed_p2_spawn_for(&game);
 		let victim = game.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
@@ -3920,7 +4061,7 @@ impl Game {
 		(game, extra)
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn cascade_turn_gain_base(p1_control: usize) -> Self {
 		let mut rules = RuleSet::default();
 		rules.center_hold_win = false;
@@ -3945,7 +4086,7 @@ impl Game {
 		game
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn overwhelmed_p2_spawn_for(game: &Self) -> NodeId {
 		let control: std::collections::HashSet<_> = std::iter::once(game.board.center())
 			.chain(game.board.inner_ring().iter().copied())
@@ -3968,13 +4109,14 @@ impl Game {
 
 	/// ADD onto `dest` captures two weak P2 neighbors, dropping 5→4 with P1
 	/// strictly leading (4 vs 3). No unique holder of 4.
-	#[cfg(test)]
-	pub(crate) fn cascade_turn_gain_mover_add_drop() -> (Self, NodeId) {
+	#[cfg(any(test, feature = "test-helpers"))]
+	#[doc(hidden)]
+	pub fn cascade_turn_gain_mover_add_drop() -> (Self, NodeId) {
 		let (game, dest, _) = Self::cascade_turn_gain_mover_add_drop_inner(false);
 		(game, dest)
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn touches_player(game: &Self, node: NodeId, player: Player) -> bool {
 		game.board
 			.neighbors(node)
@@ -3994,7 +4136,7 @@ impl Game {
 			.expect("an empty spawn with no occupied neighbors")
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn cascade_turn_gain_mover_add_drop_inner(need_land: bool) -> (Self, NodeId, NodeId) {
 		// Center stays empty so dest's two inner-ring neighbors are not
 		// pre-overwhelmed by a P1 origin. Those two inners are not adjacent
@@ -4118,7 +4260,7 @@ impl Game {
 		(game, dest, dest, land)
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn pin_total_material(&mut self, player: Player, total: usize) {
 		let board = self.board_count(player);
 		assert!(board <= total, "{player:?} board {board} exceeds material {total}");
@@ -6069,26 +6211,9 @@ pub fn sample_tile_from_rules_with_colors(
 	color_w: &mut [i32; 6],
 ) -> Tile {
 	let _ = rules.channel_mode;
-	let (rings, n_rings) = sample_rings_colored(
-		rng,
-		rules.max_rings,
-		rules.ring_count_weights,
-		rules.color_drift,
-		color_w,
-	);
-	finish_sampled_tile(
-		owner,
-		rings,
-		n_rings,
-		rules.zag_numer,
-		rules.braid_numer,
-		rules.bead_numer,
-		rules.dot_percent,
-		rules.emblem_weights,
-		rules.allow_single_braids,
-		next_id,
-		rng,
-	)
+	let id = next_deal_id(next_id, rng);
+	let cfg = crate::core_pass::CorePass::from_rules(rules);
+	sample_tile_from_pass_with_colors(owner, id, &cfg, color_w)
 }
 
 pub fn sample_tile_with(
@@ -6105,49 +6230,54 @@ pub fn sample_tile_with(
 	rng: &mut impl Rng,
 ) -> Tile {
 	let _ = channel_mode; // scoring-only; generation always IndependentMax clustering
-	let (rings, n_rings) = sample_rings_with(rng, max_rings, ring_count_weights);
-	finish_sampled_tile(
-		owner,
-		rings,
-		n_rings,
+	let id = next_deal_id(next_id, rng);
+	let cfg = crate::core_pass::CorePass::from_sampling(
+		max_rings,
 		zag_numer,
 		braid_numer,
 		bead_numer,
 		dot_percent,
 		emblem_weights,
+		ring_count_weights,
+		color_drift_zero(),
 		false,
-		next_id,
-		rng,
-	)
+	);
+	sample_tile_from_pass(owner, id, &cfg)
 }
 
-fn finish_sampled_tile(
+/// Mix the sequential counter with a deal nonce so collections still vary
+/// with the RNG while [`Tile::id`] remains the CorePass replay seed.
+fn next_deal_id(next_id: &mut u32, rng: &mut impl Rng) -> u32 {
+	let nonce = rng.gen::<u32>();
+	let id = crate::core_pass::TileId(*next_id).mix(("deal", nonce)).0;
+	*next_id = next_id.saturating_add(1);
+	if id >= *next_id {
+		*next_id = id.saturating_add(1);
+	}
+	id
+}
+
+/// Core pass + character pass for a known [`Tile::id`].
+pub fn sample_tile_from_pass(owner: Player, id: u32, cfg: &crate::core_pass::CorePass) -> Tile {
+	let core = cfg.run(crate::core_pass::TileId(id));
+	assign_character(owner, id, core)
+}
+
+fn sample_tile_from_pass_with_colors(
 	owner: Player,
-	rings: [TileColor; 3],
-	n_rings: u8,
-	zag_numer: u8,
-	braid_numer: u8,
-	bead_numer: u8,
-	dot_percent: u8,
-	emblem_weights: EmblemWeights,
-	single_braids: bool,
-	next_id: &mut u32,
-	rng: &mut impl Rng,
+	id: u32,
+	cfg: &crate::core_pass::CorePass,
+	color_w: &mut [i32; 6],
 ) -> Tile {
-	let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
-	let mut ring_type = cluster_heavies(heavy, n_rings, single_braids);
-	sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
-	let weight = n_rings.max(1);
-	let dots = rng.gen_range(1..=3);
-	let capture = if rng.gen_range(0..100u8) < dot_percent.min(100) {
-		CaptureMark::Dot
-	} else {
-		CaptureMark::Triangle
-	};
-	let emblem = sample_emblem(rng, emblem_weights);
-	let id = *next_id;
-	*next_id += 1;
-	Tile { id, owner, rings, n_rings, ring_type, weight, dots, capture, emblem }
+	let core = cfg.run_with_color_weights(crate::core_pass::TileId(id), color_w);
+	assign_character(owner, id, core)
+}
+
+fn assign_character(owner: Player, id: u32, core: crate::core_pass::CoreTile) -> Tile {
+	let character = crate::character_pass::bundled()
+		.map(|p| p.assign(&core, id))
+		.unwrap_or_else(CharacterId::faceless);
+	core.into_tile(id, owner, character)
 }
 
 fn format_log(
@@ -12608,7 +12738,32 @@ mod tests {
 		assert_eq!(t.capture, CaptureMark::Triangle);
 		assert_eq!(t.dots, 2);
 		assert_eq!(t.emblem, Emblem::None);
+		assert!(t.character.is_faceless());
 		assert_eq!(t.cost(), t.n_rings);
+	}
+
+	#[test]
+	fn generated_tiles_always_get_a_catalog_character() {
+		let mut rng = StdRng::seed_from_u64(41);
+		let mut next_id = 1u32;
+		let lib = crate::characters::CharacterLibrary::load().unwrap();
+		for _ in 0..200 {
+			let t = sample_tile(
+				Player::One,
+				3,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				&mut next_id,
+				&mut rng,
+			);
+			assert!(
+				lib.get(t.character.as_str()).is_some(),
+				"character pass always assigns a catalog id, got {}",
+				t.character.as_str()
+			);
+		}
 	}
 
 	#[test]

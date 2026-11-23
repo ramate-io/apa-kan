@@ -1754,6 +1754,7 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 		EndReason::Control => stats.control += 1,
 		EndReason::InsufficientTiles => stats.insuff += 1,
 		EndReason::LowValue => stats.low_value += 1,
+		EndReason::Flag | EndReason::FlagDraw => {}
 	}
 }
 
