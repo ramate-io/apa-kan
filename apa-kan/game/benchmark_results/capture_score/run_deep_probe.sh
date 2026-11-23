@@ -23,10 +23,10 @@ fi
 
 exec "$BIN" --no-depth-probe --deep-probe \
   --budget nodes:132000,iters:2600 \
-  --search-profile exactplay \
   --probe-mult 1,16,64 \
   --probe-jobs "${PROBE_JOBS:-$(nproc 2>/dev/null || echo 4)}" \
-  --probe-fanout "${PROBE_FANOUT:-8}" \
+  --probe-fanout "${PROBE_FANOUT:-4}" \
+  --search-profile enhanced \
   --probe-root-shuffle on \
   --probe-out "$out/deep_probe_results.txt" \
   "${logs[@]}"

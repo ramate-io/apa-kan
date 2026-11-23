@@ -1,7 +1,5 @@
 //! Head-to-head search benchmark: branching, stalling, minimax vs MCTS.
 
-mod deep_probe;
-
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -107,7 +105,7 @@ fn usage() -> &'static str {
 	   --deep-probe         Replay positions from --probe-log and run deep fan-out minimax, then exit\n\
 	   --probe-log <path>   JSONL.gz game log (repeatable; used with --deep-probe)\n\
 	   --probe-mult <list>  Node budget multipliers vs --budget (default: 1,16,64)\n\
-	   --probe-fanout <n>   Randomized root runs at max budget mult (default: 8)\n\
+	   --probe-fanout <n>   Randomized root runs at max budget mult (default: 8; 0=off)\n\
 	   --probe-jobs <n>     Parallel positions for --deep-probe (default: available_parallelism)\n\
 	   --probe-root-shuffle <on|off>  Shuffle root move order on fan-out runs (default: on)\n\
 	   --probe-out <path>   Write probe TSV summary (default: none; stdout always)\n\
@@ -762,7 +760,16 @@ fn run(cfg: BenchConfig) {
 			eprintln!("--deep-probe requires at least one --probe-log");
 			std::process::exit(1);
 		}
-		deep_probe::run(&cfg);
+		apa_kan::deep_probe::run(&apa_kan::deep_probe::Config {
+			probe_logs: cfg.probe_logs.clone(),
+			probe_budget_mult: cfg.probe_budget_mult.clone(),
+			probe_fanout: cfg.probe_fanout,
+			probe_jobs: cfg.probe_jobs,
+			probe_root_shuffle: cfg.probe_root_shuffle,
+			probe_out: cfg.probe_out.clone(),
+			limit: cfg.limit,
+			search: cfg.search,
+		});
 		return;
 	}
 	let started = Instant::now();

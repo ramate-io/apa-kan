@@ -2580,6 +2580,23 @@ mod tests {
 	}
 
 	#[test]
+	fn replay_to_action_matches_mid_score() {
+		use crate::ai::Actor;
+		use std::time::Duration;
+		let rules = RuleSet::default();
+		let (game, log) =
+			play_to_log(rules, 77, Actor::Greedy, Actor::Greedy, Duration::from_millis(1), 40);
+		let n = log.actions.len() / 2;
+		let (mid, _, _) = replay_to_action(&log, n).expect("mid");
+		let full = replay(&log).expect("full");
+		assert!(mid.turn_count() <= full.turn_count());
+		let last = &log.actions[n.saturating_sub(1)];
+		assert_eq!(mid.capture_score(Player::One), last.p1_score);
+		assert_eq!(mid.capture_score(Player::Two), last.p2_score);
+		assert_eq!(game.rules().objective, rules.objective);
+	}
+
+	#[test]
 	fn committed_work_budget_doubles_allowed_jsonl_gz_replays_all_games() {
 		assert_committed_jsonl_gz_replays(
 			"benchmark_results/work_budget_doubles_allowed/h2h.jsonl.gz",

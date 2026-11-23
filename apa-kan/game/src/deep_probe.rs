@@ -4,16 +4,27 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::thread;
 
-use apa_kan::ai::{
+use crate::ai::{
 	apply_move, is_capture, legal_search_moves, Actor, SearchConfig, SearchLimit, Searcher,
 	SearchMove, CALIBRATED_NODES_PER_MOVE, WIN,
 };
-use apa_kan::bench_log::{decode_jsonl_gz, replay_to_action, GameLog};
-use apa_kan::game::{Action, Game, Player};
+use crate::bench_log::{decode_jsonl_gz, replay_to_action, GameLog};
+use crate::game::{Action, Game, Player};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use std::path::PathBuf;
 
-use super::BenchConfig;
+/// Inputs for a deep probe run (filled from `apa-kan-bench` CLI).
+pub struct Config {
+	pub probe_logs: Vec<PathBuf>,
+	pub probe_budget_mult: Vec<u64>,
+	pub probe_fanout: u32,
+	pub probe_jobs: usize,
+	pub probe_root_shuffle: bool,
+	pub probe_out: Option<PathBuf>,
+	pub limit: SearchLimit,
+	pub search: SearchConfig,
+}
 
 const CENTER: u8 = 0;
 const INNER: [u8; 8] = [9, 1, 12, 3, 16, 6, 18, 21];
@@ -178,7 +189,7 @@ fn sample_action_indices(log: &GameLog) -> Vec<usize> {
 
 	picks.sort_unstable();
 	picks.dedup();
-	picks.truncate(6);
+	picks.truncate(4);
 	picks
 }
 
@@ -238,21 +249,23 @@ fn probe_position(
 
 	let max_mult = *multipliers.last().unwrap_or(&64);
 	let mut fanout_tags: HashSet<MoveTag> = HashSet::new();
-	for f in 0..fanout {
-		let seed = log.search_rng_seed
-			^ (ix as u64).wrapping_mul(0x517c)
-			^ (f as u64).wrapping_mul(0x9E3779B97F4A7C15);
-		let nodes = base_nodes.saturating_mul(max_mult);
-		let run = minimax_probe(
-			&game,
-			&played,
-			last,
-			search,
-			nodes,
-			seed,
-			root_shuffle,
-		);
-		fanout_tags.insert(run.tag);
+	if fanout > 0 {
+		for f in 0..fanout {
+			let seed = log.search_rng_seed
+				^ (ix as u64).wrapping_mul(0x517c)
+				^ (f as u64).wrapping_mul(0x9E3779B97F4A7C15);
+			let nodes = base_nodes.saturating_mul(max_mult);
+			let run = minimax_probe(
+				&game,
+				&played,
+				last,
+				search,
+				nodes,
+				seed,
+				root_shuffle,
+			);
+			fanout_tags.insert(run.tag);
+		}
 	}
 
 	let changed_16 = mid.map(|m| m.tag != light.tag).unwrap_or(false);
@@ -326,14 +339,14 @@ fn probe_position(
 	}
 }
 
-pub fn run(cfg: &BenchConfig) {
+pub fn run(cfg: &Config) {
 	let logs = &cfg.probe_logs;
 	let multipliers = if cfg.probe_budget_mult.is_empty() {
 		vec![1_u64, 16, 64]
 	} else {
 		cfg.probe_budget_mult.clone()
 	};
-	let fanout = cfg.probe_fanout.max(1);
+	let fanout = cfg.probe_fanout;
 	let jobs = cfg.probe_jobs.max(1);
 	let base_nodes = cfg.limit.nodes().unwrap_or(CALIBRATED_NODES_PER_MOVE);
 	let search = cfg.search;
