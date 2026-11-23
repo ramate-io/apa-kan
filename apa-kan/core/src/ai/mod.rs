@@ -30,6 +30,11 @@ pub const CALIBRATED_NODES_PER_MOVE: u64 = 132_000;
 /// Same calibrate run: n=24, mean=2635, min=1327, max=3961. Rounded to 2600.
 pub const CALIBRATED_ITERS_PER_MOVE: u32 = 2_600;
 
+/// Light work budget used by locked-ruleset sanity / exactplay H2H cells
+/// (`nodes:33000,iters:650` ≈ 250 ms at the calibrated rate).
+pub const LIGHT_NODES_PER_MOVE: u64 = 33_000;
+pub const LIGHT_ITERS_PER_MOVE: u32 = 650;
+
 /// How a search is bounded. Work budgets replay identically; time budgets do not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchLimit {
@@ -157,6 +162,35 @@ pub struct SearchStats {
 	pub root_best_stability: f32,
 	/// Legal real moves at the root (not factored).
 	pub root_legal: u16,
+	/// Root value of the last fully completed ID iteration (side to move).
+	pub score: i32,
+}
+
+/// Alpha-beta accounting for one minimax call. Counters only; they do not
+/// change move choice.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SearchTrace {
+	pub tt_probes: u64,
+	pub tt_hits: u64,
+	pub tt_cuts: u64,
+	pub beta_cuts: u64,
+	pub first_move_cuts: u64,
+	pub lmr_reductions: u64,
+	pub lmr_researches: u64,
+	pub pvs_nulls: u64,
+	pub pvs_researches: u64,
+	pub q_nodes: u64,
+	pub terminals: u64,
+	pub terminal_wins: u64,
+	pub terminal_losses: u64,
+	pub terminal_draws: u64,
+	pub same_side_children: u64,
+	pub opening_children: u64,
+	pub ratchet_children: u64,
+	pub max_ply: u8,
+	/// First ply (from root=1) that returned a win score for the side to move; 0 if none.
+	pub first_win_ply: u8,
+	pub first_loss_ply: u8,
 }
 
 pub struct HistoryTable {
@@ -229,6 +263,8 @@ pub struct Searcher {
 	mcts: Option<mcts::MctsTree>,
 	played_hashes: Vec<u64>,
 	stats: SearchStats,
+	trace: SearchTrace,
+	pv: Vec<Action>,
 	config: SearchConfig,
 }
 
@@ -249,12 +285,27 @@ impl Searcher {
 			mcts: None,
 			played_hashes: Vec::new(),
 			stats: SearchStats::default(),
+			trace: SearchTrace::default(),
+			pv: Vec::new(),
 			config,
 		}
 	}
 
 	pub fn stats(&self) -> SearchStats {
 		self.stats
+	}
+
+	pub fn trace(&self) -> SearchTrace {
+		self.trace
+	}
+
+	pub fn principal_variation(&self) -> &[Action] {
+		&self.pv
+	}
+
+	/// Cap iterative deepening (1..=16). Used by the log-analyze tool.
+	pub fn set_max_id_depth(&mut self, depth: u8) {
+		self.minimax.max_id_depth = depth.clamp(1, 16);
 	}
 
 	pub fn observe(&mut self, game: &Game) {
@@ -289,6 +340,8 @@ impl Searcher {
 	) -> Action {
 		self.observe(game);
 		self.stats = SearchStats::default();
+		self.trace = SearchTrace::default();
+		self.pv.clear();
 		let legal = game.legal_actions();
 		if legal.is_empty() {
 			return Action::Pass;
@@ -300,9 +353,11 @@ impl Searcher {
 			Actor::Minimax | Actor::MinimaxLegacy => {
 				self.minimax.legacy = actor == Actor::MinimaxLegacy;
 				self.minimax.config = self.config;
-				let (action, stats) =
+				let (action, stats, trace, pv) =
 					minimax::search(&mut self.minimax, game, &self.played_hashes, rng, limit);
 				self.stats = stats;
+				self.trace = trace;
+				self.pv = pv;
 				action
 			}
 			Actor::Mcts => {

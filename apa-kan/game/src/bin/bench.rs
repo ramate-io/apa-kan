@@ -81,9 +81,9 @@ fn usage() -> &'static str {
 	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
 	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
 	                        Each search stays single-threaded unless --search-threads > 1.\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay>\n\
-	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest, playtest)\n\
-	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced defaults)\n\
+	   --search-profile <exactplay|enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay>\n\
+	                        Search preset (default: exactplay; aliases: playtest, default, aggressive, cautious, explore, deep, focused, contest)\n\
+	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced tree, eval_margin_scale 100)\n\
 	   --list-search-profiles    Print named presets and their labels\n\
 	   --search <k=v,...>   Overlay any knob (ordering, tt, lmr, pvs, q-depth, pw, puct, priors,\n\
 	                        pw-order, reuse, mcts-tt, factored, leaf, solver, threads, eval-margin, ...)\n\
@@ -162,7 +162,7 @@ where
 		setup: SetupConfig::default(),
 		pairings: None,
 		matchups: Vec::new(),
-		search: SearchConfig::enhanced(),
+		search: SearchConfig::default(),
 		p1_search: None,
 		p2_search: None,
 		p1_limit: None,
@@ -3129,6 +3129,7 @@ mod tests {
 		assert_eq!(cfg.limit, SearchLimit::calibrated());
 		assert!(cfg.jobs >= 1);
 		assert_eq!(cfg.matchups, vec![(DeckArchetype::Mixed, DeckArchetype::Mixed)]);
+		assert_eq!(cfg.search, SearchConfig::exactplay());
 	}
 
 	#[test]
