@@ -1,0 +1,45 @@
+[package]
+name = "apa-kan-server"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+publish = { workspace = true }
+rust-version = { workspace = true }
+default-run = "apa-kan-server"
+
+[[bin]]
+name = "apa-kan-server"
+path = "src/main.rs"
+
+[features]
+default = ["sqlite"]
+sqlite = ["apa-kan-store/sqlite"]
+
+[dependencies]
+apa-kan = { workspace = true, default-features = false }
+apa-kan-account = { workspace = true }
+apa-kan-store = { workspace = true, features = ["sqlite"] }
+axum.workspace = true
+hex.workspace = true
+rand.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha3.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+apa-kan-account = { workspace = true }
+ml-dsa.workspace = true
+rand.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time", "process"] }
+
+[lints]
+workspace = true
