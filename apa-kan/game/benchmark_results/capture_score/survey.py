@@ -104,6 +104,12 @@ def survey(games: list[dict]) -> None:
     tied_plies = 0
     trail_plies = 0
     examples: list[str] = []
+    inner_move_cap = 0
+    inner_move_nocap = 0
+    first_opp: list[int] = []
+    center_dest_plies = 0
+    end_rings: Counter[str] = Counter()
+    end_center_occupied = 0
 
     for i, g in enumerate(games):
         end = g.get("end") or {}
@@ -140,10 +146,14 @@ def survey(games: list[dict]) -> None:
         own_caps = 0
         min_lead: dict[int, int] = {1: 0, 2: 0}
         last_opp_cap_by: dict[int, int] = {}
+        first_cap_turn: int | None = None
         for ai, act in enumerate(actions):
             kind = act.get("kind") or "?"
             kinds[kind] += 1
-            dest_rings[node_ring(dest_of(act))] += 1
+            dest = dest_of(act)
+            dest_rings[node_ring(dest)] += 1
+            if node_ring(dest) == "center":
+                center_dest_plies += 1
             piece = act.get("piece") or {}
             w = piece.get("weight") or piece.get("n_rings")
             if w is not None:
@@ -178,25 +188,33 @@ def survey(games: list[dict]) -> None:
             else:
                 tied_plies += 1
             player = act.get("player")
-            captured_opp = False
+            opp_this = 0
             for cap in act.get("captures") or []:
                 capture_dests[str(cap.get("dest") or "?")] += 1
                 cap_rings[node_ring(cap.get("node"))] += 1
                 owner = cap.get("owner")
                 if owner is not None and player is not None and int(owner) != int(player):
                     opp_caps += 1
-                    captured_opp = True
+                    opp_this += 1
                     opp_cap_events += 1
                     last_opp_cap_by[int(player)] = ai
                     other = 1 if int(player) == 2 else 2
                     prev = last_opp_cap_by.get(other)
                     if prev is not None and ai - prev <= 2:
                         recapture_2 += 1
+                    if first_cap_turn is None:
+                        first_cap_turn = int(act.get("turn") or 0)
                 else:
                     own_caps += 1
-            _ = captured_opp
+            if kind == "MOVE" and node_ring(dest) == "inner":
+                if opp_this:
+                    inner_move_cap += 1
+                else:
+                    inner_move_nocap += 1
         caps.append(opp_caps)
         self_caps.append(own_caps)
+        if first_cap_turn is not None:
+            first_opp.append(first_cap_turn)
         if status == "won" and winner in (1, 2) and min_lead[int(winner)] < 0:
             comebacks += 1
             if len(examples) < 8:
@@ -207,9 +225,17 @@ def survey(games: list[dict]) -> None:
                 )
         final = g.get("final_state") or {}
         occ = 0
+        center_held = False
         for key in ("p1_board", "p2_board"):
-            occ += len(final.get(key) or [])
+            for piece in final.get(key) or []:
+                occ += 1
+                r = node_ring(piece.get("node"))
+                end_rings[r] += 1
+                if r == "center":
+                    center_held = True
         end_occupied.append(occ)
+        if center_held:
+            end_center_occupied += 1
 
     p, lo, hi = wilson_ci(p1_w, n)
     action_n = sum(dest_rings.values())
@@ -247,6 +273,17 @@ def survey(games: list[dict]) -> None:
             if dest_rings[k]
         )
     )
+    inner_moves = inner_move_cap + inner_move_nocap
+    print(
+        f"inner MOVE capturing opp  {inner_move_cap}/{inner_moves} "
+        f"({pct(inner_move_cap, inner_moves)}); parking={inner_move_nocap}"
+    )
+    print(f"center dest plies  {center_dest_plies} ({pct(center_dest_plies, action_n)})")
+    if first_opp:
+        print(
+            f"first opp-capture turn  mean={statistics.mean(first_opp):.1f} "
+            f"median={statistics.median(first_opp):.1f} n={len(first_opp)}/{n}"
+        )
     print(
         "capture nodes  "
         + "  ".join(
@@ -270,9 +307,16 @@ def survey(games: list[dict]) -> None:
         f"({pct(recapture_2, opp_cap_events)})"
     )
     if end_occupied:
+        end_n = sum(end_rings.values())
         print(
             f"end occupancy  mean={statistics.mean(end_occupied):.2f} "
-            f"median={statistics.median(end_occupied):.1f}"
+            f"median={statistics.median(end_occupied):.1f}  "
+            + "  ".join(
+                f"{k}={end_rings[k]} ({pct(end_rings[k], end_n)})"
+                for k in ("center", "inner", "spawn", "outer")
+                if end_rings[k]
+            )
+            + f"  center_held={end_center_occupied}/{n}"
         )
     if examples:
         print("comeback examples:")

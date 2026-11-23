@@ -49,7 +49,7 @@ Light package: release, `--no-default-features`, `nodes:33000,iters:650`, exactp
 | + capture_cascade | 4 | 2-0-2 | 119 / 124 | 5.50 | 2.75 / 2.75 (3.50) | 1 score, 1 lockout, 2 turn-limit |
 | + unlimited_spawn | 4 | 1-1-2 | 142 / 166 | 9.75 opp, **58.5 self** | 4.50 / 5.25 (1.75) | 2 score, 2 turn-limit |
 
-Full 150-game arms are running (control_mm in progress). Follow-up majority combos / trigger / target / weight sweeps are queued behind that cell.
+Control 150-game mm-mm is in. Capture-score base mm-mm is running. Follow-up majority combos / trigger / target / weight sweeps wait behind `all_light` + MCTS.
 
 ### Smoke concentration (dest share of all actions)
 
@@ -85,13 +85,23 @@ Do not bake 400. Weight 80 is only barely less stalled (1/4 target wins). Tune f
 
 | Arm | Pairing | n | P1 W-D-L | P1 WR | mean/med turns | caps/game | score margin | target vs turn-limit | comebacks |
 |---|---|---|---|---|---|---|---|---|---|
-| control (live) | mm-mm | _running_ |  |  |  |  | — | — |  |
-| capture-score base | mm-mm |  |  |  |  |  |  |  |  |
+| control (live) | mm-mm | 150 | 75-3-72 | 0.500 [0.421, 0.579] | 49.0 / 40.5 | 6.48 | — | 97 control, 39 lockout, 5 elim, 6 LV, **3 TL draws** | n/a |
+| capture-score base | mm-mm | _running_ |  |  |  |  |  |  |  |
 | + majority_spawn_bonus | mm-mm |  |  |  |  |  |  |  |  |
 | + capture_cascade | mm-mm |  |  |  |  |  |  |  |  |
 | + unlimited_spawn | mm-mm |  |  |  |  |  |  |  |  |
 
-## Qualitative (smoke)
+Control concentration (150 games): dest rings **C 5.4 / I 26.5 / S 52.6 / O 15.5%**. Capture nodes 7.3 / 29.8 / 44.3 / 18.6%. Inner MOVEs that actually take an opponent piece: **16.2%** (307/1893). End occupancy is inner-heavy even though actions go through spawn: remaining pieces C 11.3 / **I 55.8** / S 23.7 / O 9.2%, center held at end **86/150**. First opponent capture mean turn 8.1. Recapture-within-2: 14.1% (137/972). Piece usage: 2-ring 3847, 3-ring 3052, 1-ring 464; marks ~50/50 dot/triangle; lights normal 5806 / zag 2640 / bead 1732 / braid 1390. SWAP 78, CONVERT 99 (ratchet counterplay).
+
+## Qualitative (control 150 + smoke)
+
+Control seed=308 (lockout, t49, P1): 2-2-1-1 ADDs on spawns, P1 sits center at **t7**, P2 answers inner 12 at t8 taking two. Later P2 SWAP inner 9 (t24), P1 recaptures center at t29 (two caps). Cascade ratchets at t45 and t48 each give P1 a CONVERT (outer 10, then spawn 8). Ends lockout — typical ratchet counterplay, not a score race.
+
+Control seed=300 (the rare 200-turn draw): P1 occupies center at **t5** with no capture, P2 takes two off inner 9 at t8 and sits center at t10. After that the game is MOVE ping-pong (181 MOVEs, 2 center dests total, 0 SWAP/CONVERT). This is the 2% stall tail (3/150 hit the cap).
+
+Control seed=10310 (lockout t53): P1 takes center t11, P2 recaptures center t36 (two caps), cascade at t50 → P1 CONVERT spawn 11.
+
+Smoke notes below are unchanged; they picked the majority lever.
 
 Base scoring with weight 0 does not hunt captures. Smoke_base game seed=1: opening ADDs on outer spawns (t1–t6), first capture at **t23** (P1 MOVE to node 1, takes P2 off center). End is **t200 TurnLimit, 5–4**. Late ply is MOVE ping-pong on the inner ring (t196–t200, score stuck 5–4). Dest mix: 559 outer / 217 inner / 24 center over 800 actions. Zero CLAIM/SWAP/CONVERT.
 
@@ -105,4 +115,4 @@ Base scoring with weight 0 does not hunt captures. Smoke_base game seed=1: openi
 
 ## Honest take
 
-Pending the 150-game cells. Smoke says **bare capture-score is not yet a better game** — it stalls, bots shuffle on the outer ring, and they stop one point short of the target. Majority-of-former-control as a spawn bonus looks like the bones of a scoring game that still has a reason to fight the center. Control remains shorter and more decisive.
+Control 150-game mirror is a **fair, short game** (P1 WR 0.500, mean 49 turns, 97/150 control wins, ratchet CONVERT/SWAP actually fire). The 3 turn-limit draws are real but rare. Smoke still says **bare capture-score is not yet a better game** — it stalls, bots shuffle on the outer ring, and they stop one point short of the target. Majority-of-former-control as a spawn bonus looks like the bones of a scoring game that still has a reason to fight the center. Waiting on the 150-game scoring cells before calling a winner.
