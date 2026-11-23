@@ -84,7 +84,7 @@ impl SearchLimit {
 }
 
 use eval::evaluate as eval_pos;
-use search_move::{legal_search_moves as search_moves};
+use search_move::legal_search_moves as search_moves;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Actor {

@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 use std::thread;
 
 use crate::ai::{
-	apply_move, is_capture, legal_search_moves, Actor, SearchConfig, SearchLimit, Searcher,
-	SearchMove, CALIBRATED_NODES_PER_MOVE, WIN,
+	apply_move, is_capture, legal_search_moves, Actor, SearchConfig, SearchLimit, SearchMove,
+	Searcher, CALIBRATED_NODES_PER_MOVE, WIN,
 };
 use crate::bench_log::{decode_jsonl_gz, replay_to_action, GameLog};
 use crate::game::{Action, Game, Player};
@@ -39,11 +39,9 @@ struct MoveTag {
 impl MoveTag {
 	fn from_action(a: &Action) -> Self {
 		match a {
-			Action::Add { bench_index, node } => Self {
-				kind: 0,
-				from: (*bench_index).min(u8::MAX as usize) as u8,
-				to: *node,
-			},
+			Action::Add { bench_index, node } => {
+				Self { kind: 0, from: (*bench_index).min(u8::MAX as usize) as u8, to: *node }
+			}
 			Action::Move { from, to } => Self { kind: 1, from: *from, to: *to },
 			Action::Claim { node } => Self { kind: 2, from: 0, to: *node },
 			Action::Swap { from, to } => Self { kind: 3, from: *from, to: *to },
@@ -142,9 +140,7 @@ fn minimax_probe(
 	searcher.set_root_shuffle(root_shuffle);
 	let mut rng = StdRng::seed_from_u64(rng_seed);
 	let limit = SearchLimit::Work { nodes, iters: u32::MAX };
-	let action = searcher
-		.choose_with(game, Actor::Minimax, &mut rng, limit)
-		.clone();
+	let action = searcher.choose_with(game, Actor::Minimax, &mut rng, limit).clone();
 	let st = searcher.stats();
 	let dest = match &action {
 		Action::Add { node, .. } | Action::Claim { node } | Action::Convert { node } => *node,
@@ -255,24 +251,14 @@ fn probe_position(
 				^ (ix as u64).wrapping_mul(0x517c)
 				^ (f as u64).wrapping_mul(0x9E3779B97F4A7C15);
 			let nodes = base_nodes.saturating_mul(max_mult);
-			let run = minimax_probe(
-				&game,
-				&played,
-				last,
-				search,
-				nodes,
-				seed,
-				root_shuffle,
-			);
+			let run = minimax_probe(&game, &played, last, search, nodes, seed, root_shuffle);
 			fanout_tags.insert(run.tag);
 		}
 	}
 
 	let changed_16 = mid.map(|m| m.tag != light.tag).unwrap_or(false);
 	let changed_64 = deep.map(|d| d.tag != light.tag).unwrap_or(false);
-	let deep_win_spot = deep
-		.map(|d| d.proves_terminal && !light.proves_terminal)
-		.unwrap_or(false);
+	let deep_win_spot = deep.map(|d| d.proves_terminal && !light.proves_terminal).unwrap_or(false);
 	let shallow_miss = imm > 0
 		&& matches!((mid, deep), (Some(m), Some(d)) if light.tag != m.tag || light.tag != d.tag);
 
@@ -301,11 +287,7 @@ fn probe_position(
 			);
 		}
 	}
-	let _ = write!(
-		row,
-		"\tfan{max_mult}_uniq={} fan{max_mult}_n={fanout}",
-		fanout_tags.len()
-	);
+	let _ = write!(row, "\tfan{max_mult}_uniq={} fan{max_mult}_n={fanout}", fanout_tags.len());
 	if let (Some(m), Some(d)) = (mid, deep) {
 		let _ = write!(
 			row,
@@ -354,7 +336,8 @@ pub fn run(cfg: &Config) {
 	let mut tasks: Vec<PosTask> = Vec::new();
 	for path in logs {
 		let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-		let games = decode_jsonl_gz(&bytes).unwrap_or_else(|e| panic!("decode {}: {e}", path.display()));
+		let games =
+			decode_jsonl_gz(&bytes).unwrap_or_else(|e| panic!("decode {}: {e}", path.display()));
 		let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("?").to_string();
 		for log in games {
 			for ix in sample_action_indices(&log) {
@@ -370,7 +353,9 @@ pub fn run(cfg: &Config) {
 		cfg.probe_root_shuffle
 	));
 	lines.push(format!("# positions_scheduled={}", tasks.len()));
-	lines.push("# columns: log game action turn player scores claim counts imm_cap budgets moves".into());
+	lines.push(
+		"# columns: log game action turn player scores claim counts imm_cap budgets moves".into(),
+	);
 
 	let chunk = (tasks.len() + jobs - 1) / jobs.max(1);
 	let handles: Vec<_> = tasks
@@ -382,7 +367,9 @@ pub fn run(cfg: &Config) {
 			thread::spawn(move || {
 				batch
 					.iter()
-					.map(|task| probe_position(task, &multipliers, base_nodes, fanout, search, root_shuffle))
+					.map(|task| {
+						probe_position(task, &multipliers, base_nodes, fanout, search, root_shuffle)
+					})
 					.collect::<Vec<_>>()
 			})
 		})

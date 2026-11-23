@@ -2,11 +2,11 @@
 
 pub mod ai;
 pub mod bench_log;
-pub mod deep_probe;
 pub mod board;
 pub mod characters;
 pub mod config;
 pub mod deck;
+pub mod deep_probe;
 pub mod game;
 pub mod render;
 pub mod scenario;

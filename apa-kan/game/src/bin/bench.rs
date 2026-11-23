@@ -367,10 +367,12 @@ where
 				cfg.probe_budget_mult = parse_probe_mult(&need("--probe-mult", it.next())?)?;
 			}
 			"--probe-fanout" => {
-				cfg.probe_fanout = parse_u64("--probe-fanout", &need("--probe-fanout", it.next())?)? as u32;
+				cfg.probe_fanout =
+					parse_u64("--probe-fanout", &need("--probe-fanout", it.next())?)? as u32;
 			}
 			"--probe-jobs" => {
-				cfg.probe_jobs = parse_u64("--probe-jobs", &need("--probe-jobs", it.next())?)? as usize;
+				cfg.probe_jobs =
+					parse_u64("--probe-jobs", &need("--probe-jobs", it.next())?)? as usize;
 			}
 			"--probe-root-shuffle" => {
 				let v = need("--probe-root-shuffle", it.next())?;
@@ -378,7 +380,9 @@ where
 					"on" | "true" | "1" => true,
 					"off" | "false" | "0" => false,
 					other => {
-						return Err(format!("invalid --probe-root-shuffle '{other}' (expected on|off)"));
+						return Err(format!(
+							"invalid --probe-root-shuffle '{other}' (expected on|off)"
+						));
 					}
 				};
 			}

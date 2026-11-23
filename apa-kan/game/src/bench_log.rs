@@ -1727,9 +1727,7 @@ pub fn replay_to_action(
 		}
 		let action = act.to_action().map_err(|e| format!("action {i}: {e}"))?;
 		last_move = last_position_action(&action);
-		game
-			.apply(action)
-			.map_err(|e| format!("action {i} apply: {e}"))?;
+		game.apply(action).map_err(|e| format!("action {i} apply: {e}"))?;
 		let h = crate::ai::occupancy_hash(&game);
 		if played.last().copied() != Some(h) {
 			played.push(h);
