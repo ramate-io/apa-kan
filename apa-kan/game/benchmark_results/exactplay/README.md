@@ -1,10 +1,15 @@
 # Exactplay bots: eval-only leaf margin for braid-only-exact
 
-Stacked on PR #83 (live playtest `RuleSet`: 4:3:1 Additive, `braid-only-exact`,
-single braids on, normal-only SWAP, center↔inner double-count, color-drift
-160). That PR’s confirmation cell
-[`h2h_defaults`](../single_braid_exact_swap/h2h_defaults.txt) is the **old
-bot** baseline: `--search-profile counterplay`, `--pick search`.
+Live `RuleSet` (PR #88) is ratchet reward + 2-2-1-1 on the #83 scoring
+package (4:3:1 Additive, `braid-only-exact`, single braids on, normal-only
+SWAP, center↔inner double-count, color-drift 160). That PR’s confirmation
+cell [`h2h_defaults`](../single_braid_exact_swap/h2h_defaults.txt) is the
+**old bot** baseline: `--search-profile counterplay`, `--pick search`.
+
+Committed H2H, isolation, deep, distill, and wide logs in this directory
+were recorded **before** the #88 lock (1-1-1-1 seating, no ratchet).
+`mcts_root_noise` defaults to 0 and minimax shuffles the root only when
+`ordering=off`, so live `exactplay` stays bit-identical.
 
 This package does **not** change rules. It does **not** program a playstyle
 (no pick-single-braid knobs, extra qsearch, SWAP/braid move-order hacks, or
@@ -21,8 +26,12 @@ starts from `enhanced`, not `counterplay`. Missing TOML keys still take
 
 Reproduce with [`run_h2h.sh`](run_h2h.sh) (vs counterplay),
 [`run_isolation.sh`](run_isolation.sh) (vs enhanced + cheap counter vs
-enhanced), [`tune_eval.py`](tune_eval.py) (coordinate descent), and
-[`run_deep.sh`](run_deep.sh) (4x/8x budget probe). Survey:
+enhanced), [`tune_eval.py`](tune_eval.py) (coordinate descent),
+[`run_deep.sh`](run_deep.sh) (4x/8x budget probe),
+[`run_distill.sh`](run_distill.sh) (cheap_order fit from 4x roots),
+[`run_explore.sh`](run_explore.sh) (deep wide vs standard 4x/8x),
+[`audit_fairness.py`](audit_fairness.py), and
+[`analyze_wide.py`](analyze_wide.py). Survey:
 [`survey.py`](survey.py) (first center *take* counts only if the landing
 piece is still there after that action’s captures resolve).
 
@@ -78,6 +87,13 @@ Live `RuleSet::default()` (no extra rule flags). 50 games × 2 pairings =
 | [`h2h_deep4x_vs_light_p1`](h2h_deep4x_vs_light_p1.txt) | exactplay 4x | exactplay light | deep P1 vs light P2 |
 | [`h2h_deep4x_vs_light_p2`](h2h_deep4x_vs_light_p2.txt) | exactplay light | exactplay 4x | light P1 vs deep P2 |
 | [`h2h_deep8x_self`](h2h_deep8x_self.txt) | exactplay 8x | exactplay 8x | `nodes:264000,iters:5200` both seats |
+| [`distill/`](distill/) | light re-search of 4x roots | — | `cheap_order` fit; champion unchanged |
+| [`explore/h2h_wide4_p1`](explore/h2h_wide4_p1.txt) | wide 4x | exactplay 4x | seed 1, 10 games |
+| [`explore/h2h_wide4_p2`](explore/h2h_wide4_p2.txt) | exactplay 4x | wide 4x | seed 1, 10 games |
+| [`explore/h2h_wide4_p1_s11`](explore/h2h_wide4_p1_s11.txt) | wide 4x | exactplay 4x | seed 11, 6 games |
+| [`explore/h2h_wide4_p2_s11`](explore/h2h_wide4_p2_s11.txt) | exactplay 4x | wide 4x | seed 11, 6 games |
+| [`explore/h2h_wide8_p1`](explore/h2h_wide8_p1.txt) | wide 8x | exactplay 8x | seed 1, 4 games |
+| [`explore/h2h_wide8_p2`](explore/h2h_wide8_p2.txt) | exactplay 8x | wide 8x | seed 1, 4 games |
 
 JSONL.gz logs reconstruct each game. Same-deck 27 identical=100/100 on every
 log. Search labels show `eval_margin=200`, `q=on/4`, priors off, `eval_center=180`.
@@ -489,42 +505,181 @@ minimax vs mcts / game 5 / 57. Light P1 takes t5. Deep P2 pops from
 inner 9 at t10, retakes t12. Light retakes t51. Lockout, **light**
 wins this one — one of the 5/20 light wins.
 
-### Distillation proposal (not implemented)
+### Distillation retune (implemented; no promote)
 
-Depth clearly finds **leave / inner-pop / retake** lines that light
-search misses on the same deals. It does *not* find SWAP steals, CLAIM
-origin takes, or single-braid snipes. Do not program those tactics.
-Do not hand-set `order_vacate_center` / MCTS priors.
+`--compare-roots` replays [`h2h_deep4x_self.jsonl.gz`](h2h_deep4x_self.jsonl.gz)
+and re-searches each ply at light. [`distill_order.py`](distill_order.py)
+scores the four existing `cheap_order` integers on **disagreements
+only**, with extra weight on center-touching moves. Train = games 1–3
+of each pairing; hold = games 4–5. No new features.
 
-`enhanced` already **penalizes** vacating a healthy occupant
-(`order_vacate_center = 1200`, `order_vacate_overwhelmed = 1200`) and
-gives no extra `order_center_threat`. At ~3.5 ply that tax can bury the
-leave move; at ~5 ply the PV still finds it. A data-driven fit should
-reweight existing `cheap_order` knobs from deep-vs-light disagreements,
-not add a “always vacate” bonus.
+1011 roots, 664 disagreements (331 train / 333 hold). Grid: 120
+neighbors of `vacate ∈ {0,400,800,1200,2000}`, `vacate_ow ∈ {0,1200}`,
+`threat ∈ {0,2000,3500,5000}`, `claim ∈ {0,2500,5000}`.
 
-Proposed (next PR, not this one):
+| | vacate | vacate_ow | threat | claim | train wMRR | hold wMRR |
+|---|---|---|---|---|---|---|
+| current / champion | **1200** | **1200** | **0** | **0** | **0.217** | **0.151** |
+| vacate=0 (best vacate-rank neighbor) | 0 | 1200 | 0 | 0 | 0.201 | — |
 
-1. **Paired roots.** Replay the committed seed-1 deals at light and at
-   4x. At every overlapping position, log the legal list with current
-   `cheap_order` features (capture, center, vacate, threat, claim, TT,
-   killer), plus a few binary flags the knobs already mean: MOVE onto
-   0, MOVE off 0, inner MOVE that captures 0, SWAP involving 0.
-2. **Target.** Deep’s chosen action is the label. Train only where light
-   and deep disagree, with extra weight on center-touching moves. Pairwise
-   ranking / softmax loss over the existing `SearchConfig` order_*
-   integers (and, if MCTS, the same logits as `mcts_move_priors`).
-3. **Hold out.** Fit on pairings `{mcts vs minimax}` games 1–3; confirm
-   on games 4–5 and on a new seed. Promote a TOML only if light-budget
-   sit-and-win drops *and* the 15-0-5 vs-light gap shrinks, without
-   wrecking exactplay vs enhanced.
-4. **Refuse new features** unless the residual is a recapture-after-vacate
-   pattern the current knobs cannot express. If sitting remains correct
-   on some healthy occupants (8x game 2; 4x-vs-light game 2), the fit
-   must be allowed to keep a vacate penalty there.
+Before = after. Mean rank of deep’s chosen move under current
+`cheap_order` is ~16 (train) / ~19 (hold). Top-1 is 8% / 5%. The
+vacate tax only applies to 11 train disagreements; zeroing it improves
+those ranks 16.1→6.8 but hurts overall wMRR. Threat disagreements are
+already rank 2.8 via capture bonuses (`threat=3500` is a no-op). Deep
+never chose CLAIM, so `order_claim_center` cannot fit. Extra ply is not
+a one-knob ordering fix. **No TOML promoted; skipped 4x-vs-candidate
+confirm.** Champion remains [`exactplay.toml`](../../bots/exactplay.toml).
 
-Raising the live budget is the other lever. 8x still has MCTS at 2.54
-ply; a fitted prior may be cheaper than 8x nodes.
+## Deep wide search (not a random-player baseline)
+
+Liam’s correction: fan the **deep** tree out, do not add weak/epsilon
+policies. Overlay on `exactplay` at the same 4x (and a small 8x) in-game
+budget, both seats, two seeds:
+
+`puct=8,root-noise=0.25,dirichlet-alpha=0.3,ordering=off,lmr=off,pvs=off,untried-random=1`
+
+Heuristic playouts stay **on**. New knobs `mcts_root_noise` / Dirichlet
+`α` default to 0 / 0.3 so live `exactplay` is bit-identical. Minimax
+shuffles the root when `ordering=off`. Reproduce:
+[`run_explore.sh`](run_explore.sh). Pure-random-player baseline skipped
+(not cheap at this budget, and not the question). These cells predate
+ratchet + 2-2-1-1; re-runs inherit the live lock unless those flags are
+pinned off.
+
+Seed-1 4x cells share the 27-tile deals with [`h2h_deep4x_self`](h2h_deep4x_self.jsonl.gz).
+Wide as P1 also overlays search-pick, so first ADD usually diverges;
+wide as P2 keeps P1’s first ADD (standard).
+
+| Cell | Games | Wide W-D-L | Turns | Never-left | Sit-and-win | Vacates/g | CLAIM | SWAP | SB pops | mm / mcts | entropy / eff_branch / top1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 4x self (standard) | 10 | — (5-1-4 P1) | 101 | **0%** | **0%** | 3.70 | 0 | 1 | 0 | 4.84 / 2.24 | 2.35 / 14.6 / 0.35 |
+| **wide 4x as P1** (seed 1) | 10 | **5-0-5** | 59 | 30% | **20%** | 1.10 | 0 | 3 | 0 | 3.71 / 2.05 | **2.69 / 18.5 / 0.27** |
+| **wide 4x as P2** (seed 1) | 10 | **2-1-7** | 75 | 33% | **33%** | 2.20 | 0 | 0 | 0 | 4.69 / 2.04 | **2.80 / 20.4 / 0.23** |
+| wide 4x as P1 (seed 11) | 6 | 3-0-3 | 88 | 50% | 33% | 1.33 | 0 | 0 | 0 | 4.25 / 2.00 | 2.85 / 21.6 / 0.25 |
+| wide 4x as P2 (seed 11) | 6 | 2-1-3 | 97 | 20% | 20% | 1.83 | 0 | 0 | 0 | 4.30 / 1.94 | 3.05 / 26.8 / 0.21 |
+| wide 8x as P1 | 4 | 3-0-1 | 139 | 0% | 0% | 5.50 | 0 | 4† | 0 | 5.48 / 2.18 | 2.74 / 18.7 / 0.23 |
+| wide 8x as P2 | 4 | 1-0-3 | 63 | 50% | 50% | 0.25 | 0 | 0 | 0 | 4.60 / 2.10 | 2.73 / 20.6 / 0.29 |
+
+† All four 8x SWAPs are edge 1-normal walks, none on center.
+**Wide vs standard 4x, combined (both seats, both seeds): 12-2-18.**
+**Wide vs standard 8x, combined: 4-0-4.** Fan-out is real (entropy and
+effective branching up, top-1 share down) but at a fixed node budget it
+**costs depth** (wide-as-P1 mm 3.71 vs standard 4.84) and **sits more**,
+like light search. It does not uncover a hidden origin tactic.
+
+### Strategies standard 4x never plays — with citations
+
+Citations are `log` / `pairing` / `game` / `turns`. Inner-ring
+`{9,1,12,3,16,6,18,21}`; center is 0.
+
+**CLAIM: still 0.** 32 games at 4x wide + 8 at 8x wide. Branching-factor
+sample also has 0 legal CLAIMs. Not hidden by pruning; rarely legal,
+never chosen.
+
+**Single-braid center pops: still 0.** Same as 4x/8x self.
+
+**SWAP is not a new win path.** The only SWAPs that are *absent* from
+the 4x-self corpus are in
+[`explore/h2h_wide4_p1.jsonl.gz`](explore/h2h_wide4_p1.jsonl.gz) /
+minimax vs mcts / game 2 / 151. Wide P1 (minimax) takes 17→0 at t3 with
+a 1-normal, **SWAP 0→12 at t67 budget 0**, then loses control to
+standard P2. Same deal at 4x self: P1 SWAP **0→16** at t39 with the
+*same* tile (id 16) and **P1 wins**. Wide found a worse vacate-via-SWAP,
+not a steal. The other two SWAPs in that game (t30 7→8, t140 5→4) are
+**standard P2** rotating a 1-normal on the edge. 8x wide P1’s four
+SWAPs are the same edge walk (23→21 / 13→10 / 14→15 / 15→17), none
+center.
+
+**Sit-and-win comes back when the tree is wide-and-shallow.**
+[`explore/h2h_wide4_p1.jsonl.gz`](explore/h2h_wide4_p1.jsonl.gz) /
+minimax vs mcts / game 3 / 27. Wide P1 MOVEs 20→0 at t13 and never
+leaves; control-5. Same 27 at 4x self went 125 turns, P2 won — but
+first ADD already differed (wide 5 vs standard 2), so this is a
+different opening, not a hidden PV. Fairer (wide as P2, first ADD
+matches): the sit-and-wins are mostly **standard P1** sitting on wide
+P2, e.g.
+[`explore/h2h_wide4_p2.jsonl.gz`](explore/h2h_wide4_p2.jsonl.gz) /
+minimax vs mcts / game 4 / 35 (standard P1 sits t15, wins; 4x self P2
+won that deal at 60) and
+[`explore/h2h_wide8_p2.jsonl.gz`](explore/h2h_wide8_p2.jsonl.gz) /
+mcts vs minimax / game 2 / 25 (standard P1 sits t11, wins). One wide
+sitter that wins:
+[`explore/h2h_wide4_p2.jsonl.gz`](explore/h2h_wide4_p2.jsonl.gz) /
+minimax vs mcts / game 5 / 42, wide P2 sits t14; 4x self also P2-won
+that deal (168 turns). Sitting is not a *new* line.
+
+**Stalling / 200-turn draws.**
+[`explore/h2h_wide4_p2.jsonl.gz`](explore/h2h_wide4_p2.jsonl.gz) /
+minimax vs mcts / game 3 / 200, draw on turn-limit (4x self P2 won at
+125).
+[`explore/h2h_wide4_p2_s11.jsonl.gz`](explore/h2h_wide4_p2_s11.jsonl.gz)
+/ minimax vs mcts / game 1 / 200. Same degenerate ZB walking as 4x/8x
+self (1/10 each), not a winning stall tactic.
+
+**Unusual picks / edge play.** 1-ring bench stays 9.1% on seed-1 (same
+pick budget / same 27). Seed 11 happened to draft 1.5% 1-ring — deal
+noise, not a search policy. Inner→edge MOVEs are common in both
+standard and wide logs; they are the leave/retake walk, not a new
+edge-rush.
+
+**Outcome flips on matched seed-1 deals (wide as P2, first ADD
+matches):** 3/10. Two are standard punching a wide sitter or avoiding
+a 200-turn draw; none is wide inventing CLAIM/SWAP/SB and winning.
+
+## Fairness + degenerate-tactic audit
+
+Wilson 95% intervals. `audit_fairness.py` counts `budget==0` literally
+(not `or 1`). Same-deck 27 is identical across pairings on every cell.
+
+| Cell | n | P1 W-D-L | P1% [95%] | t200 | Lockout | CLAIM | SWAP | SB pops | ZB |
+|---|---|---|---|---|---|---|---|---|---|
+| exactplay self (light) | 100 | 48-2-50 | **48.0 [38.5, 57.7]** | 1 | 24% | 0 | 2 | 0 | 29.4% |
+| exact P1 vs counter P2 | 100 | 71-0-29 | 71.0 [61.5, 79.0] | 0 | 31% | 0 | 10 | 0 | 29.3% |
+| counter P1 vs exact P2 | 100 | 29-1-70 | 29.0 [21.0, 38.5] | 1 | 28% | 0 | 3 | 0 | 30.5% |
+| exact P1 vs enhanced P2 | 100 | 59-1-40 | 59.0 [49.2, 68.1] | 1 | 31% | 0 | 40† | 2 | 29.0% |
+| enhanced P1 vs exact P2 | 100 | 50-1-49 | 50.0 [40.4, 59.6] | 1 | 25% | **3** | 1 | 0 | 28.9% |
+| 4x self | 10 | 5-1-4 | 50 [24, 76] | 1 | 20% | 0 | 1 | 0 | 42.5% |
+| 4x vs light (deep P1) | 10 | 7-0-3 | 70 [40, 89] | 0 | 10% | 0 | 1 | 0 | 32.4% |
+| 4x vs light (deep P2) | 10 | 2-0-8 | 20 [6, 51] | 0 | 30% | 0 | 0 | 0 | 42.6% |
+| 8x self | 10 | 4-1-5 | 40 [17, 69] | 1 | 20% | 0 | 0 | 0 | 37.8% |
+| wide 4x as P1 | 10 | 5-0-5 | 50 [24, 76] | 0 | 20% | 0 | 3 | 0 | 29.9% |
+| wide 4x as P2 | 10 | 7-1-2 | 70 [40, 89] | 1 | 20% | 0 | 0 | 0 | 46.3% |
+
+† 39/40 isolation SWAPs are one 200-turn draw (exact vs enh P1, mcts vs
+minimax, game 30).
+
+**Seat balance.** Light self-play is even (48%, CI covers 50%). The
+71/29 split vs counterplay is the **eval gap** (geometry 180 vs 70),
+not a P1-seat bug: it flips when exactplay sits in seat 2. Deep vs
+light 15-0-5 is a **depth gap**, same pattern both seats. Wide vs
+standard 12-2-18 is a **breadth-vs-depth** gap, also both seats.
+n=10 CIs are huge; do not over-read 4x/8x P1%.
+
+**Engine asymmetry.** Exactplay minimax-as-P1 vs counterplay MCTS is
+44-0-6 (88% [76, 94]); exactplay MCTS-as-P1 vs counterplay minimax is
+27-0-23 (54% [40, 67]). Minimax gets more from the leaf scale than
+MCTS does. Light self-play pairing split is 23-2-25 vs 25-0-25 — no
+self-play engine crush.
+
+**Draws / 200-turn / lockout.** Turn-limit is 1/100 light, 1/10 at 4x
+and 8x, 1/10 wide-as-P2: extra ply *lengthens* games (58 → 101 / 112)
+via 0↔inner walking at budget 0 (ZB 29% → 38–43%), then some hit the
+cap. Lockouts 24% light, ~20% deep — not rising. Control remains the
+main end (~70%). Low-value and elimination stay rare.
+
+**Same-deck first-move luck.** Every log: same-deck 27 identical across
+the two pairings. First action is always ADD (never MOVE/SWAP/CLAIM).
+Opening 1-ring bench is ~9.5% whenever pick is light (seed 11’s 1.5%
+is that deal’s 27, not a policy).
+
+**Dead vs unseen.** CLAIM is *dead* as a chosen action (0 in 300
+H2H + 40 deep + 32 wide-4x + 8 wide-8x; 3 in 200 isolation, none a
+win path — own-tile or inner). SWAP is *seen* but degenerate
+(budget-0 walks, one own-rotate). Single-braid origin snipes are
+*unseen* in exactplay self/deep/wide; the only two in isolation are
+enhanced P2 beating exactplay. Overwhelm is still MOVE. Nothing in
+the wide sweep promotes those mechanics from unseen to useful.
 
 ## Open design questions
 
@@ -540,24 +695,38 @@ ply; a fitted prior may be cheaper than 8x nodes.
 - **Hardcoded leaf terms were not searched.** Material, contact, spawn,
   bench, budget, presence, mobility, and claimable in `eval.rs` are not
   `SearchConfig` knobs. `order_vacate_*` is move ordering, not eval, so
-  it stayed off-limits.
+  the hillclimb left it alone; the later disagreement fit also did not
+  move it.
 - **Self-play at light still does not contest more.** Never-left /
   sit-and-win / SWAP / pick match #83. Extra ply *does* contest: 4x
   self sit-and-win 0/10, 8x 1/10, vacates 1.33 → 3.7–4.3. Sitting is
   mostly a horizon artifact, not *only* one (8x game 2 still sits).
-  Programming that fight by hand is still the circular argument; see
-  the distillation proposal above.
-- **CLAIM still dead** (3/200 vs enhanced, 0/300 vs counterplay + self).
-  Overwhelm is still resolved by MOVE. The three CLAIMs are own-tile or
-  inner, not origin steals.
-- **MCTS ~1.8 ply at light, ~2.5 at 8x.** Extra nodes buy less than a
-  ply of MCTS depth. Distill ordering, or raise the live budget?
-- **n=10 per deep cell.** Sit-and-win 0/10 vs 1/10 is noisy. A 50-game
-  4x cell would tighten never-left. 8x vs light was skipped to keep
-  runtime reasonable.
-- **Center pops did not rise with 4x** (0.47 → 0.20). Contest is
-  vacate/retake, not dislodge. Fitting `order_center_threat` from these
-  logs may do nothing; fitting `order_vacate_center` might.
+  Programming that fight by hand is still the circular argument.
+- **Distillation did not move `cheap_order`.** 66% of 4x plies disagree
+  with light, but the four existing integers cannot rank deep’s leave
+  (mean rank ~16). Vacate=0 helps 11 examples and hurts the rest.
+  Fitting would need new features (recapture-after-vacate) or a live
+  budget raise — both out of scope here.
+- **Deep-and-wide at the same node budget is weaker, not more tactical.**
+  Combined 12-2-18 vs standard 4x. CLAIM/SB still 0. SWAP still
+  degenerate. Fan-out (entropy 2.35→2.7–3.0) buys sit-and-win again
+  because mm depth drops 4.84→3.71. To actually search *hidden* lines
+  we would need wide *and* more nodes, not a PUCT/Dirichlet overlay
+  alone.
+- **CLAIM still dead** (3/200 vs enhanced, 0 everywhere else including
+  wide). Overwhelm is still MOVE. The three CLAIMs are own-tile or
+  inner, not origin steals. Branching-factor samples often have 0
+  legal CLAIMs.
+- **MCTS ~1.8 ply at light, ~2.5 at 8x, ~2.0 at 4x wide.** Extra nodes
+  buy less than a ply of MCTS depth; extra exploration buys even less.
+  Distill ordering failed; raise the live budget?
+- **n=10 per deep cell.** Sit-and-win 0/10 vs 1/10 is noisy. Wide n=32
+  at 4x is enough to say CLAIM/SB stay dead, not enough to pin a 40%
+  wide-vs-standard rate. 8x vs light was skipped for runtime.
+- **Center pops did not rise with 4x** (0.47 → 0.20) **or with wide**
+  (0.20–0.50). Contest is vacate/retake, not dislodge. Fitting
+  `order_center_threat` from these logs does nothing (already rank 2.8);
+  fitting `order_vacate_center` also failed.
 - **Search pick still dumps 1-rings** (9.5% on the 11 vs ~49% generated).
   Existing heuristic, not a new bias.
 - **One SWAP-walk draw dominates swap stats.** Quote swaps/g from

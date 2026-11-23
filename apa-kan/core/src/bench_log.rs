@@ -1610,11 +1610,8 @@ pub fn replay(log: &GameLog) -> Result<Game, String> {
 	Ok(replay_center_captures(log)?.0)
 }
 
-/// Replay `log`, counting opponent and self-captures at the origin.
-///
-/// Returns `(replayed game, opponent tiles popped at center, own tiles popped
-/// at center)`.
-pub fn replay_center_captures(log: &GameLog) -> Result<(Game, u32, u32), String> {
+/// Opening position of `log` (deal, bags, tokens) before any action.
+pub fn start_from_log(log: &GameLog) -> Result<Game, String> {
 	if log.v != SCHEMA_VERSION {
 		return Err(format!("unsupported log schema v={}", log.v));
 	}
@@ -1635,6 +1632,15 @@ pub fn replay_center_captures(log: &GameLog) -> Result<(Game, u32, u32), String>
 	if let Some(name) = &log.time_control {
 		game.set_time_control(TimeControl::parse(name)?);
 	}
+	Ok(game)
+}
+
+/// Replay `log`, counting opponent and self-captures at the origin.
+///
+/// Returns `(replayed game, opponent tiles popped at center, own tiles popped
+/// at center)`.
+pub fn replay_center_captures(log: &GameLog) -> Result<(Game, u32, u32), String> {
+	let mut game = start_from_log(log)?;
 	let center = game.board().center();
 	let mut opp = 0u32;
 	let mut slf = 0u32;

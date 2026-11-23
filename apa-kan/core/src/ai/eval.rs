@@ -192,10 +192,10 @@ pub fn evaluate_legacy(game: &Game, me: Player, repeat_count: u16) -> i32 {
 /// center threats, overwhelm pressure on the center occupant, lockout-aware
 /// mobility, and a fade toward 0 as the turn-limit approaches.
 ///
-/// Uses [`SearchConfig::enhanced`] eval weights. Search should call
-/// [`evaluate_with`] so per-bot personalities apply.
+/// Uses [`SearchConfig::default`] eval weights (`exactplay`). Search should
+/// call [`evaluate_with`] so per-bot personalities apply.
 pub fn evaluate(game: &Game, me: Player, repeat_count: u16) -> i32 {
-	evaluate_with(game, me, repeat_count, SearchConfig::enhanced())
+	evaluate_with(game, me, repeat_count, SearchConfig::default())
 }
 
 pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchConfig) -> i32 {

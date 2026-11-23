@@ -282,7 +282,7 @@ pub struct SetupConfig {
 	/// collections are generated independently even if `identical_bags`.
 	pub p2_deck: DeckArchetype,
 	/// Per-seat leaf eval used by search-pick rollouts. Defaults to
-	/// [`SearchConfig::enhanced`]. Heuristic/greedy pick ignore this
+	/// [`SearchConfig::exactplay`]. Heuristic/greedy pick ignore this
 	/// (no pick-phase bonuses).
 	pub p1_search: SearchConfig,
 	pub p2_search: SearchConfig,
@@ -297,8 +297,8 @@ impl Default for SetupConfig {
 			limit: SearchLimit::calibrated(),
 			p1_deck: DeckArchetype::Mixed,
 			p2_deck: DeckArchetype::Mixed,
-			p1_search: SearchConfig::enhanced(),
-			p2_search: SearchConfig::enhanced(),
+			p1_search: SearchConfig::default(),
+			p2_search: SearchConfig::default(),
 		}
 	}
 }
