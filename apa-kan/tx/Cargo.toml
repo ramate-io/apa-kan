@@ -8,13 +8,14 @@ repository = { workspace = true }
 homepage = { workspace = true }
 publish = { workspace = true }
 rust-version = { workspace = true }
-description = "Apa Kan game transactions: submit one action against a hosted game record. No Bevy, no HTTP."
+description = "Apa Kan signed transaction envelope (ML-DSA, account keys) and the deterministic state machine that folds a ledger stream into state. No Bevy, no HTTP, no storage."
 
 [lib]
 name = "apa_kan_tx"
 path = "src/lib.rs"
 
 [dependencies]
+apa-kan-account = { workspace = true }
 apa-kan-core = { workspace = true }
 apa-kan-view = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -22,6 +23,7 @@ serde_json.workspace = true
 sha3.workspace = true
 thiserror.workspace = true
 hex.workspace = true
+ml-dsa.workspace = true
 
 [lints]
 workspace = true

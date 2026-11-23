@@ -235,11 +235,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "apa-kan-game-store"
+name = "apa-kan-ledger"
 version = "0.1.0"
 dependencies = [
- "apa-kan-core",
- "apa-kan-view",
  "async-trait",
  "serde",
  "serde_json",
@@ -254,10 +252,11 @@ version = "0.1.0"
 dependencies = [
  "apa-kan-account",
  "apa-kan-core",
- "apa-kan-game-store",
+ "apa-kan-ledger",
  "apa-kan-store",
  "apa-kan-tx",
  "apa-kan-view",
+ "async-trait",
  "axum",
  "hex",
  "ml-dsa",
@@ -291,9 +290,11 @@ dependencies = [
 name = "apa-kan-tx"
 version = "0.1.0"
 dependencies = [
+ "apa-kan-account",
  "apa-kan-core",
  "apa-kan-view",
  "hex",
+ "ml-dsa",
  "serde",
  "serde_json",
  "sha3 0.10.9",
