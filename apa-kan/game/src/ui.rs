@@ -600,42 +600,10 @@ fn setup_camera(mut commands: Commands) {
 }
 
 fn spawn_match_hud(mut commands: Commands, font: Res<UiFont>) {
-	spawn_hud_line(
-		&mut commands,
-		&font,
-		StatusHud,
-		16.0,
-		8.0,
-		17.0,
-		Color::srgb(0.92, 0.93, 0.90),
-	);
-	spawn_hud_line(
-		&mut commands,
-		&font,
-		TurnHud,
-		16.0,
-		30.0,
-		15.0,
-		Color::srgb(0.88, 0.90, 0.86),
-	);
-	spawn_hud_line(
-		&mut commands,
-		&font,
-		LogHud,
-		16.0,
-		52.0,
-		15.0,
-		Color::srgb(0.78, 0.82, 0.72),
-	);
-	spawn_hud_line(
-		&mut commands,
-		&font,
-		WarnHud,
-		16.0,
-		74.0,
-		15.0,
-		Color::srgb(0.95, 0.72, 0.28),
-	);
+	spawn_hud_line(&mut commands, &font, StatusHud, 16.0, 8.0, 17.0, Color::srgb(0.92, 0.93, 0.90));
+	spawn_hud_line(&mut commands, &font, TurnHud, 16.0, 30.0, 15.0, Color::srgb(0.88, 0.90, 0.86));
+	spawn_hud_line(&mut commands, &font, LogHud, 16.0, 52.0, 15.0, Color::srgb(0.78, 0.82, 0.72));
+	spawn_hud_line(&mut commands, &font, WarnHud, 16.0, 74.0, 15.0, Color::srgb(0.95, 0.72, 0.28));
 	commands.spawn((
 		HelpHud,
 		Text::new(visual::HELP_TEXT),
