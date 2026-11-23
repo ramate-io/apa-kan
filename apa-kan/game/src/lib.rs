@@ -10,6 +10,8 @@ pub use apa_kan_core::{
 
 pub mod characters;
 pub mod config;
+#[cfg(feature = "desktop")]
+pub mod platform;
 pub mod render;
 #[cfg(feature = "desktop")]
 pub mod ui;

@@ -26,10 +26,12 @@ Build packages for all desktop platforms via GitHub Actions by:
 ### Mobile
 
 Mobile builds are handled by separate workflows:
-- `mobile-ios.yml` for iOS
+- `mobile-ios.yml` for iOS — **unsigned Simulator build on every pull request**, unsigned device IPA on `main` / releases
 - `mobile-android.yml` for Android
 
 ## Manual Setup Required
+
+The iOS app is a thin xcodegen wrapper around the Bevy client. Bevy owns home, H2H, and the match; there is no SwiftUI/Dioxus UI. See [`packaging/ios/README.md`](ios/README.md) for simulator, device, signing, `apakan://` deep links, and the bundle id **`io.ramate.apakan`**.
 
 ### iOS Publishing
 
@@ -37,7 +39,7 @@ To publish to the App Store, you need to:
 
 1. **Apple Developer Account**
    - Enroll in Apple Developer Program ($99/year)
-   - Create App ID: `io.ramate.apa-kan`
+   - Create App ID: `io.ramate.apakan`
 
 2. **Code Signing**
    - Generate signing certificate in Xcode or Apple Developer portal
