@@ -54,6 +54,15 @@ nix develop
 cargo run -p apa-kan
 ```
 
+Web (Bevy WebGL2 on `wasm32-unknown-unknown`; no Dioxus chrome):
+
+```bash
+packaging/scripts/build-web.sh
+packaging/scripts/serve-web.sh   # http://127.0.0.1:8080/
+```
+
+Hash routes (`#/h2h`, `#/game/<id>`) work on any static host. Path routes need a SPA fallback; see [`packaging/web/README.md`](packaging/web/README.md). Bot search is time-sliced (~8 ms per frame) so the tab stays responsive.
+
 A plain `cargo run --no-default-features -p apa-kan` is the playtest package (human vs greedy). With a desktop window: `nix develop && cargo run -p apa-kan`. Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`. Live search is `--search-profile enhanced`. `--search-profile exactplay` is the same tree with `eval_margin_scale=200` (hillclimbed vs enhanced; [`exactplay`](apa-kan/game/bots/exactplay.toml)).
 
 ```text

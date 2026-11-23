@@ -1,0 +1,56 @@
+name: Web WASM
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'cursor/**'
+  workflow_dispatch:
+
+concurrency:
+  group: web-wasm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wasm:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen pkg-config
+
+      - name: Read versions
+        id: ver
+        run: |
+          echo "version=$(packaging/version.sh)" >> "$GITHUB_OUTPUT"
+          echo "rust=$(packaging/version.sh --rust)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.ver.outputs.rust }}
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm32-unknown-unknown
+
+      - name: Build wasm bundle
+        run: packaging/scripts/build-web.sh
+
+      - name: Report bundle size
+        run: |
+          echo "## Wasm bundle size" >> "$GITHUB_STEP_SUMMARY"
+          cat dist/web/size.txt >> "$GITHUB_STEP_SUMMARY"
+          cat dist/web/size.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apa-kan-${{ steps.ver.outputs.version }}-web
+          path: dist/web
+          if-no-files-found: error
+          retention-days: 14

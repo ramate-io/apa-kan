@@ -1,4 +1,6 @@
-//! Bevy 0.19 desktop UI: both public decks, ADD/MOVE/SWAP targeting, last-action log.
+//! Bevy 0.19 UI: home / H2H shell plus in-match board.
+
+use std::time::Duration;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -8,95 +10,152 @@ use bevy::window::WindowResolution;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use crate::ai;
+use crate::ai::{self, SearchLimit};
 use crate::board::NodeId;
 use crate::config::GameConfig;
 use crate::deck::{
 	self, pick_from_pool, pick_plan, respects_type_cap, would_respect_cap, SetupConfig, SetupRecord,
 };
 use crate::game::{Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile};
+use crate::platform::{replace_browser_route, IncomingUrl, PlatformPlugin};
+use crate::route::{DeepLink, Route};
+use crate::shell::{self, AppScreen, LeaveMatch, StartMatch};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
 pub fn run_app(cfg: GameConfig) {
+	let width = cfg.width;
+	let height = cfg.height;
+	let play = play_state_from_config(&cfg);
+	let deck_slots = play.game.rules().bag_size as usize;
+	let rng = StdRng::seed_from_u64(cfg.seed ^ 0xA5A5_A5A5);
+	let screen = if cfg.show_shell && cfg.screenshot.is_none() {
+		AppScreen::Shell
+	} else {
+		AppScreen::Match
+	};
+	let mut resolution = WindowResolution::new(width, height);
+	resolution.set_scale_factor_override(Some(1.0));
+	let mut app = App::new();
+	app.add_plugins(
+		DefaultPlugins.set(WindowPlugin {
+			primary_window: Some(primary_window(&cfg, resolution)),
+			..default()
+		}),
+	)
+	.insert_resource(ClearColor(Color::srgb(
+		visual::BG_RGB[0],
+		visual::BG_RGB[1],
+		visual::BG_RGB[2],
+	)))
+	.insert_resource(ConfigRes(cfg))
+	.insert_resource(play)
+	.insert_resource(RngRes(rng))
+	.insert_resource(BotClock { wait: 0.4 })
+	.insert_resource(UiLayout(ViewLayout::from_window_with_deck(
+		width as f32,
+		height as f32,
+		deck_slots,
+	)))
+	.insert_resource(ShotState { frames: 0, requested_at: 0, requested: false, finished: false })
+	.insert_state(screen)
+	.add_plugins(PlatformPlugin)
+	.add_plugins(shell::plugin)
+	.add_systems(Startup, setup_camera)
+	.add_systems(OnEnter(AppScreen::Match), spawn_match_hud)
+	.add_systems(OnExit(AppScreen::Match), despawn_match_hud)
+	.add_systems(
+		Update,
+		(
+			sync_layout,
+			handle_click,
+			bot_turn,
+			tick_clock,
+			refresh_view,
+			update_hud,
+			screenshot_capture,
+		)
+			.run_if(in_state(AppScreen::Match)),
+	)
+	.add_systems(Update, (handle_start_match, handle_leave_match, handle_game_deep_link));
+	app.run();
+}
+
+fn primary_window(cfg: &GameConfig, resolution: WindowResolution) -> Window {
+	Window {
+		title: "Apa Kan".into(),
+		resolution,
+		canvas: Some("#bevy-canvas".into()),
+		fit_canvas_to_parent: true,
+		prevent_default_event_handling: true,
+		visible: cfg.screenshot.is_none() || !cfg!(target_arch = "wasm32"),
+		..default()
+	}
+}
+
+fn play_state_from_config(cfg: &GameConfig) -> PlayState {
 	let screenshot = cfg.screenshot.clone();
 	let from_start = cfg.screenshot_from_start;
 	let interactive_setup = cfg.bot1.is_human() || cfg.bot2.is_human();
-	let (game, setup_session) = if screenshot.is_some() && !from_start {
+	let (mut game, setup_session) = if screenshot.is_some() && !from_start {
 		(visual::demo_midgame(), None)
 	} else if screenshot.is_some() || !interactive_setup {
 		match Game::start_with(cfg.rules, cfg.seed, cfg.scenario.as_ref(), cfg.setup) {
 			Ok(g) => (g, None),
-			Err(err) => {
-				eprintln!("{err}");
-				std::process::exit(1);
-			}
+			Err(err) => fatal(&err),
 		}
 	} else {
-		match SetupSession::begin(&cfg) {
+		match SetupSession::begin(cfg) {
 			Ok(session) => (Game::empty(cfg.rules), Some(session)),
-			Err(err) => {
-				eprintln!("{err}");
-				std::process::exit(1);
-			}
+			Err(err) => fatal(&err),
 		}
 	};
-	let rng = StdRng::seed_from_u64(cfg.seed ^ 0xA5A5_A5A5);
-	let width = cfg.width;
-	let height = cfg.height;
-	let search = cfg.search;
-	let deck_slots = game.rules().bag_size as usize;
-	let mut resolution = WindowResolution::new(width, height);
-	resolution.set_scale_factor_override(Some(1.0));
-	App::new()
-		.add_plugins(DefaultPlugins.set(WindowPlugin {
-			primary_window: Some(Window { title: "Apa Kan".into(), resolution, ..default() }),
-			..default()
-		}))
-		.insert_resource(ClearColor(Color::srgb(
-			visual::BG_RGB[0],
-			visual::BG_RGB[1],
-			visual::BG_RGB[2],
-		)))
-		.insert_resource(ConfigRes(cfg))
-		.insert_resource(PlayState {
-			game,
-			setup: setup_session,
-			selection: Selection::None,
-			log: if screenshot.is_some() && !from_start {
-				"P1 ADD orange w2 d2 at center".into()
-			} else {
-				String::new()
-			},
-			warning: String::new(),
-			last_removals: String::new(),
-			flash: visual::CaptureFlash::empty(),
-			fingerprint: 0,
-			search1: ai::Searcher::with_config(search),
-			search2: ai::Searcher::with_config(search),
-		})
-		.insert_resource(RngRes(rng))
-		.insert_resource(BotClock { wait: 0.4 })
-		.insert_resource(UiLayout(ViewLayout::from_window_with_deck(
-			width as f32,
-			height as f32,
-			deck_slots,
-		)))
-		.insert_resource(ShotState {
-			frames: 0,
-			requested_at: 0,
-			requested: false,
-			finished: false,
-		})
-		.add_systems(Startup, setup)
-		.add_systems(
-			Update,
-			(sync_layout, handle_click, bot_turn, refresh_view, update_hud, screenshot_capture),
-		)
-		.run();
+	if let Some(tc) = cfg.time_control {
+		if setup_session.is_none() {
+			game.set_time_control(tc);
+		}
+	}
+	PlayState {
+		game,
+		setup: setup_session,
+		selection: Selection::None,
+		log: if screenshot.is_some() && !from_start {
+			"P1 ADD orange w2 d2 at center".into()
+		} else {
+			String::new()
+		},
+		warning: String::new(),
+		last_removals: String::new(),
+		flash: visual::CaptureFlash::empty(),
+		fingerprint: 0,
+		search1: ai::Searcher::with_config(cfg.search),
+		search2: ai::Searcher::with_config(cfg.search),
+		bot_thinking: false,
+		from_shell: cfg.show_shell,
+	}
+}
+
+fn fatal(err: &str) -> ! {
+	#[cfg(target_arch = "wasm32")]
+	{
+		panic!("{err}");
+	}
+	#[cfg(not(target_arch = "wasm32"))]
+	{
+		eprintln!("{err}");
+		std::process::exit(1);
+	}
+}
+
+fn search_slice() -> Duration {
+	if cfg!(target_arch = "wasm32") {
+		Duration::from_millis(8)
+	} else {
+		Duration::from_secs(60 * 60)
+	}
 }
 
 #[derive(Resource)]
-struct ConfigRes(GameConfig);
+pub(crate) struct ConfigRes(pub GameConfig);
 
 impl std::ops::Deref for ConfigRes {
 	type Target = GameConfig;
@@ -127,6 +186,8 @@ struct PlayState {
 	fingerprint: u64,
 	search1: ai::Searcher,
 	search2: ai::Searcher,
+	bot_thinking: bool,
+	from_shell: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -492,8 +553,11 @@ struct WarnHud;
 #[derive(Component)]
 struct HelpHud;
 
-fn setup(mut commands: Commands) {
+fn setup_camera(mut commands: Commands) {
 	commands.spawn(Camera2d::default());
+}
+
+fn spawn_match_hud(mut commands: Commands) {
 	spawn_hud_line(&mut commands, StatusHud, 16.0, 8.0, 17.0, Color::srgb(0.92, 0.93, 0.90));
 	spawn_hud_line(&mut commands, TurnHud, 16.0, 30.0, 15.0, Color::srgb(0.88, 0.90, 0.86));
 	spawn_hud_line(&mut commands, LogHud, 16.0, 52.0, 15.0, Color::srgb(0.78, 0.82, 0.72));
@@ -513,6 +577,25 @@ fn setup(mut commands: Commands) {
 			..default()
 		},
 	));
+}
+
+fn despawn_match_hud(
+	mut commands: Commands,
+	hud: Query<
+		Entity,
+		Or<(
+			With<StatusHud>,
+			With<TurnHud>,
+			With<LogHud>,
+			With<WarnHud>,
+			With<HelpHud>,
+			With<DynamicView>,
+		)>,
+	>,
+) {
+	for e in &hud {
+		commands.entity(e).despawn();
+	}
 }
 
 fn spawn_hud_line<M: Component>(
@@ -568,12 +651,22 @@ fn handle_click(
 	cfg: Res<ConfigRes>,
 	keys: Res<ButtonInput<KeyCode>>,
 	layout: Res<UiLayout>,
+	mut leave: MessageWriter<LeaveMatch>,
 ) {
 	if keys.just_pressed(KeyCode::Escape) {
-		if let Some(session) = play.setup.as_mut() {
-			session.selected.clear();
+		let setup_sel = play.setup.as_ref().is_some_and(|s| !s.selected.is_empty());
+		if play.selection != Selection::None || setup_sel {
+			if let Some(session) = play.setup.as_mut() {
+				session.selected.clear();
+			}
+			play.selection = Selection::None;
+			play.warning.clear();
+			return;
 		}
-		play.selection = Selection::None;
+		if play.from_shell {
+			leave.write(LeaveMatch);
+			return;
+		}
 		play.warning.clear();
 		return;
 	}
@@ -612,7 +705,7 @@ fn handle_click(
 	};
 	if play.setup.is_some() {
 		try_click_setup(&mut play, &layout.0, world_pos);
-		complete_setup_if_ready(&mut play);
+		complete_setup_if_ready(&mut play, cfg.time_control);
 		return;
 	}
 	try_click(&mut play, &layout.0, world_pos);
@@ -664,7 +757,7 @@ fn hit_setup_grid(len: usize, layout: &ViewLayout, pos: Vec2) -> Option<usize> {
 	best
 }
 
-fn complete_setup_if_ready(play: &mut PlayState) {
+fn complete_setup_if_ready(play: &mut PlayState, time_control: Option<crate::clock::TimeControl>) {
 	let Some(session) = play.setup.take() else {
 		return;
 	};
@@ -676,6 +769,9 @@ fn complete_setup_if_ready(play: &mut PlayState) {
 	let seed = session.seed;
 	let rec = session.finish();
 	play.game = Game::from_setup_record(rules, seed, rec);
+	if let Some(tc) = time_control {
+		play.game.set_time_control(tc);
+	}
 	play.log = "Setup complete. 11-tile benches are public.".into();
 	play.warning.clear();
 	play.selection = Selection::None;
@@ -771,6 +867,8 @@ fn apply_action(play: &mut PlayState, action: Action) {
 			}
 			play.selection = Selection::None;
 			play.warning.clear();
+			play.bot_thinking = false;
+			play.game.credit_increment(outcome.player);
 			play.search1.advance(&play.game);
 			play.search2.advance(&play.game);
 		}
@@ -879,7 +977,7 @@ fn bot_turn(
 		return;
 	}
 	if play.setup.is_some() {
-		complete_setup_if_ready(&mut play);
+		complete_setup_if_ready(&mut play, cfg.time_control);
 		let human_waiting = match play.setup.as_ref().map(|s| s.stage) {
 			Some(SetupStage::Opening(p) | SetupStage::Extend(p)) => cfg.actor(p).is_human(),
 			Some(SetupStage::Reveal | SetupStage::Done) => false,
@@ -911,32 +1009,136 @@ fn bot_turn(
 		let prompt = play.setup.as_ref().map(|s| s.prompt()).unwrap_or_default();
 		play.log = prompt;
 		play.warning.clear();
-		complete_setup_if_ready(&mut play);
+		complete_setup_if_ready(&mut play, cfg.time_control);
 		return;
 	}
 	if play.game.status().is_over() {
+		play.bot_thinking = false;
 		return;
 	}
 	let actor = cfg.actor(play.game.current_player());
 	if actor.is_human() {
 		clock.wait = cfg.delay.as_secs_f32();
+		play.bot_thinking = false;
 		return;
 	}
-	clock.wait -= time.delta().as_secs_f32();
-	if clock.wait > 0.0 {
-		return;
+	if !play.bot_thinking {
+		clock.wait -= time.delta().as_secs_f32();
+		if clock.wait > 0.0 {
+			return;
+		}
 	}
-	clock.wait = cfg.delay.as_secs_f32();
+	play.bot_thinking = true;
 	let player = play.game.current_player();
 	let think = cfg.think;
+	let slice = search_slice();
 	let action = {
 		let PlayState { game, search1, search2, .. } = &mut *play;
-		match player {
-			Player::One => search1.choose(game, actor, &mut rng.0, think),
-			Player::Two => search2.choose(game, actor, &mut rng.0, think),
-		}
+		let searcher = match player {
+			Player::One => search1,
+			Player::Two => search2,
+		};
+		searcher.think_slice(game, actor, &mut rng.0, SearchLimit::Time(think), slice)
 	};
+	let Some(action) = action else {
+		return;
+	};
+	play.bot_thinking = false;
+	clock.wait = cfg.delay.as_secs_f32();
 	apply_action(&mut play, action);
+}
+
+fn tick_clock(time: Res<Time>, mut play: ResMut<PlayState>) {
+	if play.setup.is_some() || play.game.clock().is_none() || play.game.status().is_over() {
+		return;
+	}
+	let ms = (time.delta_secs() * 1000.0).round() as u64;
+	if ms == 0 {
+		return;
+	}
+	let player = play.game.current_player();
+	if play.game.apply_elapsed(player, ms).ok() == Some(crate::clock::ClockTick::Flagged) {
+		play.log = "flag-fall".into();
+		play.bot_thinking = false;
+		play.fingerprint = 0;
+	}
+}
+
+fn handle_start_match(
+	mut starts: MessageReader<StartMatch>,
+	mut cfg: ResMut<ConfigRes>,
+	mut play: ResMut<PlayState>,
+	mut rng: ResMut<RngRes>,
+	mut clock: ResMut<BotClock>,
+	mut layout: ResMut<UiLayout>,
+	mut screen: ResMut<NextState<AppScreen>>,
+) {
+	let Some(next) = starts.read().map(|StartMatch { cfg }| cfg.clone()).last() else {
+		return;
+	};
+	cfg.0 = next.clone();
+	*play = play_state_from_config(&next);
+	play.from_shell = true;
+	rng.0 = StdRng::seed_from_u64(next.seed ^ 0xA5A5_A5A5);
+	clock.wait = next.delay.as_secs_f32();
+	layout.0 = ViewLayout::from_window_with_deck(
+		layout.width,
+		layout.height,
+		play.game.rules().bag_size as usize,
+	);
+	screen.set(AppScreen::Match);
+}
+
+fn handle_leave_match(
+	mut leaves: MessageReader<LeaveMatch>,
+	mut screen: ResMut<NextState<AppScreen>>,
+	mut play: ResMut<PlayState>,
+) {
+	if leaves.read().next().is_none() {
+		return;
+	}
+	play.bot_thinking = false;
+	replace_browser_route(&Route::Home);
+	screen.set(AppScreen::Shell);
+}
+
+fn handle_game_deep_link(
+	mut links: MessageReader<IncomingUrl>,
+	mut cfg: ResMut<ConfigRes>,
+	mut play: ResMut<PlayState>,
+	mut rng: ResMut<RngRes>,
+	mut clock: ResMut<BotClock>,
+	mut layout: ResMut<UiLayout>,
+	mut screen: ResMut<NextState<AppScreen>>,
+) {
+	let mut id = None;
+	for IncomingUrl { uri } in links.read() {
+		if let Route::Game { id: game_id } = DeepLink::parse(uri).route {
+			id = Some(game_id);
+		}
+	}
+	let Some(id) = id else {
+		return;
+	};
+	let mut next = cfg.0.clone();
+	next.match_id = Some(id.clone());
+	next.seed = shell::seed_from_match_id(&id);
+	next.setup.deck_seed = Some(next.seed);
+	next.show_shell = false;
+	next.bot1 = crate::ai::Actor::Human;
+	next.bot2 = crate::ai::Actor::Greedy;
+	cfg.0 = next.clone();
+	*play = play_state_from_config(&next);
+	play.from_shell = true;
+	rng.0 = StdRng::seed_from_u64(next.seed ^ 0xA5A5_A5A5);
+	clock.wait = next.delay.as_secs_f32();
+	layout.0 = ViewLayout::from_window_with_deck(
+		layout.width,
+		layout.height,
+		play.game.rules().bag_size as usize,
+	);
+	replace_browser_route(&Route::Game { id });
+	screen.set(AppScreen::Match);
 }
 
 fn refresh_view(
@@ -2216,7 +2418,19 @@ fn update_hud(
 		*t = Text::new(if let Some(session) = play.setup.as_ref() {
 			session.prompt()
 		} else {
-			visual::format_turn_line(g, cfg.actor(g.current_player()).name())
+			let mut line = visual::format_turn_line(g, cfg.actor(g.current_player()).name());
+			if let Some(ms) = g.remaining_ms(g.current_player()) {
+				line.push_str("  clock ");
+				line.push_str(&fmt_clock(ms));
+			}
+			if play.bot_thinking {
+				line.push_str("  thinking");
+			}
+			if let Some(id) = cfg.match_id.as_ref() {
+				line.push_str("  game ");
+				line.push_str(id);
+			}
+			line
 		});
 	}
 	if let Some(mut t) = log.iter_mut().next() {
@@ -2273,6 +2487,11 @@ fn screenshot_capture(
 	commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
 	shot.requested = true;
 	shot.requested_at = shot.frames;
+}
+
+fn fmt_clock(ms: u64) -> String {
+	let secs = ms / 1000;
+	format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 fn view_fingerprint(play: &PlayState, layout: &ViewLayout) -> u64 {

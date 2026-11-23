@@ -1,11 +1,13 @@
 //! Fail-closed CLI parsing. Unknown arguments print usage and exit 1.
 
+#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 use std::env;
 use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 
 use crate::ai::{Actor, SearchConfig};
+use crate::clock::TimeControl;
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	color_drift_diagonal, BlockerBlocks, CaptureMode, EmblemWeights, EndgameRule, HopWeightCmp,
@@ -31,6 +33,12 @@ pub struct GameConfig {
 	pub scenario: Option<Scenario>,
 	pub setup: SetupConfig,
 	pub search: SearchConfig,
+	/// Bevy home / H2H lobby instead of jumping into a match.
+	pub show_shell: bool,
+	/// Optional Fischer clock. `None` is today's unclocked default.
+	pub time_control: Option<TimeControl>,
+	/// Deep-link match id (`/game/<id>` or `apakan://game/<id>`).
+	pub match_id: Option<String>,
 }
 
 impl Default for GameConfig {
@@ -49,17 +57,22 @@ impl Default for GameConfig {
 			scenario: None,
 			setup: SetupConfig::default(),
 			search: SearchConfig::default(),
+			show_shell: cfg!(any(target_arch = "wasm32", target_os = "android", target_os = "ios")),
+			time_control: None,
+			match_id: None,
 		}
 	}
 }
 
 impl GameConfig {
 	pub fn from_args() -> Self {
-		#[cfg(any(target_os = "android", target_os = "ios"))]
+		#[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "ios"))]
 		{
-			return Self::default();
+			let mut cfg = Self::default();
+			cfg.show_shell = true;
+			return cfg;
 		}
-		#[cfg(not(any(target_os = "android", target_os = "ios")))]
+		#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 		{
 			match Self::parse(env::args().skip(1)) {
 				Ok(cfg) => cfg,
@@ -147,6 +160,20 @@ impl GameConfig {
 				}
 				"--height" => {
 					cfg.height = parse_u32("--height", &require_value("--height", it.next())?)?;
+				}
+				"--shell" => {
+					cfg.show_shell = true;
+				}
+				"--no-shell" => {
+					cfg.show_shell = false;
+				}
+				"--time-control" => {
+					let raw = require_value("--time-control", it.next())?;
+					if raw.eq_ignore_ascii_case("off") || raw.eq_ignore_ascii_case("none") {
+						cfg.time_control = None;
+					} else {
+						cfg.time_control = Some(TimeControl::parse(&raw)?);
+					}
 				}
 				"--search-profile" => {
 					cfg.search = SearchConfig::parse_profile(&require_value(
@@ -495,6 +522,8 @@ pub fn usage() -> &'static str {
 	   --turn-limit <n>                           Safety-net draw (default: 200)\n\
 	   --width <px>                               Window width (default: 1280)\n\
 	   --height <px>                              Window height (default: 900)\n\
+	   --shell / --no-shell                       Bevy home + H2H lobby (web/mobile default: on)\n\
+	   --time-control <5+0|2+1|off>               Fischer clock; off is unclocked (default: off)\n\
 	   --screenshot <path>                        Capture a mid-game board PNG and exit\n\
 	   --from-start                               With --screenshot, capture the opening deal\n\
 	   --scenario <name|path>                     Opening deck (default|same|complementary|...)\n\
@@ -556,6 +585,16 @@ mod tests {
 		assert_eq!(cfg.bot2, Actor::Minimax);
 		assert_eq!(cfg.seed, 42);
 		assert_eq!(cfg.search, SearchConfig::enhanced());
+	}
+
+	#[test]
+	fn parses_shell_and_time_control() {
+		let shell = GameConfig::parse(["--shell", "--time-control", "2+1"]).unwrap();
+		assert!(shell.show_shell);
+		assert_eq!(shell.time_control, Some(TimeControl::TwoPlusOne));
+		let off = GameConfig::parse(["--no-shell", "--time-control", "off"]).unwrap();
+		assert!(!off.show_shell);
+		assert_eq!(off.time_control, None);
 	}
 
 	#[test]

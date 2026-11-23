@@ -1,0 +1,686 @@
+//! Bevy home, Head-to-Head lobby, and stub pages. No Dioxus chrome.
+//!
+//! Buttons follow issue #50. Tile/deck options that are not in core yet are
+//! labelled Coming Soon rather than invented.
+
+use bevy::prelude::*;
+
+use crate::ai::Actor;
+use crate::clock::TimeControl;
+use crate::config::GameConfig;
+use crate::platform::{open_url, replace_browser_route, IncomingUrl};
+use crate::route::{DeepLink, Route};
+
+pub const MARKET_URL: &str = "https://symbolic.software/";
+pub const LEGAL_URL: &str = "https://github.com/ramate-io/apa-kan/blob/main/LICENSE.md";
+pub const PAYMENT_URL: &str = "https://symbolic.software/";
+
+const BG: Color = Color::srgb(0.957, 0.933, 0.886); // #f4eee2
+const BG_ALT: Color = Color::srgb(0.929, 0.898, 0.831); // #ede5d4
+const PAPER: Color = Color::srgb(0.984, 0.969, 0.925); // #fbf7ec
+const INK: Color = Color::srgb(0.102, 0.102, 0.102); // #1a1a1a
+const MUTED: Color = Color::srgb(0.365, 0.341, 0.290); // #5d574a
+const PURPLE: Color = Color::srgb(0.431, 0.345, 0.514); // #6e5883
+const GREEN: Color = Color::srgb(0.239, 0.400, 0.322); // #3d6652
+const ORANGE: Color = Color::srgb(0.639, 0.361, 0.227); // #a35c3a
+
+#[derive(States, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum AppScreen {
+	#[default]
+	Shell,
+	Match,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ShellPage {
+	#[default]
+	Home,
+	HeadToHead,
+	Puzzles,
+	Market,
+	Settings,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum OpponentKind {
+	#[default]
+	Local,
+	Bot,
+	Online,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum TileKind {
+	#[default]
+	Iye,
+	Breakwalls,
+	Fences,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum DeckKind {
+	#[default]
+	PartHand,
+	Blind,
+	Randoms,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum RewardKind {
+	#[default]
+	Casual,
+	Divisions,
+	Wagers,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum ClockKind {
+	Unclocked,
+	#[default]
+	FiveMin,
+	TwoPlusOne,
+}
+
+#[derive(Resource, Clone)]
+pub struct ShellState {
+	page: ShellPage,
+	opponent: OpponentKind,
+	bot: Actor,
+	tile: TileKind,
+	deck: DeckKind,
+	reward: RewardKind,
+	clock: ClockKind,
+	notice: String,
+}
+
+impl Default for ShellState {
+	fn default() -> Self {
+		Self {
+			page: ShellPage::Home,
+			opponent: OpponentKind::Bot,
+			bot: Actor::Greedy,
+			tile: TileKind::Iye,
+			deck: DeckKind::PartHand,
+			reward: RewardKind::Casual,
+			clock: ClockKind::FiveMin,
+			notice: String::new(),
+		}
+	}
+}
+
+#[derive(Message, Clone)]
+pub struct StartMatch {
+	pub cfg: GameConfig,
+}
+
+#[derive(Message, Clone, Copy)]
+pub struct LeaveMatch;
+
+#[derive(Component)]
+struct ShellRoot;
+
+#[derive(Component, Clone, Copy)]
+enum ShellBtn {
+	Page(ShellPage),
+	Opponent(OpponentKind),
+	Bot(Actor),
+	Tile(TileKind),
+	Deck(DeckKind),
+	Reward(RewardKind),
+	Clock(ClockKind),
+	Play,
+	OpenMarket,
+	OpenLegal,
+	OpenPay,
+}
+
+pub fn plugin(app: &mut App) {
+	app.init_resource::<ShellState>()
+		.add_message::<StartMatch>()
+		.add_message::<LeaveMatch>()
+		.add_systems(OnEnter(AppScreen::Shell), spawn_root)
+		.add_systems(OnExit(AppScreen::Shell), despawn_root)
+		.add_systems(
+			Update,
+			(rebuild_if_needed, handle_clicks, apply_deep_links).run_if(in_state(AppScreen::Shell)),
+		);
+}
+
+fn spawn_root(mut commands: Commands, shell: Res<ShellState>) {
+	build_page(&mut commands, &shell);
+}
+
+fn despawn_root(mut commands: Commands, roots: Query<Entity, With<ShellRoot>>) {
+	for e in &roots {
+		commands.entity(e).despawn();
+	}
+}
+
+fn rebuild_if_needed(
+	mut commands: Commands,
+	shell: Res<ShellState>,
+	roots: Query<Entity, With<ShellRoot>>,
+	mut fingerprint: Local<u64>,
+) {
+	let fp = shell_fingerprint(&shell);
+	if *fingerprint == fp && roots.iter().next().is_some() {
+		return;
+	}
+	*fingerprint = fp;
+	for e in &roots {
+		commands.entity(e).despawn();
+	}
+	build_page(&mut commands, &shell);
+}
+
+fn shell_fingerprint(shell: &ShellState) -> u64 {
+	use std::hash::{Hash, Hasher};
+	let mut h = std::collections::hash_map::DefaultHasher::new();
+	(shell.page as u8).hash(&mut h);
+	(shell.opponent as u8).hash(&mut h);
+	shell.bot.name().hash(&mut h);
+	(shell.tile as u8).hash(&mut h);
+	(shell.deck as u8).hash(&mut h);
+	(shell.reward as u8).hash(&mut h);
+	(shell.clock as u8).hash(&mut h);
+	shell.notice.hash(&mut h);
+	h.finish()
+}
+
+fn root_node() -> Node {
+	Node {
+		width: Val::Percent(100.0),
+		height: Val::Percent(100.0),
+		flex_direction: FlexDirection::Column,
+		align_items: AlignItems::Center,
+		justify_content: JustifyContent::FlexStart,
+		padding: UiRect::all(Val::Px(28.0)),
+		row_gap: Val::Px(12.0),
+		overflow: Overflow::scroll_y(),
+		..default()
+	}
+}
+
+fn build_page(commands: &mut Commands, shell: &ShellState) {
+	let root = commands.spawn((ShellRoot, root_node(), BackgroundColor(BG))).id();
+	match shell.page {
+		ShellPage::Home => fill_home(commands, root),
+		ShellPage::HeadToHead => fill_h2h(commands, root, shell),
+		ShellPage::Puzzles => fill_stub(
+			commands,
+			root,
+			"Puzzles",
+			"Coming Soon. Chapter rewards are a later grant path; there is no puzzle runtime in this phase.",
+			&[],
+		),
+		ShellPage::Market => fill_stub(
+			commands,
+			root,
+			"Market",
+			"Listings, sleeves, and purchases live outside the match view. Opens a new tab — no in-app browser.",
+			&[
+				(ShellBtn::OpenMarket, "Open market in a new tab"),
+				(ShellBtn::OpenPay, "Open payment in a new tab"),
+			],
+		),
+		ShellPage::Settings => fill_stub(
+			commands,
+			root,
+			"Settings",
+			"Keys, email opt-in, and legal copy land with accounts. The source-available license opens in a new tab.",
+			&[(ShellBtn::OpenLegal, "Open license in a new tab")],
+		),
+	}
+}
+
+fn fill_home(commands: &mut Commands, root: Entity) {
+	let mut children = Vec::new();
+	children.push(spawn_title(commands, "Apa Kan", "A turn-based game of colors and adjacency."));
+	children.push(spawn_full_btn(
+		commands,
+		"Head-to-Head",
+		ShellBtn::Page(ShellPage::HeadToHead),
+		PURPLE,
+		true,
+	));
+	children.push(spawn_full_btn(
+		commands,
+		"Puzzles — Coming Soon",
+		ShellBtn::Page(ShellPage::Puzzles),
+		BG_ALT,
+		false,
+	));
+	children.push(spawn_full_btn(
+		commands,
+		"Market",
+		ShellBtn::Page(ShellPage::Market),
+		GREEN,
+		true,
+	));
+	children.push(spawn_full_btn(
+		commands,
+		"Settings",
+		ShellBtn::Page(ShellPage::Settings),
+		ORANGE,
+		true,
+	));
+	commands.entity(root).add_children(&children);
+}
+
+fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState) {
+	let mut children = Vec::new();
+	children.push(spawn_title(
+		commands,
+		"Head-to-Head",
+		"Pick axes, then play locally. Online and economy options stay visible but flagged Coming Soon.",
+	));
+	push_axis(
+		commands,
+		&mut children,
+		"Tile option",
+		&[
+			("Iye", ShellBtn::Tile(TileKind::Iye), shell.tile == TileKind::Iye),
+			("Breakwalls — soon", ShellBtn::Tile(TileKind::Breakwalls), false),
+			("Fences — soon", ShellBtn::Tile(TileKind::Fences), false),
+		],
+	);
+	push_axis(
+		commands,
+		&mut children,
+		"Deck option",
+		&[
+			("Part-hand", ShellBtn::Deck(DeckKind::PartHand), shell.deck == DeckKind::PartHand),
+			("Blind — soon", ShellBtn::Deck(DeckKind::Blind), false),
+			("Randoms — soon", ShellBtn::Deck(DeckKind::Randoms), false),
+		],
+	);
+	push_axis(
+		commands,
+		&mut children,
+		"Reward",
+		&[
+			("Casual", ShellBtn::Reward(RewardKind::Casual), shell.reward == RewardKind::Casual),
+			("Divisions — soon", ShellBtn::Reward(RewardKind::Divisions), false),
+			("Wagers — soon", ShellBtn::Reward(RewardKind::Wagers), false),
+		],
+	);
+	push_axis(
+		commands,
+		&mut children,
+		"Opponent",
+		&[
+			(
+				"Local",
+				ShellBtn::Opponent(OpponentKind::Local),
+				shell.opponent == OpponentKind::Local,
+			),
+			("Bot", ShellBtn::Opponent(OpponentKind::Bot), shell.opponent == OpponentKind::Bot),
+			("Online — soon", ShellBtn::Opponent(OpponentKind::Online), false),
+		],
+	);
+	push_axis(
+		commands,
+		&mut children,
+		"Bot",
+		&[
+			("greedy", ShellBtn::Bot(Actor::Greedy), shell.bot == Actor::Greedy),
+			("minimax", ShellBtn::Bot(Actor::Minimax), shell.bot == Actor::Minimax),
+			("mcts", ShellBtn::Bot(Actor::Mcts), shell.bot == Actor::Mcts),
+		],
+	);
+	push_axis(
+		commands,
+		&mut children,
+		"Time control",
+		&[
+			(
+				"Unclocked",
+				ShellBtn::Clock(ClockKind::Unclocked),
+				shell.clock == ClockKind::Unclocked,
+			),
+			("5-minute", ShellBtn::Clock(ClockKind::FiveMin), shell.clock == ClockKind::FiveMin),
+			("2 + 1", ShellBtn::Clock(ClockKind::TwoPlusOne), shell.clock == ClockKind::TwoPlusOne),
+		],
+	);
+	children.push(spawn_notice(commands, &shell.notice));
+	children.push(spawn_full_btn(commands, "Play", ShellBtn::Play, GREEN, true));
+	children.push(spawn_full_btn(commands, "Back", ShellBtn::Page(ShellPage::Home), BG_ALT, false));
+	commands.entity(root).add_children(&children);
+}
+
+fn fill_stub(
+	commands: &mut Commands,
+	root: Entity,
+	title: &str,
+	body: &str,
+	extra: &[(ShellBtn, &str)],
+) {
+	let mut children = Vec::new();
+	children.push(spawn_title(commands, title, body));
+	for (btn, label) in extra {
+		children.push(spawn_full_btn(commands, label, *btn, PURPLE, true));
+	}
+	children.push(spawn_full_btn(commands, "Back", ShellBtn::Page(ShellPage::Home), BG_ALT, false));
+	commands.entity(root).add_children(&children);
+}
+
+fn push_axis(
+	commands: &mut Commands,
+	out: &mut Vec<Entity>,
+	caption: &str,
+	items: &[(&str, ShellBtn, bool)],
+) {
+	out.push(spawn_caption(commands, caption));
+	out.push(
+		commands
+			.spawn(Node {
+				width: Val::Percent(100.0),
+				max_width: Val::Px(640.0),
+				flex_direction: FlexDirection::Row,
+				column_gap: Val::Px(8.0),
+				flex_wrap: FlexWrap::Wrap,
+				..default()
+			})
+			.with_children(|parent| {
+				for (label, action, on) in items {
+					spawn_chip(parent, label, *action, *on);
+				}
+			})
+			.id(),
+	);
+}
+
+fn spawn_title(commands: &mut Commands, title: &str, sub: &str) -> Entity {
+	commands
+		.spawn(Node {
+			width: Val::Percent(100.0),
+			max_width: Val::Px(640.0),
+			flex_direction: FlexDirection::Column,
+			row_gap: Val::Px(6.0),
+			margin: UiRect::bottom(Val::Px(8.0)),
+			..default()
+		})
+		.with_children(|parent| {
+			parent.spawn((
+				Text::new(title.to_string()),
+				TextFont { font_size: FontSize::Px(42.0), ..default() },
+				TextColor(INK),
+			));
+			parent.spawn((
+				Text::new(sub.to_string()),
+				TextFont { font_size: FontSize::Px(16.0), ..default() },
+				TextColor(MUTED),
+			));
+		})
+		.id()
+}
+
+fn spawn_caption(commands: &mut Commands, text: &str) -> Entity {
+	commands
+		.spawn((
+			Text::new(text.to_string()),
+			TextFont { font_size: FontSize::Px(14.0), ..default() },
+			TextColor(MUTED),
+			Node {
+				width: Val::Percent(100.0),
+				max_width: Val::Px(640.0),
+				margin: UiRect::top(Val::Px(8.0)),
+				..default()
+			},
+		))
+		.id()
+}
+
+fn spawn_notice(commands: &mut Commands, text: &str) -> Entity {
+	commands
+		.spawn((
+			Text::new(text.to_string()),
+			TextFont { font_size: FontSize::Px(15.0), ..default() },
+			TextColor(if text.is_empty() { MUTED } else { ORANGE }),
+			Node {
+				width: Val::Percent(100.0),
+				max_width: Val::Px(640.0),
+				min_height: Val::Px(22.0),
+				..default()
+			},
+		))
+		.id()
+}
+
+fn spawn_full_btn(
+	commands: &mut Commands,
+	label: &str,
+	action: ShellBtn,
+	fill: Color,
+	light_text: bool,
+) -> Entity {
+	let color = if light_text { PAPER } else { INK };
+	commands
+		.spawn((
+			Button,
+			action,
+			Node {
+				width: Val::Percent(100.0),
+				max_width: Val::Px(640.0),
+				min_height: Val::Px(52.0),
+				padding: UiRect::axes(Val::Px(16.0), Val::Px(12.0)),
+				justify_content: JustifyContent::Center,
+				align_items: AlignItems::Center,
+				border_radius: BorderRadius::all(Val::Px(4.0)),
+				..default()
+			},
+			BackgroundColor(fill),
+		))
+		.with_children(|parent| {
+			parent.spawn((
+				Text::new(label.to_string()),
+				TextFont { font_size: FontSize::Px(20.0), ..default() },
+				TextColor(color),
+			));
+		})
+		.id()
+}
+
+fn spawn_chip(parent: &mut ChildSpawnerCommands, label: &str, action: ShellBtn, on: bool) {
+	parent
+		.spawn((
+			Button,
+			action,
+			Node {
+				flex_grow: 1.0,
+				min_height: Val::Px(40.0),
+				padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)),
+				justify_content: JustifyContent::Center,
+				align_items: AlignItems::Center,
+				border_radius: BorderRadius::all(Val::Px(4.0)),
+				..default()
+			},
+			BackgroundColor(if on { PURPLE } else { BG_ALT }),
+		))
+		.with_children(|parent| {
+			parent.spawn((
+				Text::new(label.to_string()),
+				TextFont { font_size: FontSize::Px(15.0), ..default() },
+				TextColor(if on { PAPER } else { INK }),
+			));
+		});
+}
+
+fn handle_clicks(
+	mut shell: ResMut<ShellState>,
+	mut start: MessageWriter<StartMatch>,
+	base: Res<crate::ui::ConfigRes>,
+	mut interaction: Query<(&Interaction, &ShellBtn), Changed<Interaction>>,
+) {
+	for (interaction, btn) in &mut interaction {
+		if *interaction != Interaction::Pressed {
+			continue;
+		}
+		match *btn {
+			ShellBtn::Page(page) => {
+				shell.page = page;
+				shell.notice.clear();
+				replace_browser_route(&page_route(page));
+			}
+			ShellBtn::Opponent(OpponentKind::Online) => {
+				shell.notice = "Online matchmaking is not in this web bring-up.".into();
+			}
+			ShellBtn::Opponent(kind) => {
+				shell.opponent = kind;
+				shell.notice.clear();
+			}
+			ShellBtn::Bot(actor) => {
+				shell.bot = actor;
+				if shell.opponent != OpponentKind::Bot {
+					shell.opponent = OpponentKind::Bot;
+				}
+				shell.notice.clear();
+			}
+			ShellBtn::Tile(TileKind::Iye) => {
+				shell.tile = TileKind::Iye;
+				shell.notice.clear();
+			}
+			ShellBtn::Tile(_) => {
+				shell.notice =
+					"Breakwalls and Fences are core transforms in a later milestone.".into();
+			}
+			ShellBtn::Deck(DeckKind::PartHand) => {
+				shell.deck = DeckKind::PartHand;
+				shell.notice.clear();
+			}
+			ShellBtn::Deck(_) => {
+				shell.notice = "Blind and Randoms deck procedures are not in this build.".into();
+			}
+			ShellBtn::Reward(RewardKind::Casual) => {
+				shell.reward = RewardKind::Casual;
+				shell.notice.clear();
+			}
+			ShellBtn::Reward(_) => {
+				shell.notice = "Divisions and Wagers wait on ratings and the market.".into();
+			}
+			ShellBtn::Clock(kind) => {
+				shell.clock = kind;
+				shell.notice.clear();
+			}
+			ShellBtn::Play => match start_cfg(&shell, &base.0) {
+				Ok(cfg) => {
+					replace_browser_route(&Route::HeadToHead);
+					start.write(StartMatch { cfg });
+				}
+				Err(msg) => shell.notice = msg,
+			},
+			ShellBtn::OpenMarket => {
+				let _ = open_url(MARKET_URL);
+			}
+			ShellBtn::OpenLegal => {
+				let _ = open_url(LEGAL_URL);
+			}
+			ShellBtn::OpenPay => {
+				let _ = open_url(PAYMENT_URL);
+			}
+		}
+	}
+}
+
+fn page_route(page: ShellPage) -> Route {
+	match page {
+		ShellPage::Home => Route::Home,
+		ShellPage::HeadToHead => Route::HeadToHead,
+		ShellPage::Puzzles => Route::Puzzles,
+		ShellPage::Market => Route::Market,
+		ShellPage::Settings => Route::Settings,
+	}
+}
+
+fn start_cfg(shell: &ShellState, base: &GameConfig) -> Result<GameConfig, String> {
+	if shell.tile != TileKind::Iye {
+		return Err("Only Iye is playable in this build.".into());
+	}
+	if shell.deck != DeckKind::PartHand {
+		return Err("Only Part-hand is playable in this build.".into());
+	}
+	if shell.opponent == OpponentKind::Online {
+		return Err("Online matchmaking is not in this web bring-up.".into());
+	}
+	if shell.reward != RewardKind::Casual {
+		return Err("Rated rewards are not in this web bring-up.".into());
+	}
+	let mut cfg = base.clone();
+	cfg.show_shell = false;
+	cfg.bot1 = Actor::Human;
+	cfg.bot2 = match shell.opponent {
+		OpponentKind::Local => Actor::Human,
+		OpponentKind::Bot => shell.bot,
+		OpponentKind::Online => Actor::Human,
+	};
+	cfg.time_control = match shell.clock {
+		ClockKind::Unclocked => None,
+		ClockKind::FiveMin => Some(TimeControl::FiveMin),
+		ClockKind::TwoPlusOne => Some(TimeControl::TwoPlusOne),
+	};
+	Ok(cfg)
+}
+
+pub fn apply_link_to_shell(shell: &mut ShellState, link: &DeepLink) {
+	match &link.route {
+		Route::Home => shell.page = ShellPage::Home,
+		Route::HeadToHead => {
+			shell.page = ShellPage::HeadToHead;
+			if let Some(v) = link.query.get("opponent") {
+				match v.as_str() {
+					"local" => shell.opponent = OpponentKind::Local,
+					"bot" => shell.opponent = OpponentKind::Bot,
+					"online" => {
+						shell.notice = "Online matchmaking is not in this web bring-up.".into();
+					}
+					_ => {}
+				}
+			}
+			if let Some(v) = link.query.get("bot") {
+				if let Ok(actor) = Actor::parse(v) {
+					if !actor.is_human() {
+						shell.bot = actor;
+						shell.opponent = OpponentKind::Bot;
+					}
+				}
+			}
+			if let Some(v) = link.query.get("time") {
+				match TimeControl::parse(v) {
+					Ok(TimeControl::FiveMin) => shell.clock = ClockKind::FiveMin,
+					Ok(TimeControl::TwoPlusOne) => shell.clock = ClockKind::TwoPlusOne,
+					Err(_) if v.eq_ignore_ascii_case("off") => {
+						shell.clock = ClockKind::Unclocked;
+					}
+					Err(_) => {}
+				}
+			}
+		}
+		Route::Puzzles => shell.page = ShellPage::Puzzles,
+		Route::Market => shell.page = ShellPage::Market,
+		Route::Settings => shell.page = ShellPage::Settings,
+		Route::Game { .. } => {}
+	}
+}
+
+fn apply_deep_links(mut shell: ResMut<ShellState>, mut links: MessageReader<IncomingUrl>) {
+	for IncomingUrl { uri } in links.read() {
+		let link = DeepLink::parse(uri);
+		if matches!(link.route, Route::Game { .. }) {
+			continue;
+		}
+		apply_link_to_shell(&mut shell, &link);
+	}
+}
+
+/// Seed a local match from `/game/<id>` until the server hosts real ids.
+pub fn seed_from_match_id(id: &str) -> u64 {
+	use std::hash::{Hash, Hasher};
+	let mut h = std::collections::hash_map::DefaultHasher::new();
+	id.hash(&mut h);
+	let n = h.finish();
+	if n == 0 {
+		1
+	} else {
+		n
+	}
+}

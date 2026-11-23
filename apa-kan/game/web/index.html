@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="theme-color" content="#f4eee2">
+	<title>Apa Kan</title>
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Expletus+Sans:wght@500;600;700&display=swap" rel="stylesheet">
+	<style>
+		:root {
+			--bg: #f4eee2;
+			--bg-alt: #ede5d4;
+			--paper: #fbf7ec;
+			--ink: #1a1a1a;
+			--muted: #5d574a;
+			--purple: #6e5883;
+			--green: #3d6652;
+			--orange: #a35c3a;
+			--yellow: #ecc368;
+			--red: #a03d33;
+			--radius: 4px;
+			--display: "Expletus Sans", "Iowan Old Style", Charter, Georgia, serif;
+			--body: "Iowan Old Style", Charter, Georgia, serif;
+			--mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace;
+		}
+		@media (prefers-color-scheme: dark) {
+			:root {
+				--bg: #1b1a18;
+				--bg-alt: #24221f;
+				--paper: #23211e;
+				--ink: #eee8dc;
+				--muted: #b7b0a2;
+				--purple: #c2a8df;
+				--green: #a3c9ae;
+				--orange: #e9ab88;
+			}
+		}
+		html, body {
+			margin: 0;
+			height: 100%;
+			background: var(--bg);
+			color: var(--ink);
+			font-family: var(--body);
+		}
+		#stage {
+			position: relative;
+			width: 100%;
+			height: 100%;
+			overflow: hidden;
+			background: var(--bg);
+		}
+		#bevy-canvas {
+			display: block;
+			width: 100%;
+			height: 100%;
+			outline: none;
+			background: var(--bg);
+			touch-action: none;
+		}
+		#status {
+			position: absolute;
+			inset: 0;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			gap: 12px;
+			pointer-events: none;
+			background: var(--bg);
+		}
+		#status h1 {
+			font-family: var(--display);
+			font-weight: 600;
+			font-size: 2.4rem;
+			margin: 0;
+			letter-spacing: 0.02em;
+		}
+		#status p {
+			margin: 0;
+			color: var(--muted);
+			font-size: 1.05rem;
+		}
+		#status.hidden { display: none; }
+		#status.error { pointer-events: auto; }
+		#status .code {
+			font-family: var(--mono);
+			font-size: 0.85rem;
+			color: var(--orange);
+		}
+		noscript {
+			position: absolute;
+			inset: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			background: var(--bg);
+			color: var(--muted);
+		}
+	</style>
+</head>
+<body>
+	<div id="stage">
+		<canvas id="bevy-canvas" tabindex="0" oncontextmenu="return false;"></canvas>
+		<div id="status">
+			<h1>Apa Kan</h1>
+			<p>Loading the board…</p>
+		</div>
+		<noscript>Apa Kan needs JavaScript to run the Bevy client.</noscript>
+	</div>
+	<script type="module">
+		const canvas = document.getElementById("bevy-canvas");
+		const status = document.getElementById("status");
+		const focusCanvas = () => canvas.focus({ preventScroll: true });
+		canvas.addEventListener("pointerdown", focusCanvas);
+		window.addEventListener("resize", focusCanvas);
+		window.addEventListener("focus", focusCanvas);
+		focusCanvas();
+
+		try {
+			const { default: init } = await import("./apa-kan.js");
+			await init();
+			status.classList.add("hidden");
+			focusCanvas();
+		} catch (err) {
+			console.error(err);
+			status.classList.add("error");
+			status.innerHTML =
+				"<h1>Apa Kan</h1><p>The WebGL2 client failed to start.</p><p class=\"code\"></p>";
+			status.querySelector(".code").textContent = String(err);
+		}
+	</script>
+</body>
+</html>

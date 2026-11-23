@@ -1,7 +1,7 @@
 //! Iterative-deepening alpha-beta with optional TT, killers/history, LMR, PVS,
 //! and quiescence. Levers live on [`super::SearchConfig`].
 
-use std::time::Instant;
+use web_time::Instant;
 
 use rand::Rng;
 
@@ -86,6 +86,11 @@ pub struct MinimaxState {
 	pub last_move: Option<SearchMove>,
 	pub legacy: bool,
 	pub config: SearchConfig,
+	/// Occupancy hash of an in-progress ID search so a later slice can resume.
+	ponder_hash: u64,
+	ponder_depth: u8,
+	ponder_best: Option<SearchMove>,
+	ponder_nodes: u64,
 }
 
 impl MinimaxState {
@@ -97,12 +102,26 @@ impl MinimaxState {
 			last_move: None,
 			legacy: false,
 			config,
+			ponder_hash: 0,
+			ponder_depth: 0,
+			ponder_best: None,
+			ponder_nodes: 0,
 		}
+	}
+
+	pub fn clear_ponder(&mut self) {
+		self.ponder_hash = 0;
+		self.ponder_depth = 0;
+		self.ponder_best = None;
+		self.ponder_nodes = 0;
 	}
 }
 
 struct Ctx<'a> {
 	stop: Stop,
+	/// Optional extra wall-clock yield so a live client can return to the
+	/// frame loop before `stop` is exhausted (wasm must not freeze the tab).
+	yield_at: Option<Instant>,
 	abort: bool,
 	nodes: u64,
 	tt: &'a mut TranspositionTable,
@@ -117,8 +136,15 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+	fn yield_hit(&self) -> bool {
+		self.yield_at.is_some_and(|t| Instant::now() >= t)
+	}
+
 	fn over_budget(&self) -> bool {
 		if self.abort {
+			return true;
+		}
+		if self.yield_hit() {
 			return true;
 		}
 		match self.stop {
@@ -136,7 +162,8 @@ impl Ctx<'_> {
 			Stop::Time(deadline) => self.nodes % 64 == 0 && Instant::now() >= deadline,
 			Stop::Nodes(max) => self.nodes >= max,
 		};
-		if hit {
+		let yielded = !hit && self.nodes % 64 == 0 && self.yield_hit();
+		if hit || yielded {
 			self.abort = true;
 		}
 		self.abort
@@ -149,6 +176,17 @@ pub fn search(
 	played: &[u64],
 	rng: &mut impl Rng,
 	limit: SearchLimit,
+) -> (Action, SearchStats) {
+	search_with_yield(state, game, played, rng, limit, None)
+}
+
+pub fn search_with_yield(
+	state: &mut MinimaxState,
+	game: &Game,
+	played: &[u64],
+	rng: &mut impl Rng,
+	limit: SearchLimit,
+	yield_at: Option<Instant>,
 ) -> (Action, SearchStats) {
 	let legal = legal_search_moves(game);
 	let fallback = legal
@@ -164,10 +202,13 @@ pub fn search(
 		SearchLimit::Time(d) => Stop::Time(Instant::now() + d),
 		SearchLimit::Work { nodes, .. } => Stop::Nodes(nodes),
 	};
+	let hash = zobrist::occupancy_hash(game);
+	let resume = state.ponder_hash == hash && state.ponder_best.is_some();
 	let mut ctx = Ctx {
 		stop,
+		yield_at,
 		abort: false,
-		nodes: 0,
+		nodes: if resume { state.ponder_nodes } else { 0 },
 		tt: &mut state.tt,
 		killers: &mut state.killers,
 		history: &mut state.history,
@@ -180,10 +221,14 @@ pub fn search(
 	};
 
 	let me = game.current_player();
-	let mut best_move = legal[rng.gen_range(0..legal.len())];
-	let mut completed_depth = 0u8;
+	let mut best_move = match state.ponder_best {
+		Some(mv) if resume => mv,
+		_ => legal[rng.gen_range(0..legal.len())],
+	};
+	let mut completed_depth = if resume { state.ponder_depth } else { 0u8 };
+	let start_depth = completed_depth.saturating_add(1).max(1);
 
-	for depth in 1..=16u8 {
+	for depth in start_depth..=16u8 {
 		if ctx.over_budget() {
 			break;
 		}
@@ -241,6 +286,11 @@ pub fn search(
 		}
 	}
 
+	state.ponder_hash = hash;
+	state.ponder_depth = completed_depth;
+	state.ponder_best = Some(best_move);
+	state.ponder_nodes = ctx.nodes;
+
 	let action = best_move.to_action(game).unwrap_or(fallback);
 	(action, SearchStats { depth: completed_depth, nodes: ctx.nodes, ..SearchStats::default() })
 }
@@ -257,6 +307,7 @@ fn value_at_depth(game: &Game, depth: u8, played: &[u64], config: SearchConfig) 
 	let mut state = MinimaxState::with_config(config);
 	let mut ctx = Ctx {
 		stop: Stop::Nodes(u64::MAX / 4),
+		yield_at: None,
 		abort: false,
 		nodes: 0,
 		tt: &mut state.tt,
