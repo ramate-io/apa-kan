@@ -97,6 +97,7 @@ Do not bake 400. Weight 80 is only barely less stalled (1/4 target wins). Tune f
 | majority set=center | mm-mm | 80 | 34-7-39 | 0.425 [0.323, 0.534] | 123.0 / 111.5 | 8.25 | 4.05 / 4.20 (abs 2.27) | **37 target / 26 TL wins / 7 draws** | 33/73 (45.2%) |
 | majority target=4 | mm-mm | 80 | 27-14-39 | 0.338 [0.243, 0.446] | **102.1 / 79.0** | 6.05 | 2.83 / 3.23 (abs 1.30) | **54 target / 8 TL wins / 14 draws** | 31/66 (47.0%) |
 | majority target=8 | mm-mm | 80 | 34-7-39 | 0.425 [0.323, 0.534] | 128.7 / 117.5 | 10.44 | 5.10 / 5.34 (abs 2.86) | **26 target / 28 TL wins / 7 draws / 18 lockout** | 39/73 (53.4%) |
+| majority target=8 | mm-mm | **150 (seed 300)** | 65-16-69 | 0.433 [0.357, 0.513] | **140.4 / 200** | 10.12 | 4.92 / 5.20 (abs 2.55) | **46 target / 63 TL wins / 16 draws / 23 lockout / 2 elim** | 72/134 (53.7%) |
 | majority + eval=40 | mm-mm | 40 | 15-5-20 | 0.375 [0.242, 0.530] | 120.7 / 115.0 | 8.93 | 4.33 / 4.60 (abs 2.08) | 24 target / 9 TL wins / 5 draws | 19/35 (54.3%) |
 | majority + eval=80 | mm-mm | 40 | 16-3-21 | 0.400 [0.263, 0.554] | 123.0 / 129.0 | 8.10 | 3.67 / 4.42 (abs 2.25) | 20 target / 15 TL wins / 3 draws | 19/37 (51.4%) |
 | majority + eval=160 | mm-mm | 40 | 12-5-23 | 0.300 [0.181, 0.454] | 118.4 / 107.0 | 7.92 | 3.70 / 4.22 (abs 2.17) | 22 target / 9 TL wins / 5 draws | 17/35 (48.6%) |
@@ -132,6 +133,8 @@ Majority set=center (80 games, seed 400): dest C **3.1** / I 23.3 / S 49.0 / O 2
 Majority target=4 (80 games, seed 400): dest C 3.8 / I 25.4 / S 51.6 / O 19.2 — same rings as target 6. Finish rate **54/80 = 67.5%** vs 50.7% at 6; median 79 vs 108.5. P1 WR **0.338 vs 0.387** — the opening skirmish (first-capture mean t7) decides more games. Still 22/80 hit the cap. Center held 41/80 (51%). Lowering the target finishes more games by making P1 weaker, not by creating a fight.
 
 Majority target=8 (80 games, seed 400): dest C 3.2 / I 23.8 / S 50.2 / O 22.7. Finish rate **26/80 = 32.5%** — worse than 6. 18 lockouts, 35/80 hit the cap. Inner MOVE capturing 13.1% vs 10.1% at 6 (more contact because you need 8). P1 WR 0.425 vs 0.387 (CIs overlap). Raising the target does not create a center fight; it adds lockouts and turn-limit wins. **Keep target 6.**
+
+Majority target=8 at the full 150 games (seed 300, same seeds as every other 150-game arm) confirms the 80-game cell and is worse: **46/150 = 30.7% target** vs 76/150 at target 6, **median 200** (79/150 hit the cap) vs 108.5, 23 lockouts. Dest C 3.4 / I 25.5 / S 46.0 / O 25.0. Inner MOVE capturing 9.7%. Center held at end 91/150. P1 WR 0.433 (CI overlaps target 6's 0.387). The winner's final lead is held a median **81 turns** (116/128 decided games ≥10 turns), against 36.5 at target 6: a bigger target turns the late game into a long wait behind an early lead, the same snowball Liam dislikes in control. Keep target 6 for majority.
 
 Majority + `eval_capture_score` (n=40 each, seed 600): none of 40/80/160 beat weight 0's 150-game result. Inner MOVE capturing 14.2 / 13.0 / 11.3% vs 10.1% at 0 — not the timid-400 pattern (that was 1.3%). Recapture-within-2 15.4 / 17.9 / 21.1%. Weight 160 is the first that looks worse for P1 (0.300, P2 leads 49% of plies). Wide CIs; do not bake a score weight. Keep `eval_capture_score=0`.
 
