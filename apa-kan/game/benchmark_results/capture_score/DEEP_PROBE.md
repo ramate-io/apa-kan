@@ -9,7 +9,7 @@ Independent check of whether **base** capture-score stalling (4–4 at turn 200,
 3. **Positions**: Up to 4 plies per game at late **tied / ±1** capture scores (focus t≥80 on stalled games). **n=16** positions.
 4. **Search**: Same bot config on replayed states, repetition hash from JSONL. Per position:
    - Minimax at **1× / 16× / 64×** node budgets (132k / 2.11M / 8.45M nodes).
-   - Optional **fan-out** at max mult: re-search with root move shuffle + independent seeds (`--probe-fanout`, off for this smoke run due to runtime).
+   - Optional **fan-out** at max mult (64×): **4** independent 64× searches with root move shuffle + different seeds (`PROBE_FANOUT=4`, `PROBE_FANOUT_OFF=1` to disable).
    - Parallel `--probe-jobs 8`.
 5. **Signals**:
    - `ch16` / `ch64`: best move differs from 1×.
@@ -63,17 +63,51 @@ Bench play: **83% outer** destination rings, 6.75 opp captures/game but still 4�
 | g4 | 83 | 2–3 | `move17->14` → `move17->24` | 4 | 8 | 8.45M |
 | g3 | 160 | 3–4 | `move19->15` → `move12->9` | 4 | 7 | 8.45M |
 
-Full TSV: `deep_probe_results.txt`.
+Full TSV: `deep_probe_base_nofanout.txt`.
 
-## Majority-spawn comparison
+## Randomized fan-out (64×) vs single-seed 64×
 
-_Queued_: `smoke_majority_mm.jsonl.gz` (games finish ~73 turns with score-target ends). Re-run:
+| Arm | `PROBE_FANOUT` | `ch64` rate | `ch16` | `term1` | `fan_uniq_mean` |
+|-----|----------------|------------:|-------:|--------:|----------------:|
+| Single 64× seed | **0** (`PROBE_FANOUT_OFF=1`) | **50%** | **37.5%** | **0** | **1.0** (trivial) |
+| **4× shuffled 64×** | **4** | _running → `deep_probe_base_fanout.txt`_ | — | — | expect **>1** if alternatives tie in eval |
 
-```bash
-./run_deep_probe.sh apa-kan/game/benchmark_results/capture_score/smoke_majority_mm.jsonl.gz
-```
+**Expectation (Liam):** if shallow play misses a hidden tactic, fan-out should surface **multiple disagreeing winners** (`fan64_uniq>1`) or a **different** `m64:` move than the single-seed line. On base stalls, pilot logs already show **identical** `m64` across seeds when fan-out was accidentally off (`fan64_uniq=0`); re-run with `PROBE_FANOUT=4` is in flight.
 
-Expect fewer late tied stalls and more `co>0` / inner traffic when spawn incentive breaks the draw pocket.
+`compare_probe.py` will pair `deep_probe_base_nofanout.txt` vs `deep_probe_base_fanout.txt` when the fan-out job finishes.
+
+## Qualitative play read (smoke JSONL)
+
+Scripts: `qualitative_read.py`, `survey.py` on committed logs.
+
+### Base (`smoke_base_mm`, 4×200 turn_limit)
+
+- **Center sitting:** almost no center **ADDs** (0); **34** MOVEs touch center across 800 actions vs **19** center-dest moves in survey — chips **pass through** center rarely; **2/4** finals leave center occupied.
+- **Counterplay:** high **opp capture** rate (6.8/game) but scores still hug **4–4**; **0** CLAIM actions — tension is **movement-to-overwhelm**, not claim execution at sampled lines. **No** immediate reverse-move pairs (`A→B` then `B→A` back-to-back).
+- **Piece types:** play is **low-weight dot tiles** (`norm2 w2`, `braid2`, `zag1` dominate ADD/MOVE). Heavy w3 braids show on long MOVE grinds, not opening fights.
+
+### Majority spawn (`smoke_majority_mm`, local 4-game smoke)
+
+- **Center / inner:** destination mix shifts **center 7%** (55 center-dest), **inner 21%** (vs base **3% / 25%**). **98** MOVEs touch center — more **mid-board traffic** with spawn tokens spent (`majority_spawn` awards **260**).
+- **Finishing:** **1/4** hits **score target** at **t=34** (6–5 comeback); others still hit turn_limit. Mean turns **158** (pulls down by fast game).
+- **Counterplay:** captures/game **8.2** opp; **2/3** decided games are **comebacks** on capture-score.
+
+### Capture cascade (`smoke_cascade_mm`, local 4-game smoke)
+
+- **Ratchets:** **10** capture-ratchet rewards; **4 SWAP**s appear (sparse-board capture follow-ups).
+- **Passivity:** still **3/4** games hit **turn_limit** or low capture volume (**3.2** opp caps/game) — cascade **helps finish one** game (**t=47** score win) but does not globally prevent stalls.
+
+### Unlimited spawn (`smoke_unlimited_mm`)
+
+_Probe queued after local 4-game smoke completes._
+
+## Majority / cascade / unlimited deep probes
+
+| Log | Probe TSV | Status |
+|-----|-----------|--------|
+| `smoke_majority_mm.jsonl.gz` | `deep_probe_majority_nofanout.txt` (+ fan-out optional) | queued after base fan-out |
+| `smoke_cascade_mm.jsonl.gz` | `deep_probe_cascade_fanout.txt` | queued |
+| `smoke_unlimited_mm.jsonl.gz` | `deep_probe_unlimited_fanout.txt` | waiting on smoke |
 
 ## Verdict
 
