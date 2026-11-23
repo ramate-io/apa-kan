@@ -403,7 +403,11 @@ fn push_opponent_axes(
 				shell.opponent == OpponentKind::Local,
 			),
 			("Bot", ShellBtn::Opponent(OpponentKind::Bot), shell.opponent == OpponentKind::Bot),
-			("Online — soon", ShellBtn::Opponent(OpponentKind::Online), false),
+			(
+				"Online (invite link)",
+				ShellBtn::Opponent(OpponentKind::Online),
+				shell.opponent == OpponentKind::Online,
+			),
 		],
 	);
 	push_axis(
@@ -612,7 +616,12 @@ fn handle_clicks(
 				replace_browser_route(&page_route(page));
 			}
 			ShellBtn::Opponent(OpponentKind::Online) => {
-				shell.notice = "Online matchmaking is not in this web bring-up.".into();
+				if online_available(&host.0) {
+					shell.opponent = OpponentKind::Online;
+					shell.notice.clear();
+				} else {
+					shell.notice = OFFLINE_NOTICE.into();
+				}
 			}
 			ShellBtn::Opponent(kind) => {
 				shell.opponent = kind;
@@ -651,6 +660,16 @@ fn handle_clicks(
 				shell.clock = kind;
 				shell.notice.clear();
 			}
+			ShellBtn::Play
+				if shell.opponent == OpponentKind::Online && shell.reward == RewardKind::Casual =>
+			{
+				if crate::remote::request_create(&host.0) {
+					division.pending = None;
+					shell.notice = "Creating a hosted game… the seat-2 invite link is copied when it is ready.".into();
+				} else {
+					shell.notice = OFFLINE_NOTICE.into();
+				}
+			}
 			ShellBtn::Play => match start_cfg(&shell, &base.0) {
 				Ok((cfg, div)) => {
 					division.pending = div;
@@ -669,6 +688,20 @@ fn handle_clicks(
 				let _ = open_url(&host.0.payment_url);
 			}
 		}
+	}
+}
+
+const OFFLINE_NOTICE: &str =
+	"Online needs a server: set APAKAN_API_URL (or the apakan:api-url meta tag).";
+
+fn online_available(host: &HostConfig) -> bool {
+	host.api_url.is_some() && crate::remote::HTTP_AVAILABLE
+}
+
+impl ShellState {
+	/// Show a message on the lobby (used by server replies).
+	pub fn set_notice(&mut self, msg: impl Into<String>) {
+		self.notice = msg.into();
 	}
 }
 
@@ -699,7 +732,7 @@ fn start_cfg(
 	}
 	let division = (shell.reward == RewardKind::Divisions).then(|| shell.ladder.division());
 	if division.is_none() && shell.opponent == OpponentKind::Online {
-		return Err("Online matchmaking is not in this web bring-up.".into());
+		return Err(OFFLINE_NOTICE.into());
 	}
 	let mut cfg = base.clone();
 	cfg.show_shell = false;

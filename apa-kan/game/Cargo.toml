@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:bevy", "dep:webbrowser"]
+desktop = ["dep:bevy", "dep:webbrowser", "dep:ehttp"]
 # Trivial WebGPU override of the default WebGL2 wasm renderer.
 webgpu = ["desktop", "bevy/webgpu"]
 
@@ -36,6 +36,8 @@ path = "src/bin/analyze.rs"
 
 [dependencies]
 apa-kan-core = { path = "../core" }
+apa-kan-tx = { path = "../tx" }
+apa-kan-view = { path = "../view" }
 bevy = { workspace = true, optional = true }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -44,6 +46,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 webbrowser = { version = "1", optional = true }
+
+# HTTP for server-hosted `/game/<id>`: browser fetch on web, a thread on
+# desktop. Android/iOS keep the offline stub until their wrappers pick a client.
+[target.'cfg(any(target_arch = "wasm32", not(any(target_os = "android", target_os = "ios"))))'.dependencies]
+ehttp = { version = "0.7", optional = true }
 
 # Native-activity is Android-only. Keeping it off wasm/desktop avoids pulling
 # android-activity into the browser bundle.
@@ -56,7 +63,7 @@ getrandom = { version = "0.2", features = ["js"] }
 getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Location", "History", "Document", "Element", "Storage"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "History", "Document", "Element", "Storage", "Navigator", "Clipboard", "console"] }
 console_error_panic_hook = "0.1"
 
 [dev-dependencies]
