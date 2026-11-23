@@ -8,13 +8,22 @@ use bevy::prelude::*;
 use crate::ai::Actor;
 use crate::clock::TimeControl;
 use crate::config::GameConfig;
+use crate::divisions::{Division, Ladder, Outcome};
+use crate::host::HostConfig;
 use crate::platform::{open_url, replace_browser_route, IncomingUrl};
 use crate::route::{DeepLink, Route};
 use crate::ui::{ui_text_font, ui_title_font, UiFont};
 
-pub const MARKET_URL: &str = "https://symbolic.software/";
-pub const LEGAL_URL: &str = "https://github.com/ramate-io/apa-kan/blob/main/LICENSE.md";
-pub const PAYMENT_URL: &str = "https://symbolic.software/";
+/// Resolved deploy host (public URL, API URL, external links). See [`crate::host`].
+#[derive(Resource, Clone, Debug, Default)]
+pub struct HostRes(pub HostConfig);
+
+/// The offline Divisions match in flight, if any. Set by Play, cleared when the
+/// result is recorded or the player leaves.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct DivisionMatch {
+	pub pending: Option<Division>,
+}
 
 const BG: Color = Color::srgb(0.957, 0.933, 0.886); // #f4eee2
 const BG_ALT: Color = Color::srgb(0.929, 0.898, 0.831); // #ede5d4
@@ -92,6 +101,7 @@ pub struct ShellState {
 	reward: RewardKind,
 	clock: ClockKind,
 	notice: String,
+	ladder: Ladder,
 }
 
 impl Default for ShellState {
@@ -105,6 +115,7 @@ impl Default for ShellState {
 			reward: RewardKind::Casual,
 			clock: ClockKind::FiveMin,
 			notice: String::new(),
+			ladder: Ladder::default(),
 		}
 	}
 }
@@ -136,7 +147,9 @@ enum ShellBtn {
 }
 
 pub fn plugin(app: &mut App) {
-	app.init_resource::<ShellState>()
+	app.insert_resource(ShellState { ladder: Ladder::load(), ..ShellState::default() })
+		.init_resource::<HostRes>()
+		.init_resource::<DivisionMatch>()
 		.add_message::<StartMatch>()
 		.add_message::<LeaveMatch>()
 		.add_systems(OnEnter(AppScreen::Shell), spawn_root)
@@ -147,8 +160,13 @@ pub fn plugin(app: &mut App) {
 		);
 }
 
-fn spawn_root(mut commands: Commands, shell: Res<ShellState>, font: Res<UiFont>) {
-	build_page(&mut commands, &shell, &font);
+fn spawn_root(
+	mut commands: Commands,
+	shell: Res<ShellState>,
+	host: Res<HostRes>,
+	font: Res<UiFont>,
+) {
+	build_page(&mut commands, &shell, &host.0, &font);
 }
 
 fn despawn_root(mut commands: Commands, roots: Query<Entity, With<ShellRoot>>) {
@@ -160,6 +178,7 @@ fn despawn_root(mut commands: Commands, roots: Query<Entity, With<ShellRoot>>) {
 fn rebuild_if_needed(
 	mut commands: Commands,
 	shell: Res<ShellState>,
+	host: Res<HostRes>,
 	font: Res<UiFont>,
 	roots: Query<Entity, With<ShellRoot>>,
 	mut fingerprint: Local<u64>,
@@ -172,7 +191,7 @@ fn rebuild_if_needed(
 	for e in &roots {
 		commands.entity(e).despawn();
 	}
-	build_page(&mut commands, &shell, &font);
+	build_page(&mut commands, &shell, &host.0, &font);
 }
 
 fn shell_fingerprint(shell: &ShellState) -> u64 {
@@ -186,6 +205,8 @@ fn shell_fingerprint(shell: &ShellState) -> u64 {
 	(shell.reward as u8).hash(&mut h);
 	(shell.clock as u8).hash(&mut h);
 	shell.notice.hash(&mut h);
+	shell.ladder.elo.hash(&mut h);
+	shell.ladder.games().hash(&mut h);
 	h.finish()
 }
 
@@ -203,7 +224,7 @@ fn root_node() -> Node {
 	}
 }
 
-fn build_page(commands: &mut Commands, shell: &ShellState, font: &UiFont) {
+fn build_page(commands: &mut Commands, shell: &ShellState, host: &HostConfig, font: &UiFont) {
 	let root = commands.spawn((ShellRoot, root_node(), BackgroundColor(BG))).id();
 	match shell.page {
 		ShellPage::Home => fill_home(commands, root, font),
@@ -232,7 +253,11 @@ fn build_page(commands: &mut Commands, shell: &ShellState, font: &UiFont) {
 			root,
 			font,
 			"Settings",
-			"Keys, email opt-in, and legal copy land with accounts. The source-available license opens in a new tab.",
+			&format!(
+				"Keys, email opt-in, and legal copy land with accounts. The source-available license opens in a new tab.\n\n{}\nDivisions: {}",
+				host.summary(),
+				shell.ladder.summary()
+			),
 			&[(ShellBtn::OpenLegal, "Open license in a new tab")],
 		),
 	}
@@ -318,36 +343,20 @@ fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState, font: &Ui
 		"Reward",
 		&[
 			("Casual", ShellBtn::Reward(RewardKind::Casual), shell.reward == RewardKind::Casual),
-			("Divisions — soon", ShellBtn::Reward(RewardKind::Divisions), false),
+			(
+				"Divisions (offline)",
+				ShellBtn::Reward(RewardKind::Divisions),
+				shell.reward == RewardKind::Divisions,
+			),
 			("Wagers — soon", ShellBtn::Reward(RewardKind::Wagers), false),
 		],
 	);
-	push_axis(
-		commands,
-		font,
-		&mut children,
-		"Opponent",
-		&[
-			(
-				"Local",
-				ShellBtn::Opponent(OpponentKind::Local),
-				shell.opponent == OpponentKind::Local,
-			),
-			("Bot", ShellBtn::Opponent(OpponentKind::Bot), shell.opponent == OpponentKind::Bot),
-			("Online — soon", ShellBtn::Opponent(OpponentKind::Online), false),
-		],
-	);
-	push_axis(
-		commands,
-		font,
-		&mut children,
-		"Bot",
-		&[
-			("greedy", ShellBtn::Bot(Actor::Greedy), shell.bot == Actor::Greedy),
-			("minimax", ShellBtn::Bot(Actor::Minimax), shell.bot == Actor::Minimax),
-			("mcts", ShellBtn::Bot(Actor::Mcts), shell.bot == Actor::Mcts),
-		],
-	);
+	if shell.reward == RewardKind::Divisions {
+		children.push(spawn_caption(commands, font, "Division"));
+		children.push(spawn_notice_colored(commands, font, &shell.ladder.summary(), INK));
+	} else {
+		push_opponent_axes(commands, font, &mut children, shell);
+	}
 	push_axis(
 		commands,
 		font,
@@ -374,6 +383,40 @@ fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState, font: &Ui
 		false,
 	));
 	commands.entity(root).add_children(&children);
+}
+
+fn push_opponent_axes(
+	commands: &mut Commands,
+	font: &UiFont,
+	out: &mut Vec<Entity>,
+	shell: &ShellState,
+) {
+	push_axis(
+		commands,
+		font,
+		out,
+		"Opponent",
+		&[
+			(
+				"Local",
+				ShellBtn::Opponent(OpponentKind::Local),
+				shell.opponent == OpponentKind::Local,
+			),
+			("Bot", ShellBtn::Opponent(OpponentKind::Bot), shell.opponent == OpponentKind::Bot),
+			("Online — soon", ShellBtn::Opponent(OpponentKind::Online), false),
+		],
+	);
+	push_axis(
+		commands,
+		font,
+		out,
+		"Bot",
+		&[
+			("greedy", ShellBtn::Bot(Actor::Greedy), shell.bot == Actor::Greedy),
+			("minimax", ShellBtn::Bot(Actor::Minimax), shell.bot == Actor::Minimax),
+			("mcts", ShellBtn::Bot(Actor::Mcts), shell.bot == Actor::Mcts),
+		],
+	);
 }
 
 fn fill_stub(
@@ -463,11 +506,20 @@ fn spawn_caption(commands: &mut Commands, font: &UiFont, text: &str) -> Entity {
 }
 
 fn spawn_notice(commands: &mut Commands, font: &UiFont, text: &str) -> Entity {
+	spawn_notice_colored(commands, font, text, if text.is_empty() { MUTED } else { ORANGE })
+}
+
+fn spawn_notice_colored(
+	commands: &mut Commands,
+	font: &UiFont,
+	text: &str,
+	color: Color,
+) -> Entity {
 	commands
 		.spawn((
 			Text::new(text.to_string()),
 			ui_text_font(font, 15.0),
-			TextColor(if text.is_empty() { MUTED } else { ORANGE }),
+			TextColor(color),
 			Node {
 				width: Val::Percent(100.0),
 				max_width: Val::Px(640.0),
@@ -545,6 +597,8 @@ fn handle_clicks(
 	mut shell: ResMut<ShellState>,
 	mut start: MessageWriter<StartMatch>,
 	base: Res<crate::ui::ConfigRes>,
+	host: Res<HostRes>,
+	mut division: ResMut<DivisionMatch>,
 	mut interaction: Query<(&Interaction, &ShellBtn), Changed<Interaction>>,
 ) {
 	for (interaction, btn) in &mut interaction {
@@ -586,32 +640,33 @@ fn handle_clicks(
 			ShellBtn::Deck(_) => {
 				shell.notice = "Blind and Randoms deck procedures are not in this build.".into();
 			}
-			ShellBtn::Reward(RewardKind::Casual) => {
-				shell.reward = RewardKind::Casual;
+			ShellBtn::Reward(kind @ (RewardKind::Casual | RewardKind::Divisions)) => {
+				shell.reward = kind;
 				shell.notice.clear();
 			}
-			ShellBtn::Reward(_) => {
-				shell.notice = "Divisions and Wagers wait on ratings and the market.".into();
+			ShellBtn::Reward(RewardKind::Wagers) => {
+				shell.notice = "Wagers wait on ratings and the market.".into();
 			}
 			ShellBtn::Clock(kind) => {
 				shell.clock = kind;
 				shell.notice.clear();
 			}
 			ShellBtn::Play => match start_cfg(&shell, &base.0) {
-				Ok(cfg) => {
+				Ok((cfg, div)) => {
+					division.pending = div;
 					replace_browser_route(&Route::HeadToHead);
 					start.write(StartMatch { cfg });
 				}
 				Err(msg) => shell.notice = msg,
 			},
 			ShellBtn::OpenMarket => {
-				let _ = open_url(MARKET_URL);
+				let _ = open_url(&host.0.market_url);
 			}
 			ShellBtn::OpenLegal => {
-				let _ = open_url(LEGAL_URL);
+				let _ = open_url(&host.0.legal_url);
 			}
 			ShellBtn::OpenPay => {
-				let _ = open_url(PAYMENT_URL);
+				let _ = open_url(&host.0.payment_url);
 			}
 		}
 	}
@@ -627,33 +682,68 @@ fn page_route(page: ShellPage) -> Route {
 	}
 }
 
-fn start_cfg(shell: &ShellState, base: &GameConfig) -> Result<GameConfig, String> {
+/// Match config for the lobby selection, plus the division being played when
+/// Reward is Divisions.
+fn start_cfg(
+	shell: &ShellState,
+	base: &GameConfig,
+) -> Result<(GameConfig, Option<Division>), String> {
 	if shell.tile != TileKind::Iye {
 		return Err("Only Iye is playable in this build.".into());
 	}
 	if shell.deck != DeckKind::PartHand {
 		return Err("Only Part-hand is playable in this build.".into());
 	}
-	if shell.opponent == OpponentKind::Online {
-		return Err("Online matchmaking is not in this web bring-up.".into());
+	if shell.reward == RewardKind::Wagers {
+		return Err("Wagers wait on ratings and the market.".into());
 	}
-	if shell.reward != RewardKind::Casual {
-		return Err("Rated rewards are not in this web bring-up.".into());
+	let division = (shell.reward == RewardKind::Divisions).then(|| shell.ladder.division());
+	if division.is_none() && shell.opponent == OpponentKind::Online {
+		return Err("Online matchmaking is not in this web bring-up.".into());
 	}
 	let mut cfg = base.clone();
 	cfg.show_shell = false;
 	cfg.bot1 = Actor::Human;
-	cfg.bot2 = match shell.opponent {
-		OpponentKind::Local => Actor::Human,
-		OpponentKind::Bot => shell.bot,
-		OpponentKind::Online => Actor::Human,
+	cfg.bot2 = match (division, shell.opponent) {
+		(Some(d), _) => d.bot,
+		(None, OpponentKind::Local | OpponentKind::Online) => Actor::Human,
+		(None, OpponentKind::Bot) => shell.bot,
 	};
+	if let Some(d) = division {
+		cfg.think = d.think();
+		cfg.seed = rand::random();
+		cfg.setup.deck_seed = Some(cfg.seed);
+		cfg.match_id = None;
+	}
 	cfg.time_control = match shell.clock {
 		ClockKind::Unclocked => None,
 		ClockKind::FiveMin => Some(TimeControl::FiveMin),
 		ClockKind::TwoPlusOne => Some(TimeControl::TwoPlusOne),
 	};
-	Ok(cfg)
+	Ok((cfg, division))
+}
+
+/// Outcome for the human seat (P1) once the game is over.
+pub fn division_outcome(status: crate::game::GameStatus) -> Option<Outcome> {
+	use crate::game::{GameStatus, Player};
+	match status {
+		GameStatus::InProgress => None,
+		GameStatus::Won { winner: Player::One, .. } => Some(Outcome::Win),
+		GameStatus::Won { .. } => Some(Outcome::Loss),
+		GameStatus::Draw { .. } => Some(Outcome::Draw),
+	}
+}
+
+/// Record a finished Divisions match on the local ladder and save it.
+/// Returns the HUD/lobby message.
+pub fn record_division(shell: &mut ShellState, outcome: Outcome) -> String {
+	let update = shell.ladder.record(outcome);
+	let mut msg = update.message();
+	if let Err(err) = shell.ladder.save() {
+		msg.push_str(&format!(" (not saved: {err})"));
+	}
+	shell.notice = msg.clone();
+	msg
 }
 
 pub fn apply_link_to_shell(shell: &mut ShellState, link: &DeepLink) {
@@ -677,6 +767,13 @@ pub fn apply_link_to_shell(shell: &mut ShellState, link: &DeepLink) {
 						shell.bot = actor;
 						shell.opponent = OpponentKind::Bot;
 					}
+				}
+			}
+			if let Some(v) = link.query.get("reward") {
+				match v.to_ascii_lowercase().as_str() {
+					"casual" => shell.reward = RewardKind::Casual,
+					"divisions" | "division" => shell.reward = RewardKind::Divisions,
+					_ => {}
 				}
 			}
 			if let Some(v) = link.query.get("time") {
@@ -717,5 +814,69 @@ pub fn seed_from_match_id(id: &str) -> u64 {
 		1
 	} else {
 		n
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#![allow(clippy::unwrap_used)]
+
+	use super::*;
+	use crate::game::{EndReason, GameStatus, Player};
+
+	#[test]
+	fn divisions_play_uses_the_division_bot_and_budget() {
+		let shell = ShellState {
+			reward: RewardKind::Divisions,
+			opponent: OpponentKind::Local,
+			..ShellState::default()
+		};
+		let (cfg, div) = start_cfg(&shell, &GameConfig::default()).unwrap();
+		let div = div.unwrap();
+		assert_eq!(div, shell.ladder.division());
+		assert!(cfg.bot1.is_human());
+		assert_eq!(cfg.bot2, div.bot);
+		assert_eq!(cfg.think, div.think());
+	}
+
+	#[test]
+	fn casual_play_has_no_division() {
+		let shell = ShellState::default();
+		let (cfg, div) = start_cfg(&shell, &GameConfig::default()).unwrap();
+		assert!(div.is_none());
+		assert_eq!(cfg.bot2, shell.bot);
+		let wagers = ShellState { reward: RewardKind::Wagers, ..ShellState::default() };
+		assert!(start_cfg(&wagers, &GameConfig::default()).is_err());
+	}
+
+	#[test]
+	fn outcome_is_from_the_human_seat() {
+		assert_eq!(division_outcome(GameStatus::InProgress), None);
+		assert_eq!(
+			division_outcome(GameStatus::Won {
+				winner: Player::One,
+				reason: EndReason::DoublePass
+			}),
+			Some(Outcome::Win)
+		);
+		assert_eq!(
+			division_outcome(GameStatus::Won {
+				winner: Player::Two,
+				reason: EndReason::DoublePass
+			}),
+			Some(Outcome::Loss)
+		);
+		assert_eq!(
+			division_outcome(GameStatus::Draw { reason: EndReason::DoublePass }),
+			Some(Outcome::Draw)
+		);
+	}
+
+	#[test]
+	fn reward_deep_link() {
+		let mut shell = ShellState::default();
+		apply_link_to_shell(&mut shell, &DeepLink::parse("#/h2h?reward=divisions"));
+		assert_eq!(shell.page, ShellPage::HeadToHead);
+		assert_eq!(shell.reward, RewardKind::Divisions);
 	}
 }

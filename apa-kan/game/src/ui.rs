@@ -52,6 +52,7 @@ pub fn run_app(cfg: GameConfig) {
 	let play = play_state_from_config(&cfg);
 	let deck_slots = play.game.rules().bag_size as usize;
 	let rng = StdRng::seed_from_u64(cfg.seed ^ 0xA5A5_A5A5);
+	let host = shell::HostRes(crate::host::HostConfig::detect(cfg.host.clone()));
 	let screen = if cfg.show_shell && cfg.screenshot.is_none() {
 		AppScreen::Shell
 	} else {
@@ -82,6 +83,7 @@ pub fn run_app(cfg: GameConfig) {
 	)))
 	.insert_resource(ShotState { frames: 0, requested_at: 0, requested: false, finished: false })
 	.insert_state(screen)
+	.insert_resource(host)
 	.add_plugins(PlatformPlugin)
 	.add_plugins(shell::plugin)
 	.add_systems(Startup, (load_ui_font, setup_camera))
@@ -97,10 +99,19 @@ pub fn run_app(cfg: GameConfig) {
 			refresh_view,
 			update_hud,
 			screenshot_capture,
+			record_division_result,
 		)
 			.run_if(in_state(AppScreen::Match)),
 	)
-	.add_systems(Update, (handle_start_match, handle_leave_match, handle_game_deep_link));
+	.add_systems(
+		Update,
+		(
+			handle_start_match,
+			handle_leave_match,
+			handle_game_deep_link,
+			clear_division_on_game_link,
+		),
+	);
 	app.run();
 }
 
@@ -1220,14 +1231,48 @@ fn handle_start_match(
 	screen.set(AppScreen::Match);
 }
 
+/// A `/game/<id>` link replaces any Divisions match in flight without rating it.
+fn clear_division_on_game_link(
+	mut links: MessageReader<IncomingUrl>,
+	mut division: ResMut<shell::DivisionMatch>,
+) {
+	if links
+		.read()
+		.any(|IncomingUrl { uri }| matches!(DeepLink::parse(uri).route, Route::Game { .. }))
+	{
+		division.pending = None;
+	}
+}
+
+/// Rate a finished offline Divisions match once, then clear it.
+fn record_division_result(
+	mut play: ResMut<PlayState>,
+	mut division: ResMut<shell::DivisionMatch>,
+	mut lobby: ResMut<shell::ShellState>,
+) {
+	if division.pending.is_none() || play.setup.is_some() {
+		return;
+	}
+	let Some(outcome) = shell::division_outcome(play.game.status()) else {
+		return;
+	};
+	division.pending = None;
+	let msg = shell::record_division(&mut lobby, outcome);
+	play.log = format!("{} {msg}", play.log).trim().to_string();
+	play.fingerprint = 0;
+}
+
 fn handle_leave_match(
 	mut leaves: MessageReader<LeaveMatch>,
 	mut screen: ResMut<NextState<AppScreen>>,
 	mut play: ResMut<PlayState>,
+	mut division: ResMut<shell::DivisionMatch>,
 ) {
 	if leaves.read().next().is_none() {
 		return;
 	}
+	// Leaving an unfinished Divisions match does not rate it.
+	division.pending = None;
 	play.bot_thinking = false;
 	replace_browser_route(&Route::Home);
 	screen.set(AppScreen::Shell);

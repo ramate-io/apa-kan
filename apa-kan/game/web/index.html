@@ -5,6 +5,17 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 	<meta name="theme-color" content="#f4eee2">
 	<title>Apa Kan</title>
+	<!--
+		Deploy host. The domain is not hardcoded: packaging/scripts/configure-web-host.sh
+		fills these from APAKAN_* env vars (build-web.sh, or the Docker entrypoint at start).
+		A leftover %PLACEHOLDER% means "not set": public URL falls back to
+		window.location.origin, and no API URL keeps /game/<id> offline.
+	-->
+	<meta name="apakan:public-url" content="%APAKAN_PUBLIC_URL%">
+	<meta name="apakan:api-url" content="%APAKAN_API_URL%">
+	<meta name="apakan:market-url" content="%APAKAN_MARKET_URL%">
+	<meta name="apakan:payment-url" content="%APAKAN_PAYMENT_URL%">
+	<meta name="apakan:legal-url" content="%APAKAN_LEGAL_URL%">
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 	<link href="https://fonts.googleapis.com/css2?family=Expletus+Sans:wght@500;600;700&display=swap" rel="stylesheet">

@@ -10,6 +10,8 @@ pub use apa_kan_core::{
 
 pub mod characters;
 pub mod config;
+pub mod divisions;
+pub mod host;
 #[cfg(feature = "desktop")]
 pub mod platform;
 pub mod play_log;

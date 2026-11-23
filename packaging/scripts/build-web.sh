@@ -50,7 +50,7 @@ else
 	echo "wasm-opt not found; skipping (install binaryen for smaller bundles)"
 fi
 
-cp apa-kan/game/web/index.html "$OUT/index.html"
+packaging/scripts/configure-web-host.sh apa-kan/game/web/index.html "$OUT/index.html"
 if [ -d apa-kan/game/assets ]; then
 	mkdir -p "$OUT/assets"
 	cp -R apa-kan/game/assets/. "$OUT/assets/"

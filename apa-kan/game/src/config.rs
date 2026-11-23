@@ -43,6 +43,8 @@ pub struct GameConfig {
 	pub games_log: Option<PathBuf>,
 	/// `--no-games-log` / `APA_KAN_GAME_LOG=off`.
 	pub games_log_off: bool,
+	/// `--public-url` / `--api-url` overrides. See [`crate::host`].
+	pub host: crate::host::HostOverrides,
 }
 
 impl Default for GameConfig {
@@ -66,6 +68,7 @@ impl Default for GameConfig {
 			match_id: None,
 			games_log: None,
 			games_log_off: false,
+			host: crate::host::HostOverrides::default(),
 		}
 	}
 }
@@ -210,6 +213,12 @@ impl GameConfig {
 							cfg.games_log = Some(PathBuf::from(v));
 						}
 					}
+				}
+				"--public-url" => {
+					cfg.host.public_url = Some(require_value("--public-url", it.next())?);
+				}
+				"--api-url" => {
+					cfg.host.api_url = Some(require_value("--api-url", it.next())?);
 				}
 				"--no-games-log" => {
 					games_log_cli = true;
@@ -536,6 +545,8 @@ pub fn usage() -> &'static str {
 	   --search-threads <1..32>                   MCTS root-parallel trees (default: 1; 1 keeps benches deterministic)\n\
 	   --games-log <path|off>                     Per-game JSONL (default: $XDG_DATA_HOME/apa-kan/logs or ~/.local/share/apa-kan/logs)\n\
 	   --no-games-log                             Disable play JSONL (on by default; also APA_KAN_GAME_LOG=off)\n\
+	   --public-url <url>                         Public origin for share links (also APAKAN_PUBLIC_URL)\n\
+	   --api-url <url>                            Platform API base for /game/<id> (also APAKAN_API_URL)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
 	   --deck-noise <0..100>                      Resample that percent of a mirrored collection (default: 0)\n\
@@ -680,6 +691,20 @@ mod tests {
 		assert_eq!(cfg.games_log, Some(PathBuf::from("/tmp/play.jsonl")));
 		let cfg = GameConfig::parse(["--games-log", "off"]).unwrap();
 		assert!(cfg.games_log_off);
+	}
+
+	#[test]
+	fn parses_host_flags() {
+		let cfg = GameConfig::parse([
+			"--public-url",
+			"https://play.example",
+			"--api-url",
+			"http://127.0.0.1:8787",
+		])
+		.unwrap();
+		assert_eq!(cfg.host.public_url.as_deref(), Some("https://play.example"));
+		assert_eq!(cfg.host.api_url.as_deref(), Some("http://127.0.0.1:8787"));
+		assert!(GameConfig::parse(["--api-url"]).is_err());
 	}
 
 	#[test]
