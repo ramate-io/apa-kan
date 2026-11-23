@@ -1,165 +1,107 @@
-//! Game host behind `/v1/games`.
+//! Ledger host: admits signed transactions, folds them through the
+//! `apa-kan-tx` state machine, and commits them to an `apa-kan-ledger` store.
 //!
-//! Wraps `apa-kan-view` (records and views) and `apa-kan-tx` (transactions)
-//! with ids, seat secrets, and a [`GameStore`]. Every accepted transaction is
-//! appended to the store (compare-and-swap on its move number) before the
-//! response goes out, so an acknowledged move survives a restart; loading a
-//! game replays its opening record plus the log through core. An in-process
-//! cache of live positions avoids replaying on every request and is
-//! refreshed whenever the store's head moves (another instance, or a peer
-//! relay, committed first). Hosted games are human-vs-human, unclocked,
-//! default rules, with the deal auto-picked by core's default setup.
+//! Every mutation is one [`SignedTx`] posted to `POST /v1/tx`; every read is a
+//! view derived from the folded state. Submission order:
+//!
+//! 1. look up the signer key's status in the account directory, then
+//!    [`admit`] (domain, chain, signature, key authority);
+//! 2. lock the stream's cache slot and refresh it if the store's head moved;
+//! 3. [`GameState::apply`] on a clone (seq, prev link, phase, seat, engine);
+//! 4. append to the ledger (CAS on seq + prev) and await the commit;
+//! 5. only then swap the new state into the cache and acknowledge.
+//!
+//! Loading a stream replays its committed transactions, re-verifying every
+//! signature and link ([`apa_kan_tx::game::replay`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use apa_kan_core::{Game, RuleSet};
-use apa_kan_game_store::{GameStore, GameStoreError, LoadedGame, LoggedAuth, LoggedTx, StoredGame};
+use apa_kan_account::crypto::VerifyingKeyBytes;
+use apa_kan_account::{AccountId, AuthorizedKeyStatus};
+use apa_kan_ledger::{LedgerEntry, LedgerError, LedgerStore};
+use apa_kan_store::{AccountRepo, KeyRepo};
 use apa_kan_tx::{
-	apply_transaction, authorize, SeatSecret, Transaction, TxAuth, TxError, TxReceipt,
+	admit, game_id_of, game_stream, GameState, KeyStatus, SignedTx, TxError, TxResponse, TX_DOMAIN,
 };
-use apa_kan_view::{GameRecord, GameView, Seat};
-use rand::RngCore;
+use apa_kan_view::HostedGameView;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-/// Refuse new games past this many, so an open endpoint can't exhaust memory.
+/// Refuse new game streams past this many.
 pub const DEFAULT_MAX_GAMES: usize = 10_000;
-/// Seat label cap.
-pub const MAX_LABEL_LEN: usize = 40;
+/// Chain id when `APAKAN_CHAIN_ID` is unset.
+pub const DEFAULT_CHAIN_ID: &str = "apa-kan-local";
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct NewGame {
-	/// Deal seed. Random when omitted.
-	#[serde(default)]
-	pub seed: Option<u64>,
-	/// Display names for seats 1 and 2.
-	#[serde(default)]
-	pub labels: Option<[String; 2]>,
+/// Account key lookups for admission (the account crate's indirection).
+#[async_trait]
+pub trait KeyDirectory: Send + Sync {
+	async fn status(
+		&self,
+		account: &AccountId,
+		vk: &VerifyingKeyBytes,
+	) -> Result<KeyStatus, String>;
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SeatInvite {
-	pub seat: Seat,
-	/// Bearer secret for this seat. Shown once; the host keeps only a hash.
-	pub token: String,
-	/// Client route that claims this seat: `/game/<id>?seat=N&token=…`.
-	pub path: String,
-}
+/// No registered accounts: only self-certifying genesis keys pass.
+pub struct GenesisOnly;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CreatedGame {
-	pub game_id: String,
-	pub seats: [SeatInvite; 2],
-	pub view: GameView,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TxResponse {
-	pub receipt: TxReceipt,
-	pub view: GameView,
-}
-
-/// Where hosted games are stored, from the environment:
-/// `APAKAN_GAME_STORE_URL` (`memory`, `sqlite:<path>`, `postgres://…`), else
-/// `APA_KAN_DATABASE_URL` (share the account database), else a SQLite file
-/// in the temp dir.
-pub fn game_store_url_from_env() -> String {
-	let nonempty = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-	nonempty("APAKAN_GAME_STORE_URL")
-		.or_else(|| {
-			// main.rs accepts a bare path for the account DB; mirror that.
-			nonempty("APA_KAN_DATABASE_URL").map(|u| {
-				if u.contains(':') && !u.starts_with('/') {
-					u
-				} else {
-					format!("sqlite:{u}")
-				}
-			})
-		})
-		.unwrap_or_else(|| {
-			format!("sqlite:{}", std::env::temp_dir().join("apa-kan-games.db").display())
-		})
-}
-
-struct HostedGame {
-	record: GameRecord,
-	game: Game,
-	secrets: [SeatSecret; 2],
-	labels: [String; 2],
-}
-
-impl HostedGame {
-	fn view(&self) -> GameView {
-		GameView::new(&self.record, &self.game, [&self.labels[0], &self.labels[1]])
+#[async_trait]
+impl KeyDirectory for GenesisOnly {
+	async fn status(&self, _: &AccountId, _: &VerifyingKeyBytes) -> Result<KeyStatus, String> {
+		Ok(KeyStatus::UnknownAccount)
 	}
+}
 
-	fn seq(&self) -> u64 {
-		self.record.seq()
-	}
+/// Directory backed by the account store's `authorized_keys`.
+pub struct AccountStoreKeys<S>(pub Arc<S>);
 
-	/// Rebuild from storage by replaying the log through core.
-	fn from_loaded(loaded: &LoadedGame) -> Result<Self, TxError> {
-		let record = loaded.record();
-		let game = record.replay().map_err(|e| host_err(format!("stored game replay: {e}")))?;
-		let secret = |i: usize| {
-			SeatSecret::from_hex(&loaded.game.seat_secrets[i])
-				.ok_or_else(|| host_err("stored seat secret is not valid hex"))
-		};
-		Ok(Self {
-			record,
-			game,
-			secrets: [secret(0)?, secret(1)?],
-			labels: loaded.game.labels.clone(),
+#[async_trait]
+impl<S: AccountRepo + KeyRepo + Send + Sync> KeyDirectory for AccountStoreKeys<S> {
+	async fn status(
+		&self,
+		account: &AccountId,
+		vk: &VerifyingKeyBytes,
+	) -> Result<KeyStatus, String> {
+		if self.0.get_account(account).await.map_err(|e| e.to_string())?.is_none() {
+			return Ok(KeyStatus::UnknownAccount);
+		}
+		let keys = self.0.list_keys(account).await.map_err(|e| e.to_string())?;
+		Ok(match keys.iter().find(|k| &k.vk == vk).map(|k| k.status) {
+			Some(AuthorizedKeyStatus::Active) => KeyStatus::Active,
+			Some(_) => KeyStatus::Inactive,
+			None => KeyStatus::NotOnAccount,
 		})
 	}
 }
 
-type Slot = Arc<Mutex<HostedGame>>;
-
-pub struct GameHost {
-	store: Arc<dyn GameStore>,
-	/// Live positions; each game has its own lock so games don't serialize
-	/// on one another. Dropped wholesale past `max_cached` (it's only a cache).
-	cache: Mutex<HashMap<String, Slot>>,
-	max_games: usize,
-	max_cached: usize,
+/// `GET /v1/ledger`: what a client needs to build transactions.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LedgerInfo {
+	pub domain: String,
+	pub chain: String,
+	pub backend: String,
 }
 
-impl Default for GameHost {
-	/// Memory-backed host (tests, `AppState::new`).
-	fn default() -> Self {
-		Self::new(
-			Arc::new(apa_kan_game_store::memory::MemoryGameStore::default()),
-			DEFAULT_MAX_GAMES,
-		)
-	}
-}
-
-fn random_hex(bytes: usize) -> String {
-	let mut buf = vec![0u8; bytes];
-	rand::rngs::OsRng.fill_bytes(&mut buf);
-	hex::encode(buf)
-}
-
-fn clean_label(s: &str, fallback: &str) -> String {
-	let t: String = s.trim().chars().filter(|c| !c.is_control()).take(MAX_LABEL_LEN).collect();
-	if t.is_empty() {
-		fallback.to_string()
-	} else {
-		t
-	}
+/// One committed transaction, as served by `GET /v1/games/{id}/txs`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommittedTx {
+	pub seq: u64,
+	pub hash: String,
+	pub committed_at_unix: i64,
+	pub tx: SignedTx,
 }
 
 fn host_err(reason: impl Into<String>) -> TxError {
 	TxError::Host { reason: reason.into() }
 }
 
-fn store_err(e: GameStoreError) -> TxError {
+fn ledger_err(e: LedgerError) -> TxError {
 	match e {
-		GameStoreError::NotFound => TxError::NotFound,
-		GameStoreError::Conflict { current, got } => TxError::StaleSeq { current, got },
+		LedgerError::NotFound => TxError::NotFound,
+		LedgerError::Conflict { current, got } => TxError::StaleSeq { current, got },
 		other => host_err(other.to_string()),
 	}
 }
@@ -171,147 +113,221 @@ fn now_unix() -> i64 {
 		.unwrap_or(0)
 }
 
-fn logged_auth(auth: &TxAuth) -> LoggedAuth {
-	match auth {
-		TxAuth::SeatToken { .. } => LoggedAuth::SeatToken,
+/// Ledger URL from the environment: `APAKAN_LEDGER_URL` (`memory`,
+/// `sqlite:<path>`, `postgres://…`), else `APA_KAN_DATABASE_URL` (share the
+/// account database), else a SQLite file in the temp dir.
+pub fn ledger_url_from_env() -> String {
+	let nonempty = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+	nonempty("APAKAN_LEDGER_URL")
+		.or_else(|| {
+			// main.rs accepts a bare path for the account DB; mirror that.
+			nonempty("APA_KAN_DATABASE_URL").map(|u| {
+				if u.contains(':') && !u.starts_with('/') {
+					u
+				} else {
+					format!("sqlite:{u}")
+				}
+			})
+		})
+		.unwrap_or_else(|| {
+			format!("sqlite:{}", std::env::temp_dir().join("apa-kan-ledger.db").display())
+		})
+}
+
+/// `APAKAN_CHAIN_ID`, else [`DEFAULT_CHAIN_ID`].
+pub fn chain_id_from_env() -> String {
+	std::env::var("APAKAN_CHAIN_ID")
+		.ok()
+		.map(|s| s.trim().to_string())
+		.filter(|s| !s.is_empty())
+		.unwrap_or_else(|| DEFAULT_CHAIN_ID.into())
+}
+
+type Slot = Arc<Mutex<Option<GameState>>>;
+
+pub struct GameHost {
+	ledger: Arc<dyn LedgerStore>,
+	keys: Arc<dyn KeyDirectory>,
+	chain: String,
+	/// Folded streams; one lock per stream. Cleared past `max_cached`.
+	cache: Mutex<HashMap<String, Slot>>,
+	max_games: usize,
+	max_cached: usize,
+}
+
+impl Default for GameHost {
+	/// Memory ledger, genesis-only keys, default chain (tests).
+	fn default() -> Self {
+		Self::new(
+			Arc::new(apa_kan_ledger::memory::MemoryLedger::default()),
+			Arc::new(GenesisOnly),
+			DEFAULT_CHAIN_ID,
+			DEFAULT_MAX_GAMES,
+		)
 	}
 }
 
 impl GameHost {
-	pub fn new(store: Arc<dyn GameStore>, max_games: usize) -> Self {
-		Self { store, cache: Mutex::new(HashMap::new()), max_games, max_cached: 4_096 }
-	}
-
-	pub fn store_backend(&self) -> &'static str {
-		self.store.backend()
-	}
-
-	pub async fn game_count(&self) -> Result<u64, TxError> {
-		self.store.count().await.map_err(store_err)
-	}
-
-	/// Deal and host a new game. The deal runs on a blocking thread; the game
-	/// is in the store before its invites are returned.
-	pub async fn create(&self, req: NewGame) -> Result<CreatedGame, TxError> {
-		if self.game_count().await? >= self.max_games as u64 {
-			return Err(host_err("game capacity reached"));
+	pub fn new(
+		ledger: Arc<dyn LedgerStore>,
+		keys: Arc<dyn KeyDirectory>,
+		chain: impl Into<String>,
+		max_games: usize,
+	) -> Self {
+		Self {
+			ledger,
+			keys,
+			chain: chain.into(),
+			cache: Mutex::new(HashMap::new()),
+			max_games,
+			max_cached: 4_096,
 		}
-		let seed = req.seed.unwrap_or_else(|| rand::rngs::OsRng.next_u64());
-		let id = random_hex(12);
-		let deal_id = id.clone();
-		let (record, game) = tokio::task::spawn_blocking(move || {
-			let game = Game::new(RuleSet::default(), seed);
-			GameRecord::begin(deal_id, &game).map(|r| (r, game))
-		})
-		.await
-		.map_err(|e| host_err(e.to_string()))?
-		.map_err(host_err)?;
-		let tokens = [random_hex(24), random_hex(24)];
-		let labels = match req.labels {
-			Some([a, b]) => [clean_label(&a, "P1"), clean_label(&b, "P2")],
-			None => ["P1".into(), "P2".into()],
-		};
-		let secrets = [SeatSecret::from_token(&tokens[0]), SeatSecret::from_token(&tokens[1])];
-		let stored = StoredGame {
-			game_id: id.clone(),
-			opening: record.clone(),
-			seat_secrets: [secrets[0].to_hex(), secrets[1].to_hex()],
-			labels: labels.clone(),
-			created_at_unix: now_unix(),
-		};
-		self.store.create(&stored).await.map_err(store_err)?;
-		let hosted = HostedGame { record, game, secrets, labels };
-		let view = hosted.view();
-		self.insert_cache(id.clone(), hosted).await;
-		let invite = |seat: Seat, token: &str| SeatInvite {
-			seat,
-			token: token.to_string(),
-			path: format!("/game/{id}?seat={seat}&token={token}"),
-		};
-		Ok(CreatedGame {
-			game_id: id.clone(),
-			seats: [invite(1, &tokens[0]), invite(2, &tokens[1])],
-			view,
-		})
 	}
 
-	async fn insert_cache(&self, id: String, hosted: HostedGame) -> Slot {
+	/// Same host with a different key directory.
+	pub fn with_keys(mut self, keys: Arc<dyn KeyDirectory>) -> Self {
+		self.keys = keys;
+		self
+	}
+
+	pub fn chain(&self) -> &str {
+		&self.chain
+	}
+
+	pub fn info(&self) -> LedgerInfo {
+		LedgerInfo {
+			domain: TX_DOMAIN.into(),
+			chain: self.chain.clone(),
+			backend: self.ledger.backend().into(),
+		}
+	}
+
+	async fn slot(&self, stream: &str) -> Slot {
 		let mut cache = self.cache.lock().await;
+		if let Some(s) = cache.get(stream) {
+			return s.clone();
+		}
 		if cache.len() >= self.max_cached {
 			cache.clear();
 		}
-		let slot = Arc::new(Mutex::new(hosted));
-		cache.insert(id, slot.clone());
+		let slot: Slot = Arc::new(Mutex::new(None));
+		cache.insert(stream.to_string(), slot.clone());
 		slot
 	}
 
-	async fn load_from_store(&self, id: &str) -> Result<HostedGame, TxError> {
-		let loaded = self.store.load(id).await.map_err(store_err)?;
-		tokio::task::spawn_blocking(move || HostedGame::from_loaded(&loaded))
-			.await
-			.map_err(|e| host_err(e.to_string()))?
+	/// Rebuild a stream from the ledger (`None` if it has no entries).
+	async fn load(&self, stream: &str) -> Result<Option<GameState>, TxError> {
+		let entries = match self.ledger.read(stream, 0).await {
+			Ok(e) => e,
+			Err(LedgerError::NotFound) => return Ok(None),
+			Err(e) => return Err(ledger_err(e)),
+		};
+		let chain = self.chain.clone();
+		tokio::task::spawn_blocking(move || {
+			let txs = entries
+				.iter()
+				.map(|e| serde_json::from_str::<SignedTx>(&e.tx_json))
+				.collect::<Result<Vec<_>, _>>()
+				.map_err(|e| host_err(format!("stored tx does not parse: {e}")))?;
+			apa_kan_tx::game::replay(&chain, &txs)
+				.map_err(|e| host_err(format!("stored stream does not replay: {e}")))
+		})
+		.await
+		.map_err(|e| host_err(e.to_string()))?
 	}
 
-	/// Cached slot for `id`, loading it from the store on a miss.
-	async fn slot(&self, id: &str) -> Result<Slot, TxError> {
-		if let Some(slot) = self.cache.lock().await.get(id).cloned() {
-			return Ok(slot);
-		}
-		let hosted = self.load_from_store(id).await?;
-		Ok(self.insert_cache(id.to_string(), hosted).await)
-	}
-
-	/// Bring a locked cached game up to the store's head if it fell behind.
-	async fn refresh(&self, id: &str, hosted: &mut HostedGame) -> Result<(), TxError> {
-		let head = self.store.head_seq(id).await.map_err(store_err)?;
-		if head != hosted.seq() {
-			*hosted = self.load_from_store(id).await?;
+	/// Bring a locked cached stream up to the ledger head.
+	async fn refresh(&self, stream: &str, state: &mut Option<GameState>) -> Result<(), TxError> {
+		let head = match self.ledger.head(stream).await {
+			Ok(h) => Some(h),
+			Err(LedgerError::NotFound) => None,
+			Err(e) => return Err(ledger_err(e)),
+		};
+		let cached = state.as_ref().map(|s| (s.next_seq, s.head.as_str()));
+		let fresh = head.as_ref().map(|h| (h.next_seq, h.head.as_str()));
+		if cached != fresh {
+			*state = self.load(stream).await?;
 		}
 		Ok(())
 	}
 
-	pub async fn view(&self, id: &str) -> Result<GameView, TxError> {
-		let slot = self.slot(id).await?;
-		let mut hosted = slot.lock().await;
-		self.refresh(id, &mut hosted).await?;
-		Ok(hosted.view())
+	pub async fn view(&self, id: &str) -> Result<HostedGameView, TxError> {
+		let stream = game_stream(id);
+		game_id_of(&stream).ok_or(TxError::NotFound)?;
+		let slot = self.slot(&stream).await;
+		let mut state = slot.lock().await;
+		self.refresh(&stream, &mut state).await?;
+		state.as_ref().map(GameState::view).ok_or(TxError::NotFound)
 	}
 
-	/// Validate `tx` against the engine, commit it to the store, then advance
-	/// the cached position. Nothing is acknowledged before the commit.
-	pub async fn submit(&self, id: &str, tx: &Transaction) -> Result<TxResponse, TxError> {
-		let slot = self.slot(id).await?;
-		let mut hosted = slot.lock().await;
-		self.refresh(id, &mut hosted).await?;
-		authorize(tx, &hosted.secrets)?;
-		let mut record = hosted.record.clone();
-		let mut game = hosted.game.clone();
-		let receipt = apply_transaction(&mut record, &mut game, tx)?;
-		let entry = LoggedTx {
-			game_id: id.to_string(),
-			seq: tx.seq,
-			seat: tx.seat,
-			action: tx.action,
-			auth: logged_auth(&tx.auth),
+	/// Committed transactions of a game from `from` on (resync / audit / p2p).
+	pub async fn log(&self, id: &str, from: u64) -> Result<Vec<CommittedTx>, TxError> {
+		let stream = game_stream(id);
+		game_id_of(&stream).ok_or(TxError::NotFound)?;
+		let entries = self.ledger.read(&stream, from).await.map_err(ledger_err)?;
+		entries
+			.into_iter()
+			.map(|e| {
+				Ok(CommittedTx {
+					seq: e.seq,
+					hash: e.hash,
+					committed_at_unix: e.committed_at_unix,
+					tx: serde_json::from_str(&e.tx_json)
+						.map_err(|err| host_err(format!("stored tx does not parse: {err}")))?,
+				})
+			})
+			.collect()
+	}
+
+	/// Admit, apply, commit, then acknowledge one transaction.
+	pub async fn submit(&self, tx: SignedTx) -> Result<TxResponse, TxError> {
+		let stream = tx.body.stream.clone();
+		game_id_of(&stream).ok_or_else(|| TxError::UnsupportedStream { stream: stream.clone() })?;
+		let key = self.keys.status(&tx.body.signer, &tx.body.signer_vk).await.map_err(host_err)?;
+		let chain = self.chain.clone();
+		// ML-DSA verification is CPU work; keep it off the async workers.
+		let (tx, id) =
+			tokio::task::spawn_blocking(move || admit(&tx, &chain, key).map(|id| (tx, id)))
+				.await
+				.map_err(|e| host_err(e.to_string()))??;
+		if tx.body.seq == 0
+			&& self.ledger.count_streams("game/").await.map_err(ledger_err)?
+				>= self.max_games as u64
+		{
+			return Err(host_err("game capacity reached"));
+		}
+
+		let slot = self.slot(&stream).await;
+		let mut state = slot.lock().await;
+		self.refresh(&stream, &mut state).await?;
+		let (next, receipt) = GameState::apply(state.as_ref(), &tx, &id)?;
+		let entry = LedgerEntry {
+			stream: stream.clone(),
+			seq: tx.body.seq,
+			hash: receipt.tx_id.clone(),
+			prev: tx.body.prev.clone(),
+			signer: tx.body.signer.to_hex(),
+			kind: receipt.kind.clone(),
+			tx_json: serde_json::to_string(&tx).map_err(|e| host_err(e.to_string()))?,
 			committed_at_unix: now_unix(),
 		};
-		match self.store.append(&entry).await {
+		match self.ledger.append(&entry).await {
 			Ok(()) => {}
-			Err(GameStoreError::Conflict { current, got }) => {
-				// Someone else committed this move number first; resync.
-				if let Ok(fresh) = self.load_from_store(id).await {
-					*hosted = fresh;
+			Err(LedgerError::Conflict { current, got }) => {
+				// Another writer committed this seq first; resync.
+				if let Ok(fresh) = self.load(&stream).await {
+					*state = fresh;
 				}
 				return Err(TxError::StaleSeq { current, got });
 			}
-			Err(e) => return Err(store_err(e)),
+			Err(e) => return Err(ledger_err(e)),
 		}
-		hosted.record = record;
-		hosted.game = game;
-		Ok(TxResponse { receipt, view: hosted.view() })
+		let view = next.view();
+		*state = Some(next);
+		Ok(TxResponse { receipt, view })
 	}
 
-	/// Forget cached positions (tests: simulate a restart on the same store).
+	/// Forget cached state (tests: simulate a restart on the same ledger).
 	pub async fn clear_cache(&self) {
 		self.cache.lock().await.clear();
 	}
@@ -322,121 +338,197 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
-	use apa_kan_game_store::memory::MemoryGameStore;
-	use apa_kan_tx::TxAuth;
-	use apa_kan_view::ActionWire;
+	use apa_kan_account::Seed;
+	use apa_kan_ledger::memory::MemoryLedger;
+	use apa_kan_tx::{TxPayload, TxSigner, GENESIS_PREV};
+	use apa_kan_view::{ActionWire, GamePhase};
 
-	fn tx_for(view: &GameView, token: &str, action: ActionWire) -> Transaction {
-		Transaction {
-			game_id: view.id.clone(),
-			seq: view.seq,
-			seat: view.to_move,
-			action,
-			auth: TxAuth::SeatToken { token: token.into() },
-		}
+	fn signer(n: u8) -> TxSigner {
+		TxSigner::from_seed(&Seed::from_bytes([n; 32]))
 	}
 
-	#[tokio::test]
-	async fn create_view_submit_round_trip() {
-		let host = GameHost::default();
-		let created = host
-			.create(NewGame { seed: Some(3), labels: Some(["ana".into(), " ".into()]) })
-			.await
+	fn next_tx(who: &TxSigner, view: &HostedGameView, payload: TxPayload) -> SignedTx {
+		who.sign(
+			&view.ledger.chain,
+			&view.ledger.stream,
+			view.ledger.seq,
+			&view.ledger.head,
+			payload,
+		)
+		.unwrap()
+	}
+
+	async fn start(host: &GameHost, a: &TxSigner, b: &TxSigner, id: &str) -> HostedGameView {
+		let create = a
+			.sign(
+				host.chain(),
+				&game_stream(id),
+				0,
+				GENESIS_PREV,
+				TxPayload::GameCreate { seat: 1, label: "ana".into() },
+			)
 			.unwrap();
-		assert_eq!(created.view.seats[0].label, "ana");
-		assert_eq!(created.view.seats[1].label, "P2");
-		assert!(created.seats[0]
-			.path
-			.starts_with(&format!("/game/{}?seat=1&token=", created.game_id)));
-		let mut view = host.view(&created.game_id).await.unwrap();
-		for _ in 0..6 {
-			let token = &created.seats[usize::from(view.to_move - 1)].token;
-			let res = host.submit(&view.id, &tx_for(&view, token, view.legal[0])).await.unwrap();
-			assert_eq!(res.view.seq, view.seq + 1);
-			view = res.view;
+		let v = host.submit(create).await.unwrap().view;
+		assert_eq!(v.phase, GamePhase::Open);
+		host.submit(next_tx(b, &v, TxPayload::GameJoin { label: "bo".into() }))
+			.await
+			.unwrap()
+			.view
+	}
+
+	fn first_move(view: &HostedGameView) -> ActionWire {
+		view.game.as_ref().unwrap().legal[0]
+	}
+
+	fn mover<'a>(view: &HostedGameView, a: &'a TxSigner, b: &'a TxSigner) -> &'a TxSigner {
+		let to_move = view.game.as_ref().unwrap().to_move;
+		if view.seat_of_account(&a.account().to_hex()) == Some(to_move) {
+			a
+		} else {
+			b
 		}
-		let replayed = view.replay().unwrap();
-		assert_eq!(replayed.turn_count(), view.turn);
 	}
 
 	#[tokio::test]
-	async fn wrong_token_and_unknown_game() {
+	async fn create_join_play_through_one_endpoint() {
 		let host = GameHost::default();
-		let created = host.create(NewGame { seed: Some(4), labels: None }).await.unwrap();
-		let view = created.view.clone();
-		let other_seat_token = &created.seats[1].token;
-		assert_eq!(
-			host.submit(&view.id, &tx_for(&view, other_seat_token, view.legal[0]))
-				.await
-				.unwrap_err(),
-			TxError::Unauthorized
-		);
-		assert_eq!(host.view("missing").await.unwrap_err(), TxError::NotFound);
-		assert_eq!(host.view(&view.id).await.unwrap().seq, 0);
-	}
-
-	#[tokio::test]
-	async fn capacity_is_enforced() {
-		let host = GameHost::new(Arc::new(MemoryGameStore::default()), 1);
-		host.create(NewGame { seed: Some(1), labels: None }).await.unwrap();
-		assert!(matches!(host.create(NewGame::default()).await, Err(TxError::Host { .. })));
-	}
-
-	/// Acknowledged moves survive dropping every cached position, and a second
-	/// host on the same store sees them and rejects a replayed move number.
-	#[tokio::test]
-	async fn moves_are_durable_and_shared_through_the_store() {
-		let store: Arc<dyn GameStore> = Arc::new(MemoryGameStore::default());
-		let a = GameHost::new(store.clone(), 10);
-		let b = GameHost::new(store.clone(), 10);
-		let created = a.create(NewGame { seed: Some(9), labels: None }).await.unwrap();
-		let mut view = created.view.clone();
+		let (a, b) = (signer(1), signer(2));
+		let mut v = start(&host, &a, &b, "g1").await;
+		assert_eq!(v.phase, GamePhase::Playing);
 		for _ in 0..4 {
-			let token = &created.seats[usize::from(view.to_move - 1)].token;
-			view = a.submit(&view.id, &tx_for(&view, token, view.legal[0])).await.unwrap().view;
+			let who = mover(&v, &a, &b);
+			v = host
+				.submit(next_tx(who, &v, TxPayload::GameMove { action: first_move(&v) }))
+				.await
+				.unwrap()
+				.view;
 		}
-		assert_eq!(store.head_seq(&view.id).await, Ok(4));
-		a.clear_cache().await;
-		let reloaded = a.view(&view.id).await.unwrap();
-		assert_eq!(serde_json::to_value(&reloaded).unwrap(), serde_json::to_value(&view).unwrap());
-
-		// Host b moves; host a's stale cache refreshes from the store.
-		let token = &created.seats[usize::from(view.to_move - 1)].token;
-		let stale = tx_for(&view, token, view.legal[0]);
-		let next = b.submit(&view.id, &stale).await.unwrap().view;
-		assert_eq!(a.view(&view.id).await.unwrap().seq, next.seq);
-		assert_eq!(
-			a.submit(&view.id, &stale).await.unwrap_err(),
-			TxError::StaleSeq { current: 5, got: 4 }
-		);
+		assert_eq!(v.ledger.seq, 6);
+		assert_eq!(v.game.as_ref().unwrap().seq, 4);
+		assert_eq!(host.view("g1").await.unwrap(), v);
+		let log = host.log("g1", 2).await.unwrap();
+		assert_eq!(log.len(), 4);
+		assert_eq!(log[0].seq, 2);
+		assert_eq!(host.view("missing").await.unwrap_err(), TxError::NotFound);
+		assert_eq!(host.view("BAD ID").await.unwrap_err(), TxError::NotFound);
 	}
 
-	/// Concurrent submits for one move number: exactly one is acknowledged.
 	#[tokio::test]
-	async fn concurrent_same_seq_submits_commit_once() {
-		let store: Arc<dyn GameStore> = Arc::new(MemoryGameStore::default());
-		let hosts: Vec<Arc<GameHost>> =
-			(0..4).map(|_| Arc::new(GameHost::new(store.clone(), 10))).collect();
-		let created = hosts[0].create(NewGame { seed: Some(11), labels: None }).await.unwrap();
-		let view = created.view.clone();
-		let token = created.seats[usize::from(view.to_move - 1)].token.clone();
+	async fn wrong_chain_bad_sig_and_foreign_account_are_refused() {
+		let host = GameHost::default();
+		let (a, b) = (signer(1), signer(2));
+		let v = start(&host, &a, &b, "g2").await;
+		let who = mover(&v, &a, &b);
+		let mut tx = next_tx(who, &v, TxPayload::GameMove { action: first_move(&v) });
+		tx.body.chain = "elsewhere".into();
+		assert!(matches!(host.submit(tx).await, Err(TxError::WrongChain { .. })));
+		let mut tx = next_tx(who, &v, TxPayload::GameMove { action: first_move(&v) });
+		tx.body.payload = TxPayload::GameResign;
+		assert_eq!(host.submit(tx).await.unwrap_err(), TxError::BadSignature);
+		let outsider = signer(3);
+		let tx = next_tx(&outsider, &v, TxPayload::GameMove { action: first_move(&v) });
+		assert_eq!(host.submit(tx).await.unwrap_err(), TxError::Unauthorized);
+		let tx = outsider
+			.sign(host.chain(), "account/x", 0, GENESIS_PREV, TxPayload::GameResign)
+			.unwrap();
+		assert!(matches!(host.submit(tx).await, Err(TxError::UnsupportedStream { .. })));
+	}
+
+	struct Revoked;
+
+	#[async_trait]
+	impl KeyDirectory for Revoked {
+		async fn status(&self, _: &AccountId, _: &VerifyingKeyBytes) -> Result<KeyStatus, String> {
+			Ok(KeyStatus::Inactive)
+		}
+	}
+
+	#[tokio::test]
+	async fn revoked_keys_cannot_act() {
+		let host = GameHost::default().with_keys(Arc::new(Revoked));
+		let a = signer(1);
+		let tx = a
+			.sign(
+				host.chain(),
+				"game/r",
+				0,
+				GENESIS_PREV,
+				TxPayload::GameCreate { seat: 1, label: "a".into() },
+			)
+			.unwrap();
+		assert_eq!(host.submit(tx).await.unwrap_err(), TxError::KeyNotAuthorized);
+	}
+
+	/// Acknowledged transactions survive dropping the cache, and a second host
+	/// on the same ledger sees them and rejects a replay.
+	#[tokio::test]
+	async fn durable_and_shared_through_the_ledger() {
+		let ledger: Arc<dyn LedgerStore> = Arc::new(MemoryLedger::default());
+		let mk = || GameHost::new(ledger.clone(), Arc::new(GenesisOnly), "c", 10);
+		let (h1, h2) = (mk(), mk());
+		let (a, b) = (signer(1), signer(2));
+		let mut v = start(&h1, &a, &b, "g3").await;
+		for _ in 0..3 {
+			let who = mover(&v, &a, &b);
+			v = h1
+				.submit(next_tx(who, &v, TxPayload::GameMove { action: first_move(&v) }))
+				.await
+				.unwrap()
+				.view;
+		}
+		h1.clear_cache().await;
+		assert_eq!(h1.view("g3").await.unwrap(), v);
+		let who = mover(&v, &a, &b);
+		let tx = next_tx(who, &v, TxPayload::GameMove { action: first_move(&v) });
+		let next = h2.submit(tx.clone()).await.unwrap().view;
+		assert_eq!(h1.view("g3").await.unwrap(), next);
+		assert_eq!(h1.submit(tx).await.unwrap_err(), TxError::StaleSeq { current: 6, got: 5 });
+	}
+
+	/// Concurrent submits at one seq across hosts: exactly one is acknowledged.
+	#[tokio::test]
+	async fn concurrent_same_seq_commits_once() {
+		let ledger: Arc<dyn LedgerStore> = Arc::new(MemoryLedger::default());
+		let hosts: Vec<Arc<GameHost>> = (0..4)
+			.map(|_| Arc::new(GameHost::new(ledger.clone(), Arc::new(GenesisOnly), "c", 10)))
+			.collect();
+		let (a, b) = (signer(1), signer(2));
+		let v = start(&hosts[0], &a, &b, "g4").await;
+		let who = mover(&v, &a, &b);
+		let legal = v.game.as_ref().unwrap().legal.clone();
 		let mut joins = Vec::new();
-		for i in 0..12 {
+		for i in 0..8 {
 			let host = hosts[i % hosts.len()].clone();
-			let action = view.legal[i % view.legal.len()];
-			let tx = tx_for(&view, &token, action);
-			let id = view.id.clone();
-			joins.push(tokio::spawn(async move { host.submit(&id, &tx).await }));
+			let tx = next_tx(who, &v, TxPayload::GameMove { action: legal[i % legal.len()] });
+			joins.push(tokio::spawn(async move { host.submit(tx).await }));
 		}
 		let mut ok = 0;
 		for j in joins {
 			match j.await.unwrap() {
 				Ok(_) => ok += 1,
-				Err(TxError::StaleSeq { current: 1, got: 0 }) => {}
+				Err(TxError::StaleSeq { current: 3, got: 2 }) => {}
 				Err(e) => panic!("unexpected: {e:?}"),
 			}
 		}
 		assert_eq!(ok, 1);
-		assert_eq!(store.head_seq(&view.id).await, Ok(1));
+		assert_eq!(ledger.head("game/g4").await.unwrap().next_seq, 3);
+	}
+
+	#[tokio::test]
+	async fn capacity_counts_game_streams() {
+		let host = GameHost::new(Arc::new(MemoryLedger::default()), Arc::new(GenesisOnly), "c", 1);
+		let a = signer(1);
+		let mk = |id: &str| {
+			a.sign(
+				"c",
+				&game_stream(id),
+				0,
+				GENESIS_PREV,
+				TxPayload::GameCreate { seat: 1, label: "a".into() },
+			)
+			.unwrap()
+		};
+		host.submit(mk("one")).await.unwrap();
+		assert!(matches!(host.submit(mk("two")).await, Err(TxError::Host { .. })));
 	}
 }

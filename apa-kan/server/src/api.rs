@@ -8,10 +8,10 @@ use apa_kan_account::crypto::VerifyingKeyBytes;
 use apa_kan_account::id::AccountId;
 use apa_kan_account::link::{LinkApproval, LinkRequest};
 use apa_kan_store::StoreError;
-use apa_kan_tx::{Transaction, TxError};
-use apa_kan_view::GameView;
+use apa_kan_tx::{SignedTx, TxError, TxResponse};
+use apa_kan_view::HostedGameView;
 
-use crate::games::{CreatedGame, NewGame, TxResponse};
+use crate::games::{CommittedTx, LedgerInfo};
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -124,16 +124,18 @@ pub fn router(state: AppState) -> Router {
 		.route("/v1/accounts/{account_id}/recovery/finish", post(recovery_finish))
 		.route("/v1/accounts/{account_id}/email", post(set_email))
 		.route("/v1/accounts/{account_id}/keys", get(list_keys))
-		.route("/v1/games", post(create_game))
+		// Ledger: one write route for every signed transaction; reads are views.
+		.route("/v1/ledger", get(ledger_info))
+		.route("/v1/tx", post(submit_tx))
 		.route("/v1/games/{game_id}", get(get_game))
-		.route("/v1/games/{game_id}/transactions", post(submit_transaction))
+		.route("/v1/games/{game_id}/txs", get(get_game_txs))
 		.layer(cors_layer())
 		.with_state(state)
 }
 
 /// The web client is served from its own domain, so the API allows
-/// cross-origin GET/POST with JSON bodies. Auth travels in the body (seat
-/// tokens), never cookies, so no credentials are allowed.
+/// cross-origin GET/POST with JSON bodies. Auth travels in the body (signed
+/// transactions), never cookies, so no credentials are allowed.
 ///
 /// `APAKAN_CORS_ORIGINS` (comma-separated) restricts origins; unset allows any.
 fn cors_layer() -> tower_http::cors::CorsLayer {
@@ -159,38 +161,54 @@ pub type GameApiError = (StatusCode, Json<TxError>);
 pub fn tx_error(e: TxError) -> GameApiError {
 	let status = match &e {
 		TxError::NotFound => StatusCode::NOT_FOUND,
-		TxError::WrongGame { .. } | TxError::BadSeat { .. } => StatusCode::BAD_REQUEST,
-		TxError::Unauthorized => StatusCode::UNAUTHORIZED,
-		TxError::StaleSeq { .. } | TxError::NotYourTurn { .. } | TxError::GameOver => {
-			StatusCode::CONFLICT
-		}
+		TxError::BadEnvelope { .. }
+		| TxError::WrongChain { .. }
+		| TxError::UnsupportedStream { .. } => StatusCode::BAD_REQUEST,
+		TxError::BadSignature | TxError::KeyNotAuthorized => StatusCode::UNAUTHORIZED,
+		TxError::Unauthorized => StatusCode::FORBIDDEN,
+		TxError::StaleSeq { .. }
+		| TxError::PrevMismatch { .. }
+		| TxError::AlreadySeated
+		| TxError::WrongPhase { .. }
+		| TxError::NotYourTurn { .. }
+		| TxError::GameOver => StatusCode::CONFLICT,
 		TxError::Illegal { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 		TxError::Host { .. } => StatusCode::SERVICE_UNAVAILABLE,
 	};
 	(status, Json(e))
 }
 
-async fn create_game(
+async fn ledger_info(State(state): State<AppState>) -> Json<LedgerInfo> {
+	Json(state.games.info())
+}
+
+/// The only mutation route for games: one signed transaction.
+async fn submit_tx(
 	State(state): State<AppState>,
-	body: Option<Json<NewGame>>,
-) -> Result<Json<CreatedGame>, GameApiError> {
-	let req = body.map(|Json(b)| b).unwrap_or_default();
-	state.games.create(req).await.map(Json).map_err(tx_error)
+	Json(tx): Json<SignedTx>,
+) -> Result<Json<TxResponse>, GameApiError> {
+	state.games.submit(tx).await.map(Json).map_err(tx_error)
 }
 
 async fn get_game(
 	State(state): State<AppState>,
 	Path(game_id): Path<String>,
-) -> Result<Json<GameView>, GameApiError> {
+) -> Result<Json<HostedGameView>, GameApiError> {
 	state.games.view(&game_id).await.map(Json).map_err(tx_error)
 }
 
-async fn submit_transaction(
+#[derive(Deserialize)]
+struct FromQuery {
+	#[serde(default)]
+	from: u64,
+}
+
+async fn get_game_txs(
 	State(state): State<AppState>,
 	Path(game_id): Path<String>,
-	Json(tx): Json<Transaction>,
-) -> Result<Json<TxResponse>, GameApiError> {
-	state.games.submit(&game_id, &tx).await.map(Json).map_err(tx_error)
+	axum::extract::Query(q): axum::extract::Query<FromQuery>,
+) -> Result<Json<Vec<CommittedTx>>, GameApiError> {
+	state.games.log(&game_id, q.from).await.map(Json).map_err(tx_error)
 }
 
 async fn health() -> Json<HealthResponse> {

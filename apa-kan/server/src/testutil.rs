@@ -16,11 +16,15 @@ pub async fn spawn_test_server(
 	clock: Arc<dyn Clock>,
 	mailer: Arc<dyn Mailer>,
 ) -> Result<(SocketAddr, JoinHandle<()>), std::io::Error> {
-	spawn_test_server_with_games(clock, mailer, GameHost::default()).await
+	let store = SqliteStore::connect_in_memory()
+		.await
+		.map_err(|e| std::io::Error::other(e.to_string()))?;
+	serve(AppState::new(store, clock, mailer)).await
 }
 
 /// Like [`spawn_test_server`], with a caller-chosen game host (e.g. one over a
-/// durable store, to exercise restarts).
+/// durable ledger, to exercise restarts). Its key directory is replaced by the
+/// test server's account store.
 pub async fn spawn_test_server_with_games(
 	clock: Arc<dyn Clock>,
 	mailer: Arc<dyn Mailer>,
@@ -29,7 +33,12 @@ pub async fn spawn_test_server_with_games(
 	let store = SqliteStore::connect_in_memory()
 		.await
 		.map_err(|e| std::io::Error::other(e.to_string()))?;
-	let state = AppState::new(store, clock, mailer).with_games(games);
+	let state = AppState::new(store, clock, mailer);
+	let keys = state.account_keys();
+	serve(state.with_games(games.with_keys(keys))).await
+}
+
+async fn serve(state: AppState) -> Result<(SocketAddr, JoinHandle<()>), std::io::Error> {
 	let app = api::router(state);
 
 	let listener = TcpListener::bind("127.0.0.1:0").await?;

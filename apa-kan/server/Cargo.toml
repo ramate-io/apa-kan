@@ -16,17 +16,18 @@ path = "src/main.rs"
 
 [features]
 default = ["sqlite"]
-sqlite = ["apa-kan-store/sqlite", "apa-kan-game-store/sqlite"]
-# Durable hosted games in Postgres (`APAKAN_GAME_STORE_URL=postgres://…`).
-postgres = ["apa-kan-game-store/postgres"]
+sqlite = ["apa-kan-store/sqlite", "apa-kan-ledger/sqlite"]
+# Ledger in Postgres (`APAKAN_LEDGER_URL=postgres://…`).
+postgres = ["apa-kan-ledger/postgres"]
 
 [dependencies]
 apa-kan-account = { workspace = true }
 apa-kan-core = { workspace = true }
-apa-kan-game-store = { workspace = true }
+apa-kan-ledger = { workspace = true }
 apa-kan-store = { workspace = true, features = ["sqlite"] }
 apa-kan-tx = { workspace = true }
 apa-kan-view = { workspace = true }
+async-trait.workspace = true
 axum.workspace = true
 hex.workspace = true
 rand.workspace = true
@@ -40,7 +41,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-apa-kan-game-store = { workspace = true, features = ["sqlite"] }
+apa-kan-ledger = { workspace = true, features = ["sqlite"] }
 apa-kan-account = { workspace = true }
 apa-kan-view = { workspace = true }
 ml-dsa.workspace = true
