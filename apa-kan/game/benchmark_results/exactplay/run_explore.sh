@@ -4,6 +4,10 @@
 # heuristic playouts stay on; the fan-out is higher PUCT, Dirichlet root
 # noise, shuffled / unordered moves, and LMR/PVS off.
 #
+# Committed explore/ logs predate PR #88 (no ratchet, 1-1-1-1). Re-runs
+# inherit live RuleSet defaults (ratchet + 2-2-1-1) unless those flags are
+# pinned off.
+#
 # Usage:
 #   run_explore.sh all
 #   run_explore.sh wide4_p1 | wide4_p2 | wide4_p1_s11 | wide4_p2_s11

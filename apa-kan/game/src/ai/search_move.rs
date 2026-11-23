@@ -458,6 +458,12 @@ pub fn order_fit_features(game: &Game, mv: SearchMove) -> OrderFitFeatures {
 			}
 			None
 		}
+		SearchMove::Convert { node } => {
+			if node == center {
+				onto_center = 1;
+			}
+			Some(node)
+		}
 		SearchMove::Pass => None,
 	};
 	let mut probe = SearchConfig::enhanced();

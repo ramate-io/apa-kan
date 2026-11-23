@@ -704,6 +704,9 @@ fn action_tag(action: Action) -> serde_json::Value {
 		Action::Swap { from, to } => serde_json::json!({
 			"kind": "SWAP", "from": from, "to": to
 		}),
+		Action::Convert { node } => serde_json::json!({
+			"kind": "CONVERT", "to": node
+		}),
 		Action::Pass => serde_json::json!({"kind": "PASS"}),
 	}
 }
@@ -807,6 +810,7 @@ fn dump_one_root_game(
 				| Action::Swap { from: 0, .. }
 				| Action::Swap { to: 0, .. }
 				| Action::Claim { node: 0 }
+				| Action::Convert { node: 0 }
 				| Action::Add { node: 0, .. }
 		);
 		rows.push(serde_json::json!({

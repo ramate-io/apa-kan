@@ -1,10 +1,15 @@
 # Exactplay bots: eval-only leaf margin for braid-only-exact
 
-Stacked on PR #83 (live playtest `RuleSet`: 4:3:1 Additive, `braid-only-exact`,
-single braids on, normal-only SWAP, center↔inner double-count, color-drift
-160). That PR’s confirmation cell
-[`h2h_defaults`](../single_braid_exact_swap/h2h_defaults.txt) is the **old
-bot** baseline: `--search-profile counterplay`, `--pick search`.
+Live `RuleSet` (PR #88) is ratchet reward + 2-2-1-1 on the #83 scoring
+package (4:3:1 Additive, `braid-only-exact`, single braids on, normal-only
+SWAP, center↔inner double-count, color-drift 160). That PR’s confirmation
+cell [`h2h_defaults`](../single_braid_exact_swap/h2h_defaults.txt) is the
+**old bot** baseline: `--search-profile counterplay`, `--pick search`.
+
+Committed H2H, isolation, deep, distill, and wide logs in this directory
+were recorded **before** the #88 lock (1-1-1-1 seating, no ratchet).
+`mcts_root_noise` defaults to 0 and minimax shuffles the root only when
+`ordering=off`, so live `exactplay` stays bit-identical.
 
 This package does **not** change rules. It does **not** program a playstyle
 (no pick-single-braid knobs, extra qsearch, SWAP/braid move-order hacks, or
@@ -538,7 +543,9 @@ Heuristic playouts stay **on**. New knobs `mcts_root_noise` / Dirichlet
 `α` default to 0 / 0.3 so live `exactplay` is bit-identical. Minimax
 shuffles the root when `ordering=off`. Reproduce:
 [`run_explore.sh`](run_explore.sh). Pure-random-player baseline skipped
-(not cheap at this budget, and not the question).
+(not cheap at this budget, and not the question). These cells predate
+ratchet + 2-2-1-1; re-runs inherit the live lock unless those flags are
+pinned off.
 
 Seed-1 4x cells share the 27-tile deals with [`h2h_deep4x_self`](h2h_deep4x_self.jsonl.gz).
 Wide as P1 also overlays search-pick, so first ADD usually diverges;

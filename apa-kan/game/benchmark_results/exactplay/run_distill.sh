@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Distill cheap_order knobs from 4x logs, then (if the fit moves) confirm
 # at light self-play and 4x vs the candidate.
+#
+# Committed distill/ roots predate PR #88 (no ratchet, 1-1-1-1). Re-runs of
+# confirm_self / vs4x inherit live RuleSet defaults (ratchet + 2-2-1-1)
+# unless those flags are pinned off. Compare-roots replays the logged
+# ruleset, so the fit itself stays on the historical cell.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../../../.." && pwd)"
 cd "$repo"
