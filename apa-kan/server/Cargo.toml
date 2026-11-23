@@ -22,6 +22,8 @@ sqlite = ["apa-kan-store/sqlite"]
 apa-kan-account = { workspace = true }
 apa-kan-core = { workspace = true }
 apa-kan-store = { workspace = true, features = ["sqlite"] }
+apa-kan-tx = { workspace = true }
+apa-kan-view = { workspace = true }
 axum.workspace = true
 hex.workspace = true
 rand.workspace = true
@@ -30,12 +32,13 @@ serde_json.workspace = true
 sha3.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tower-http.workspace = true
+tower-http = { workspace = true, features = ["cors"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 apa-kan-account = { workspace = true }
+apa-kan-view = { workspace = true }
 ml-dsa.workspace = true
 rand.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

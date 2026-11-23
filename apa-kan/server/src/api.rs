@@ -8,7 +8,10 @@ use apa_kan_account::crypto::VerifyingKeyBytes;
 use apa_kan_account::id::AccountId;
 use apa_kan_account::link::{LinkApproval, LinkRequest};
 use apa_kan_store::StoreError;
+use apa_kan_tx::{Transaction, TxError};
+use apa_kan_view::GameView;
 
+use crate::games::{CreatedGame, NewGame, TxResponse};
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -121,7 +124,78 @@ pub fn router(state: AppState) -> Router {
 		.route("/v1/accounts/{account_id}/recovery/finish", post(recovery_finish))
 		.route("/v1/accounts/{account_id}/email", post(set_email))
 		.route("/v1/accounts/{account_id}/keys", get(list_keys))
+		.route("/v1/games", post(create_game))
+		.route("/v1/games/{game_id}", get(get_game))
+		.route("/v1/games/{game_id}/transactions", post(submit_transaction))
+		.layer(cors_layer())
 		.with_state(state)
+}
+
+/// The web client is served from its own domain, so the API allows
+/// cross-origin GET/POST with JSON bodies. Auth travels in the body (seat
+/// tokens), never cookies, so no credentials are allowed.
+///
+/// `APAKAN_CORS_ORIGINS` (comma-separated) restricts origins; unset allows any.
+fn cors_layer() -> tower_http::cors::CorsLayer {
+	use axum::http::{header, HeaderValue, Method};
+	use tower_http::cors::{AllowOrigin, CorsLayer};
+	let origins: Vec<HeaderValue> = std::env::var("APAKAN_CORS_ORIGINS")
+		.unwrap_or_default()
+		.split(',')
+		.map(str::trim)
+		.filter(|s| !s.is_empty())
+		.filter_map(|s| HeaderValue::from_str(s).ok())
+		.collect();
+	let allow = if origins.is_empty() { AllowOrigin::any() } else { AllowOrigin::list(origins) };
+	CorsLayer::new()
+		.allow_origin(allow)
+		.allow_methods([Method::GET, Method::POST])
+		.allow_headers([header::CONTENT_TYPE])
+}
+
+/// JSON error body plus status for game routes.
+pub type GameApiError = (StatusCode, Json<TxError>);
+
+pub fn tx_error(e: TxError) -> GameApiError {
+	let status = match &e {
+		TxError::NotFound => StatusCode::NOT_FOUND,
+		TxError::WrongGame { .. } | TxError::BadSeat { .. } => StatusCode::BAD_REQUEST,
+		TxError::Unauthorized => StatusCode::UNAUTHORIZED,
+		TxError::StaleSeq { .. } | TxError::NotYourTurn { .. } | TxError::GameOver => {
+			StatusCode::CONFLICT
+		}
+		TxError::Illegal { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+		TxError::Host { .. } => StatusCode::SERVICE_UNAVAILABLE,
+	};
+	(status, Json(e))
+}
+
+async fn create_game(
+	State(state): State<AppState>,
+	body: Option<Json<NewGame>>,
+) -> Result<Json<CreatedGame>, GameApiError> {
+	let req = body.map(|Json(b)| b).unwrap_or_default();
+	let games = state.games.clone();
+	let created = tokio::task::spawn_blocking(move || games.create(req))
+		.await
+		.map_err(|e| tx_error(TxError::Host { reason: e.to_string() }))?
+		.map_err(tx_error)?;
+	Ok(Json(created))
+}
+
+async fn get_game(
+	State(state): State<AppState>,
+	Path(game_id): Path<String>,
+) -> Result<Json<GameView>, GameApiError> {
+	state.games.view(&game_id).map(Json).map_err(tx_error)
+}
+
+async fn submit_transaction(
+	State(state): State<AppState>,
+	Path(game_id): Path<String>,
+	Json(tx): Json<Transaction>,
+) -> Result<Json<TxResponse>, GameApiError> {
+	state.games.submit(&game_id, &tx).map(Json).map_err(tx_error)
 }
 
 async fn health() -> Json<HealthResponse> {
