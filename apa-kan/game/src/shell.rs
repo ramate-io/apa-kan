@@ -10,6 +10,7 @@ use crate::clock::TimeControl;
 use crate::config::GameConfig;
 use crate::platform::{open_url, replace_browser_route, IncomingUrl};
 use crate::route::{DeepLink, Route};
+use crate::ui::{ui_text_font, ui_title_font, UiFont};
 
 pub const MARKET_URL: &str = "https://symbolic.software/";
 pub const LEGAL_URL: &str = "https://github.com/ramate-io/apa-kan/blob/main/LICENSE.md";
@@ -146,8 +147,8 @@ pub fn plugin(app: &mut App) {
 		);
 }
 
-fn spawn_root(mut commands: Commands, shell: Res<ShellState>) {
-	build_page(&mut commands, &shell);
+fn spawn_root(mut commands: Commands, shell: Res<ShellState>, font: Res<UiFont>) {
+	build_page(&mut commands, &shell, &font);
 }
 
 fn despawn_root(mut commands: Commands, roots: Query<Entity, With<ShellRoot>>) {
@@ -159,6 +160,7 @@ fn despawn_root(mut commands: Commands, roots: Query<Entity, With<ShellRoot>>) {
 fn rebuild_if_needed(
 	mut commands: Commands,
 	shell: Res<ShellState>,
+	font: Res<UiFont>,
 	roots: Query<Entity, With<ShellRoot>>,
 	mut fingerprint: Local<u64>,
 ) {
@@ -170,7 +172,7 @@ fn rebuild_if_needed(
 	for e in &roots {
 		commands.entity(e).despawn();
 	}
-	build_page(&mut commands, &shell);
+	build_page(&mut commands, &shell, &font);
 }
 
 fn shell_fingerprint(shell: &ShellState) -> u64 {
@@ -201,14 +203,15 @@ fn root_node() -> Node {
 	}
 }
 
-fn build_page(commands: &mut Commands, shell: &ShellState) {
+fn build_page(commands: &mut Commands, shell: &ShellState, font: &UiFont) {
 	let root = commands.spawn((ShellRoot, root_node(), BackgroundColor(BG))).id();
 	match shell.page {
-		ShellPage::Home => fill_home(commands, root),
-		ShellPage::HeadToHead => fill_h2h(commands, root, shell),
+		ShellPage::Home => fill_home(commands, root, font),
+		ShellPage::HeadToHead => fill_h2h(commands, root, shell, font),
 		ShellPage::Puzzles => fill_stub(
 			commands,
 			root,
+			font,
 			"Puzzles",
 			"Coming Soon. Chapter rewards are a later grant path; there is no puzzle runtime in this phase.",
 			&[],
@@ -216,6 +219,7 @@ fn build_page(commands: &mut Commands, shell: &ShellState) {
 		ShellPage::Market => fill_stub(
 			commands,
 			root,
+			font,
 			"Market",
 			"Listings, sleeves, and purchases live outside the match view. Opens a new tab — no in-app browser.",
 			&[
@@ -226,6 +230,7 @@ fn build_page(commands: &mut Commands, shell: &ShellState) {
 		ShellPage::Settings => fill_stub(
 			commands,
 			root,
+			font,
 			"Settings",
 			"Keys, email opt-in, and legal copy land with accounts. The source-available license opens in a new tab.",
 			&[(ShellBtn::OpenLegal, "Open license in a new tab")],
@@ -233,11 +238,17 @@ fn build_page(commands: &mut Commands, shell: &ShellState) {
 	}
 }
 
-fn fill_home(commands: &mut Commands, root: Entity) {
+fn fill_home(commands: &mut Commands, root: Entity, font: &UiFont) {
 	let mut children = Vec::new();
-	children.push(spawn_title(commands, "Apa Kan", "A turn-based game of colors and adjacency."));
+	children.push(spawn_title(
+		commands,
+		font,
+		"Apa Kan",
+		"A turn-based game of colors and adjacency.",
+	));
 	children.push(spawn_full_btn(
 		commands,
+		font,
 		"Head-to-Head",
 		ShellBtn::Page(ShellPage::HeadToHead),
 		PURPLE,
@@ -245,6 +256,7 @@ fn fill_home(commands: &mut Commands, root: Entity) {
 	));
 	children.push(spawn_full_btn(
 		commands,
+		font,
 		"Puzzles — Coming Soon",
 		ShellBtn::Page(ShellPage::Puzzles),
 		BG_ALT,
@@ -252,6 +264,7 @@ fn fill_home(commands: &mut Commands, root: Entity) {
 	));
 	children.push(spawn_full_btn(
 		commands,
+		font,
 		"Market",
 		ShellBtn::Page(ShellPage::Market),
 		GREEN,
@@ -259,6 +272,7 @@ fn fill_home(commands: &mut Commands, root: Entity) {
 	));
 	children.push(spawn_full_btn(
 		commands,
+		font,
 		"Settings",
 		ShellBtn::Page(ShellPage::Settings),
 		ORANGE,
@@ -267,15 +281,17 @@ fn fill_home(commands: &mut Commands, root: Entity) {
 	commands.entity(root).add_children(&children);
 }
 
-fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState) {
+fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState, font: &UiFont) {
 	let mut children = Vec::new();
 	children.push(spawn_title(
 		commands,
+		font,
 		"Head-to-Head",
 		"Pick axes, then play locally. Online and economy options stay visible but flagged Coming Soon.",
 	));
 	push_axis(
 		commands,
+		font,
 		&mut children,
 		"Tile option",
 		&[
@@ -286,6 +302,7 @@ fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState) {
 	);
 	push_axis(
 		commands,
+		font,
 		&mut children,
 		"Deck option",
 		&[
@@ -296,6 +313,7 @@ fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState) {
 	);
 	push_axis(
 		commands,
+		font,
 		&mut children,
 		"Reward",
 		&[
@@ -306,6 +324,7 @@ fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState) {
 	);
 	push_axis(
 		commands,
+		font,
 		&mut children,
 		"Opponent",
 		&[
@@ -320,6 +339,7 @@ fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState) {
 	);
 	push_axis(
 		commands,
+		font,
 		&mut children,
 		"Bot",
 		&[
@@ -330,6 +350,7 @@ fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState) {
 	);
 	push_axis(
 		commands,
+		font,
 		&mut children,
 		"Time control",
 		&[
@@ -342,35 +363,51 @@ fn fill_h2h(commands: &mut Commands, root: Entity, shell: &ShellState) {
 			("2 + 1", ShellBtn::Clock(ClockKind::TwoPlusOne), shell.clock == ClockKind::TwoPlusOne),
 		],
 	);
-	children.push(spawn_notice(commands, &shell.notice));
-	children.push(spawn_full_btn(commands, "Play", ShellBtn::Play, GREEN, true));
-	children.push(spawn_full_btn(commands, "Back", ShellBtn::Page(ShellPage::Home), BG_ALT, false));
+	children.push(spawn_notice(commands, font, &shell.notice));
+	children.push(spawn_full_btn(commands, font, "Play", ShellBtn::Play, GREEN, true));
+	children.push(spawn_full_btn(
+		commands,
+		font,
+		"Back",
+		ShellBtn::Page(ShellPage::Home),
+		BG_ALT,
+		false,
+	));
 	commands.entity(root).add_children(&children);
 }
 
 fn fill_stub(
 	commands: &mut Commands,
 	root: Entity,
+	font: &UiFont,
 	title: &str,
 	body: &str,
 	extra: &[(ShellBtn, &str)],
 ) {
 	let mut children = Vec::new();
-	children.push(spawn_title(commands, title, body));
+	children.push(spawn_title(commands, font, title, body));
 	for (btn, label) in extra {
-		children.push(spawn_full_btn(commands, label, *btn, PURPLE, true));
+		children.push(spawn_full_btn(commands, font, label, *btn, PURPLE, true));
 	}
-	children.push(spawn_full_btn(commands, "Back", ShellBtn::Page(ShellPage::Home), BG_ALT, false));
+	children.push(spawn_full_btn(
+		commands,
+		font,
+		"Back",
+		ShellBtn::Page(ShellPage::Home),
+		BG_ALT,
+		false,
+	));
 	commands.entity(root).add_children(&children);
 }
 
 fn push_axis(
 	commands: &mut Commands,
+	font: &UiFont,
 	out: &mut Vec<Entity>,
 	caption: &str,
 	items: &[(&str, ShellBtn, bool)],
 ) {
-	out.push(spawn_caption(commands, caption));
+	out.push(spawn_caption(commands, font, caption));
 	out.push(
 		commands
 			.spawn(Node {
@@ -383,14 +420,16 @@ fn push_axis(
 			})
 			.with_children(|parent| {
 				for (label, action, on) in items {
-					spawn_chip(parent, label, *action, *on);
+					spawn_chip(parent, font, label, *action, *on);
 				}
 			})
 			.id(),
 	);
 }
 
-fn spawn_title(commands: &mut Commands, title: &str, sub: &str) -> Entity {
+fn spawn_title(commands: &mut Commands, font: &UiFont, title: &str, sub: &str) -> Entity {
+	let title_font = ui_title_font(font, 42.0);
+	let sub_font = ui_text_font(font, 16.0);
 	commands
 		.spawn(Node {
 			width: Val::Percent(100.0),
@@ -401,25 +440,17 @@ fn spawn_title(commands: &mut Commands, title: &str, sub: &str) -> Entity {
 			..default()
 		})
 		.with_children(|parent| {
-			parent.spawn((
-				Text::new(title.to_string()),
-				TextFont { font_size: FontSize::Px(42.0), ..default() },
-				TextColor(INK),
-			));
-			parent.spawn((
-				Text::new(sub.to_string()),
-				TextFont { font_size: FontSize::Px(16.0), ..default() },
-				TextColor(MUTED),
-			));
+			parent.spawn((Text::new(title.to_string()), title_font, TextColor(INK)));
+			parent.spawn((Text::new(sub.to_string()), sub_font, TextColor(MUTED)));
 		})
 		.id()
 }
 
-fn spawn_caption(commands: &mut Commands, text: &str) -> Entity {
+fn spawn_caption(commands: &mut Commands, font: &UiFont, text: &str) -> Entity {
 	commands
 		.spawn((
 			Text::new(text.to_string()),
-			TextFont { font_size: FontSize::Px(14.0), ..default() },
+			ui_text_font(font, 14.0),
 			TextColor(MUTED),
 			Node {
 				width: Val::Percent(100.0),
@@ -431,11 +462,11 @@ fn spawn_caption(commands: &mut Commands, text: &str) -> Entity {
 		.id()
 }
 
-fn spawn_notice(commands: &mut Commands, text: &str) -> Entity {
+fn spawn_notice(commands: &mut Commands, font: &UiFont, text: &str) -> Entity {
 	commands
 		.spawn((
 			Text::new(text.to_string()),
-			TextFont { font_size: FontSize::Px(15.0), ..default() },
+			ui_text_font(font, 15.0),
 			TextColor(if text.is_empty() { MUTED } else { ORANGE }),
 			Node {
 				width: Val::Percent(100.0),
@@ -449,12 +480,14 @@ fn spawn_notice(commands: &mut Commands, text: &str) -> Entity {
 
 fn spawn_full_btn(
 	commands: &mut Commands,
+	font: &UiFont,
 	label: &str,
 	action: ShellBtn,
 	fill: Color,
 	light_text: bool,
 ) -> Entity {
 	let color = if light_text { PAPER } else { INK };
+	let text_font = ui_title_font(font, 20.0);
 	commands
 		.spawn((
 			Button,
@@ -472,16 +505,18 @@ fn spawn_full_btn(
 			BackgroundColor(fill),
 		))
 		.with_children(|parent| {
-			parent.spawn((
-				Text::new(label.to_string()),
-				TextFont { font_size: FontSize::Px(20.0), ..default() },
-				TextColor(color),
-			));
+			parent.spawn((Text::new(label.to_string()), text_font, TextColor(color)));
 		})
 		.id()
 }
 
-fn spawn_chip(parent: &mut ChildSpawnerCommands, label: &str, action: ShellBtn, on: bool) {
+fn spawn_chip(
+	parent: &mut ChildSpawnerCommands,
+	font: &UiFont,
+	label: &str,
+	action: ShellBtn,
+	on: bool,
+) {
 	parent
 		.spawn((
 			Button,
@@ -500,7 +535,7 @@ fn spawn_chip(parent: &mut ChildSpawnerCommands, label: &str, action: ShellBtn, 
 		.with_children(|parent| {
 			parent.spawn((
 				Text::new(label.to_string()),
-				TextFont { font_size: FontSize::Px(15.0), ..default() },
+				ui_text_font(font, 15.0),
 				TextColor(if on { PAPER } else { INK }),
 			));
 		});

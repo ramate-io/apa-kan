@@ -24,6 +24,28 @@ use crate::route::{DeepLink, Route};
 use crate::shell::{self, AppScreen, LeaveMatch, StartMatch};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
 
+/// SIL OFL Expletus Sans, same face as the wasm host page.
+const EXPLETUS_SANS: &[u8] = include_bytes!("../assets/fonts/ExpletusSans.ttf");
+
+#[derive(Resource, Clone)]
+pub(crate) struct UiFont(pub Handle<Font>);
+
+pub(crate) fn ui_text_font(font: &UiFont, size: f32) -> TextFont {
+	TextFont::from_font_size(FontSize::Px(size))
+		.with_font(font.0.clone())
+		.with_font_weight(FontWeight::MEDIUM)
+}
+
+pub(crate) fn ui_title_font(font: &UiFont, size: f32) -> TextFont {
+	TextFont::from_font_size(FontSize::Px(size))
+		.with_font(font.0.clone())
+		.with_font_weight(FontWeight::SEMIBOLD)
+}
+
+fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
+	commands.insert_resource(UiFont(fonts.add(Font::from_bytes(EXPLETUS_SANS.to_vec()))));
+}
+
 pub fn run_app(cfg: GameConfig) {
 	let width = cfg.width;
 	let height = cfg.height;
@@ -62,7 +84,7 @@ pub fn run_app(cfg: GameConfig) {
 	.insert_state(screen)
 	.add_plugins(PlatformPlugin)
 	.add_plugins(shell::plugin)
-	.add_systems(Startup, setup_camera)
+	.add_systems(Startup, (load_ui_font, setup_camera))
 	.add_systems(OnEnter(AppScreen::Match), spawn_match_hud)
 	.add_systems(OnExit(AppScreen::Match), despawn_match_hud)
 	.add_systems(
@@ -577,15 +599,47 @@ fn setup_camera(mut commands: Commands) {
 	commands.spawn(Camera2d::default());
 }
 
-fn spawn_match_hud(mut commands: Commands) {
-	spawn_hud_line(&mut commands, StatusHud, 16.0, 8.0, 17.0, Color::srgb(0.92, 0.93, 0.90));
-	spawn_hud_line(&mut commands, TurnHud, 16.0, 30.0, 15.0, Color::srgb(0.88, 0.90, 0.86));
-	spawn_hud_line(&mut commands, LogHud, 16.0, 52.0, 15.0, Color::srgb(0.78, 0.82, 0.72));
-	spawn_hud_line(&mut commands, WarnHud, 16.0, 74.0, 15.0, Color::srgb(0.95, 0.72, 0.28));
+fn spawn_match_hud(mut commands: Commands, font: Res<UiFont>) {
+	spawn_hud_line(
+		&mut commands,
+		&font,
+		StatusHud,
+		16.0,
+		8.0,
+		17.0,
+		Color::srgb(0.92, 0.93, 0.90),
+	);
+	spawn_hud_line(
+		&mut commands,
+		&font,
+		TurnHud,
+		16.0,
+		30.0,
+		15.0,
+		Color::srgb(0.88, 0.90, 0.86),
+	);
+	spawn_hud_line(
+		&mut commands,
+		&font,
+		LogHud,
+		16.0,
+		52.0,
+		15.0,
+		Color::srgb(0.78, 0.82, 0.72),
+	);
+	spawn_hud_line(
+		&mut commands,
+		&font,
+		WarnHud,
+		16.0,
+		74.0,
+		15.0,
+		Color::srgb(0.95, 0.72, 0.28),
+	);
 	commands.spawn((
 		HelpHud,
 		Text::new(visual::HELP_TEXT),
-		TextFont { font_size: FontSize::Px(15.0), ..default() },
+		ui_text_font(&font, 15.0),
 		TextColor(Color::srgb(0.70, 0.74, 0.68)),
 		TextLayout::no_wrap(),
 		Node {
@@ -620,6 +674,7 @@ fn despawn_match_hud(
 
 fn spawn_hud_line<M: Component>(
 	commands: &mut Commands,
+	font: &UiFont,
 	marker: M,
 	left: f32,
 	top: f32,
@@ -629,7 +684,7 @@ fn spawn_hud_line<M: Component>(
 	commands.spawn((
 		marker,
 		Text::new(""),
-		TextFont { font_size: FontSize::Px(size), ..default() },
+		ui_text_font(font, size),
 		TextColor(color),
 		TextLayout::no_wrap(),
 		Node {
@@ -1253,6 +1308,7 @@ fn refresh_view(
 	mut commands: Commands,
 	mut play: ResMut<PlayState>,
 	layout: Res<UiLayout>,
+	font: Res<UiFont>,
 	existing: Query<Entity, With<DynamicView>>,
 	mut meshes: ResMut<Assets<Mesh>>,
 	mut materials: ResMut<Assets<ColorMaterial>>,
@@ -1375,6 +1431,7 @@ fn refresh_view(
 			&mut meshes,
 			&mut materials,
 			layout,
+			&font,
 			play.setup.as_ref().unwrap(),
 		);
 		return;
@@ -1397,6 +1454,7 @@ fn refresh_view(
 			if claimable {
 				spawn_label(
 					&mut commands,
+					&font,
 					world_v(layout, board.position(id))
 						+ Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
 					"CLAIM",
@@ -1404,6 +1462,7 @@ fn refresh_view(
 			} else if swap_partners.contains(&id) {
 				spawn_label(
 					&mut commands,
+					&font,
 					world_v(layout, board.position(id))
 						+ Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
 					"SWAP",
@@ -1412,6 +1471,7 @@ fn refresh_view(
 		} else if board.is_spawn(id) && matches!(play.selection, Selection::Bench(_)) {
 			spawn_label(
 				&mut commands,
+				&font,
 				world_v(layout, board.position(id)) + Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
 				"ADD",
 			);
@@ -1503,6 +1563,7 @@ fn draw_setup_view(
 	meshes: &mut Assets<Mesh>,
 	materials: &mut Assets<ColorMaterial>,
 	layout: &ViewLayout,
+	font: &UiFont,
 	session: &SetupSession,
 ) {
 	let pool = session.pool_tiles();
@@ -1541,7 +1602,7 @@ fn draw_setup_view(
 	if !matches!(session.stage, SetupStage::Done) {
 		let p = layout.setup_confirm_pos();
 		let label = if session.can_confirm() { "CONFIRM" } else { "pick" };
-		spawn_label(commands, Vec2::new(p[0], p[1]), label);
+		spawn_label(commands, font, Vec2::new(p[0], p[1]), label);
 		if session.can_confirm() {
 			spawn_ring(
 				commands,
@@ -2478,11 +2539,11 @@ fn spawn_tile_at(
 	}
 }
 
-fn spawn_label(commands: &mut Commands, pos: Vec2, text: &str) {
+fn spawn_label(commands: &mut Commands, font: &UiFont, pos: Vec2, text: &str) {
 	commands.spawn((
 		DynamicView,
 		Text2d::new(text),
-		TextFont { font_size: FontSize::Px(12.0), ..default() },
+		ui_text_font(font, 12.0),
 		TextColor(Color::srgb(0.95, 0.86, 0.30)),
 		Transform::from_translation(pos.extend(visual::Z_MARKER)),
 	));
