@@ -17,7 +17,7 @@ Independent check of whether **base** capture-score stalling (4–4 at turn 200,
    - `ic`: count of one-ply captures in legal search moves.
    - `co` / `cs`: claimable overwhelmed opponent / own tiles (local-claim setup).
 
-Tooling: `apa-kan-bench --deep-probe`, `run_deep_probe.sh`, raw TSV `deep_probe_results.txt`.
+Tooling: `apa-kan-bench --deep-probe`, `run_deep_probe.sh`, raw TSVs `deep_probe_*_nofanout.txt` / `deep_probe_*_fanout.txt`.
 
 ## Base-mode smoke game context (seed 901)
 
@@ -65,16 +65,16 @@ Bench play: **83% outer** destination rings, 6.75 opp captures/game but still 4�
 
 Full TSV: `deep_probe_base_nofanout.txt`.
 
-## Randomized fan-out (64×) vs single-seed 64×
+## Randomized fan-out (64×) vs single-seed 64× — **base**
 
-| Arm | `PROBE_FANOUT` | `ch64` rate | `ch16` | `term1` | `fan_uniq_mean` |
-|-----|----------------|------------:|-------:|--------:|----------------:|
-| Single 64× seed | **0** (`PROBE_FANOUT_OFF=1`) | **50%** | **37.5%** | **0** | **1.0** (trivial) |
-| **4× shuffled 64×** | **4** | _running → `deep_probe_base_fanout.txt`_ | — | — | expect **>1** if alternatives tie in eval |
+| Arm | `PROBE_FANOUT` | `ch64` | `ch16` | `term1` | `fan_uniq_mean` (max) |
+|-----|----------------|-------:|-------:|--------:|----------------------:|
+| Single 64× seed | **0** (`PROBE_FANOUT_OFF=1`) | **50%** | **37.5%** | **0** | **1.0** |
+| **4× shuffled 64×** | **4** | **50%** | **37.5%** | **0** | **2.75** (**4**) |
 
-**Expectation (Liam):** if shallow play misses a hidden tactic, fan-out should surface **multiple disagreeing winners** (`fan64_uniq>1`) or a **different** `m64:` move than the single-seed line. On base stalls, pilot logs already show **identical** `m64` across seeds when fan-out was accidentally off (`fan64_uniq=0`); re-run with `PROBE_FANOUT=4` is in flight.
+**Interpretation:** fan-out **does** surface **2–4** tied 64× candidates per stalled line (`fan64_uniq` distribution: 1×3, 2×3, 3×5, 4×5 over 16 positions), but **none** of the seeds pick a different **class** of outcome: `ch64` vs 1× stays **8/16**, still **zero** `term1`, same imm-capture / `co=0` profile. Randomized fan-out confirms **move instability** (heuristic plateaus) without revealing a **hidden score win** light search skipped.
 
-`compare_probe.py` will pair `deep_probe_base_nofanout.txt` vs `deep_probe_base_fanout.txt` when the fan-out job finishes.
+TSVs: `deep_probe_base_nofanout.txt`, `deep_probe_base_fanout.txt` (`compare_probe.py`).
 
 ## Qualitative play read (smoke JSONL)
 
@@ -101,13 +101,26 @@ Scripts: `qualitative_read.py`, `survey.py` on committed logs.
 
 _Probe queued after local 4-game smoke completes._
 
-## Majority / cascade / unlimited deep probes
+## Deep probe — **majority spawn** (n=12 late positions, fan-out off)
+
+| Metric | Base stall | Majority |
+|--------|----------:|---------:|
+| `ch64` vs 1× | 50% | **66.7%** |
+| `ch16` vs 1× | 37.5% | **50.0%** |
+| `term1` | 0 | **0** |
+| `co>0` | 0/16 | **0/12** |
+| Root \|sc\| @ 64× | ~400 | **~700–1000** (higher material/spawn tension) |
+
+Still **no** terminal band, but eval **magnitude** rises (spawn tokens spent, center-adjacent ADD/MOVE like `move20->0` in probe lines). Deeper search **disagrees with light play more often** yet does **not** fabricate a forced target-6 win on these late lines.
+
+Fan-out rerun: `deep_probe_majority_fanout.txt` (queued with cascade/unlimited).
+
+## Deep probe — cascade / unlimited
 
 | Log | Probe TSV | Status |
 |-----|-----------|--------|
-| `smoke_majority_mm.jsonl.gz` | `deep_probe_majority_nofanout.txt` (+ fan-out optional) | queued after base fan-out |
-| `smoke_cascade_mm.jsonl.gz` | `deep_probe_cascade_fanout.txt` | queued |
-| `smoke_unlimited_mm.jsonl.gz` | `deep_probe_unlimited_fanout.txt` | waiting on smoke |
+| `smoke_cascade_mm.jsonl.gz` | `deep_probe_cascade_fanout.txt` | running (`PROBE_FANOUT=4`) |
+| `smoke_unlimited_mm.jsonl.gz` | `deep_probe_unlimited_fanout.txt` | waiting on 4-game smoke |
 
 ## Verdict
 

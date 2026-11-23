@@ -1,0 +1,24 @@
+# deep_probe  search=profile=enhanced ordering=on tt=on/18 lmr=on pvs=on q=on/4 pw=off heur_playouts=on puct=1.60 cutoff=12 threads=1 priors=off pw_order=off reuse=on mcts_tt=off factored=off leaf=0 solver=off eval_center=180 eval_inner=55 eval_pressure=0 order_claim_c=0 order_threat=0 eval_margin=100 eval_capture=0
+# budget_base_nodes=132000  mult=[1, 16, 64]  fanout=0@max  shuffle=true jobs=4
+# positions_scheduled=12
+# columns: log game action turn player scores claim counts imm_cap budgets moves
+pos	smoke_majority_mm.jsonl.gz	g1	ix79	t80	P2	4-5	co=0	cs=0	ic=4	sw=false	m1:add@23 d4 n132000 sc647 ringouter term0	m16:add@23 d7 n2112000 sc710 ringouter term0	m64:add@23 d8 n8448000 sc677 ringouter term0	fan64_uniq=0 fan64_n=0	d16=7	d64=8	ch16=0	ch64=0
+pos	smoke_majority_mm.jsonl.gz	g1	ix80	t81	P1	4-5	co=0	cs=0	ic=10	sw=false	m1:move6->24 d4 n132000 sc-731 ringouter term0	m16:move10->19 d7 n2112000 sc-677 ringouter term0	m64:move10->15 d8 n8448000 sc-695 ringouter term0	fan64_uniq=0 fan64_n=0	d16=7	d64=8	ch16=1	ch64=1
+pos	smoke_majority_mm.jsonl.gz	g1	ix81	t82	P2	4-5	co=0	cs=0	ic=5	sw=false	m1:move20->0 d4 n132000 sc679 ringcenter term0	m16:move12->5 d6 n2112000 sc773 ringouter term0	m64:move12->5 d8 n8448000 sc799 ringouter term0	fan64_uniq=0 fan64_n=0	d16=6	d64=8	ch16=1	ch64=1
+pos	smoke_majority_mm.jsonl.gz	g1	ix82	t83	P1	4-5	co=0	cs=0	ic=10	sw=false	m1:move6->7 d5 n132000 sc-646 ringouter term0	m16:move6->7 d7 n2112000 sc-685 ringouter term0	m64:move6->7 d8 n8448000 sc-738 ringouter term0	fan64_uniq=0 fan64_n=0	d16=7	d64=8	ch16=0	ch64=0
+pos	smoke_majority_mm.jsonl.gz	g2	ix79	t80	P2	3-4	co=0	cs=0	ic=5	sw=false	m1:move16->22 d4 n132000 sc896 ringouter term0	m16:move1->9 d6 n2112000 sc936 ringinner term0	m64:move18->22 d7 n8448000 sc1014 ringouter term0	fan64_uniq=0 fan64_n=0	d16=6	d64=7	ch16=1	ch64=1
+pos	smoke_majority_mm.jsonl.gz	g2	ix80	t81	P1	3-4	co=0	cs=0	ic=0	sw=false	m1:move3->16 d5 n132000 sc-921 ringinner term0	m16:move3->16 d7 n2112000 sc-936 ringinner term0	m64:move3->16 d8 n8448000 sc-996 ringinner term0	fan64_uniq=0 fan64_n=0	d16=7	d64=8	ch16=0	ch64=0
+pos	smoke_majority_mm.jsonl.gz	g2	ix81	t82	P2	3-4	co=0	cs=0	ic=3	sw=false	m1:move22->3 d4 n132000 sc921 ringinner term0	m16:move21->3 d6 n2112000 sc936 ringinner term0	m64:move22->3 d7 n8448000 sc1016 ringinner term0	fan64_uniq=0 fan64_n=0	d16=6	d64=7	ch16=1	ch64=0
+pos	smoke_majority_mm.jsonl.gz	g2	ix82	t83	P1	3-4	co=0	cs=0	ic=0	sw=false	m1:move0->13 d5 n132000 sc-914 ringouter term0	m16:move0->13 d7 n2112000 sc-936 ringouter term0	m64:move0->12 d8 n8448000 sc-988 ringinner term0	fan64_uniq=0 fan64_n=0	d16=7	d64=8	ch16=0	ch64=1
+pos	smoke_majority_mm.jsonl.gz	g3	ix79	t80	P2	2-2	co=0	cs=0	ic=19	sw=false	m1:move11->21 d4 n132000 sc378 ringinner term0	m16:move11->21 d7 n2112000 sc378 ringinner term0	m64:move11->6 d8 n8448000 sc329 ringinner term0	fan64_uniq=0 fan64_n=0	d16=7	d64=8	ch16=0	ch64=1
+pos	smoke_majority_mm.jsonl.gz	g3	ix80	t81	P1	2-2	co=0	cs=0	ic=0	sw=false	m1:move19->23 d4 n132000 sc-378 ringouter term0	m16:move19->23 d6 n2112000 sc-378 ringouter term0	m64:move14->10 d8 n8448000 sc-298 ringouter term0	fan64_uniq=0 fan64_n=0	d16=6	d64=8	ch16=0	ch64=1
+pos	smoke_majority_mm.jsonl.gz	g3	ix81	t82	P2	2-2	co=0	cs=0	ic=12	sw=false	m1:add@2 d4 n132000 sc320 ringouter term0	m16:move21->17 d6 n2112000 sc329 ringouter term0	m64:move21->17 d7 n8448000 sc378 ringouter term0	fan64_uniq=0 fan64_n=0	d16=6	d64=7	ch16=1	ch64=1
+pos	smoke_majority_mm.jsonl.gz	g3	ix82	t83	P1	2-2	co=0	cs=0	ic=0	sw=false	m1:move8->24 d4 n132000 sc-378 ringouter term0	m16:move14->10 d7 n2112000 sc-279 ringouter term0	m64:move14->10 d8 n8448000 sc-279 ringouter term0	fan64_uniq=0 fan64_n=0	d16=7	d64=8	ch16=1	ch64=1
+
+# summary
+positions=12
+move_change_rate  x16=0.500 x64=0.667
+deep_only_terminal_win_flags=0
+imm_capture_positions=8 shallow_missed_tactical=6
+fanout_unique_mean=0.00
+dest_ring_light={"center": 1, "outer": 8, "inner": 3} dest_ring_max_mult={"inner": 4, "outer": 8}
