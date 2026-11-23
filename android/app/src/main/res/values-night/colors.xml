@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ak_window_bg">@color/ak_bg_dark</color>
+    <color name="ak_window_ink">@color/ak_ink_dark</color>
+</resources>

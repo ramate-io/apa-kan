@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:bevy"]
+desktop = ["dep:bevy", "dep:webbrowser"]
 
 [[bin]]
 name = "apa-kan"
@@ -30,13 +30,17 @@ path = "src/bin/bench.rs"
 
 [dependencies]
 apa-kan-core = { path = "../core" }
-bevy = { workspace = true, optional = true, features = ["android-native-activity"] }
+bevy = { workspace = true, optional = true, features = ["android-game-activity"] }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+webbrowser = { version = "1", optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22"
 
 [dev-dependencies]
 apa-kan-core = { path = "../core", features = ["test-helpers"] }
@@ -44,29 +48,7 @@ apa-kan-core = { path = "../core", features = ["test-helpers"] }
 [lints]
 workspace = true
 
-[package.metadata.android]
-package = "io.ramate.apa_kan"
-label = "Apa Kan"
-icon = "@mipmap/ic_launcher"
-fullscreen = false
-orientation = "landscape"
-build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
-
-[package.metadata.android.sdk]
-min_sdk_version = 26
-target_sdk_version = 30
-
-[package.metadata.android.application]
-debuggable = false
-theme = "@android:style/Theme.NoTitleBar.Fullscreen"
-
-[package.metadata.android.application.activity]
-config_changes = "orientation|keyboardHidden|screenSize"
-launch_mode = "singleTask"
-orientation = "landscape"
-
-[package.metadata.android.signing.release]
-path = "debug.keystore"
-keystore_password = "android"
-key_alias = "androiddebugkey"
-key_password = "android"
+# Android packaging lives in `android/` (Gradle + GameActivity). cargo-apk
+# metadata is intentionally gone: App Links autoVerify, Play App Bundles, and
+# release signing need a real Android Gradle project. Application id is
+# `io.ramate.apakan` (no underscore) so iOS can match.

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ApaKan" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/ak_window_bg</item>
+        <item name="android:statusBarColor">@color/ak_window_bg</item>
+        <item name="android:navigationBarColor">@color/ak_window_bg</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:fontFamily">@font/expletus_sans</item>
+    </style>
+
+    <style name="Theme.ApaKan.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ak_window_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="windowSplashScreenIconBackgroundColor">@color/ak_window_bg</item>
+        <item name="postSplashScreenTheme">@style/Theme.ApaKan</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+</resources>

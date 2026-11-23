@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- symbolic.software palette -->
+    <color name="ak_bg_light">#FFF4EEE2</color>
+    <color name="ak_ink_light">#FF1A1A1A</color>
+    <color name="ak_purple">#FF6E5883</color>
+    <color name="ak_green">#FF3D6652</color>
+    <color name="ak_orange">#FFA35C3A</color>
+    <color name="ak_yellow">#FFECC368</color>
+    <color name="ak_red">#FFA03D33</color>
+    <color name="ak_bg_dark">#FF1B1A18</color>
+    <color name="ak_ink_dark">#FFEEE8DC</color>
+    <color name="ak_window_bg">@color/ak_bg_light</color>
+    <color name="ak_window_ink">@color/ak_ink_light</color>
+</resources>

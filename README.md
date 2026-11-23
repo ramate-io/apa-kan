@@ -54,6 +54,9 @@ nix develop
 cargo run -p apa-kan
 ```
 
+Android (Gradle wrapper, `io.ramate.apakan`): see [`android/README.md`](android/README.md).
+CI builds a debug APK on every pull request (`.github/workflows/mobile-android.yml`).
+
 A plain `cargo run --no-default-features -p apa-kan` is the playtest package (human vs greedy). With a desktop window: `nix develop && cargo run -p apa-kan`. Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`. Live search is `--search-profile enhanced`. `--search-profile exactplay` is the same tree with `eval_margin_scale=200` (hillclimbed vs enhanced; [`exactplay`](apa-kan/game/bots/exactplay.toml)).
 
 ```text

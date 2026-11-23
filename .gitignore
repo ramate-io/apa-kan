@@ -12,3 +12,5 @@ packaging/*.local.md
 packaging/*.local.env
 packaging/identity.local.md
 .DS_Store
+*.keystore
+*.jks

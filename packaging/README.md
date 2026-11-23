@@ -11,7 +11,7 @@ This directory contains packaging scripts and configuration for building and dis
 
 ### Mobile
 - **iOS** (arm64)
-- **Android** (arm64-v8a, armeabi-v7a)
+- **Android** (arm64-v8a) — Gradle wrapper in `android/`; see `android/README.md`
 
 ## Building Packages
 
@@ -37,7 +37,7 @@ To publish to the App Store, you need to:
 
 1. **Apple Developer Account**
    - Enroll in Apple Developer Program ($99/year)
-   - Create App ID: `io.ramate.apa-kan`
+   - Create App ID: `io.ramate.apakan` (match Android; was `io.ramate.apa-kan`)
 
 2. **Code Signing**
    - Generate signing certificate in Xcode or Apple Developer portal
@@ -57,11 +57,13 @@ To publish to the App Store, you need to:
 
 ### Android Publishing
 
-To publish to Google Play, you need to:
+Package name / application id is **`io.ramate.apakan`** (unified with iOS; no
+underscore). Full debug-install and signing steps: [`android/README.md`](../android/README.md).
 
 1. **Google Play Developer Account**
    - Register for Google Play Console ($25 one-time fee)
-   - Create app listing with package name: `io.ramate.apa_kan`
+   - Create app listing with package name: `io.ramate.apakan`
+   - Target API **36** (Play requirement as of 2026-08-31)
 
 2. **Release Signing**
    - Generate release keystore:
@@ -70,6 +72,7 @@ To publish to Google Play, you need to:
        -alias apa-kan -keyalg RSA -keysize 2048 -validity 10000
      ```
    - Store keystore securely (do NOT commit to repository)
+   - CI builds a Play bundle (`.aab`) when the secrets below are set
 
 3. **CI/CD Secrets** (add to GitHub repository)
    - `ANDROID_KEYSTORE` - Base64-encoded keystore file
@@ -81,6 +84,9 @@ To publish to Google Play, you need to:
    - Complete app listing (title, description, screenshots, etc.)
    - Set up internal/alpha/beta testing tracks
    - Configure app content rating and privacy policy
+   - Enable Play App Signing; host Digital Asset Links at
+     `https://apakan.ramate.io/.well-known/assetlinks.json`
+     (template: `android/assetlinks.json.example`)
 
 ## Local Builds
 
