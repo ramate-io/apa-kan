@@ -172,6 +172,8 @@ case "$cfg" in
   followup_maj)
     run_one h2h_maj_unlim_mm "${mm_pair[@]}" --games 75 --seed 300 \
       --objective capture-score --majority-spawn-bonus on --unlimited-spawn on
+    run_one h2h_unlimited_mcts "${mcts_pair[@]}" --games 50 --seed 10300 \
+      --objective capture-score --unlimited-spawn on
     run_one h2h_majority_inner_mm "${mm_pair[@]}" --games 40 --seed 400 \
       --objective capture-score --majority-spawn-bonus on --majority-spawn-set inner
     run_one h2h_majority_center_mm "${mm_pair[@]}" --games 40 --seed 400 \
