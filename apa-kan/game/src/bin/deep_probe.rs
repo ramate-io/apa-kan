@@ -1,0 +1,370 @@
+//! Deep fan-out search on replayed benchmark positions (capture-score passivity probe).
+
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+use apa_kan::ai::{
+	apply_move, is_capture, legal_search_moves, Actor, SearchConfig, SearchLimit, Searcher,
+	SearchMove, CALIBRATED_NODES_PER_MOVE, WIN,
+};
+use apa_kan::bench_log::{decode_jsonl_gz, replay_to_action, GameLog};
+use apa_kan::game::{Action, Game, Player};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
+
+use super::BenchConfig;
+
+const CENTER: u8 = 0;
+const INNER: [u8; 8] = [9, 1, 12, 3, 16, 6, 18, 21];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct MoveTag {
+	kind: u8,
+	from: u8,
+	to: u8,
+}
+
+impl MoveTag {
+	fn from_action(a: &Action) -> Self {
+		match a {
+			Action::Add { bench_index, node } => Self {
+				kind: 0,
+				from: (*bench_index).min(u8::MAX as usize) as u8,
+				to: *node,
+			},
+			Action::Move { from, to } => Self { kind: 1, from: *from, to: *to },
+			Action::Claim { node } => Self { kind: 2, from: 0, to: *node },
+			Action::Swap { from, to } => Self { kind: 3, from: *from, to: *to },
+			Action::Convert { node } => Self { kind: 4, from: 0, to: *node },
+			Action::Pass => Self { kind: 5, from: 0, to: 0 },
+		}
+	}
+
+	fn label(self) -> String {
+		match self.kind {
+			0 => format!("add@{}", self.to),
+			1 => format!("move{}->{}", self.from, self.to),
+			2 => format!("claim@{}", self.to),
+			3 => format!("swap{}<->{}", self.from, self.to),
+			4 => format!("convert@{}", self.to),
+			_ => "pass".into(),
+		}
+	}
+}
+
+fn dest_ring(node: u8) -> &'static str {
+	if node == CENTER {
+		"center"
+	} else if INNER.contains(&node) {
+		"inner"
+	} else {
+		"outer"
+	}
+}
+
+fn overwhelming_counts(game: &Game) -> (u8, u8) {
+	let mut opp = 0u8;
+	let mut own = 0u8;
+	let me = game.current_player();
+	for node in game.overwhelmed_nodes() {
+		if let Some(tile) = game.tile_at(node) {
+			if tile.owner == me {
+				own += 1;
+			} else {
+				opp += 1;
+			}
+		}
+	}
+	(opp, own)
+}
+
+fn immediate_capture_moves(game: &Game) -> u16 {
+	let me = game.current_player();
+	let mut n = 0u16;
+	for mv in legal_search_moves(game) {
+		let mut child = game.clone();
+		if let Ok(out) = apply_move(&mut child, mv) {
+			if is_capture(&out, me) {
+				n += 1;
+			}
+		}
+	}
+	n
+}
+
+fn score_win_visible(game: &Game, me: Player) -> bool {
+	let target = game.rules().score_target;
+	game.capture_score(me) + 1 >= target
+		&& overwhelming_counts(game).0 > 0
+}
+
+struct ProbeRun {
+	tag: MoveTag,
+	depth: u8,
+	nodes: u64,
+	root_score: i32,
+	dest_ring: &'static str,
+	proves_terminal: bool,
+}
+
+fn action_to_search_move(action: &Action) -> Option<SearchMove> {
+	match action {
+		Action::Move { from, to } => Some(SearchMove::Move { from: *from, to: *to }),
+		Action::Swap { from, to } => Some(SearchMove::Swap { from: *from, to: *to }),
+		Action::Convert { node } => Some(SearchMove::Convert { node: *node }),
+		_ => None,
+	}
+}
+
+fn minimax_probe(
+	game: &Game,
+	played: &[u64],
+	last_move: Option<Action>,
+	search: SearchConfig,
+	nodes: u64,
+	rng_seed: u64,
+	root_shuffle: bool,
+) -> ProbeRun {
+	let mut searcher = Searcher::with_config(search);
+	searcher.seed_played_hashes(played);
+	searcher.set_minimax_last_move(last_move.as_ref().and_then(action_to_search_move));
+	searcher.set_root_shuffle(root_shuffle);
+	let mut rng = StdRng::seed_from_u64(rng_seed);
+	let limit = SearchLimit::Work { nodes, iters: u32::MAX };
+	let action = searcher
+		.choose_with(game, Actor::Minimax, &mut rng, limit)
+		.clone();
+	let st = searcher.stats();
+	let dest = match &action {
+		Action::Add { node, .. } | Action::Claim { node } | Action::Convert { node } => *node,
+		Action::Move { to, .. } | Action::Swap { to, .. } => *to,
+		Action::Pass => CENTER,
+	};
+	let proves_terminal = st.root_score.abs() >= WIN / 2;
+	ProbeRun {
+		tag: MoveTag::from_action(&action),
+		depth: st.depth,
+		nodes: st.nodes,
+		root_score: st.root_score,
+		dest_ring: dest_ring(dest),
+		proves_terminal,
+	}
+}
+
+fn sample_action_indices(log: &GameLog) -> Vec<usize> {
+	let mut picks = Vec::new();
+	let actions = &log.actions;
+	let end = &log.end;
+	let late = log.turns >= 80;
+	let stalled = end.reason.as_deref() == Some("turn_limit");
+	let mut seen_turns = HashSet::new();
+
+	for (i, act) in actions.iter().enumerate() {
+		let turn = act.turn;
+		let p1 = act.p1_score;
+		let p2 = act.p2_score;
+		let tied = p1 == p2 || p1.abs_diff(p2) <= 1;
+		let interesting = late && tied && turn >= 60;
+		if stalled && interesting && turn >= 100 && seen_turns.insert(turn) {
+			picks.push(i);
+		}
+	}
+
+	if picks.len() < 6 {
+		for (i, act) in actions.iter().enumerate() {
+			if act.turn >= 40 && (i % 8 == 3) {
+				picks.push(i);
+			}
+		}
+	}
+
+	picks.sort_unstable();
+	picks.dedup();
+	picks.truncate(10);
+	picks
+}
+
+pub fn run(cfg: &BenchConfig) {
+	let logs = &cfg.probe_logs;
+	let multipliers = if cfg.probe_budget_mult.is_empty() {
+		vec![1_u64, 16, 64]
+	} else {
+		cfg.probe_budget_mult.clone()
+	};
+	let fanout = cfg.probe_fanout.max(1);
+	let base_nodes = cfg.limit.nodes().unwrap_or(CALIBRATED_NODES_PER_MOVE);
+	let search = cfg.search;
+	let mut lines: Vec<String> = Vec::new();
+	lines.push(format!("# deep_probe  search={}", search.label()));
+	lines.push(format!(
+		"# budget_base_nodes={base_nodes}  mult={multipliers:?}  fanout={fanout}  shuffle={}",
+		cfg.probe_root_shuffle
+	));
+	lines.push("# columns: log game action turn player p1 p2 claim_opp claim_own imm_cap light..deep moves".into());
+
+	let mut total = 0u32;
+	let mut changed_16 = 0u32;
+	let mut changed_64 = 0u32;
+	let mut deep_win_spot = 0u32;
+	let mut shallow_only_caps = 0u32;
+	let mut imm_cap_positions = 0u32;
+	let mut ring_light = HashMap::<&'static str, u32>::new();
+	let mut ring_deep = HashMap::<&'static str, u32>::new();
+
+	for path in logs {
+		let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+		let games = decode_jsonl_gz(&bytes).unwrap_or_else(|e| panic!("decode {}: {e}", path.display()));
+		let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+		lines.push(format!("\n# log={label} n_games={}", games.len()));
+
+		for log in games {
+			let indices = sample_action_indices(&log);
+			for &ix in &indices {
+				let (game, played, last) =
+					replay_to_action(&log, ix).unwrap_or_else(|e| panic!("replay g{} ix{ix}: {e}", log.game));
+				let me = game.current_player();
+				let act = &log.actions[ix];
+				let (claim_opp, claim_own) = overwhelming_counts(&game);
+				let imm = immediate_capture_moves(&game);
+				if imm > 0 {
+					imm_cap_positions += 1;
+				}
+				let score_win_setup = score_win_visible(&game, me);
+
+				let mut by_mult: HashMap<u64, ProbeRun> = HashMap::new();
+				for &mult in &multipliers {
+					let nodes = base_nodes.saturating_mul(mult);
+					let seed = log
+						.search_rng_seed
+						.wrapping_add((ix as u64).wrapping_mul(0x9E37))
+						.wrapping_add(mult.wrapping_mul(0xD1B5));
+					let run = minimax_probe(&game, &played, last, search, nodes, seed, false);
+					by_mult.insert(mult, run);
+				}
+
+				let light = by_mult.get(&1).or_else(|| by_mult.get(&multipliers[0])).unwrap();
+				let mid = by_mult.get(&16).or_else(|| by_mult.get(&multipliers[1.min(multipliers.len() - 1)]));
+				let deep = by_mult.get(&64).or_else(|| by_mult.get(&multipliers.last().copied().unwrap_or(64)));
+
+				*ring_light.entry(light.dest_ring).or_default() += 1;
+				if let Some(d) = deep {
+					*ring_deep.entry(d.dest_ring).or_default() += 1;
+				}
+
+				let mut fanout_tags: HashSet<MoveTag> = HashSet::new();
+				for f in 0..fanout {
+					let seed = log.search_rng_seed
+						^ (ix as u64).wrapping_mul(0x517c)
+						^ (f as u64).wrapping_mul(0x9E3779B97F4A7C15);
+					let nodes = base_nodes.saturating_mul(16);
+					let run = minimax_probe(
+						&game,
+						&played,
+						last,
+						search,
+						nodes,
+						seed,
+						cfg.probe_root_shuffle,
+					);
+					fanout_tags.insert(run.tag);
+				}
+
+				total += 1;
+				if let Some(m) = mid {
+					if m.tag != light.tag {
+						changed_16 += 1;
+					}
+				}
+				if let Some(d) = deep {
+					if d.tag != light.tag {
+						changed_64 += 1;
+					}
+					if d.proves_terminal && !light.proves_terminal {
+						deep_win_spot += 1;
+					}
+				}
+				if imm > 0 {
+					if let (Some(m), Some(d)) = (mid, deep) {
+						if light.tag != m.tag || light.tag != d.tag {
+							shallow_only_caps += 1;
+						}
+					}
+				}
+
+				let mut row = String::new();
+				let _ = write!(
+					row,
+					"pos\t{label}\tg{}\tix{ix}\tt{}\t{}\t{}-{}\tco={claim_opp}\tcs={claim_own}\tic={imm}\tsw={score_win_setup}",
+					log.game,
+					act.turn,
+					me.label(),
+					act.p1_score,
+					act.p2_score,
+				);
+				for &mult in &multipliers {
+					if let Some(r) = by_mult.get(&mult) {
+						let _ = write!(
+							row,
+							"\tm{mult}:{} d{} n{} sc{} ring{} term{}",
+							r.tag.label(),
+							r.depth,
+							r.nodes,
+							r.root_score,
+							r.dest_ring,
+							r.proves_terminal as u8
+						);
+					}
+				}
+				let _ = write!(row, "\tfan16_n={} fan16_moves={}", fanout_tags.len(), fanout_tags.len());
+				if let (Some(m), Some(d)) = (mid, deep) {
+					let _ = write!(
+						row,
+						"\td16={}\td64={}\tch16={}\tch64={}",
+						m.depth,
+						d.depth,
+						u8::from(m.tag != light.tag),
+						u8::from(d.tag != light.tag)
+					);
+				}
+				lines.push(row);
+				eprintln!(
+					"probe {label} g{} ix{ix} t{} light={} deep={}",
+					log.game,
+					act.turn,
+					light.tag.label(),
+					deep.map(|d| d.tag.label()).unwrap_or_else(|| "-".into()),
+				);
+			}
+		}
+	}
+
+	lines.push(String::new());
+	lines.push("# summary".into());
+	lines.push(format!("positions={total}"));
+	lines.push(format!(
+		"move_change_rate  x16={:.3} x64={:.3}",
+		if total == 0 {
+			0.0
+		} else {
+			f64::from(changed_16) / f64::from(total)
+		},
+		if total == 0 {
+			0.0
+		} else {
+			f64::from(changed_64) / f64::from(total)
+		}
+	));
+	lines.push(format!("deep_only_terminal_win_flags={deep_win_spot}"));
+	lines.push(format!(
+		"imm_capture_positions={imm_cap_positions} shallow_missed_tactical={shallow_only_caps}"
+	));
+	lines.push(format!("dest_ring_light={ring_light:?} dest_ring_64x={ring_deep:?}"));
+
+	let text = lines.join("\n");
+	println!("{text}");
+	if let Some(out) = &cfg.probe_out {
+		if let Some(parent) = out.parent() {
+			let _ = std::fs::create_dir_all(parent);
+		}
+		std::fs::write(out, &text).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
+	}
+}

@@ -1696,6 +1696,55 @@ pub fn replay_center_captures(log: &GameLog) -> Result<(Game, u32, u32), String>
 	Ok((game, opp, slf))
 }
 
+/// Replay through `before_action` exclusive: the side to move is about to play
+/// ply `before_action`. Returns occupancy history for repetition-aware search.
+pub fn replay_to_action(
+	log: &GameLog,
+	before_action: usize,
+) -> Result<(Game, Vec<u64>, Option<Action>), String> {
+	if log.v != SCHEMA_VERSION {
+		return Err(format!("unsupported log schema v={}", log.v));
+	}
+	let rules = log.rules.to_rules()?;
+	let mut game = if let Some(setup) = &log.setup {
+		Game::from_setup_record(rules, log.seed, setup.to_record()?)
+	} else {
+		let mut game = Game::empty(rules);
+		game.set_bag(Player::One, tiles_from_log(&log.opening.p1_bag)?);
+		game.set_bag(Player::Two, tiles_from_log(&log.opening.p2_bag)?);
+		game.set_bench(Player::One, tiles_from_log(&log.opening.p1_bench)?);
+		game.set_bench(Player::Two, tiles_from_log(&log.opening.p2_bench)?);
+		game
+	};
+	game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; log.opening.p1_tokens]);
+	game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; log.opening.p2_tokens]);
+	game.set_current(Player::One);
+	let mut played: Vec<u64> = Vec::new();
+	let mut last_move = None;
+	for (i, act) in log.actions.iter().enumerate() {
+		if i >= before_action {
+			break;
+		}
+		let action = act.to_action().map_err(|e| format!("action {i}: {e}"))?;
+		last_move = last_position_action(&action);
+		game
+			.apply(action)
+			.map_err(|e| format!("action {i} apply: {e}"))?;
+		let h = crate::ai::occupancy_hash(&game);
+		if played.last().copied() != Some(h) {
+			played.push(h);
+		}
+	}
+	Ok((game, played, last_move))
+}
+
+fn last_position_action(action: &Action) -> Option<Action> {
+	match action {
+		Action::Move { .. } | Action::Swap { .. } | Action::Convert { .. } => Some(*action),
+		_ => None,
+	}
+}
+
 /// Compare terminal physics: status, turns, board, benches, bags, token stacks.
 pub fn assert_same_terminal(live: &Game, replayed: &Game) -> Result<(), String> {
 	if live.status() != replayed.status() {

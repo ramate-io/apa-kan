@@ -86,6 +86,8 @@ pub struct MinimaxState {
 	pub last_move: Option<SearchMove>,
 	pub legacy: bool,
 	pub config: SearchConfig,
+	/// When true, shuffle root move order after killers/TT/history ordering.
+	pub root_shuffle: bool,
 }
 
 impl MinimaxState {
@@ -97,6 +99,7 @@ impl MinimaxState {
 			last_move: None,
 			legacy: false,
 			config,
+			root_shuffle: false,
 		}
 	}
 }
@@ -182,6 +185,7 @@ pub fn search(
 	let me = game.current_player();
 	let mut best_move = legal[rng.gen_range(0..legal.len())];
 	let mut completed_depth = 0u8;
+	let mut completed_score = 0i32;
 
 	for depth in 1..=16u8 {
 		if ctx.over_budget() {
@@ -190,6 +194,10 @@ pub fn search(
 		ctx.abort = false;
 		let mut ordered = legal.clone();
 		order_root(&mut ctx, game, &mut ordered, Some(best_move));
+		if state.root_shuffle {
+			use rand::seq::SliceRandom;
+			ordered.shuffle(rng);
+		}
 		let mut alpha = -WIN;
 		let beta = WIN;
 		let mut best = -WIN - 1;
@@ -236,13 +244,22 @@ pub fn search(
 		if completed && !ctx.abort {
 			best_move = pick;
 			completed_depth = depth;
+			completed_score = best;
 		} else {
 			break;
 		}
 	}
 
 	let action = best_move.to_action(game).unwrap_or(fallback);
-	(action, SearchStats { depth: completed_depth, nodes: ctx.nodes, ..SearchStats::default() })
+	(
+		action,
+		SearchStats {
+			depth: completed_depth,
+			nodes: ctx.nodes,
+			root_score: completed_score,
+			..SearchStats::default()
+		},
+	)
 }
 
 /// Fixed-depth root value from the side to move. No iterative deepening,

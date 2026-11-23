@@ -1,5 +1,7 @@
 //! Head-to-head search benchmark: branching, stalling, minimax vs MCTS.
 
+mod deep_probe;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -65,6 +67,13 @@ struct BenchConfig {
 	ply_probe: Option<u8>,
 	/// When true, both players start from the identical 27-tile collection.
 	same_deck: bool,
+	/// JSONL.gz sources for [`deep_probe::run`].
+	probe_logs: Vec<PathBuf>,
+	probe_budget_mult: Vec<u64>,
+	probe_fanout: u32,
+	probe_root_shuffle: bool,
+	probe_out: Option<PathBuf>,
+	deep_probe: bool,
 }
 
 fn usage() -> &'static str {
@@ -94,6 +103,12 @@ fn usage() -> &'static str {
 	                             Worker t is seeded with rng.gen() XOR (t+1)*golden; threads=1 draws nothing extra.\n\
 	   --ablate-search      Depth/node table for each lever on opening + short midgame, then exit\n\
 	   --ply-probe <n>      Time minimax completing ID depth n on a handful of positions, then exit\n\
+	   --deep-probe         Replay positions from --probe-log and run deep fan-out minimax, then exit\n\
+	   --probe-log <path>   JSONL.gz game log (repeatable; used with --deep-probe)\n\
+	   --probe-mult <list>  Node budget multipliers vs --budget (default: 1,16,64)\n\
+	   --probe-fanout <n>   Randomized root runs at 16x budget (default: 8)\n\
+	   --probe-root-shuffle <on|off>  Shuffle root move order on fan-out runs (default: on)\n\
+	   --probe-out <path>   Write probe TSV summary (default: none; stdout always)\n\
 	   --calibrate          Measure nodes/iters per move at --think-ms (default 1000), jobs=1, then exit\n\
 	   --seed <u64>         Base seed (default: 1)\n\
 	   --deck-seed <u64>    Collection generation seed (default: --seed)\n\
@@ -171,6 +186,12 @@ where
 		ablate: false,
 		ply_probe: None,
 		same_deck: false,
+		probe_logs: Vec::new(),
+		probe_budget_mult: Vec::new(),
+		probe_fanout: 8,
+		probe_root_shuffle: true,
+		probe_out: None,
+		deep_probe: false,
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -339,6 +360,25 @@ where
 				}
 				cfg.ply_probe = Some(n as u8);
 			}
+			"--deep-probe" => cfg.deep_probe = true,
+			"--probe-log" => cfg.probe_logs.push(PathBuf::from(need("--probe-log", it.next())?)),
+			"--probe-mult" => {
+				cfg.probe_budget_mult = parse_probe_mult(&need("--probe-mult", it.next())?)?;
+			}
+			"--probe-fanout" => {
+				cfg.probe_fanout = parse_u64("--probe-fanout", &need("--probe-fanout", it.next())?)? as u32;
+			}
+			"--probe-root-shuffle" => {
+				let v = need("--probe-root-shuffle", it.next())?;
+				cfg.probe_root_shuffle = match v.to_ascii_lowercase().as_str() {
+					"on" | "true" | "1" => true,
+					"off" | "false" | "0" => false,
+					other => {
+						return Err(format!("invalid --probe-root-shuffle '{other}' (expected on|off)"));
+					}
+				};
+			}
+			"--probe-out" => cfg.probe_out = Some(PathBuf::from(need("--probe-out", it.next())?)),
 			"--turn-limit" => {
 				let n = parse_u64("--turn-limit", &need("--turn-limit", it.next())?)?;
 				if n == 0 {
@@ -502,6 +542,25 @@ fn parse_bots(s: &str) -> Result<Vec<Actor>, String> {
 			continue;
 		}
 		out.push(Actor::parse(part)?);
+	}
+	Ok(out)
+}
+
+fn parse_probe_mult(s: &str) -> Result<Vec<u64>, String> {
+	let mut out = Vec::new();
+	for part in s.split(',') {
+		let part = part.trim();
+		if part.is_empty() {
+			continue;
+		}
+		let n = parse_u64("--probe-mult", part)?;
+		if n == 0 {
+			return Err("invalid --probe-mult (expected positive integers)".into());
+		}
+		out.push(n);
+	}
+	if out.is_empty() {
+		return Err("invalid --probe-mult (empty)".into());
 	}
 	Ok(out)
 }
@@ -690,6 +749,14 @@ fn run(cfg: BenchConfig) {
 	}
 	if cfg.ply_probe.is_some() {
 		run_ply_probe(&cfg);
+		return;
+	}
+	if cfg.deep_probe {
+		if cfg.probe_logs.is_empty() {
+			eprintln!("--deep-probe requires at least one --probe-log");
+			std::process::exit(1);
+		}
+		deep_probe::run(&cfg);
 		return;
 	}
 	let started = Instant::now();
