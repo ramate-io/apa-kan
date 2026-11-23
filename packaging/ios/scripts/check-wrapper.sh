@@ -41,6 +41,12 @@ if find "$ROOT/packaging/ios" -iname '*berkeley*' \( -name '*.ttf' -o -name '*.o
 	fail=1
 fi
 
+# Xcode's script phase is bash 3.2 with `set -u`; empty arrays are unbound.
+if grep -qE 'RELFLAG\[@\]|RELFLAG\[\*\]' "$ROOT/packaging/ios/scripts/build-rust.sh"; then
+	echo "build-rust.sh must not expand RELFLAG as an array under set -u" >&2
+	fail=1
+fi
+
 if [[ "$fail" -ne 0 ]]; then
 	exit 1
 fi

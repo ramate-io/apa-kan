@@ -12,10 +12,10 @@ PATH="$PATH:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin"
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 PROFILE=debug
-RELFLAG=()
+RELFLAG=""
 if [[ "${CONFIGURATION:-Debug}" != "Debug" ]]; then
 	PROFILE=release
-	RELFLAG=(--release)
+	RELFLAG="--release"
 fi
 
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
@@ -50,8 +50,11 @@ for arch in $ARCHS_LIST; do
 		;;
 	esac
 
-	echo "cargo build -p apa-kan --bin apa-kan --target $TARGET ${RELFLAG[*]:-}"
-	cargo build -p apa-kan --bin apa-kan --features desktop "${RELFLAG[@]}" --target "$TARGET"
+	echo "cargo build -p apa-kan --bin apa-kan --target $TARGET $RELFLAG"
+	# $RELFLAG must stay a plain string: empty arrays are unbound under `set -u`
+	# on the bash 3.2 that Xcode's script phase uses.
+	# shellcheck disable=SC2086
+	cargo build -p apa-kan --bin apa-kan --features desktop --target "$TARGET" $RELFLAG
 	EXECUTABLES+=("$CARGO_TARGET_DIR/$TARGET/$PROFILE/apa-kan")
 done
 
