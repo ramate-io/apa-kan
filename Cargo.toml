@@ -4,6 +4,7 @@ resolver = "2"
 
 members = [
   "apa-kan/account",
+  "apa-kan/admin",
   "apa-kan/core",
   "apa-kan/game",
   "apa-kan/server",
