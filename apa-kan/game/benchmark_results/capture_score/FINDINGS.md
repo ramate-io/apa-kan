@@ -91,6 +91,8 @@ Do not bake 400. Weight 80 is only barely less stalled (1/4 target wins). Tune f
 | + capture_cascade | mm-mm | 150 | **30-18-102** | 0.200 [0.144, 0.271] | 139.6 / 200 | 4.23 | 1.31 / 2.93 (abs 2.58) | 23 target / 64 TL wins / 18 TL draws / **42 lockout** | 30/132 (22.7%) |
 | + unlimited_spawn | mm-mm | 150 | **72-25-53** | 0.480 [0.402, 0.559] | **95.0 / 65.5** | 9.93 opp / **25.8 self** | 5.03 / 4.90 (abs 1.60) | **113 target / 8 TL wins / 25 TL draws** | **74/125 (59.2%)** |
 | + majority + cascade | mm-mm | 150 | 54-17-79 | 0.360 [0.288, 0.439] | 129.3 / 131.0 | 6.25 | 2.77 / 3.49 (abs 2.83) | 48 target / 49 TL wins / 17 draws / 34 lockout | 47/133 (35.3%) |
+| control (live) | mm-mcts | 100 | 42-1-57 | 0.420 [0.328, 0.518] | 57.4 / 39.0 | 6.22 | — | 65 control, 29 lockout | n/a |
+| + majority_spawn_bonus | mm-mcts | _running_ |  |  |  |  |  |  |  |
 
 Control concentration (150 games): dest rings **C 5.4 / I 26.5 / S 52.6 / O 15.5%**. Capture nodes 7.3 / 29.8 / 44.3 / 18.6%. Inner MOVEs that actually take an opponent piece: **16.2%** (307/1893). End occupancy is inner-heavy even though actions go through spawn: remaining pieces C 11.3 / **I 55.8** / S 23.7 / O 9.2%, center held at end **86/150**. First opponent capture mean turn 8.1. Recapture-within-2: 14.1% (137/972). Piece usage: 2-ring 3847, 3-ring 3052, 1-ring 464; marks ~50/50 dot/triangle; lights normal 5806 / zag 2640 / bead 1732 / braid 1390. SWAP 78, CONVERT 99 (ratchet counterplay).
 
