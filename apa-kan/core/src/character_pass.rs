@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::characters::{CharacterId, CharacterLibrary};
 use crate::core_pass::CoreTile;
@@ -66,6 +66,53 @@ impl CoreKey {
 			tile.emblem,
 		)
 	}
+
+	pub fn rings(&self) -> &[(TileColor, RingType)] {
+		&self.rings
+	}
+
+	pub fn dots(&self) -> u8 {
+		self.dots
+	}
+
+	pub fn capture(&self) -> CaptureMark {
+		self.capture
+	}
+
+	pub fn emblem(&self) -> Emblem {
+		self.emblem
+	}
+
+	pub fn to_map_json(&self, characters: &[String]) -> serde_json::Value {
+		let rings: Vec<[String; 2]> = self
+			.rings
+			.iter()
+			.map(|(c, t)| [c.name().to_string(), t.name().to_string()])
+			.collect();
+		serde_json::json!({
+			"rings": rings,
+			"dots": self.dots,
+			"capture": self.capture.name(),
+			"emblem": self.emblem.name(),
+			"characters": characters,
+		})
+	}
+
+	pub fn from_map_json(value: &serde_json::Value) -> Result<(Self, Vec<String>), String> {
+		let entry: SpecificEntryFile = serde_json::from_value(value.clone())
+			.map_err(|e| format!("invalid specific-map JSON: {e}"))?;
+		if entry.characters.is_empty() {
+			return Err("specific map entry has an empty character set".into());
+		}
+		let rings = parse_ring_pairs(&entry.rings)?;
+		let key = Self::new(
+			rings,
+			entry.dots,
+			CaptureMark::parse(&entry.capture)?,
+			Emblem::parse(&entry.emblem)?,
+		);
+		Ok((key, entry.characters))
+	}
 }
 
 /// Sparse admin row: omitted keys are 0 (no opinion).
@@ -89,6 +136,86 @@ impl SparseCharacterRow {
 			&& self.capture.values().all(|&w| w == 0.0)
 			&& self.dots == 0.0
 	}
+
+	pub fn validate(&self) -> Result<(), String> {
+		if self.id.is_empty() {
+			return Err("embedding row has an empty id".into());
+		}
+		if self.is_all_zero() {
+			return Err(format!("embedding row '{}' is all-zero (invalid)", self.id));
+		}
+		Ok(())
+	}
+
+	/// `embedding.json` row object (omitted keys stay absent).
+	pub fn to_json_value(&self) -> serde_json::Value {
+		let mut obj = serde_json::Map::new();
+		obj.insert("id".into(), serde_json::Value::String(self.id.clone()));
+		if !self.color.is_empty() {
+			obj.insert(
+				"color".into(),
+				weight_map_json(self.color.iter().map(|(k, w)| (k.name(), *w))),
+			);
+		}
+		if !self.ring_type.is_empty() {
+			obj.insert(
+				"type".into(),
+				weight_map_json(self.ring_type.iter().map(|(k, w)| (k.name(), *w))),
+			);
+		}
+		if !self.emblem.is_empty() {
+			obj.insert(
+				"emblem".into(),
+				weight_map_json(self.emblem.iter().map(|(k, w)| (k.name(), *w))),
+			);
+		}
+		let mut marks = serde_json::Map::new();
+		if self.n_rings != 0.0 {
+			marks.insert("n_rings".into(), serde_json::json!(self.n_rings));
+		}
+		if self.dots != 0.0 {
+			marks.insert("dots".into(), serde_json::json!(self.dots));
+		}
+		if !self.capture.is_empty() {
+			marks.insert(
+				"capture".into(),
+				weight_map_json(self.capture.iter().map(|(k, w)| (k.name(), *w))),
+			);
+		}
+		if !marks.is_empty() {
+			obj.insert("marks".into(), serde_json::Value::Object(marks));
+		}
+		serde_json::Value::Object(obj)
+	}
+
+	pub fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+		let raw: EmbeddingRowFile = serde_json::from_value(value.clone())
+			.map_err(|e| format!("invalid embedding row JSON: {e}"))?;
+		parse_embedding_row(raw)
+	}
+}
+
+impl Serialize for SparseCharacterRow {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		self.to_json_value().serialize(serializer)
+	}
+}
+
+impl<'de> Deserialize<'de> for SparseCharacterRow {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = serde_json::Value::deserialize(deserializer)?;
+		Self::from_json_value(&value).map_err(serde::de::Error::custom)
+	}
+}
+
+fn weight_map_json<'a>(iter: impl Iterator<Item = (&'a str, f32)>) -> serde_json::Value {
+	let mut map = serde_json::Map::new();
+	for (k, w) in iter {
+		if w != 0.0 {
+			map.insert(k.to_string(), serde_json::json!(w));
+		}
+	}
+	serde_json::Value::Object(map)
 }
 
 /// Backing store for the three character databases. JSON today; a SQL/admin
@@ -100,6 +227,8 @@ pub trait CharacterTables {
 	fn specific(&self, key: &CoreKey) -> Option<&[String]>;
 	/// Every character id that appears in a specific-map set (for catalog checks).
 	fn specific_ids(&self) -> Vec<&str>;
+	/// All authored exact maps. Used to snapshot a version into the store.
+	fn specific_all(&self) -> Vec<(CoreKey, Vec<String>)>;
 	fn embedding_rows(&self) -> &[SparseCharacterRow];
 	fn fallback_ids(&self) -> &[String];
 }
@@ -280,6 +409,10 @@ impl CharacterTables for JsonCharacterTables {
 		self.specific.values().flatten().map(String::as_str).collect()
 	}
 
+	fn specific_all(&self) -> Vec<(CoreKey, Vec<String>)> {
+		self.specific.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+	}
+
 	fn embedding_rows(&self) -> &[SparseCharacterRow] {
 		&self.rows
 	}
@@ -292,25 +425,178 @@ impl CharacterTables for JsonCharacterTables {
 fn parse_ring_pairs(pairs: &[(String, String)]) -> Result<Vec<(TileColor, RingType)>, String> {
 	pairs
 		.iter()
-		.map(|(c, t)| Ok((TileColor::parse(c)?, parse_ring_type(t)?)))
+		.map(|(c, t)| Ok((TileColor::parse(c)?, RingType::parse(t)?)))
 		.collect()
 }
 
-fn parse_ring_type(s: &str) -> Result<RingType, String> {
-	match s.to_ascii_lowercase().as_str() {
-		"normal" | "n" => Ok(RingType::Normal),
-		"zag" | "jag" | "z" => Ok(RingType::Zag),
-		"braid" | "b" => Ok(RingType::Braid),
-		"bead" | "e" => Ok(RingType::Bead),
-		other => Err(format!("unknown ring type '{other}'")),
+/// In-memory snapshot of one pass version. Store backends materialize this
+/// for generation so Memory, SQLite, and Postgres pick identically.
+#[derive(Clone, Debug)]
+pub struct SnapshotCharacterTables {
+	version: u16,
+	tau: f32,
+	k: Option<usize>,
+	specific: BTreeMap<CoreKey, Vec<String>>,
+	rows: Vec<SparseCharacterRow>,
+	fallback: Vec<String>,
+}
+
+impl SnapshotCharacterTables {
+	pub fn new(
+		version: u16,
+		tau: f32,
+		k: Option<usize>,
+		specific: BTreeMap<CoreKey, Vec<String>>,
+		rows: Vec<SparseCharacterRow>,
+		fallback: Vec<String>,
+	) -> Result<Self, String> {
+		if !(0.0..=1.0).contains(&tau) {
+			return Err(format!("tau {tau} is outside [0, 1]"));
+		}
+		if let Some(0) = k {
+			return Err("k must be >= 1 when set".into());
+		}
+		if fallback.is_empty() {
+			return Err("fallback set is empty".into());
+		}
+		let mut seen = BTreeSet::new();
+		for row in &rows {
+			row.validate()?;
+			if !seen.insert(row.id.as_str()) {
+				return Err(format!("duplicate embedding id '{}'", row.id));
+			}
+		}
+		let mut seen_fb = BTreeSet::new();
+		for id in &fallback {
+			if id.is_empty() {
+				return Err("fallback id is empty".into());
+			}
+			if !seen_fb.insert(id.as_str()) {
+				return Err(format!("duplicate fallback id '{id}'"));
+			}
+			if seen.contains(id.as_str()) && id != crate::characters::FACELESS_ID {
+				return Err(format!(
+					"fallback id '{id}' also appears in the embedding (must be disjoint)"
+				));
+			}
+		}
+		Ok(Self { version, tau, k, specific, rows, fallback })
 	}
+
+	pub fn from_tables<T: CharacterTables>(tables: &T) -> Result<Self, String> {
+		Self::new(
+			tables.version(),
+			tables.tau(),
+			tables.k(),
+			tables.specific_all().into_iter().collect(),
+			tables.embedding_rows().to_vec(),
+			tables.fallback_ids().to_vec(),
+		)
+	}
+}
+
+impl CharacterTables for SnapshotCharacterTables {
+	fn version(&self) -> u16 {
+		self.version
+	}
+
+	fn tau(&self) -> f32 {
+		self.tau
+	}
+
+	fn k(&self) -> Option<usize> {
+		self.k
+	}
+
+	fn specific(&self, key: &CoreKey) -> Option<&[String]> {
+		self.specific.get(key).map(|v| v.as_slice())
+	}
+
+	fn specific_ids(&self) -> Vec<&str> {
+		self.specific.values().flatten().map(String::as_str).collect()
+	}
+
+	fn specific_all(&self) -> Vec<(CoreKey, Vec<String>)> {
+		self.specific.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+	}
+
+	fn embedding_rows(&self) -> &[SparseCharacterRow] {
+		&self.rows
+	}
+
+	fn fallback_ids(&self) -> &[String] {
+		&self.fallback
+	}
+}
+
+/// One cosine neighborhood hit. Sorted by id before `tile.id % len` in
+/// [`assign_character`]; preview sorts by cosine instead.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NeighborHit {
+	pub id: String,
+	pub cosine: f32,
+}
+
+/// Pure character pick as a catalog slug. Same rule as [`CharacterPass::assign`].
+pub fn assign_character<T: CharacterTables>(tables: &T, tile: &CoreTile, tile_id: u32) -> String {
+	let key = CoreKey::from_core(tile);
+	if let Some(set) = tables.specific(&key) {
+		if !set.is_empty() {
+			return set[(tile_id as usize) % set.len()].clone();
+		}
+	}
+	let tile_vec = encode_tile(tile);
+	let mut hits = neighborhood(tables, &tile_vec);
+	if hits.is_empty() {
+		return fallback_pick(tables, tile_id);
+	}
+	if let Some(k) = tables.k() {
+		hits.sort_by(|a, b| {
+			b.cosine
+				.partial_cmp(&a.cosine)
+				.unwrap_or(std::cmp::Ordering::Equal)
+				.then(a.id.cmp(&b.id))
+		});
+		hits.truncate(k.max(1));
+	}
+	hits.sort_by(|a, b| a.id.cmp(&b.id));
+	hits[(tile_id as usize) % hits.len()].id.clone()
+}
+
+fn fallback_pick<T: CharacterTables>(tables: &T, tile_id: u32) -> String {
+	let ids = tables.fallback_ids();
+	let h = crate::core_pass::TileId(tile_id).avalanche() as usize;
+	ids[h % ids.len()].clone()
+}
+
+/// Cosine neighborhood under τ, minus fallback-reserved ids (`faceless` stays).
+pub fn neighborhood<T: CharacterTables>(tables: &T, query: &[f32]) -> Vec<NeighborHit> {
+	neighborhood_rows(tables.embedding_rows(), tables.fallback_ids(), tables.tau(), query)
+}
+
+pub fn neighborhood_rows(
+	rows: &[SparseCharacterRow],
+	fallback: &[String],
+	tau: f32,
+	query: &[f32],
+) -> Vec<NeighborHit> {
+	let fallback: BTreeSet<&str> = fallback.iter().map(String::as_str).collect();
+	rows.iter()
+		.filter(|row| {
+			!(fallback.contains(row.id.as_str()) && row.id != crate::characters::FACELESS_ID)
+		})
+		.filter_map(|row| {
+			let c = cosine(query, &encode_character(row));
+			(c >= tau).then_some(NeighborHit { id: row.id.clone(), cosine: c })
+		})
+		.collect()
 }
 
 fn parse_embedding_row(raw: EmbeddingRowFile) -> Result<SparseCharacterRow, String> {
 	Ok(SparseCharacterRow {
 		id: raw.id,
 		color: parse_weight_map(&raw.color, TileColor::parse)?,
-		ring_type: parse_weight_map(&raw.ring_type, parse_ring_type)?,
+		ring_type: parse_weight_map(&raw.ring_type, RingType::parse)?,
 		emblem: parse_weight_map(&raw.emblem, Emblem::parse)?,
 		n_rings: raw.marks.n_rings,
 		capture: parse_weight_map(&raw.marks.capture, CaptureMark::parse)?,
@@ -334,7 +620,6 @@ fn parse_weight_map<T: Copy + Ord, E: ToString>(
 pub struct CharacterPass<T: CharacterTables> {
 	tables: T,
 	library: CharacterLibrary,
-	encoded: Vec<(CharacterId, String, Vec<f32>)>,
 }
 
 impl CharacterPass<JsonCharacterTables> {
@@ -363,18 +648,16 @@ impl<T: CharacterTables> CharacterPass<T> {
 				.get(id)
 				.ok_or_else(|| format!("specific-map id '{id}' is not in the catalog"))?;
 		}
-		let mut encoded = Vec::new();
 		for row in tables.embedding_rows() {
 			if fallback.contains(row.id.as_str()) && row.id != crate::characters::FACELESS_ID {
 				return Err(format!("embedding row '{}' is reserved for fallback", row.id));
 			}
-			let ch = library
-				.id_of(&row.id)
-				.ok_or_else(|| format!("embedding id '{}' is not in the catalog", row.id))?;
-			let vec = encode_character(row);
-			encoded.push((ch, row.id.clone(), vec));
+			if library.id_of(&row.id).is_none() {
+				return Err(format!("embedding id '{}' is not in the catalog", row.id));
+			}
+			let _ = encode_character(row);
 		}
-		Ok(Self { tables, library, encoded })
+		Ok(Self { tables, library })
 	}
 
 	pub fn tables(&self) -> &T {
@@ -392,44 +675,9 @@ impl<T: CharacterTables> CharacterPass<T> {
 	/// Assign a catalog character. Specific-map hit wins; otherwise the
 	/// cosine neighborhood under τ (minus fallback); otherwise fallback.
 	pub fn assign(&self, tile: &CoreTile, tile_id: u32) -> CharacterId {
-		let key = CoreKey::from_core(tile);
-		if let Some(set) = self.tables.specific(&key) {
-			if !set.is_empty() {
-				let pick = set[(tile_id as usize) % set.len()].as_str();
-				if let Some(id) = self.library.id_of(pick) {
-					return id;
-				}
-			}
-		}
-		let tile_vec = encode_tile(tile);
-		let mut hits: Vec<(f32, &str, CharacterId)> = self
-			.encoded
-			.iter()
-			.filter_map(|(cid, name, vec)| {
-				let c = cosine(&tile_vec, vec);
-				(c >= self.tables.tau()).then_some((c, name.as_str(), *cid))
-			})
-			.collect();
-		if hits.is_empty() {
-			return self.fallback_pick(tile_id);
-		}
-		if let Some(k) = self.tables.k() {
-			hits.sort_by(|a, b| {
-				b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(b.1))
-			});
-			hits.truncate(k.max(1));
-		}
-		hits.sort_by(|a, b| a.1.cmp(b.1));
-		let pick = hits[(tile_id as usize) % hits.len()];
-		pick.2
-	}
-
-	fn fallback_pick(&self, tile_id: u32) -> CharacterId {
-		let ids = self.tables.fallback_ids();
-		let h = crate::core_pass::TileId(tile_id).avalanche() as usize;
-		let name = ids[h % ids.len()].as_str();
+		let slug = assign_character(&self.tables, tile, tile_id);
 		self.library
-			.id_of(name)
+			.id_of(&slug)
 			.or_else(|| self.library.id_at(0))
 			.unwrap_or(CharacterId::INVALID)
 	}
@@ -900,6 +1148,17 @@ mod tests {
 	#[test]
 	fn version_is_frozen_at_one() {
 		assert_eq!(pass().version(), 1);
+	}
+
+	#[test]
+	fn snapshot_tables_match_json_assign() {
+		let json = JsonCharacterTables::load_v1().unwrap();
+		let snap = SnapshotCharacterTables::from_tables(&json).unwrap();
+		let cfg = CorePass::base();
+		for id in 0..80u32 {
+			let tile = cfg.run(TileId(id));
+			assert_eq!(assign_character(&json, &tile, id), assign_character(&snap, &tile, id));
+		}
 	}
 
 	#[test]

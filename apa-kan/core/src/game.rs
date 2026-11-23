@@ -200,12 +200,24 @@ pub enum RingType {
 }
 
 impl RingType {
+	pub const ALL: [RingType; 4] = [Self::Normal, Self::Zag, Self::Braid, Self::Bead];
+
 	pub fn name(self) -> &'static str {
 		match self {
 			Self::Normal => "normal",
 			Self::Zag => "zag",
 			Self::Braid => "braid",
 			Self::Bead => "bead",
+		}
+	}
+
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"normal" | "n" => Ok(Self::Normal),
+			"zag" | "jag" | "z" => Ok(Self::Zag),
+			"braid" | "b" => Ok(Self::Braid),
+			"bead" | "e" => Ok(Self::Bead),
+			other => Err(format!("unknown ring type '{other}'")),
 		}
 	}
 
