@@ -1,6 +1,8 @@
+pub mod admin;
 pub mod api;
 pub mod mailer;
 pub mod service;
+pub mod session;
 pub mod starter;
 pub mod state;
 

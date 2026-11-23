@@ -5,7 +5,9 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 use apa_kan_store::sqlite::SqliteStore;
+use apa_kan_store::Store;
 
+use crate::admin;
 use crate::api;
 use crate::mailer::Mailer;
 use crate::state::AppState;
@@ -15,10 +17,15 @@ pub async fn spawn_test_server(
 	clock: Arc<dyn Clock>,
 	mailer: Arc<dyn Mailer>,
 ) -> Result<(SocketAddr, JoinHandle<()>), std::io::Error> {
-	let store = SqliteStore::connect_in_memory()
+	let sqlite = SqliteStore::connect_in_memory()
 		.await
 		.map_err(|e| std::io::Error::other(e.to_string()))?;
-	let state = AppState::new(store, clock, mailer);
+	let store: Arc<dyn Store> = Arc::new(sqlite);
+	let mut state = AppState::new(store, clock, mailer);
+	state.allow_first_admin = true;
+	admin::seed_if_needed(&state)
+		.await
+		.map_err(|e| std::io::Error::other(e.to_string()))?;
 	let app = api::router(state);
 
 	let listener = TcpListener::bind("127.0.0.1:0").await?;

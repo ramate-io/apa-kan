@@ -1,11 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use apa_kan_server::admin;
 use apa_kan_server::api;
 use apa_kan_server::mailer::NoopMailer;
 use apa_kan_server::state::AppState;
 use apa_kan_store::sqlite::SqliteStore;
-use apa_kan_store::SystemClock;
+use apa_kan_store::{Store, SystemClock};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -16,9 +17,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let database_url = std::env::var("APA_KAN_DATABASE_URL").unwrap_or_else(|_| {
 		format!("sqlite:{}", std::env::temp_dir().join("apa-kan-server.db").display())
 	});
-	let path = database_url.strip_prefix("sqlite:").unwrap_or(&database_url);
-	let store = SqliteStore::connect_file(path).await?;
+	let store: Arc<dyn Store> =
+		if database_url.starts_with("postgres://") || database_url.starts_with("postgresql://") {
+			#[cfg(feature = "postgres")]
+			{
+				Arc::new(apa_kan_store::postgres::PostgresStore::connect(&database_url).await?)
+			}
+			#[cfg(not(feature = "postgres"))]
+			{
+				return Err("postgres feature disabled".into());
+			}
+		} else {
+			let path = database_url.strip_prefix("sqlite:").unwrap_or(&database_url);
+			Arc::new(SqliteStore::connect_file(path).await?)
+		};
 	let state = AppState::new(store, Arc::new(SystemClock), Arc::new(NoopMailer));
+	admin::seed_if_needed(&state).await?;
 
 	let app = api::router(state);
 

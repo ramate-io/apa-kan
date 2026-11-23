@@ -15,13 +15,14 @@ name = "apa-kan-server"
 path = "src/main.rs"
 
 [features]
-default = ["sqlite"]
+default = ["sqlite", "postgres"]
 sqlite = ["apa-kan-store/sqlite"]
+postgres = ["apa-kan-store/postgres"]
 
 [dependencies]
 apa-kan-account = { workspace = true }
 apa-kan-core = { workspace = true }
-apa-kan-store = { workspace = true, features = ["sqlite"] }
+apa-kan-store = { workspace = true, features = ["sqlite", "postgres", "memory"] }
 axum.workspace = true
 hex.workspace = true
 rand.workspace = true

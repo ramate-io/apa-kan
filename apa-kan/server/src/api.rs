@@ -96,19 +96,22 @@ fn account_id_from_path(s: &str) -> Result<AccountId, (StatusCode, String)> {
 	AccountId::from_hex(s.trim()).map_err(|e| (StatusCode::BAD_REQUEST, format!("bad id: {e}")))
 }
 
-fn store_error(e: StoreError) -> (StatusCode, String) {
+pub(crate) fn store_error(e: StoreError) -> (StatusCode, String) {
 	match e {
 		StoreError::NotFound => (StatusCode::NOT_FOUND, "not found".into()),
 		StoreError::Conflict(msg) => (StatusCode::CONFLICT, msg),
 		StoreError::BadNonce => (StatusCode::CONFLICT, "bad nonce".into()),
 		StoreError::Expired => (StatusCode::GONE, "expired".into()),
 		StoreError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg),
+		StoreError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
 		StoreError::Account(err) => (StatusCode::UNAUTHORIZED, err.to_string()),
 		StoreError::Storage(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
 	}
 }
 
 pub fn router(state: AppState) -> Router {
+	use tower_http::cors::{Any, CorsLayer};
+
 	Router::new()
 		.route("/health", get(health))
 		.route("/v1/accounts", post(create_account))
@@ -121,6 +124,8 @@ pub fn router(state: AppState) -> Router {
 		.route("/v1/accounts/{account_id}/recovery/finish", post(recovery_finish))
 		.route("/v1/accounts/{account_id}/email", post(set_email))
 		.route("/v1/accounts/{account_id}/keys", get(list_keys))
+		.merge(crate::admin::router())
+		.layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
 		.with_state(state)
 }
 

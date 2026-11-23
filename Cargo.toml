@@ -25,7 +25,7 @@ apa-kan-account = { path = "apa-kan/account" }
 apa-kan-core = { path = "apa-kan/core" }
 apa-kan-store = { path = "apa-kan/store" }
 async-trait = "0.1"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 bevy = { version = "0.19.1" }
 hex = "0.4"
 # OPEN-Q #58-19: joint bump with gwrdfa vs crates.io 0.1.2 — pinned to gwrdfa for now.
@@ -37,7 +37,7 @@ sha3 = "0.10.8"
 sqlx = { version = "0.8", default-features = false }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zeroize = { version = "1.8", features = ["derive"] }
