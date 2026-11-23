@@ -71,6 +71,7 @@ struct BenchConfig {
 	probe_logs: Vec<PathBuf>,
 	probe_budget_mult: Vec<u64>,
 	probe_fanout: u32,
+	probe_jobs: usize,
 	probe_root_shuffle: bool,
 	probe_out: Option<PathBuf>,
 	deep_probe: bool,
@@ -106,7 +107,8 @@ fn usage() -> &'static str {
 	   --deep-probe         Replay positions from --probe-log and run deep fan-out minimax, then exit\n\
 	   --probe-log <path>   JSONL.gz game log (repeatable; used with --deep-probe)\n\
 	   --probe-mult <list>  Node budget multipliers vs --budget (default: 1,16,64)\n\
-	   --probe-fanout <n>   Randomized root runs at 16x budget (default: 8)\n\
+	   --probe-fanout <n>   Randomized root runs at max budget mult (default: 8)\n\
+	   --probe-jobs <n>     Parallel positions for --deep-probe (default: available_parallelism)\n\
 	   --probe-root-shuffle <on|off>  Shuffle root move order on fan-out runs (default: on)\n\
 	   --probe-out <path>   Write probe TSV summary (default: none; stdout always)\n\
 	   --calibrate          Measure nodes/iters per move at --think-ms (default 1000), jobs=1, then exit\n\
@@ -189,6 +191,7 @@ where
 		probe_logs: Vec::new(),
 		probe_budget_mult: Vec::new(),
 		probe_fanout: 8,
+		probe_jobs: default_jobs(),
 		probe_root_shuffle: true,
 		probe_out: None,
 		deep_probe: false,
@@ -367,6 +370,9 @@ where
 			}
 			"--probe-fanout" => {
 				cfg.probe_fanout = parse_u64("--probe-fanout", &need("--probe-fanout", it.next())?)? as u32;
+			}
+			"--probe-jobs" => {
+				cfg.probe_jobs = parse_u64("--probe-jobs", &need("--probe-jobs", it.next())?)? as usize;
 			}
 			"--probe-root-shuffle" => {
 				let v = need("--probe-root-shuffle", it.next())?;
