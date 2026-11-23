@@ -1,0 +1,14 @@
+name: Server Smoke
+
+on:
+  push:
+    branches:
+
+jobs:
+  server-smoke:
+    uses: ./.github/workflows/nix-command.yml
+    with:
+      command: cargo test -p apa-kan-server --test smoke_server --test smoke_binary -- --test-threads=1
+      nix_flake_path: '.'
+      runner: 'ubuntu-latest'
+      rust_cache_key: cargo-server-smoke
