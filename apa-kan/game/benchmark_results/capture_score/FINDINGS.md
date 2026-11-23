@@ -49,7 +49,7 @@ Light package: release, `--no-default-features`, `nodes:33000,iters:650`, exactp
 | + capture_cascade | 4 | 2-0-2 | 119 / 124 | 5.50 | 2.75 / 2.75 (3.50) | 1 score, 1 lockout, 2 turn-limit |
 | + unlimited_spawn | 4 | 1-1-2 | 142 / 166 | 9.75 opp, **58.5 self** | 4.50 / 5.25 (1.75) | 2 score, 2 turn-limit |
 
-All five 150-game mm-mm cells plus majority+cascade are in. Control / majority / base / cascade MCTS are in. Majority+unlimited is running; inner/center/target/weight sweeps and unlimited MCTS follow.
+All five 150-game mm-mm cells plus majority+cascade and majority+unlimited are in. Control / majority / base / cascade MCTS are in. Inner-trigger sweep is running; center trigger, target 4/8, weight cells, and unlimited MCTS follow.
 
 ### Smoke concentration (dest share of all actions)
 
@@ -91,6 +91,7 @@ Do not bake 400. Weight 80 is only barely less stalled (1/4 target wins). Tune f
 | + capture_cascade | mm-mm | 150 | **30-18-102** | 0.200 [0.144, 0.271] | 139.6 / 200 | 4.23 | 1.31 / 2.93 (abs 2.58) | 23 target / 64 TL wins / 18 TL draws / **42 lockout** | 30/132 (22.7%) |
 | + unlimited_spawn | mm-mm | 150 | **72-25-53** | 0.480 [0.402, 0.559] | **95.0 / 65.5** | 9.93 opp / **25.8 self** | 5.03 / 4.90 (abs 1.60) | **113 target / 8 TL wins / 25 TL draws** | **74/125 (59.2%)** |
 | + majority + cascade | mm-mm | 150 | 54-17-79 | 0.360 [0.288, 0.439] | 129.3 / 131.0 | 6.25 | 2.77 / 3.49 (abs 2.83) | 48 target / 49 TL wins / 17 draws / 34 lockout | 47/133 (35.3%) |
+| + majority + unlimited | mm-mm | 150 | 57-28-65 | 0.380 [0.306, 0.460] | **92.4 / 59.0** | 10.00 opp / **27.4 self** | 4.85 / 5.15 (abs 1.68) | **117 target / 3 TL wins / 28 draws** | **75/122 (61.5%)** |
 | control (live) | mm-mcts | 100 | 42-1-57 | 0.420 [0.328, 0.518] | 57.4 / 39.0 | 6.22 | — | 65 control, 29 lockout | n/a |
 | + majority_spawn_bonus | mm-mcts | 100 | 43-4-53 | 0.430 [0.337, 0.528] | **70.0 / 43.0** | 7.88 | 3.65 / 4.23 (abs 3.60) | **80 target / 6 TL wins / 4 draws** | 38/96 (39.6%) |
 | capture-score base | mm-mcts | 100 | 40-12-48 | 0.400 [0.309, 0.498] | **96.4 / 58.0** | 6.42 | 2.91 / 3.51 (abs 3.62) | **57 target / 18 TL wins / 12 draws / 12 lockout** | 19/88 (21.6%) |
@@ -106,7 +107,9 @@ Capture-cascade concentration (150 games): dest C 3.1 / I 24.4 / S 39.7 / O 32.8
 
 Unlimited-spawn concentration (150 games): dest **C 2.7 / I 19.0 / S 57.1 / O 21.3%** — fight is occupying spawn nodes so the opponent cannot land recycled tiles. Capture nodes 2.6 / 16.3 / **67.0** / 14.2%. Inner MOVE capturing **20.7%** (highest of any arm, including control). All 5363 captures return to `owner`. End occupancy spawn-heavy (52%). 11+6 games with repeats≥3 (one max_rep=60). Fair P1 WR, 113/150 target — but the center is not the prize.
 
-Majority+cascade combo (150 games): dest C 3.6 / I 23.1 / S 49.3 / O 24.0%. Inner MOVE capturing 6.6%. Capture-ratchets 488 (CONVERT 92, SWAP 177) plus 7695 majority awards. **Worse than majority alone**: 48 target wins vs 76, 34 lockouts, P1 WR 0.360 vs 0.387, median 131 vs 108.5. Do not ship this combo. Remaining interesting cell is majority+unlimited.
+Majority+cascade combo (150 games): dest C 3.6 / I 23.1 / S 49.3 / O 24.0%. Inner MOVE capturing 6.6%. Capture-ratchets 488 (CONVERT 92, SWAP 177) plus 7695 majority awards. **Worse than majority alone**: 48 target wins vs 76, 34 lockouts, P1 WR 0.360 vs 0.387, median 131 vs 108.5. Do not ship this combo.
+
+Majority+unlimited combo (150 games): dest C 3.9 / I 19.9 / **S 59.6** / O 16.6% — spawn-starve like unlimited, not inner-fight like majority. Inner MOVE capturing 19.2%. All 5607 captures return to `owner`. Majority awards 4598 (tokens/side 18.82). **Finishes like unlimited** (117/150 target vs 113) but **P1 WR is majority-like** (0.380 vs unlimited 0.480). Comebacks 61.5% (highest). 14 games both hit the cap and looped ≥3. SWAP 43, CONVERT 0. Score plies are tied 58.8% of the time — a closer race that still belongs to whoever occupies spawn. Do not prefer this combo over unlimited (fairer finish) or majority (less looping, more control-like).
 
 Base scoring vs MCTS (100 games): dest **C 3.0 / I 20.4 / S 41.8 / O 34.8%**. Inner MOVE capturing 10.7% (vs 5.3% mm-mm). **57/100 target** vs 23/150 mm-mm; median **58 vs 200**. Same lopsided split as majority-vs-MCTS: minimax as P1 is **39-7-4**, MCTS as P1 is **1-5-44**. Stall is two equal exactplay bots; a weaker side gets farmed to 6 even without majority tokens. Recapture-within-2 8.3%. CONVERT 0, SWAP 0. Tokens/side 1.64. End occupancy mixed (center held 59/100). Piece usage still 2-ring then 3-ring (5505 / 3856 / 334); marks ~53/47 dot/triangle.
 
@@ -131,6 +134,12 @@ Majority-spawn seed=10300 (target, t50, 6–4 P1): P2 sits center at **t4 and t8
 Majority-spawn seed=300 (turn-limit 4–3 P1): 175 MOVEs. Center at t12 (P2, majority+) and t187 (P1, no award). Score stuck 4–3 into the cap. Late majority awards still fire (t198, t200) but nobody takes the next capture. 2-ring 10841 / 3-ring 6595 / 1-ring 1154; dots 10503 vs triangle 8087 — same piece mix as control, more of them.
 
 Majority-spawn seed=302 (target, t45, 5–6 P2): P2 wins on target after trailing −2. 76/150 games actually hit 6; 54.8% of decided games are comebacks. Tokens/side 13.4 vs 1.0 on base — extra spawn is spent, more pieces hit the board, more get captured (8.56 vs 6.00). Still 62/150 hit the cap, so the lever is real but not sufficient alone.
+
+Majority+unlimited seed=300 (target, t99, 5–6 P2): P2 sits center at **t6** (majority award, no capture). First score is P1 t13 MOVE inner 18. Tied 5–5 at t98; P2 hits 6 on **t99 MOVE outer 22** (two caps). Spawn/outer finish, not center.
+
+Majority+unlimited seed=304 (200-turn 5–5 draw): 105 ADDs / 95 MOVEs — recycle looping. Center sits at t2/t28/t50 with majority awards and no points. Late ply is ADD spawn 23 trading self-captures, score stuck 5–5.
+
+Majority+unlimited seed=327 (comeback from −5, t199, 5–6 P2): P1 led 5–1 while sitting center t43. P2 equalized, sat center t172 without scoring, then **t199 MOVE inner 3** for the sixth. Largest surveyed comeback; still not a center fight.
 
 Unlimited-spawn seed=10300 (target, t40, 6–4 P1): first score is P2 **ADD spawn 2** at t6 (landing on a recycled opponent). Center sits at t21/t25 without scoring. P1 hits 6 on **t40 MOVE inner 6** (three caps). Fight is spawn occupancy, not center.
 
@@ -166,4 +175,4 @@ Base scoring with weight 0 does not hunt captures. Smoke_base game seed=1: openi
 
 ## Honest take
 
-Control 150-game mirror is a **fair, short game** (P1 WR 0.500, mean 49 turns). Bare capture-score vs an equal exactplay mirror is not (P1 WR 0.267, median 200), but vs MCTS it **does** finish (57/100 target, median 58) — the stall is two equal bots refusing contact, not a missing win condition. Two scoring levers finish equal-bot games: **majority-spawn** (76/150 target vs mm-mm; **80/100 vs MCTS**) and **unlimited-spawn** (113/150 target, P1 WR 0.480). Majority / base / cascade vs MCTS are all lopsided (minimax P1 42-2-6 / 39-7-4 / **50-0-0**; MCTS P1 1-2-47 / 1-5-44 / **0-1-49**). Cascade's fair-looking 0.500 P1 WR is the seat swap. Center sits rarely score under capture-score; the inner ring is where points happen. Solo cascade is a lockout snowball (45/100 vs MCTS, 42/150 mm-mm). Remaining cells: majority+unlimited, inner/center trigger, target 4/8. Control still has the cleanest center fight. `eval_capture_score=400` stays off.
+Control 150-game mirror is a **fair, short game** (P1 WR 0.500, mean 49 turns). Bare capture-score vs an equal exactplay mirror is not (P1 WR 0.267, median 200), but vs MCTS it **does** finish (57/100 target, median 58) — the stall is two equal bots refusing contact, not a missing win condition. Two scoring levers finish equal-bot games: **majority-spawn** (76/150 target vs mm-mm; **80/100 vs MCTS**; more control-like rings) and **unlimited-spawn** (113/150 target, P1 WR 0.480; spawn-starve, some loops). Majority+unlimited finishes like unlimited (117 target) but keeps majority's P2 edge (P1 WR 0.380) and the spawn fight — not a better mix. Majority / base / cascade vs MCTS are all lopsided (minimax P1 42-2-6 / 39-7-4 / **50-0-0**; MCTS P1 1-2-47 / 1-5-44 / **0-1-49**). Cascade's fair-looking 0.500 P1 WR is the seat swap. Center sits rarely score under capture-score; the inner ring is where points happen. Remaining cells: inner/center trigger, target 4/8. Control still has the cleanest center fight. `eval_capture_score=400` stays off.
