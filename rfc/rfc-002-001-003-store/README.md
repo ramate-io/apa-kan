@@ -44,7 +44,7 @@ State tables for accounts, keys, inventory, ratings; append-only game events def
 
 See `apa-kan/store/migrations/001_platform_v1.sql` — includes `trade_bind_until_unix` and empty `rating_division_slots`.
 
-`tile_kind_id` is `apa_kan::game::Tile::kind_index()` plus capture mark (`triangle=0`, `dot=1`) under the locked live ruleset. Switch to `apa-kan-core` tile identity once that crate split lands; do not block M1 on it.
+`tile_kind_id` is `apa_kan_core::game::Tile::kind_index()` plus capture mark (`triangle=0`, `dot=1`) under the locked live ruleset.
 
 ## Implementation
 

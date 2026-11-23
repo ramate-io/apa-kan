@@ -37,5 +37,6 @@ Each RFC directory should contain:
 - [rfc-001-001-006-emblems](./rfc-001-001-006-emblems/README.md) — one optional emblem slot per tile (Crescent Moon, Two Zag Zs); +1 deck cost; rare generation (200/1/1)
 - [rfc-001-001-007-character-library](./rfc-001-001-007-character-library/README.md) — twenty-five named character medallion PNGs with ids and a Bevy asset manifest; not yet wired into generation
 - [rfc-000-000-00n-generation](./rfc-000-000-00n-generation/README.md) — two-pass tile generation; versioned character assignment (specific map, aesthetic embedding, fallback)
+- [rfc-002-001-001-core-split](./rfc-002-001-001-core-split/README.md) — extract `apa-kan-core` (rules, bots, JSONL, clocks) from the Bevy client; dependency direction
 - [rfc-002-001-002-accounts-ml-dsa](./rfc-002-001-002-accounts-ml-dsa/README.md) — account id, ML-DSA keys, link/approve, recovery cooldowns, signed envelopes (M1/M9)
 - [rfc-002-001-003-store](./rfc-002-001-003-store/README.md) — storage traits, SQLite/Postgres backends, migrations, hybrid state tables (M1/M3+)

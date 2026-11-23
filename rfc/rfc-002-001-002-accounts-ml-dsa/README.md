@@ -46,7 +46,7 @@ An account is not a pubkey; authorized keys are rows keyed by `account_id`.
 
 ### Signed game actions (join point with core)
 
-`apa-kan-action/v1` envelopes wrap engine actions; validation is account signature + replay. Out of scope for M1 except domain stubs. Until `apa-kan-core` lands, the server depends on the existing `apa-kan` game crate (`default-features = false`) for starter-kit tile kinds.
+`apa-kan-action/v1` envelopes wrap engine actions; validation is account signature + replay. Out of scope for M1 except domain stubs. Starter-kit tile kinds come from `apa-kan-core` (`Tile::kind_index` plus capture mark).
 
 ### Ratings context (#58-Q1 / Q2)
 

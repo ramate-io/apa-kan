@@ -19,8 +19,8 @@ default = ["sqlite"]
 sqlite = ["apa-kan-store/sqlite"]
 
 [dependencies]
-apa-kan = { workspace = true, default-features = false }
 apa-kan-account = { workspace = true }
+apa-kan-core = { workspace = true }
 apa-kan-store = { workspace = true, features = ["sqlite"] }
 axum.workspace = true
 hex.workspace = true

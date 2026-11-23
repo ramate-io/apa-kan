@@ -1,0 +1,30 @@
+[package]
+name = "apa-kan-core"
+version = { workspace = true }
+edition  = { workspace = true }
+license  = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+publish = { workspace = true }
+rust-version = { workspace = true }
+description = "Apa Kan rules, bots, JSONL replay, and clocks. No Bevy."
+
+[lib]
+name = "apa_kan_core"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Fixture constructors used by the Bevy client's `#[cfg(test)]` HUD tests.
+test-helpers = []
+
+[dependencies]
+flate2 = "1"
+rand = { version = "0.8", features = ["std", "std_rng"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[lints]
+workspace = true

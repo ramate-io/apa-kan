@@ -5,9 +5,8 @@ use apa_kan_account::recovery::RecoveryKind;
 use apa_kan_account::types::AuthorizedKeyStatus;
 use serde::{Deserialize, Serialize};
 
-/// Inventory kind id: `apa_kan::game::Tile::kind_index` plus capture mark
-/// (see `apa_kan_server::starter::inventory_kind_id`). Switch to
-/// `apa-kan-core` tile identity once that crate lands.
+/// Inventory kind id: `apa_kan_core::game::Tile::kind_index` plus capture mark
+/// (see `apa_kan_server::starter::inventory_kind_id`).
 pub type TileKindId = u32;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

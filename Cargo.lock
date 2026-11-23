@@ -188,6 +188,7 @@ dependencies = [
 name = "apa-kan"
 version = "0.1.0"
 dependencies = [
+ "apa-kan-core",
  "bevy",
  "flate2",
  "image",
@@ -212,11 +213,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "apa-kan-core"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "apa-kan-server"
 version = "0.1.0"
 dependencies = [
- "apa-kan",
  "apa-kan-account",
+ "apa-kan-core",
  "apa-kan-store",
  "axum",
  "hex",

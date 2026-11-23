@@ -4,6 +4,7 @@ resolver = "2"
 
 members = [
   "apa-kan/account",
+  "apa-kan/core",
   "apa-kan/game",
   "apa-kan/server",
   "apa-kan/store",
@@ -20,8 +21,8 @@ publish = false
 rust-version = "1.95.0"
 
 [workspace.dependencies]
-apa-kan = { path = "apa-kan/game", default-features = false }
 apa-kan-account = { path = "apa-kan/account" }
+apa-kan-core = { path = "apa-kan/core" }
 apa-kan-store = { path = "apa-kan/store" }
 async-trait = "0.1"
 axum = "0.8"

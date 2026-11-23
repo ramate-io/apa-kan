@@ -2,6 +2,8 @@
 
 A turn-based game of colors and adjacency on an 8-petal rosette, built with Rust and Bevy 0.19.1.
 
+Rules, bots, JSONL replay, and match clocks live in `apa-kan-core` (`apa-kan/core`). The `apa-kan` crate is the Bevy client (display and in-match UI) and depends on core; core does not depend on Bevy. Default games stay unclocked. Optional Fischer 5+0 / 2+1 clocks are a match axis, not a `RuleSet` knob.
+
 ## How to play
 
 The board is a 25-node rosette: a **center**, then three rings of eight (inner, spawn, outer). The eight yellow nodes are **spawns** — that is where new tiles enter. No two spawns touch.
@@ -94,6 +96,7 @@ The locked-ruleset sanity cell (exactplay minimax mirror, light budget, zags on,
 ```bash
 RUSTFLAGS=-Dwarnings cargo check --workspace --all-targets
 cargo test --workspace
+cargo test -p apa-kan-core
 cargo fmt --all -- --check
 ```
 

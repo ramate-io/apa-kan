@@ -5,10 +5,9 @@
 //! marks, under the locked live engine types (`RingType`, `CaptureMark`,
 //! `Tile::kind_index`).
 //!
-//! Depends on the `apa-kan` game crate for now. Switch to `apa-kan-core`
-//! once that split lands.
+//! Tile kinds come from `apa-kan-core` (`Tile::kind_index` plus capture mark).
 
-use apa_kan::game::{CaptureMark, Player, RingType, Tile, TileColor, KIND_COUNT};
+use apa_kan_core::game::{CaptureMark, Player, RingType, Tile, TileColor, KIND_COUNT};
 
 use apa_kan_store::TileKindId;
 
@@ -66,7 +65,7 @@ fn starter_tiles() -> Vec<Tile> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use apa_kan::game::TileColor;
+	use apa_kan_core::game::TileColor;
 	use std::collections::HashSet;
 
 	#[test]
