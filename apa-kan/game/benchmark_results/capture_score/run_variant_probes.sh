@@ -12,7 +12,7 @@ exec > >(tee -a "$log") 2>&1
 probe_one() {
   local jsonl="$1" tsv="$2"
   echo "=== deep-probe $jsonl -> $tsv (fan-out 4) ==="
-  PROBE_FANOUT=4 PROBE_JOBS="${PROBE_JOBS:-8}" PROBE_OUT="$tsv" \
+  env -u PROBE_FANOUT_OFF PROBE_FANOUT=4 PROBE_JOBS="${PROBE_JOBS:-8}" PROBE_OUT="$tsv" \
     "$out/run_deep_probe.sh" "$jsonl"
   python3 "$out/deep_probe_analyze.py" "$tsv" || true
 }
@@ -23,7 +23,6 @@ if [[ ! -f "$out/smoke_unlimited_mm.jsonl.gz" ]]; then
     --budget "$budget" \
     --bots minimax --pairings minimax:minimax \
     --objective capture-score --unlimited-spawn on \
-    --search eval_capture=0 \
     --out "$out/smoke_unlimited_mm.txt"
   python3 "$out/qualitative_read.py" "$out/smoke_unlimited_mm.jsonl.gz" || true
 fi

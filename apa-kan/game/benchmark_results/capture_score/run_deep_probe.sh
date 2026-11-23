@@ -25,7 +25,7 @@ exec "$BIN" --no-depth-probe --deep-probe \
   --budget nodes:132000,iters:2600 \
   --probe-mult 1,16,64 \
   --probe-jobs "${PROBE_JOBS:-$(nproc 2>/dev/null || echo 4)}" \
-  --probe-fanout "$(if [[ -n "${PROBE_FANOUT_OFF:-}" ]]; then echo 0; else echo "${PROBE_FANOUT:-4}"; fi)" \
+  --probe-fanout "$(if [[ -n "${PROBE_FANOUT_OFF:-}" ]]; then echo 0; elif [[ -n "${PROBE_FANOUT+x}" ]]; then echo "${PROBE_FANOUT}"; else echo 4; fi)" \
   --search-profile enhanced \
   --probe-root-shuffle on \
   --probe-out "${PROBE_OUT:-$out/deep_probe_results.txt}" \
