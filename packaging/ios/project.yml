@@ -18,6 +18,12 @@ settings:
     SWIFT_VERSION: "5.0"
     ENABLE_BITCODE: false
     CLANG_ENABLE_MODULES: true
+    # Xcode 26 Debug otherwise emits a .debug.dylib that must export _main
+    # *before* the post-build script can swap in the Bevy binary.
+    ENABLE_DEBUG_DYLIB: false
+    ONLY_ACTIVE_ARCH: true
+    ARCHS: arm64
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
     # Simulator / CI: unsigned. Device signing is documented in README.md.
     CODE_SIGN_IDENTITY: ""
     CODE_SIGNING_REQUIRED: false

@@ -17,7 +17,7 @@ if ! command -v xcodegen >/dev/null 2>&1; then
 fi
 
 command -v cargo >/dev/null
-rustup target add aarch64-apple-ios-sim x86_64-apple-ios >/dev/null
+rustup target add aarch64-apple-ios-sim >/dev/null
 
 (cd "$IOS_DIR" && xcodegen generate --spec project.yml --use-cache)
 
@@ -31,6 +31,10 @@ xcodebuild \
 	-sdk iphonesimulator \
 	-destination "$DEST" \
 	-derivedDataPath "$DERIVED" \
+	ARCHS=arm64 \
+	ONLY_ACTIVE_ARCH=YES \
+	EXCLUDED_ARCHS=x86_64 \
+	ENABLE_DEBUG_DYLIB=NO \
 	CODE_SIGNING_ALLOWED=NO \
 	CODE_SIGNING_REQUIRED=NO \
 	CODE_SIGN_IDENTITY= \

@@ -23,6 +23,10 @@ check packaging/ios/native/ApaKanAppDelegate.m 'apa_kan_push_deep_link'
 check packaging/ios/native/ApaKanAppDelegate.m 'continueUserActivity'
 check packaging/ios/Info.plist 'ExpletusSans.ttf'
 check packaging/ios/Fonts/OFL.txt 'SIL OPEN FONT LICENSE'
+test -f "$ROOT/packaging/ios/Sources/dummy_main.c" || {
+	echo "missing dummy_main.c" >&2
+	fail=1
+}
 test -f "$ROOT/packaging/ios/Fonts/ExpletusSans.ttf" || {
 	echo "missing ExpletusSans.ttf" >&2
 	fail=1

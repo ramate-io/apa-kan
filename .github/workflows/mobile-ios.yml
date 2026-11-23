@@ -47,7 +47,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ needs.version.outputs.rust }}
-          targets: aarch64-apple-ios-sim,x86_64-apple-ios
+          targets: aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ios-simulator

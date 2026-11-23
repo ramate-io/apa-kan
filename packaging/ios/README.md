@@ -31,7 +31,7 @@ The board HUD is laid out for a wide window (desktop default 1280×900; Android 
 | `ApaKan.entitlements` | Associated-domains scaffolding: `applinks:apakan.ramate.io` (not attached to unsigned simulator builds) |
 | `apple-app-site-association.example` | AASA template; serve at `https://apakan.ramate.io/.well-known/apple-app-site-association` |
 | `native/ApaKanAppDelegate.m` | Thin AppDelegate compiled **into** the Rust binary (`game/build.rs`). Forwards custom-scheme and universal-link URLs to `push_incoming_url` via `apa_kan_push_deep_link` |
-| `Sources/placeholder.swift` | Xcode compile stub; the post-build script replaces the executable with `apa-kan` |
+| `Sources/dummy_main.c` | Linkable `_main` so Xcode 26 Debug can finish linking; the post-build script then replaces the executable with `apa-kan` |
 | `scripts/build-rust.sh` | `cargo build -p apa-kan --bin apa-kan` for `aarch64-apple-ios` / `aarch64-apple-ios-sim` |
 | `LaunchScreen.storyboard` | Cream `#f4eee2` + launch mark (no game UI) |
 | `Assets.xcassets` | App icon and launch mark on `#f4eee2` |
