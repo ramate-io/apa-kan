@@ -11,3 +11,4 @@ order_capture_scale = 70
 order_center_bonus = 16000
 playout_cutoff = 18
 puct = 1.25
+eval_capture_score = 0

@@ -155,6 +155,13 @@ pub const BAG_SIZE: usize = 27;
 pub const BAG_SIZE_DEFAULT: usize = 11;
 /// Default opening spawn-token stack. Independent of [`BAG_SIZE_DEFAULT`].
 pub const STARTING_TOKENS_DEFAULT: u8 = 7;
+/// First-to-N opponent captures under [`Objective::CaptureScore`]. Chosen so a
+/// game is more than an opening skirmish (2–3) but finishes before wiping an
+/// 11-tile bench. Benches keep [`RuleSet::turn_limit`] as the safety net.
+pub const SCORE_TARGET_DEFAULT: u8 = 6;
+/// Occupied-node threshold for [`RuleSet::capture_cascade`]: a capture extra
+/// action only fires on a sparse board (≤ this many tiles still down).
+pub const CAPTURE_CASCADE_SPARSE: u8 = 8;
 pub const MAX_COLOR_RINGS: u8 = 3;
 /// Generated tiles are dots with this percent chance; the rest are triangles.
 /// CLI `--dot-chance 0..100`. Default 50/50.
@@ -788,6 +795,8 @@ impl CaptureMark {
 pub enum CaptureDest {
 	Tokens,
 	Bench,
+	/// [`RuleSet::unlimited_spawn`]: the captured tile returns to its owner's bench.
+	Owner,
 }
 
 impl CaptureDest {
@@ -795,6 +804,7 @@ impl CaptureDest {
 		match self {
 			Self::Tokens => "tokens",
 			Self::Bench => "bench",
+			Self::Owner => "owner",
 		}
 	}
 
@@ -802,7 +812,8 @@ impl CaptureDest {
 		match s.to_ascii_lowercase().as_str() {
 			"tokens" | "token" | "triangle" => Ok(Self::Tokens),
 			"bench" | "dot" => Ok(Self::Bench),
-			other => Err(format!("unknown capture dest '{other}' (expected bench|tokens)")),
+			"owner" | "owner_bench" | "return" => Ok(Self::Owner),
+			other => Err(format!("unknown capture dest '{other}' (expected bench|tokens|owner)")),
 		}
 	}
 }
@@ -1756,6 +1767,9 @@ pub enum EndReason {
 	/// Under [`EndgameRule::ControlCascade`] it is the final tie-breaker once
 	/// `max_mat <= 1` (both sides have at most one total material).
 	LowValue,
+	/// Reached [`RuleSet::score_target`] opponent captures under
+	/// [`Objective::CaptureScore`].
+	Score,
 }
 
 /// Restriction on moving the same tile on two consecutive own turns.
@@ -2346,6 +2360,8 @@ pub enum RatchetKind {
 	Fight,
 	Cascade,
 	Both,
+	/// Sparse-board opponent capture under [`RuleSet::capture_cascade`].
+	Capture,
 }
 
 impl RatchetKind {
@@ -2354,6 +2370,7 @@ impl RatchetKind {
 			Self::Fight => "fight",
 			Self::Cascade => "cascade",
 			Self::Both => "both",
+			Self::Capture => "capture",
 		}
 	}
 }
@@ -2623,6 +2640,41 @@ impl InsufficientTilesLoss {
 
 	pub fn is_on(self) -> bool {
 		!matches!(self, Self::Off)
+	}
+}
+
+/// What the game is playing for. Live default is the 9-node control race.
+/// [`Self::CaptureScore`] is the scoring experiment: 1 point per opponent
+/// piece captured, no control / cascade occupancy wins.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Objective {
+	#[default]
+	Control,
+	CaptureScore,
+}
+
+impl Objective {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"control" | "control-cascade" | "hold" => Ok(Self::Control),
+			"capture-score" | "capture_score" | "score" | "scoring" => Ok(Self::CaptureScore),
+			other => Err(format!("unknown --objective '{other}' (expected control|capture-score)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Control => "control",
+			Self::CaptureScore => "capture-score",
+		}
+	}
+
+	pub fn is_capture_score(self) -> bool {
+		matches!(self, Self::CaptureScore)
+	}
+
+	pub fn is_control(self) -> bool {
+		matches!(self, Self::Control)
 	}
 }
 
@@ -2944,6 +2996,31 @@ pub struct RuleSet {
 	/// seating has priority and consumes or forfeits the leftover opening
 	/// stay; see [`Game::finish_turn`].
 	pub opening_double: bool,
+	/// Live default [`Objective::Control`] (9-node control race).
+	/// `--objective capture-score` is the scoring experiment: 1 point per
+	/// opponent piece captured, no control/claim/ratchet/cascade wins.
+	/// Missing JSONL replays as control.
+	pub objective: Objective,
+	/// First-to-N opponent captures when [`Self::objective`] is
+	/// [`Objective::CaptureScore`]. Default [`SCORE_TARGET_DEFAULT`] (6).
+	/// `--score-target`. Unused under control. Missing JSONL replays as 6.
+	pub score_target: u8,
+	/// At the end of your turn, if you occupy strictly more of the 9 former
+	/// control-set cells (center + inner ring) than the opponent, gain one
+	/// spawn token. Once per `finish_turn`. Default off.
+	/// `--majority-spawn-bonus`. Missing JSONL replays as off.
+	pub majority_spawn_bonus: bool,
+	/// Sparse-endgame extra action: capturing ≥1 opponent piece while the
+	/// board has ≤ [`CAPTURE_CASCADE_SPARSE`] occupied nodes awards the
+	/// capturer the next action as a ratchet reward (same 1st/2nd+ SWAP/FLIP
+	/// ladder). Default off. `--capture-cascade`. Intended for capture-score;
+	/// ignored under control so the live game stays unchanged. Missing JSONL
+	/// replays as off.
+	pub capture_cascade: bool,
+	/// Captured tiles return to the owner's bench and spawn tokens are not
+	/// spent, so occupying spawn nodes is how you draw the opponent down.
+	/// Default off. `--unlimited-spawn`. Missing JSONL replays as off.
+	pub unlimited_spawn: bool,
 }
 
 impl Default for RuleSet {
@@ -3000,6 +3077,11 @@ impl Default for RuleSet {
 			cascade_winner_swap: true,
 			ratchet_cascade: true,
 			opening_double: true,
+			objective: Objective::Control,
+			score_target: SCORE_TARGET_DEFAULT,
+			majority_spawn_bonus: false,
+			capture_cascade: false,
+			unlimited_spawn: false,
 		}
 	}
 }
@@ -3032,6 +3114,16 @@ impl RuleSet {
 	/// Additive Independent keeps a separate bead lane.
 	pub fn folds_beads_into_normal(self) -> bool {
 		self.channel_mode.is_independent_max() || self.bead_scoring == BeadScoring::SharedChannel
+	}
+
+	pub fn is_capture_score(self) -> bool {
+		self.objective.is_capture_score()
+	}
+
+	/// Control occupancy can still win. False under capture-score so the
+	/// live `control_win` default is ignored rather than mutated.
+	pub fn control_wins_active(self) -> bool {
+		self.objective.is_control() && self.control_win
 	}
 }
 
@@ -3205,6 +3297,13 @@ pub struct Game {
 	/// Reconstructible 27-tile collections and 7+4 picks. `None` on
 	/// constructed [`Self::empty`] fixtures.
 	setup: Option<crate::deck::SetupRecord>,
+	/// Opponent pieces captured this game (`[p1, p2]`). Used under
+	/// [`Objective::CaptureScore`].
+	capture_score: [u8; 2],
+	/// Last action awarded a majority-spawn token.
+	last_majority_spawn: bool,
+	/// Last action captured an opponent piece on a sparse board (capture-cascade).
+	score_cascade_hit: bool,
 }
 
 impl Game {
@@ -3338,6 +3437,9 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
+			capture_score: [0, 0],
+			last_majority_spawn: false,
+			score_cascade_hit: false,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -3420,6 +3522,9 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
+			capture_score: [0, 0],
+			last_majority_spawn: false,
+			score_cascade_hit: false,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -3504,6 +3609,9 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: None,
+			capture_score: [0, 0],
+			last_majority_spawn: false,
+			score_cascade_hit: false,
 		}
 	}
 
@@ -3604,6 +3712,46 @@ impl Game {
 	/// control set (center + inner ring).
 	pub fn control_hold(&self, player: Player) -> u8 {
 		self.control_hold[player.index()]
+	}
+
+	/// Opponent pieces `player` has captured under [`Objective::CaptureScore`].
+	pub fn capture_score(&self, player: Player) -> u8 {
+		self.capture_score[player.index()]
+	}
+
+	/// Occupied board nodes.
+	pub fn occupied_count(&self) -> u8 {
+		self.tiles.iter().filter(|t| t.is_some()).count() as u8
+	}
+
+	/// Last action awarded a majority-spawn token.
+	pub fn last_majority_spawn(&self) -> bool {
+		self.last_majority_spawn
+	}
+
+	/// Compare capture scores and end the game. Used at the turn limit and
+	/// for a wall-clock timeout: higher scorer wins, a tie is a draw.
+	pub fn resolve_timeout(&mut self) {
+		if self.status.is_over() {
+			return;
+		}
+		if self.rules.is_capture_score() {
+			self.resolve_by_score(EndReason::TurnLimit);
+		} else {
+			self.status = GameStatus::Draw { reason: EndReason::TurnLimit };
+		}
+	}
+
+	fn resolve_by_score(&mut self, reason: EndReason) {
+		let p1 = self.capture_score[0];
+		let p2 = self.capture_score[1];
+		self.status = if p1 > p2 {
+			GameStatus::Won { winner: Player::One, reason }
+		} else if p2 > p1 {
+			GameStatus::Won { winner: Player::Two, reason }
+		} else {
+			GameStatus::Draw { reason }
+		};
 	}
 
 	/// How many of the 9 control-set nodes (center + 8 inner-ring) `player`
@@ -4180,7 +4328,11 @@ impl Game {
 	/// cannot be spent until a later capture leaves a tile still unplaced, or
 	/// (legacy `capture_draw_on_move`) a draw puts a tile on the bench.
 	pub fn budget(&self, player: Player) -> usize {
-		self.budget_token_count(player).min(self.bench(player).len())
+		if self.rules.unlimited_spawn {
+			self.bench(player).len()
+		} else {
+			self.budget_token_count(player).min(self.bench(player).len())
+		}
 	}
 
 	/// Physical token-stack length, including unusable surplus.
@@ -4295,6 +4447,9 @@ impl Game {
 	/// [`EndgameRule::ControlCascade`]: `max_mat <= 1` (both sides have at
 	/// most one total material). Does not require usable budget to be 0.
 	pub fn low_value_applies(&self) -> bool {
+		if self.rules.is_capture_score() {
+			return false;
+		}
 		match self.rules.endgame_rule {
 			EndgameRule::ControlCascade => self.max_material() <= 1,
 			EndgameRule::LowValue => {
@@ -4377,6 +4532,11 @@ impl Game {
 	#[cfg(test)]
 	pub(crate) fn set_center_hold(&mut self, player: Player, n: u8) {
 		self.center_hold[player.index()] = n;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_capture_score_for_test(&mut self, player: Player, n: u8) {
+		self.capture_score[player.index()] = n;
 	}
 
 	pub fn place_tile(&mut self, node: NodeId, tile: Tile) {
@@ -5307,6 +5467,8 @@ impl Game {
 		self.last_fight_gain = None;
 		self.last_ratchet_kind = None;
 		self.cascade_drop_nonwin = false;
+		self.last_majority_spawn = false;
+		self.score_cascade_hit = false;
 		self.last_played_as_extra = self.playing_extra_turn;
 		self.last_played_as_ratchet_reward = self.playing_ratchet_reward;
 		self.last_ratchet_tier = self.active_ratchet_tier;
@@ -5366,11 +5528,22 @@ impl Game {
 			rem.spawn_two_ring_single_bead = spawn;
 		}
 		let opponent = player.other();
+		if self.rules.unlimited_spawn {
+			for rem in &mut removals {
+				rem.dest = CaptureDest::Owner;
+			}
+		}
+		if self.rules.is_capture_score() {
+			let opp_caps = removals.iter().filter(|r| r.tile.owner == opponent).count() as u8;
+			self.capture_score[player.index()] =
+				self.capture_score[player.index()].saturating_add(opp_caps);
+			self.check_score_win();
+		}
 		let mut draws = 0u8;
 		let is_move = matches!(action, Action::Move { .. });
 		for rem in &removals {
 			self.tiles[rem.node as usize] = None;
-			match dest {
+			match rem.dest {
 				CaptureDest::Bench => {
 					let mut tile = rem.tile;
 					tile.owner = player;
@@ -5385,12 +5558,22 @@ impl Game {
 						self.earn_budget(player, rem.tile);
 					}
 				}
+				CaptureDest::Owner => {
+					self.benches[rem.tile.owner.index()].push(rem.tile);
+				}
 			}
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
 				if self.draw_from_bag(player).is_some() {
 					draws = draws.saturating_add(1);
 				}
 			}
+		}
+		if self.rules.is_capture_score()
+			&& self.rules.capture_cascade
+			&& removals.iter().any(|r| r.tile.owner == opponent)
+			&& self.occupied_count() <= CAPTURE_CASCADE_SPARSE
+		{
+			self.score_cascade_hit = true;
 		}
 
 		let log_line = format_log(player, action, &removals, draws, self.board.as_ref());
@@ -5448,6 +5631,9 @@ impl Game {
 			self.update_control(who);
 		}
 		if !self.status.is_over() {
+			self.award_majority_spawn(who);
+		}
+		if !self.status.is_over() {
 			self.check_insufficient_tiles();
 		}
 		self.actions_this_turn = 0;
@@ -5456,7 +5642,11 @@ impl Game {
 			return;
 		}
 		if self.turn_count >= self.rules.turn_limit {
-			self.status = GameStatus::Draw { reason: EndReason::TurnLimit };
+			if self.rules.is_capture_score() {
+				self.resolve_by_score(EndReason::TurnLimit);
+			} else {
+				self.status = GameStatus::Draw { reason: EndReason::TurnLimit };
+			}
 			return;
 		}
 		if let Some((winner, tier)) = self.pending_ratchet.take() {
@@ -5581,7 +5771,7 @@ impl Game {
 	}
 
 	fn update_control(&mut self, who: Player) {
-		if !self.rules.control_win {
+		if !self.rules.control_wins_active() {
 			self.control_hold = [0, 0];
 			return;
 		}
@@ -5629,7 +5819,7 @@ impl Game {
 	/// Otherwise, if [`RuleSet::cascade_turn_gain`] is on, the strict
 	/// material leader receives one extra turn.
 	fn check_immediate_control_drop(&mut self) {
-		if self.status.is_over() || !self.rules.control_win {
+		if self.status.is_over() || !self.rules.control_wins_active() {
 			return;
 		}
 		if !self.sync_control_ratchet() {
@@ -5686,7 +5876,19 @@ impl Game {
 	) {
 		let cascade = self.cascade_drop_nonwin;
 		self.cascade_drop_nonwin = false;
-		if !self.rules.cascade_winner_swap || self.status.is_over() {
+		let score_hit = self.score_cascade_hit;
+		self.score_cascade_hit = false;
+		if self.status.is_over() {
+			return;
+		}
+		if self.rules.is_capture_score() {
+			if !score_hit {
+				return;
+			}
+			self.seat_ratchet(self.current, RatchetKind::Capture);
+			return;
+		}
+		if !self.rules.cascade_winner_swap {
 			return;
 		}
 		let fight = pre_center_id.is_some_and(|id| removals.iter().any(|r| r.tile.id == id));
@@ -5696,25 +5898,60 @@ impl Game {
 		let Some(leader) = Self::fight_leader(p1_mat, p2_mat, p1_tok, p2_tok) else {
 			return;
 		};
-		let kind =
+		self.seat_ratchet(
+			leader,
+			if fight && cascade {
+				RatchetKind::Both
+			} else if fight {
+				RatchetKind::Fight
+			} else {
+				RatchetKind::Cascade
+			},
+		);
+	}
+
+	fn seat_ratchet(&mut self, leader: Player, kind: RatchetKind) {
+		let gain =
 			if leader == self.current { TurnGainKind::Mover } else { TurnGainKind::Opponent };
-		self.last_fight_gain = Some(kind);
+		self.last_fight_gain = Some(gain);
 		self.fight_gain_awarded = self.fight_gain_awarded.saturating_add(1);
-		if kind == TurnGainKind::Mover {
+		if gain == TurnGainKind::Mover {
 			self.fight_gain_mover = self.fight_gain_mover.saturating_add(1);
 		} else {
 			self.fight_gain_opponent = self.fight_gain_opponent.saturating_add(1);
 		}
-		self.last_ratchet_kind = Some(if fight && cascade {
-			RatchetKind::Both
-		} else if fight {
-			RatchetKind::Fight
-		} else {
-			RatchetKind::Cascade
-		});
+		self.last_ratchet_kind = Some(kind);
 		self.ratchet_count = self.ratchet_count.saturating_add(1);
 		let tier = if self.ratchet_count == 1 { RatchetTier::First } else { RatchetTier::Later };
 		self.pending_ratchet = Some((leader, tier));
+	}
+
+	fn check_score_win(&mut self) {
+		if self.status.is_over() || !self.rules.is_capture_score() {
+			return;
+		}
+		let target = self.rules.score_target.max(1);
+		let p1 = self.capture_score[0];
+		let p2 = self.capture_score[1];
+		if p1 >= target && p1 > p2 {
+			self.status = GameStatus::Won { winner: Player::One, reason: EndReason::Score };
+		} else if p2 >= target && p2 > p1 {
+			self.status = GameStatus::Won { winner: Player::Two, reason: EndReason::Score };
+		}
+	}
+
+	/// Once per completed turn: majority of the 9 former control cells earns
+	/// one spawn token. Tied or empty occupancy awards nothing.
+	fn award_majority_spawn(&mut self, who: Player) {
+		if !self.rules.majority_spawn_bonus || self.status.is_over() {
+			return;
+		}
+		let mine = self.control_count(who);
+		let theirs = self.control_count(who.other());
+		if mine > theirs && mine > 0 {
+			self.budget_tokens[who.index()].push(BudgetToken::Blank);
+			self.last_majority_spawn = true;
+		}
 	}
 
 	fn bank_extra_turn(&mut self, leader: Player) {
@@ -5873,6 +6110,9 @@ impl Game {
 	}
 
 	fn spend_budget(&mut self, player: Player) -> Result<(), String> {
+		if self.rules.unlimited_spawn {
+			return Ok(());
+		}
 		let tokens = &mut self.budget_tokens[player.index()];
 		if tokens.is_empty() {
 			return Err("no capture budget".into());
@@ -6392,6 +6632,11 @@ mod tests {
 	#[test]
 	fn default_rules_are_control_win_with_seven_tokens() {
 		let rules = RuleSet::default();
+		assert_eq!(rules.objective, Objective::Control);
+		assert!(!rules.majority_spawn_bonus);
+		assert!(!rules.capture_cascade);
+		assert!(!rules.unlimited_spawn);
+		assert_eq!(rules.score_target, SCORE_TARGET_DEFAULT);
 		assert!(!rules.center_hold_win);
 		assert!(rules.control_win);
 		assert_eq!(rules.control_n, 5);
@@ -13906,5 +14151,192 @@ mod tests {
 		game.apply(Action::Add { bench_index: 0, node: dest2 }).unwrap();
 		assert_eq!(game.current_player(), Player::One);
 		assert_eq!(game.opening_stays_left(Player::Two), 0);
+	}
+
+	fn capture_score_rules() -> RuleSet {
+		let mut rules = RuleSet::default();
+		rules.objective = Objective::CaptureScore;
+		rules.opening_double = false;
+		rules
+	}
+
+	fn claimable_opponent(rules: RuleSet) -> (Game, NodeId) {
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, nbs[0], Player::One, TileColor::Green, 3, 1);
+		put(&mut game, nbs[1], Player::One, TileColor::Orange, 3, 1);
+		put(&mut game, spawn, Player::Two, TileColor::Blue, 1, 1);
+		let far = game.board().spawns()[4];
+		put(&mut game, far, Player::Two, TileColor::Green, 3, 1);
+		assert!(game.is_overwhelmed(spawn), "1-ring vs two 3-rings should be claimable");
+		game.set_current(Player::One);
+		(game, spawn)
+	}
+
+	#[test]
+	fn capture_score_counts_opponent_claims() {
+		let (mut game, node) = claimable_opponent(capture_score_rules());
+		assert_eq!(game.capture_score(Player::One), 0);
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.capture_score(Player::One), 1);
+		assert_eq!(game.capture_score(Player::Two), 0);
+		assert_eq!(game.status(), GameStatus::InProgress);
+	}
+
+	#[test]
+	fn capture_score_self_claim_does_not_score() {
+		let mut rules = capture_score_rules();
+		rules.self_capture_budget = true;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		put(&mut game, nbs[0], Player::Two, TileColor::Green, 3, 1);
+		put(&mut game, nbs[1], Player::Two, TileColor::Orange, 3, 1);
+		put(&mut game, spawn, Player::One, TileColor::Blue, 1, 1);
+		let far = game.board().spawns()[4];
+		put(&mut game, far, Player::One, TileColor::Green, 3, 1);
+		assert!(game.is_overwhelmed(spawn));
+		game.set_current(Player::One);
+		game.apply(Action::Claim { node: spawn }).unwrap();
+		assert_eq!(game.capture_score(Player::One), 0);
+		assert_eq!(game.capture_score(Player::Two), 0);
+	}
+
+	#[test]
+	fn capture_score_target_is_an_immediate_win() {
+		let mut rules = capture_score_rules();
+		rules.score_target = 1;
+		let (mut game, node) = claimable_opponent(rules);
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Score }
+		);
+	}
+
+	#[test]
+	fn capture_score_turn_limit_awards_the_leader() {
+		let mut rules = capture_score_rules();
+		rules.turn_limit = 1;
+		let (mut game, node) = claimable_opponent(rules);
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::TurnLimit }
+		);
+	}
+
+	#[test]
+	fn capture_score_turn_limit_tie_is_a_draw() {
+		let mut rules = capture_score_rules();
+		rules.turn_limit = 1;
+		let mut game = Game::empty(rules);
+		// Keep P2 alive so the ADD is a turn-limit draw, not an elimination.
+		let p2_park = game.board().spawns()[4];
+		put(&mut game, p2_park, Player::Two, TileColor::Orange, 3, 1);
+		let spawn = game.isolated_empty_spawn();
+		let tile = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank]);
+		game.set_current(Player::One);
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(game.status(), GameStatus::Draw { reason: EndReason::TurnLimit });
+	}
+
+	#[test]
+	fn capture_score_ignores_control_occupancy_wins() {
+		let mut game = Game::empty(capture_score_rules());
+		let center = game.board().center();
+		let inner = game.board().inner_ring().to_vec();
+		put(&mut game, center, Player::One, TileColor::Green, 3, 1);
+		for &node in inner.iter().take(4) {
+			put(&mut game, node, Player::One, TileColor::Green, 3, 1);
+		}
+		let p2_park = game.board().spawns()[4];
+		put(&mut game, p2_park, Player::Two, TileColor::Orange, 3, 1);
+		assert_eq!(game.control_count(Player::One), 5);
+		let spawn = game.isolated_empty_spawn();
+		let tile = game.alloc_tile(Player::One, TileColor::Blue, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank]);
+		game.set_current(Player::One);
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(game.status(), GameStatus::InProgress, "control holds do not win capture-score");
+	}
+
+	#[test]
+	fn majority_spawn_bonus_awards_one_token_per_turn() {
+		let mut rules = capture_score_rules();
+		rules.majority_spawn_bonus = true;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		put(&mut game, inner[0], Player::One, TileColor::Green, 3, 1);
+		put(&mut game, inner[1], Player::One, TileColor::Blue, 3, 1);
+		put(&mut game, inner[2], Player::Two, TileColor::Orange, 3, 1);
+		assert!(game.control_count(Player::One) > game.control_count(Player::Two));
+		let tokens = game.budget_token_count(Player::One);
+		let spawn = game.isolated_empty_spawn();
+		let tile = game.alloc_tile(Player::One, TileColor::Teal, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; tokens.max(1)]);
+		game.set_current(Player::One);
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert!(game.last_majority_spawn());
+		assert_eq!(game.budget_token_count(Player::One), tokens.max(1)); // spent 1, earned 1
+	}
+
+	#[test]
+	fn unlimited_spawn_returns_captures_to_the_owner() {
+		let mut rules = capture_score_rules();
+		rules.unlimited_spawn = true;
+		let (mut game, node) = claimable_opponent(rules);
+		let owner_bench = game.bench(Player::Two).len();
+		let tokens = game.budget_token_count(Player::One);
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.tile_at(node), None);
+		assert_eq!(game.bench(Player::Two).len(), owner_bench + 1);
+		assert_eq!(game.budget_token_count(Player::One), tokens, "claim spends no token");
+		assert_eq!(game.capture_score(Player::One), 1);
+		assert!(game.bench(Player::Two).iter().any(|t| t.owner == Player::Two));
+	}
+
+	#[test]
+	fn unlimited_spawn_add_does_not_spend_tokens() {
+		let mut rules = capture_score_rules();
+		rules.unlimited_spawn = true;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		let tile = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 2]);
+		assert_eq!(game.budget(Player::One), 1);
+		game.set_current(Player::One);
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert_eq!(game.budget_token_count(Player::One), 2);
+		assert_eq!(game.tile_at(spawn).map(|t| t.owner), Some(Player::One));
+	}
+
+	#[test]
+	fn capture_cascade_awards_the_capturer_an_extra_action_when_sparse() {
+		let mut rules = capture_score_rules();
+		rules.capture_cascade = true;
+		let (mut game, node) = claimable_opponent(rules);
+		assert!(game.occupied_count() <= CAPTURE_CASCADE_SPARSE);
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.last_ratchet_kind(), Some(RatchetKind::Capture));
+		assert_eq!(game.current_player(), Player::One);
+		assert!(game.ratchet_reward_active());
+	}
+
+	#[test]
+	fn resolve_timeout_awards_the_higher_capture_score() {
+		let mut game = Game::empty(capture_score_rules());
+		game.capture_score = [3, 1];
+		game.resolve_timeout();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::TurnLimit }
+		);
 	}
 }

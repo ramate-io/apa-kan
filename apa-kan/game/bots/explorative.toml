@@ -9,3 +9,4 @@ pw_alpha = 0.5
 puct = 2.25
 playout_epsilon = 0.375
 mcts_untried_random = 0.375
+eval_capture_score = 0

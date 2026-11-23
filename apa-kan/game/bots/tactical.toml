@@ -9,3 +9,4 @@ order_center_bonus = 20000
 playout_cutoff = 6
 puct = 1.125
 playout_epsilon = 0.125
+eval_capture_score = 0

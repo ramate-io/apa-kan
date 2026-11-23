@@ -7,9 +7,10 @@ use crate::game::{
 	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
 	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
 	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game,
-	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
-	PathConstraint, Player, RatchetKind, RatchetTier, RingCountWeights, RingType, RuleSet,
-	SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
+	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, Objective,
+	PassThroughRingCmp, PathConstraint, Player, RatchetKind, RatchetTier, RingCountWeights,
+	RingType, RuleSet, SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind, ZagMismatchCount,
+	DOT_PERCENT_DEFAULT, SCORE_TARGET_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -169,6 +170,7 @@ fn end_reason_name(reason: EndReason) -> &'static str {
 		EndReason::Control => "control",
 		EndReason::InsufficientTiles => "insufficient_tiles",
 		EndReason::LowValue => "low_value",
+		EndReason::Score => "score",
 	}
 }
 
@@ -183,6 +185,7 @@ fn end_reason_parse(s: &str) -> Result<EndReason, String> {
 		"control" => Ok(EndReason::Control),
 		"insufficient_tiles" => Ok(EndReason::InsufficientTiles),
 		"low_value" => Ok(EndReason::LowValue),
+		"score" => Ok(EndReason::Score),
 		other => Err(format!("unknown end reason '{other}'")),
 	}
 }
@@ -486,6 +489,34 @@ pub struct RulesLog {
 	/// Historical flag; ignored.
 	#[serde(default, skip_serializing)]
 	pub swap_no_just_moved: bool,
+	/// Live default `control`. Absent on older logs; replay uses control.
+	#[serde(default = "default_control_objective", skip_serializing_if = "skip_control_objective")]
+	pub objective: String,
+	/// First-to-N under capture-score. Absent: [`SCORE_TARGET_DEFAULT`].
+	#[serde(default = "default_score_target", skip_serializing_if = "skip_score_target")]
+	pub score_target: u8,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub majority_spawn_bonus: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub capture_cascade: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub unlimited_spawn: bool,
+}
+
+fn default_control_objective() -> String {
+	Objective::Control.name().to_string()
+}
+
+fn skip_control_objective(v: &String) -> bool {
+	v == Objective::Control.name()
+}
+
+fn default_score_target() -> u8 {
+	SCORE_TARGET_DEFAULT
+}
+
+fn skip_score_target(v: &u8) -> bool {
+	*v == SCORE_TARGET_DEFAULT
 }
 
 fn default_low_value_endgame() -> String {
@@ -582,6 +613,11 @@ impl RulesLog {
 			swap_mode: r.swap_mode.name().into(),
 			swap_no_immediate_back: false,
 			swap_no_just_moved: false,
+			objective: r.objective.name().into(),
+			score_target: r.score_target,
+			majority_spawn_bonus: r.majority_spawn_bonus,
+			capture_cascade: r.capture_cascade,
+			unlimited_spawn: r.unlimited_spawn,
 		}
 	}
 
@@ -645,6 +681,15 @@ impl RulesLog {
 				.unwrap_or_else(|_| EmblemWeights::default()),
 			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
 			swap_mode: SwapMode::parse_log(&self.swap_mode).unwrap_or(SwapMode::Off),
+			objective: Objective::parse(&self.objective).unwrap_or(Objective::Control),
+			score_target: if self.score_target == 0 {
+				SCORE_TARGET_DEFAULT
+			} else {
+				self.score_target
+			},
+			majority_spawn_bonus: self.majority_spawn_bonus,
+			capture_cascade: self.capture_cascade,
+			unlimited_spawn: self.unlimited_spawn,
 		})
 	}
 }
@@ -841,6 +886,12 @@ pub struct ActionLog {
 	/// True when this action was one of a 2-2-1-1 opening pair.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub played_as_opening: bool,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub p1_score: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub p2_score: u8,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub majority_spawn: bool,
 }
 
 /// One captured tile: original owner and where it went.
@@ -941,6 +992,9 @@ impl ActionLog {
 			played_as_extra: game_after.last_played_as_extra(),
 			played_as_ratchet: game_after.last_played_as_ratchet_reward(),
 			played_as_opening: game_after.last_played_as_opening(),
+			p1_score: game_after.capture_score(Player::One),
+			p2_score: game_after.capture_score(Player::Two),
+			majority_spawn: game_after.last_majority_spawn(),
 		}
 	}
 
@@ -1089,6 +1143,12 @@ pub struct EndLog {
 	pub ended_on_extra: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub ended_after_extra: bool,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub p1_score: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub p2_score: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub score_target: u8,
 }
 
 impl EndLog {
@@ -1114,6 +1174,9 @@ impl EndLog {
 				ratchet_count: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
+				p1_score: 0,
+				p2_score: 0,
+				score_target: 0,
 			},
 			GameStatus::Won { winner, reason } => Self {
 				status: "won".into(),
@@ -1134,6 +1197,9 @@ impl EndLog {
 				ratchet_count: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
+				p1_score: 0,
+				p2_score: 0,
+				score_target: 0,
 			},
 			GameStatus::Draw { reason } => Self {
 				status: "draw".into(),
@@ -1154,6 +1220,9 @@ impl EndLog {
 				ratchet_count: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
+				p1_score: 0,
+				p2_score: 0,
+				score_target: 0,
 			},
 		}
 	}
@@ -1485,6 +1554,9 @@ impl GameLog {
 		self.end.ratchet_count = live.ratchet_count();
 		self.end.ended_on_extra = live.ended_on_extra_turn();
 		self.end.ended_after_extra = live.ended_after_extra_turn();
+		self.end.p1_score = live.capture_score(Player::One);
+		self.end.p2_score = live.capture_score(Player::Two);
+		self.end.score_target = live.rules().score_target;
 		self.final_state = Some(FinalLog::from_game(live));
 		let mut contrib = 0u32;
 		let mut needed = 0u32;
@@ -2067,6 +2139,31 @@ mod tests {
 		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
 		assert_eq!(parsed.channel_mode, "additive");
 		assert_eq!(parsed.to_rules().unwrap().channel_mode, ChannelMode::Additive);
+	}
+
+	#[test]
+	fn missing_objective_replays_as_control() {
+		let log = RulesLog::from_rules(RuleSet::default());
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("objective"), "{json}");
+		assert!(!json.contains("majority_spawn_bonus"), "{json}");
+		assert!(!json.contains("capture_cascade"), "{json}");
+		assert!(!json.contains("unlimited_spawn"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.to_rules().unwrap().objective, Objective::Control);
+		assert!(!parsed.to_rules().unwrap().majority_spawn_bonus);
+		let mut r = RuleSet::default();
+		r.objective = Objective::CaptureScore;
+		r.majority_spawn_bonus = true;
+		r.capture_cascade = true;
+		r.unlimited_spawn = true;
+		r.score_target = 8;
+		let on = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&on).unwrap();
+		assert!(json.contains("capture-score"), "{json}");
+		assert!(json.contains("majority_spawn_bonus"), "{json}");
+		assert!(json.contains("unlimited_spawn"), "{json}");
+		assert_eq!(on.to_rules().unwrap().score_target, 8);
 	}
 
 	#[test]

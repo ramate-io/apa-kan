@@ -86,7 +86,7 @@ fn usage() -> &'static str {
 	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced defaults)\n\
 	   --list-search-profiles    Print named presets and their labels\n\
 	   --search <k=v,...>   Overlay any knob (ordering, tt, lmr, pvs, q-depth, pw, puct, priors,\n\
-	                        pw-order, reuse, mcts-tt, factored, leaf, solver, threads, eval-margin, ...)\n\
+	                        pw-order, reuse, mcts-tt, factored, leaf, solver, threads, eval-margin, eval-capture-score, ...)\n\
 	   --p1-search-profile / --p2-search-profile  Per-seat profile (default: --search-profile)\n\
 	   --p1-bot-config / --p2-bot-config          Per-seat TOML profile\n\
 	   --p1-search / --p2-search                  Per-seat overlay\n\
@@ -124,7 +124,8 @@ fn usage() -> &'static str {
 	   --max-rings, --ring-count-weights, --color-drift, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
 	   --single-braids, --capture-mode, --singles-swap,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
-	   --path-constraint, --no-repeated-edge, --turn-limit\n\
+	   --path-constraint, --no-repeated-edge, --turn-limit,\n\
+	   --objective, --score-target, --majority-spawn-bonus, --capture-cascade, --unlimited-spawn\n\
 	   -h, --help\n"
 }
 
@@ -600,6 +601,11 @@ struct SeatStats {
 	low_value_piece_count: u32,
 	turn_limit: u32,
 	double_pass: u32,
+	score: u32,
+	score_p1: u32,
+	score_p2: u32,
+	score_margin_abs: u32,
+	turn_limit_wins: u32,
 	games_repeat_ge2: u32,
 	games_repeat_ge3: u32,
 	games_occ_repeat_ge3: u32,
@@ -728,7 +734,7 @@ fn run(cfg: BenchConfig) {
 		));
 	}
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} ratchet_cascade={} opening_double={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} ratchet_cascade={} opening_double={} objective={} score_target={} majority_spawn_bonus={} capture_cascade={} unlimited_spawn={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -747,6 +753,11 @@ fn run(cfg: BenchConfig) {
 		on_off(rules.cascade_winner_swap),
 		on_off(rules.ratchet_cascade),
 		on_off(rules.opening_double),
+		rules.objective.name(),
+		rules.score_target,
+		on_off(rules.majority_spawn_bonus),
+		on_off(rules.capture_cascade),
+		on_off(rules.unlimited_spawn),
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
 		rules.bag_size,
@@ -954,6 +965,12 @@ fn run(cfg: BenchConfig) {
 	let mut end_low_value_piece_count = 0u32;
 	let mut end_limit = 0u32;
 	let mut end_pass = 0u32;
+	let mut end_score = 0u32;
+	let mut end_turn_limit_wins = 0u32;
+	let mut score_p1_sum = 0u32;
+	let mut score_p2_sum = 0u32;
+	let mut score_margin_sum = 0u32;
+	let mut all_turns: Vec<u32> = Vec::new();
 	let mut captures = 0u32;
 	let mut self_captures = 0u32;
 	let mut center_captures = 0u32;
@@ -1030,6 +1047,11 @@ fn run(cfg: BenchConfig) {
 		end_low_value_piece_count += stats.low_value_piece_count;
 		end_limit += stats.turn_limit;
 		end_pass += stats.double_pass;
+		end_score += stats.score;
+		end_turn_limit_wins += stats.turn_limit_wins;
+		score_p1_sum += stats.score_p1;
+		score_p2_sum += stats.score_p2;
+		score_margin_sum += stats.score_margin_abs;
 		captures += stats.captures;
 		self_captures += stats.self_captures;
 		center_captures += stats.center_captures;
@@ -1081,7 +1103,7 @@ fn run(cfg: BenchConfig) {
 		p1_w + p1_d + p1_l
 	));
 	lines.push(format!(
-		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
+		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass} score={end_score}"
 	));
 	lines.push(format!(
 		"# control_cascade  target5={end_control_t5} target4={end_control_t4} target3={end_control_t3} target2={end_control_t2}  immediate={end_control_immediate} hold={end_control_hold_win}  low_value_max_mat_le1={end_low_value}"
@@ -1090,7 +1112,7 @@ fn run(cfg: BenchConfig) {
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
 	));
 	println!(
-		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass}"
+		"# end_reasons  elim={end_elim} locked_out={end_lock} center_hold={end_hold} petal_maj={end_petal} control={end_control} insuff={end_insuff} low_value={end_low_value} low_value_wins={end_low_value_wins} low_value_draws={end_low_value_draws} turn_limit={end_limit} double_pass={end_pass} score={end_score}"
 	);
 	println!(
 		"# control_cascade  target5={end_control_t5} target4={end_control_t4} target3={end_control_t3} target2={end_control_t2}  immediate={end_control_immediate} hold={end_control_hold_win}  low_value_max_mat_le1={end_low_value}"
@@ -1099,6 +1121,36 @@ fn run(cfg: BenchConfig) {
 		"# low_value_pairs  pair0={end_low_value_pair0} later={end_low_value_later} piece_count={end_low_value_piece_count}"
 	);
 	let games_n = p1_w + p1_d + p1_l;
+	for results in &by_pair {
+		for r in results {
+			all_turns.push(r.turns);
+		}
+	}
+	let mean_turns = if games_n == 0 {
+		0.0
+	} else {
+		f64::from(all_turns.iter().copied().sum::<u32>()) / f64::from(games_n)
+	};
+	all_turns.sort_unstable();
+	let median_turns = if all_turns.is_empty() {
+		0.0
+	} else if all_turns.len() % 2 == 1 {
+		f64::from(all_turns[all_turns.len() / 2])
+	} else {
+		let mid = all_turns.len() / 2;
+		f64::from(all_turns[mid - 1] + all_turns[mid]) / 2.0
+	};
+	let avg_p1_score =
+		if games_n == 0 { 0.0 } else { f64::from(score_p1_sum) / f64::from(games_n) };
+	let avg_p2_score =
+		if games_n == 0 { 0.0 } else { f64::from(score_p2_sum) / f64::from(games_n) };
+	let avg_margin =
+		if games_n == 0 { 0.0 } else { f64::from(score_margin_sum) / f64::from(games_n) };
+	let capture_score_line = format!(
+		"# capture_score  target_wins={end_score} turn_limit_wins={end_turn_limit_wins} turn_limit_total={end_limit}  mean_p1={avg_p1_score:.2} mean_p2={avg_p2_score:.2} mean_abs_margin={avg_margin:.2}  mean_turns={mean_turns:.2} median_turns={median_turns:.1}"
+	);
+	lines.push(capture_score_line.clone());
+	println!("{capture_score_line}");
 	let avg_cap = if games_n == 0 { 0.0 } else { f64::from(captures) / f64::from(games_n) };
 	let avg_self = if games_n == 0 { 0.0 } else { f64::from(self_captures) / f64::from(games_n) };
 	let avg_center =
@@ -1671,6 +1723,9 @@ fn summarize_pairing(
 		stats.extra_used_move += result.extra_used_move;
 		stats.extra_used_add += result.extra_used_add;
 		stats.extra_used_claim += result.extra_used_claim;
+		stats.score_p1 += u32::from(result.p1_score);
+		stats.score_p2 += u32::from(result.p2_score);
+		stats.score_margin_abs += u32::from(result.p1_score.abs_diff(result.p2_score));
 		match result.status {
 			GameStatus::Won { winner, reason } => {
 				if winner == Player::One {
@@ -1679,6 +1734,9 @@ fn summarize_pairing(
 					stats.losses += 1;
 				}
 				tally_reason(&mut stats, reason);
+				if reason == EndReason::TurnLimit {
+					stats.turn_limit_wins += 1;
+				}
 			}
 			GameStatus::Draw { reason } => {
 				stats.draws += 1;
@@ -1754,6 +1812,7 @@ fn tally_reason(stats: &mut SeatStats, reason: EndReason) {
 		EndReason::Control => stats.control += 1,
 		EndReason::InsufficientTiles => stats.insuff += 1,
 		EndReason::LowValue => stats.low_value += 1,
+		EndReason::Score => stats.score += 1,
 	}
 }
 
@@ -2047,6 +2106,8 @@ struct PlayResult {
 	low_value: Option<LowValueResolution>,
 	control_target: Option<u8>,
 	control_immediate: bool,
+	p1_score: u8,
+	p2_score: u8,
 	turns: u32,
 	max_repeat: u32,
 	max_occ_repeat: u32,
@@ -2497,6 +2558,8 @@ fn play_game(
 			_ => game.cascade_control_target(),
 		},
 		control_immediate: game.control_win_immediate(),
+		p1_score: game.capture_score(Player::One),
+		p2_score: game.capture_score(Player::Two),
 		turns: game.turn_count(),
 		max_repeat,
 		max_occ_repeat: max_occ,
@@ -3010,6 +3073,7 @@ mod tests {
 					|| line.starts_with("# fight_gain")
 					|| line.starts_with("# low_value_pairs")
 					|| line.starts_with("# captures")
+					|| line.starts_with("# capture_score")
 					|| line.starts_with("# center_captures")
 					|| line.starts_with("# capture_dest")
 					|| line.starts_with("# bead_captures")

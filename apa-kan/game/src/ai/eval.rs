@@ -247,7 +247,7 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 		let geo = if node == center {
 			if game.rules().center_hold_win {
 				420
-			} else if game.rules().control_win {
+			} else if game.rules().control_wins_active() {
 				config.eval_center_occ
 			} else {
 				22
@@ -255,7 +255,7 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 		} else if board.inner_ring().contains(&node) {
 			if game.rules().center_hold_win
 				|| game.rules().petal_majority_win
-				|| game.rules().control_win
+				|| game.rules().control_wins_active()
 			{
 				config.eval_inner_ring
 			} else {
@@ -336,6 +336,11 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 			- 22 * at_risk;
 
 	score += race_score(game, me, opp, config);
+	if game.rules().is_capture_score() {
+		let my_s = i32::from(game.capture_score(me));
+		let opp_s = i32::from(game.capture_score(opp));
+		score += config.eval_capture_score * (my_s - opp_s);
+	}
 
 	if contact_pairs == 0 && my_board > 0 && opp_board > 0 {
 		score -= 70 * (material + presence).signum();
@@ -349,7 +354,10 @@ pub fn evaluate_with(game: &Game, me: Player, repeat_count: u16, config: SearchC
 		}
 	}
 
-	if score.abs() < WIN / 2 {
+	// Capture-score ends on the turn limit by comparing scores, so do not
+	// fade a lead toward 0 (that fade exists to discourage turtling into a
+	// 200-turn draw under control).
+	if !game.rules().is_capture_score() && score.abs() < WIN / 2 {
 		let rem = game.rules().turn_limit.saturating_sub(turn);
 		if rem <= 90 {
 			score = (i64::from(score) * i64::from(rem) / 90) as i32;
@@ -401,7 +409,14 @@ fn race_score(game: &Game, me: Player, opp: Player, config: SearchConfig) -> i32
 
 	let my_petals = i32::from(game.petal_count(me));
 	let opp_petals = i32::from(game.petal_count(opp));
-	s += 90 * my_petals - 110 * opp_petals;
+	if !game.rules().is_capture_score() {
+		s += 90 * my_petals - 110 * opp_petals;
+	}
+	if game.rules().majority_spawn_bonus {
+		let my_ctl = i32::from(game.control_count(me));
+		let opp_ctl = i32::from(game.control_count(opp));
+		s += 80 * my_ctl - 90 * opp_ctl;
+	}
 	if game.rules().petal_majority_win {
 		let n = i32::from(game.rules().petal_majority_n.max(1));
 		let need = i32::from(game.petal_majority_need());
@@ -415,7 +430,7 @@ fn race_score(game: &Game, me: Player, opp: Player, config: SearchConfig) -> i32
 		}
 	}
 
-	if game.rules().control_win {
+	if game.rules().control_wins_active() {
 		let n = i32::from(game.rules().control_hold_turns.max(1));
 		let need = i32::from(game.control_need());
 		let my_ctl = i32::from(game.control_count(me));
@@ -1090,5 +1105,65 @@ mod tests {
 		let mut doubled = enhanced;
 		doubled.eval_margin_scale = 200;
 		assert_eq!(evaluate_with(&game, Player::One, 0, doubled), x);
+	}
+
+	#[test]
+	fn capture_score_win_is_near_mate() {
+		let mut game = Game::empty(RuleSet::default());
+		game.set_status(GameStatus::Won { winner: Player::One, reason: EndReason::Score });
+		let s = evaluate(&game, Player::One, 0);
+		assert!(s > WIN / 2);
+		assert_eq!(evaluate(&game, Player::Two, 0), -s);
+		assert_eq!(terminal_score(&game, Player::One), Some(WIN));
+	}
+
+	#[test]
+	fn capture_score_weight_moves_the_leaf() {
+		use crate::game::{Objective, TileColor};
+		let mut rules = RuleSet::default();
+		rules.objective = Objective::CaptureScore;
+		rules.control_win = true;
+		let mut behind = Game::empty(rules);
+		let mut ahead = Game::empty(rules);
+		let spawn = behind.board().spawns()[0];
+		let other = behind.board().spawns()[4];
+		let p1 = behind.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		let p2 = behind.alloc_tile(Player::Two, TileColor::Orange, 3, 1);
+		behind.place_tile(spawn, p1);
+		behind.place_tile(other, p2);
+		ahead.place_tile(spawn, p1);
+		ahead.place_tile(other, p2);
+		behind.pad_above_low_value();
+		ahead.pad_above_low_value();
+		ahead.set_capture_score_for_test(Player::One, 3);
+		ahead.set_capture_score_for_test(Player::Two, 1);
+		let mut cfg = SearchConfig::enhanced();
+		cfg.eval_capture_score = 400;
+		let b = evaluate_with(&behind, Player::One, 0, cfg);
+		let a = evaluate_with(&ahead, Player::One, 0, cfg);
+		assert_eq!(a - b, 400 * 2);
+		cfg.eval_capture_score = 0;
+		assert_eq!(
+			evaluate_with(&ahead, Player::One, 0, cfg),
+			evaluate_with(&behind, Player::One, 0, cfg)
+		);
+	}
+
+	#[test]
+	fn capture_score_does_not_use_control_geometry() {
+		use crate::game::{Objective, TileColor};
+		let mut control = RuleSet::default();
+		control.center_hold_win = false;
+		let mut score_rules = control;
+		score_rules.objective = Objective::CaptureScore;
+		let mut ctl = Game::empty(control);
+		let mut scr = Game::empty(score_rules);
+		let center = ctl.board().center();
+		let tile = ctl.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		ctl.place_tile(center, tile);
+		scr.place_tile(center, tile);
+		ctl.pad_above_low_value();
+		scr.pad_above_low_value();
+		assert!(evaluate(&ctl, Player::One, 0) > evaluate(&scr, Player::One, 0));
 	}
 }

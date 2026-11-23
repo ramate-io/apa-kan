@@ -9,8 +9,8 @@ use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	color_drift_diagonal, BlockerBlocks, CaptureMode, EmblemWeights, EndgameRule, HopWeightCmp,
-	PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet, SamePieceTwice, SwapMode,
-	ZagMismatchCount, BAG_SIZE,
+	Objective, PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet, SamePieceTwice,
+	SwapMode, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -337,6 +337,25 @@ where
 		"--opening" => {
 			rules.opening_double = parse_opening(&require_value(arg, it.next())?)?;
 		}
+		"--objective" => {
+			rules.objective = Objective::parse(&require_value(arg, it.next())?)?;
+		}
+		"--score-target" => {
+			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
+			if n == 0 || n > 64 {
+				return Err("invalid --score-target (expected 1..64)".into());
+			}
+			rules.score_target = n as u8;
+		}
+		"--majority-spawn-bonus" => {
+			rules.majority_spawn_bonus = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--capture-cascade" => {
+			rules.capture_cascade = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--unlimited-spawn" => {
+			rules.unlimited_spawn = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--starting-bench" | "--starting-tokens" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n == 0 || n > BAG_SIZE as u64 {
@@ -479,7 +498,7 @@ pub fn usage() -> &'static str {
 	   --list-search-profiles                     Print named presets and their labels\n\
 	   --search <k=v,...>                         Overlay any knob: ordering, tt, lmr, pvs, q-depth, pw, puct,\n\
 	                                              priors, pw-order, reuse, mcts-tt, factored, leaf, solver, threads,\n\
-	                                              eval-margin, ...\n\
+	                                              eval-margin, eval-capture-score, ...\n\
 	   --search-threads <1..32>                   MCTS root-parallel trees (default: 1; 1 keeps benches deterministic)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
@@ -515,6 +534,11 @@ pub fn usage() -> &'static str {
 	   --ratchet-cascade <on|off>                 Count non-winning control-cascade drops as ratchets when --cascade-winner-swap is on (default: on)\n\
 	   --opening-double <on|off>                  2-2-1-1 opening: P1 two actions, P2 two, then singles (default: on)\n\
 	   --opening <2-2-1-1|1-1-1-1>                Alias for --opening-double on|off\n\
+	   --objective <control|capture-score>        Win condition (default: control). capture-score: 1 point per opponent capture, no control wins\n\
+	   --score-target <1..64>                     First-to-N captures under capture-score (default: 6)\n\
+	   --majority-spawn-bonus <on|off>            Majority of former control cells earns a spawn token once per turn (default: off)\n\
+	   --capture-cascade <on|off>                 Sparse-board capture awards a ratchet extra action (default: off)\n\
+	   --unlimited-spawn <on|off>                 Captures return to the owner; ADD does not spend tokens (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
 	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
 	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
@@ -546,7 +570,7 @@ mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 	use super::*;
-	use crate::game::BAG_SIZE_DEFAULT;
+	use crate::game::{BAG_SIZE_DEFAULT, SCORE_TARGET_DEFAULT};
 
 	#[test]
 	fn parses_bot_flags() {
@@ -782,6 +806,41 @@ mod tests {
 		assert_eq!(cfg.rules.swap_mode, crate::game::SwapMode::NormalOnly);
 		assert!(cfg.rules.cascade_winner_swap);
 		assert!(cfg.rules.opening_double);
+		assert_eq!(cfg.rules.objective, crate::game::Objective::Control);
+		assert_eq!(cfg.rules.score_target, SCORE_TARGET_DEFAULT);
+		assert!(!cfg.rules.majority_spawn_bonus);
+		assert!(!cfg.rules.capture_cascade);
+		assert!(!cfg.rules.unlimited_spawn);
+	}
+
+	#[test]
+	fn parses_capture_score_objective_and_toggles() {
+		let def = GameConfig::parse([] as [&str; 0]).unwrap();
+		assert_eq!(def.rules.objective, crate::game::Objective::Control);
+		let score = GameConfig::parse([
+			"--objective",
+			"capture-score",
+			"--score-target",
+			"8",
+			"--majority-spawn-bonus",
+			"on",
+			"--capture-cascade",
+			"on",
+			"--unlimited-spawn",
+			"on",
+		])
+		.unwrap();
+		assert_eq!(score.rules.objective, crate::game::Objective::CaptureScore);
+		assert_eq!(score.rules.score_target, 8);
+		assert!(score.rules.majority_spawn_bonus);
+		assert!(score.rules.capture_cascade);
+		assert!(score.rules.unlimited_spawn);
+		assert!(score.rules.control_win, "control_win flag is unchanged; logic ignores it");
+		assert!(!score.rules.control_wins_active());
+		let alias = GameConfig::parse(["--objective", "score"]).unwrap();
+		assert_eq!(alias.rules.objective, crate::game::Objective::CaptureScore);
+		assert!(GameConfig::parse(["--objective", "points"]).is_err());
+		assert!(GameConfig::parse(["--score-target", "0"]).is_err());
 	}
 
 	#[test]

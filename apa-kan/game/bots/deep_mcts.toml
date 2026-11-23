@@ -12,3 +12,4 @@ prior_widening = true
 mcts_untried_random = 0.0
 mcts_tree_reuse = true
 mcts_solver = true
+eval_capture_score = 0

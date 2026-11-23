@@ -13,3 +13,4 @@ mcts_heuristic_playouts = true
 mcts_root_threads = 1
 puct = 1.6
 playout_cutoff = 12
+eval_capture_score = 0

@@ -2783,7 +2783,15 @@ pub fn format_turn_line(game: &Game, actor_name: &str) -> String {
 					game.rules().petal_majority_n
 				));
 			}
-			if game.rules().control_win {
+			if game.rules().is_capture_score() {
+				extra.push_str(&format!(
+					"{HUD_SEP}score P1 {}/{} P2 {}/{}",
+					game.capture_score(Player::One),
+					game.rules().score_target,
+					game.capture_score(Player::Two),
+					game.rules().score_target
+				));
+			} else if game.rules().control_win {
 				if game.rules().endgame_rule.is_control_cascade()
 					&& game.cascade_control_target().is_none()
 				{
@@ -3154,6 +3162,7 @@ pub fn demo_midgame_capture_flash(dest: CaptureDest) -> (Game, CaptureFlash) {
 			})
 			.collect(),
 		CaptureDest::Bench => game.bench(Player::One).iter().copied().take(2).collect(),
+		CaptureDest::Owner => game.bench(Player::Two).iter().copied().take(2).collect(),
 	};
 	(game, CaptureFlash { mover: Player::One, dest: Some(dest), tiles })
 }
@@ -4722,6 +4731,7 @@ mod tests {
 	fn opening_hud_uses_control_win_and_full_public_deck() {
 		let game = Game::new(RuleSet::default(), 1);
 		assert!(game.rules().control_win);
+		assert!(!game.rules().is_capture_score());
 		assert!(!game.rules().center_hold_win);
 		assert_eq!(game.bench(Player::One).len(), 11);
 		assert_eq!(game.bag_len(Player::One), 16);
@@ -4733,6 +4743,16 @@ mod tests {
 		assert!(turn.contains("P2 dark 11/11 bud 7"), "{turn}");
 		assert!(!turn.contains("hold P1"), "{turn}");
 		assert!(turn.len() < 140, "turn line should fit a 1024px window: {turn}");
+	}
+
+	#[test]
+	fn capture_score_hud_shows_scores_not_control() {
+		let mut rules = RuleSet::default();
+		rules.objective = crate::game::Objective::CaptureScore;
+		let game = Game::empty(rules);
+		let turn = format_turn_line(&game, "human");
+		assert!(turn.contains("score P1 0/6 P2 0/6"), "{turn}");
+		assert!(!turn.contains("ctl "), "{turn}");
 	}
 
 	#[test]

@@ -532,7 +532,10 @@ fn draw_benches(
 				DeckSlot::Empty => draw_solid_token(img, c, r, player),
 				DeckSlot::Live(tile) => {
 					draw_tile(img, c, r, *tile);
-					if flash.is_some_and(|f| f.highlights_tile(tile.id, CaptureDest::Bench)) {
+					if flash.is_some_and(|f| {
+						f.highlights_tile(tile.id, CaptureDest::Bench)
+							|| f.highlights_tile(tile.id, CaptureDest::Owner)
+					}) {
 						draw_capture_glow(img, c, r);
 					}
 				}

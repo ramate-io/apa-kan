@@ -13,3 +13,4 @@ order_center_threat = 3500
 order_vacate_center = 800
 order_vacate_overwhelmed = 0
 puct = 2.0
+eval_capture_score = 0

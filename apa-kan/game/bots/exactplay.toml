@@ -11,3 +11,5 @@
 name = "exactplay"
 description = "Braid-only-exact leaf margin scale (hillclimb-confirmed)"
 eval_margin_scale = 200
+# Overlay `eval_capture_score` for `--objective capture-score` (default 0).
+eval_capture_score = 0

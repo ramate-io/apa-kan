@@ -140,6 +140,11 @@ pub struct SearchConfig {
 	/// exact +1); this restores that scoring term against material/geometry
 	/// without adding new eval features. Clamped to 1..=400.
 	pub eval_margin_scale: i32,
+
+	/// Leaf term for `my_capture_score − opp_capture_score` under
+	/// [`crate::game::Objective::CaptureScore`]. Default 0 (control games
+	/// ignore it). Tune from H2H; do not bake capture tactics into search.
+	pub eval_capture_score: i32,
 }
 
 impl SearchConfig {
@@ -191,6 +196,7 @@ impl SearchConfig {
 			order_vacate_center: 1_200,
 			order_vacate_overwhelmed: 1_200,
 			eval_margin_scale: 100,
+			eval_capture_score: 0,
 		}
 	}
 
@@ -499,6 +505,9 @@ impl SearchConfig {
 				"eval-margin" | "eval_margin_scale" | "eval-margin-scale" | "margin-scale" => {
 					self.eval_margin_scale = parse_i32(&key, val)?;
 				}
+				"eval-capture-score" | "eval_capture_score" | "eval-capture" | "capture-score" => {
+					self.eval_capture_score = parse_i32(&key, val)?;
+				}
 				other => {
 					return Err(format!(
 						"unknown --search key '{other}' (see --list-search-profiles)"
@@ -571,11 +580,12 @@ impl SearchConfig {
 		} else {
 			self.eval_margin_scale = self.eval_margin_scale.clamp(1, 400);
 		}
+		self.eval_capture_score = self.eval_capture_score.clamp(0, 4_000);
 	}
 
 	pub fn label(self) -> String {
 		format!(
-			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={} eval_center={} eval_inner={} eval_pressure={} order_claim_c={} order_threat={} eval_margin={}",
+			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={} eval_center={} eval_inner={} eval_pressure={} order_claim_c={} order_threat={} eval_margin={} eval_capture={}",
 			self.profile_name(),
 			on_off(self.move_ordering),
 			on_off(self.transposition),
@@ -601,7 +611,8 @@ impl SearchConfig {
 			self.eval_center_pressure,
 			self.order_claim_center,
 			self.order_center_threat,
-			self.eval_margin_scale
+			self.eval_margin_scale,
+			self.eval_capture_score
 		)
 	}
 }
@@ -784,5 +795,13 @@ mod tests {
 		let overlay = SearchConfig::enhanced().with_spec("eval-margin=250").unwrap();
 		assert_eq!(overlay.eval_margin_scale, 250);
 		assert_eq!(overlay.profile_name(), "custom");
+	}
+
+	#[test]
+	fn spec_overlays_eval_capture_score() {
+		let cfg = SearchConfig::enhanced().with_spec("eval-capture-score=400").unwrap();
+		assert_eq!(cfg.eval_capture_score, 400);
+		assert_eq!(cfg.profile_name(), "custom");
+		assert_eq!(SearchConfig::enhanced().eval_capture_score, 0);
 	}
 }

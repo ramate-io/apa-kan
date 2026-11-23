@@ -42,6 +42,8 @@ pub struct Zobrist {
 	ratchet_count: [u64; 16],
 	opening_stays: [[u64; 4]; 2],
 	opening_double_active: u64,
+	/// Appended so score-0 (control) hashes stay unchanged.
+	capture_score: [[u64; 32]; 2],
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
 	last_swap_none: [u64; 2],
@@ -78,6 +80,7 @@ impl Zobrist {
 			ratchet_count: [0; 16],
 			opening_stays: [[0; 4]; 2],
 			opening_double_active: 0,
+			capture_score: [[0; 32]; 2],
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
 			last_swap_none: [next(), next()],
@@ -145,6 +148,11 @@ impl Zobrist {
 			}
 		}
 		z.opening_double_active = next();
+		for player in 0..2 {
+			for n in 0..32 {
+				z.capture_score[player][n] = next();
+			}
+		}
 		z
 	}
 }
@@ -272,6 +280,12 @@ pub fn hash(game: &Game) -> u64 {
 	}
 	if game.opening_double_pending() {
 		h ^= z.opening_double_active;
+	}
+	for player in [Player::One, Player::Two] {
+		let n = game.capture_score(player).min(31) as usize;
+		if n > 0 {
+			h ^= z.capture_score[player.index()][n];
+		}
 	}
 	h
 }
@@ -507,5 +521,17 @@ mod tests {
 			"TT key must include remaining 2-2-1-1 opening stays"
 		);
 		assert_eq!(occupancy_hash(&none), occupancy_hash(&doubled));
+	}
+
+	#[test]
+	fn hash_distinguishes_capture_score_and_keeps_zero_stable() {
+		use crate::game::{Game, Player};
+
+		let a = Game::empty(RuleSet::default());
+		let mut b = Game::empty(RuleSet::default());
+		assert_eq!(hash(&a), hash(&b), "score 0 must not change the live control hash");
+		b.set_capture_score_for_test(Player::One, 2);
+		assert_ne!(hash(&a), hash(&b), "TT key must include capture-score");
+		assert_eq!(occupancy_hash(&a), occupancy_hash(&b));
 	}
 }

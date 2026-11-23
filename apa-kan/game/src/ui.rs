@@ -1131,7 +1131,8 @@ fn refresh_view(
 						&& bench_i
 							.map(|idx| play.selection == Selection::Bench(idx))
 							.unwrap_or(false);
-					let just_captured = play.flash.highlights_tile(tile.id, CaptureDest::Bench);
+					let just_captured = play.flash.highlights_tile(tile.id, CaptureDest::Bench)
+						|| play.flash.highlights_tile(tile.id, CaptureDest::Owner);
 					spawn_tile_at(
 						&mut commands,
 						&mut meshes,
