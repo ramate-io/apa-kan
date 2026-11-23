@@ -10,7 +10,8 @@ Reproduce with [`run_h2h.sh`](run_h2h.sh). Survey: [`survey.py`](survey.py). Quo
 |---|---|---|
 | `--objective control\|capture-score` | `control` | Capture-score: 1 point per opponent piece captured. Control occupancy, cascade-drop wins, and center-fight ratchets do not win. `control_win` is left on so historical JSONL and the live default are unchanged; `RuleSet::control_wins_active()` is false under capture-score. |
 | `--score-target 1..64` | `6` | First-to-N opponent captures. 6 is more than an opening skirmish (2–3) and less than wiping an 11-tile bench. Benches keep `turn_limit=200`. |
-| `--majority-spawn-bonus on\|off` | off | At `finish_turn`, if you occupy strictly more of the former 9 control cells than the opponent (and at least one), gain one spawn token. Once per completed turn. Tied or empty occupancy awards nothing. |
+| `--majority-spawn-bonus on\|off` | off | At `finish_turn`, if you occupy strictly more of `--majority-spawn-set` than the opponent (and at least one), gain one spawn token. Once per completed turn. Tied or empty occupancy awards nothing. |
+| `--majority-spawn-set control-set\|inner\|center` | `control-set` | Cells the majority bonus counts. `control-set` is the former 9 (center + inner). `inner` is the 8 petals (center does not count). `center` requires occupying the origin and a strict control-set majority. Missing JSONL replays as control-set. |
 | `--capture-cascade on\|off` | off | If this action captured ≥1 opponent piece and the board then has ≤8 occupied nodes, seat the capturer for the next action as a `RatchetKind::Capture` reward. Same 1st/2nd+ SWAP/FLIP ladder as live (`cascade_winner_swap` still gates the loosened verbs). Ignored under control. |
 | `--unlimited-spawn on\|off` | off | Captured tiles return to the owner's bench (`CaptureDest::Owner`). ADD does not spend tokens; usable budget is bench length. Occupying spawn nodes is how you starve the opponent of landing spots. |
 
@@ -26,7 +27,7 @@ Timed games: `Game::resolve_timeout()` compares capture scores (higher wins, tie
 
 Search: terminals include `EndReason::Score`. Leaf term `eval_capture_score * (my − opp)` is a per-bot TOML / `--search` overlay, default 0. No capture tactics, pick biases, or scripted hints.
 
-JSONL missing `objective` / toggles replay as control / off. Score-0 Zobrist hashes match live control.
+JSONL missing `objective` / toggles replay as control / off. Missing `majority_spawn_set` replays as control-set. Score-0 Zobrist hashes match live control.
 
 ## Package
 
@@ -48,7 +49,37 @@ Light package: release, `--no-default-features`, `nodes:33000,iters:650`, exactp
 | + capture_cascade | 4 | 2-0-2 | 119 / 124 | 5.50 | 2.75 / 2.75 (3.50) | 1 score, 1 lockout, 2 turn-limit |
 | + unlimited_spawn | 4 | 1-1-2 | 142 / 166 | 9.75 opp, **58.5 self** | 4.50 / 5.25 (1.75) | 2 score, 2 turn-limit |
 
-Full 150-game arms are running.
+Full 150-game arms are running (control_mm in progress). Follow-up majority combos / trigger / target / weight sweeps are queued behind that cell.
+
+### Smoke concentration (dest share of all actions)
+
+Rings: center (node 0), inner (8 petals), spawn (8 middle), outer (8). Control's "middle ring" in the request is spawn.
+
+| Arm | center | inner | spawn | outer | inner MOVE that captured opp |
+|---|---|---|---|---|---|
+| control | 5.9% | 21.4% | 47.9% | 24.8% | 15.7% (8/51) |
+| capture-score base | 3.0% | 27.1% | 32.8% | **37.1%** | 3.7% (8/217) |
+| + weight 80 | 3.5% | 22.1% | 34.9% | 39.5% | 6.5% (11/170) |
+| + weight 400 | 3.0% | **37.4%** | 28.4% | 31.2% | **1.3% (4/299)** |
+| + majority_spawn_bonus | 4.7% | 23.6% | **54.7%** | 16.9% | 10.3% (7/68) |
+| + capture_cascade | 3.3% | 20.3% | 43.5% | 32.8% | — |
+| + unlimited_spawn | 1.9% | 17.3% | **62.0%** | 18.7% | — |
+
+Capture locations (smoke): control 10/30/40/20% center/inner/spawn/outer. Base scoring 3/22/43/32. Majority 8/21/49/21 — still spawn-heavy, but center captures 7.9% vs 3.1% on base. Piece usage stays 2-ring and 3-ring dominant; unlimited is the outlier (triangle marks 73%, 1-rings 15%).
+
+### Why `eval_capture_score=400` looks timid
+
+The leaf is `eval_capture_score * (my − opp)`. That term is **symmetric**: taking a piece is +400, getting recaptured is −400. Qsearch / stand-pat therefore prices a recapturable capture as a wash on the score channel, then subtracts hanging the capturer (`-22 * at_risk` plus losing the piece). Existing material already pays for the trade, so the extra 400 does not create initiative — it punishes being the one who opens contact.
+
+Smoke (n=4, same seeds) matches that, and it is **not** "stay on the outer ring":
+
+- Opponent captures drop 8.00 → 4.75/game; self-captures rise 8.25 → 10.25.
+- Inner destinations *rise* (27.1% → 37.4%) while inner MOVEs that actually take an opponent piece fall 3.7% → **1.3%** (4 capturing inner MOVEs vs 295 that just park).
+- Recapture-within-2 is similar (15.6% base vs 21.1% at 400) — they are not getting recaptured more often; they **stop initiating**.
+- P1 leads on 0.1% of plies (vs 29.9% at weight 0). Seed=10002 at 400: P1 scores **0–3** and never captures.
+- Seed=1 at 400: first capture is still t4 (P2 MOVE to outer 4), then the game stalls at 2–3 after t62. Base seed=1 reached 5–4 with a t23 inner capture on node 1.
+
+Do not bake 400. Weight 80 is only barely less stalled (1/4 target wins). Tune from H2H on the majority lever, not by adding capture tactics.
 
 ### Full H2H
 
@@ -64,9 +95,9 @@ Full 150-game arms are running.
 
 Base scoring with weight 0 does not hunt captures. Smoke_base game seed=1: opening ADDs on outer spawns (t1–t6), first capture at **t23** (P1 MOVE to node 1, takes P2 off center). End is **t200 TurnLimit, 5–4**. Late ply is MOVE ping-pong on the inner ring (t196–t200, score stuck 5–4). Dest mix: 559 outer / 217 inner / 24 center over 800 actions. Zero CLAIM/SWAP/CONVERT.
 
-`eval_capture_score=400` made this worse (fewer opponent captures). Do not bake a large score weight from this n=4.
+`eval_capture_score=400` made this worse (fewer opponent captures, more inner parking). See the symmetric-risk note above. Do not bake a large score weight from this n=4.
 
-`majority_spawn_bonus` is the first lever that actually finishes games (all four hit target 6 around turn 46–88). Mean tokens/side 7.30 vs 0.95 on base — the extra spawn token is spent, so more pieces hit the board and get captured.
+`majority_spawn_bonus` is the first lever that actually finishes games (all four hit target 6 around turn 46–88). Mean tokens/side 7.30 vs 0.95 on base — the extra spawn token is spent, so more pieces hit the board and get captured. Comebacks 2/4 (P1 seed=1 trailed −1 then won 6–5 at t88; P1 seed=10001 trailed −1 then won 6–1 at t46).
 
 `capture_cascade` does fire (13 capture-ratchets, 3 CONVERT / 2 SWAP / 8 extra ADD) but two of four games still hit the cap.
 

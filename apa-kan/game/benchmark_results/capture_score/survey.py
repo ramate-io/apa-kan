@@ -2,7 +2,9 @@
 """Survey capture-score (and control-baseline) JSONL.gz logs.
 
 Reports P1 win rate, draws, length, captures, score margins, how games end
-(target vs turn limit), comebacks, action mix, and dest-ring concentration.
+(target vs turn limit), comebacks, ring concentration (center / inner /
+spawn-middle / outer), capture locations, piece-type usage, and recapture
+timing (for the eval_capture_score timidness check).
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from pathlib import Path
 
 CENTER = 0
 INNER = {9, 1, 12, 3, 16, 6, 18, 21}
+SPAWN = {2, 5, 8, 11, 14, 17, 20, 23}
 CONTROL = INNER | {CENTER}
 
 
@@ -43,10 +46,15 @@ def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float, float]:
 
 
 def node_ring(node) -> str:
-    if node == CENTER:
+    if node is None:
+        return "none"
+    n = int(node)
+    if n == CENTER:
         return "center"
-    if node in INNER:
+    if n in INNER:
         return "inner"
+    if n in SPAWN:
+        return "spawn"
     return "outer"
 
 
@@ -55,6 +63,12 @@ def dest_of(act: dict) -> int | None:
     if to is not None:
         return int(to)
     return None
+
+
+def pct(part: int, whole: int) -> str:
+    if whole <= 0:
+        return "0%"
+    return f"{100.0 * part / whole:.1f}%"
 
 
 def survey(games: list[dict]) -> None:
@@ -72,16 +86,23 @@ def survey(games: list[dict]) -> None:
     margins: list[int] = []
     kinds: Counter[str] = Counter()
     dest_rings: Counter[str] = Counter()
+    cap_rings: Counter[str] = Counter()
     capture_dests: Counter[str] = Counter()
     piece_weights: Counter[int] = Counter()
+    piece_marks: Counter[str] = Counter()
+    piece_lights: Counter[str] = Counter()
     comebacks = 0
-    trail_then_win = 0
     majority_awards = 0
     ratchet_captures = 0
     target_wins = 0
     turn_limit_wins = 0
     turn_limit_draws = 0
     end_occupied: list[int] = []
+    recapture_2 = 0
+    opp_cap_events = 0
+    lead_plies = 0
+    tied_plies = 0
+    trail_plies = 0
     examples: list[str] = []
 
     for i, g in enumerate(games):
@@ -118,15 +139,30 @@ def survey(games: list[dict]) -> None:
         opp_caps = 0
         own_caps = 0
         min_lead: dict[int, int] = {1: 0, 2: 0}
-        for act in actions:
+        last_opp_cap_by: dict[int, int] = {}
+        for ai, act in enumerate(actions):
             kind = act.get("kind") or "?"
             kinds[kind] += 1
-            ring = node_ring(dest_of(act))
-            dest_rings[ring] += 1
+            dest_rings[node_ring(dest_of(act))] += 1
             piece = act.get("piece") or {}
             w = piece.get("weight") or piece.get("n_rings")
             if w is not None:
                 piece_weights[int(w)] += 1
+            mark = piece.get("capture") or "triangle"
+            piece_marks[str(mark)] += 1
+            n_rings = int(piece.get("n_rings") or 0)
+            normal = int(piece.get("normal_rings") or 0)
+            zag = int(piece.get("zag_rings") or 0)
+            bead = int(piece.get("bead_rings") or 0)
+            braid = max(0, n_rings - (normal + zag + bead))
+            if braid:
+                piece_lights["braid"] += 1
+            if zag:
+                piece_lights["zag"] += 1
+            if bead:
+                piece_lights["bead"] += 1
+            if normal:
+                piece_lights["normal"] += 1
             if act.get("majority_spawn"):
                 majority_awards += 1
             if act.get("ratchet_kind") == "capture":
@@ -135,19 +171,34 @@ def survey(games: list[dict]) -> None:
             p2_now = int(act.get("p2_score") or 0)
             min_lead[1] = min(min_lead[1], p1_now - p2_now)
             min_lead[2] = min(min_lead[2], p2_now - p1_now)
+            if p1_now > p2_now:
+                lead_plies += 1
+            elif p2_now > p1_now:
+                trail_plies += 1
+            else:
+                tied_plies += 1
             player = act.get("player")
+            captured_opp = False
             for cap in act.get("captures") or []:
                 capture_dests[str(cap.get("dest") or "?")] += 1
+                cap_rings[node_ring(cap.get("node"))] += 1
                 owner = cap.get("owner")
                 if owner is not None and player is not None and int(owner) != int(player):
                     opp_caps += 1
+                    captured_opp = True
+                    opp_cap_events += 1
+                    last_opp_cap_by[int(player)] = ai
+                    other = 1 if int(player) == 2 else 2
+                    prev = last_opp_cap_by.get(other)
+                    if prev is not None and ai - prev <= 2:
+                        recapture_2 += 1
                 else:
                     own_caps += 1
+            _ = captured_opp
         caps.append(opp_caps)
         self_caps.append(own_caps)
         if status == "won" and winner in (1, 2) and min_lead[int(winner)] < 0:
             comebacks += 1
-            trail_then_win += 1
             if len(examples) < 8:
                 examples.append(
                     f"game {i} seed={g.get('seed')} winner=P{winner} "
@@ -158,12 +209,11 @@ def survey(games: list[dict]) -> None:
         occ = 0
         for key in ("p1_board", "p2_board"):
             occ += len(final.get(key) or [])
-        if not occ:
-            # Reconstruct occupancy from last action if final_state omitted.
-            occ = -1
-        end_occupied.append(max(occ, 0))
+        end_occupied.append(occ)
 
     p, lo, hi = wilson_ci(p1_w, n)
+    action_n = sum(dest_rings.values())
+    cap_n = sum(cap_rings.values())
     print(f"n={n}  P1 {p1_w}-{draws}-{p2_w}  P1_wr={p:.3f} [{lo:.3f},{hi:.3f}]")
     print(f"end_reasons  {dict(reasons)}")
     print(
@@ -182,15 +232,43 @@ def survey(games: list[dict]) -> None:
         f"score  mean_p1={statistics.mean(p1_scores):.2f} mean_p2={statistics.mean(p2_scores):.2f} "
         f"mean_abs_margin={statistics.mean(margins):.2f} median_abs_margin={statistics.median(margins):.1f}"
     )
+    decided = p1_w + p2_w
     print(
-        f"comebacks (winner trailed on capture-score) {comebacks}/{p1_w + p2_w} "
-        f"({0 if (p1_w + p2_w) == 0 else 100 * comebacks / (p1_w + p2_w):.1f}%)"
+        f"comebacks (winner trailed on capture-score) {comebacks}/{decided} "
+        f"({0 if decided == 0 else 100 * comebacks / decided:.1f}%)"
     )
     print(f"majority_spawn awards (actions)={majority_awards}  capture-ratchets={ratchet_captures}")
     print(f"actions  {dict(kinds)}")
-    print(f"dest rings  {dict(dest_rings)}")
+    print(
+        "dest rings  "
+        + "  ".join(
+            f"{k}={dest_rings[k]} ({pct(dest_rings[k], action_n)})"
+            for k in ("center", "inner", "spawn", "outer", "none")
+            if dest_rings[k]
+        )
+    )
+    print(
+        "capture nodes  "
+        + "  ".join(
+            f"{k}={cap_rings[k]} ({pct(cap_rings[k], cap_n)})"
+            for k in ("center", "inner", "spawn", "outer")
+            if cap_rings[k]
+        )
+    )
     print(f"capture dests  {dict(capture_dests)}")
-    print(f"piece weights used  {dict(piece_weights)}")
+    print(f"piece n_rings  {dict(sorted(piece_weights.items()))}")
+    print(f"piece marks  {dict(piece_marks)}")
+    print(f"piece lights  {dict(piece_lights)}")
+    ply = lead_plies + trail_plies + tied_plies
+    print(
+        f"score plies  p1_lead={lead_plies} ({pct(lead_plies, ply)})  "
+        f"p2_lead={trail_plies} ({pct(trail_plies, ply)})  "
+        f"tied={tied_plies} ({pct(tied_plies, ply)})"
+    )
+    print(
+        f"recapture within 2 plies  {recapture_2}/{opp_cap_events} "
+        f"({pct(recapture_2, opp_cap_events)})"
+    )
     if end_occupied:
         print(
             f"end occupancy  mean={statistics.mean(end_occupied):.2f} "

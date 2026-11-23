@@ -9,8 +9,8 @@ use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	color_drift_diagonal, BlockerBlocks, CaptureMode, EmblemWeights, EndgameRule, HopWeightCmp,
-	Objective, PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet, SamePieceTwice,
-	SwapMode, ZagMismatchCount, BAG_SIZE,
+	MajoritySpawnSet, Objective, PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet,
+	SamePieceTwice, SwapMode, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -350,6 +350,9 @@ where
 		"--majority-spawn-bonus" => {
 			rules.majority_spawn_bonus = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--majority-spawn-set" => {
+			rules.majority_spawn_set = MajoritySpawnSet::parse(&require_value(arg, it.next())?)?;
+		}
 		"--capture-cascade" => {
 			rules.capture_cascade = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
@@ -537,6 +540,7 @@ pub fn usage() -> &'static str {
 	   --objective <control|capture-score>        Win condition (default: control). capture-score: 1 point per opponent capture, no control wins\n\
 	   --score-target <1..64>                     First-to-N captures under capture-score (default: 6)\n\
 	   --majority-spawn-bonus <on|off>            Majority of former control cells earns a spawn token once per turn (default: off)\n\
+	   --majority-spawn-set <control-set|inner|center>  Cells the majority bonus counts (default: control-set)\n\
 	   --capture-cascade <on|off>                 Sparse-board capture awards a ratchet extra action (default: off)\n\
 	   --unlimited-spawn <on|off>                 Captures return to the owner; ADD does not spend tokens (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
@@ -809,6 +813,7 @@ mod tests {
 		assert_eq!(cfg.rules.objective, crate::game::Objective::Control);
 		assert_eq!(cfg.rules.score_target, SCORE_TARGET_DEFAULT);
 		assert!(!cfg.rules.majority_spawn_bonus);
+		assert_eq!(cfg.rules.majority_spawn_set, crate::game::MajoritySpawnSet::ControlSet);
 		assert!(!cfg.rules.capture_cascade);
 		assert!(!cfg.rules.unlimited_spawn);
 	}
@@ -833,6 +838,11 @@ mod tests {
 		assert_eq!(score.rules.objective, crate::game::Objective::CaptureScore);
 		assert_eq!(score.rules.score_target, 8);
 		assert!(score.rules.majority_spawn_bonus);
+		assert_eq!(score.rules.majority_spawn_set, crate::game::MajoritySpawnSet::ControlSet);
+		let inner_set = GameConfig::parse(["--majority-spawn-set", "inner"]).unwrap();
+		assert_eq!(inner_set.rules.majority_spawn_set, crate::game::MajoritySpawnSet::Inner);
+		assert!(GameConfig::parse(["--majority-spawn-set", "petals"]).is_ok());
+		assert!(GameConfig::parse(["--majority-spawn-set", "board"]).is_err());
 		assert!(score.rules.capture_cascade);
 		assert!(score.rules.unlimited_spawn);
 		assert!(score.rules.control_win, "control_win flag is unchanged; logic ignores it");

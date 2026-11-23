@@ -2678,6 +2678,44 @@ impl Objective {
 	}
 }
 
+/// Which cells [`RuleSet::majority_spawn_bonus`] counts. Default is the
+/// former 9-node control set. Sweep variants for the capture-score cell;
+/// ignored when the bonus is off. Missing JSONL replays as control-set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MajoritySpawnSet {
+	#[default]
+	ControlSet,
+	/// Strict majority of the 8 inner-ring (petal) nodes.
+	Inner,
+	/// Occupy the center and a strict majority of the 9 control-set cells.
+	Center,
+}
+
+impl MajoritySpawnSet {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"control-set" | "control_set" | "control" | "9" => Ok(Self::ControlSet),
+			"inner" | "petals" | "petal" | "8" => Ok(Self::Inner),
+			"center" | "center-plus" | "center_plus" | "origin" => Ok(Self::Center),
+			other => Err(format!(
+				"unknown --majority-spawn-set '{other}' (expected control-set|inner|center)"
+			)),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::ControlSet => "control-set",
+			Self::Inner => "inner",
+			Self::Center => "center",
+		}
+	}
+
+	pub fn is_control_set(self) -> bool {
+		matches!(self, Self::ControlSet)
+	}
+}
+
 /// How the two-tier endgame (control, then low-value) scales with remaining
 /// material. CLI: `--endgame-rule`.
 ///
@@ -3010,6 +3048,10 @@ pub struct RuleSet {
 	/// spawn token. Once per `finish_turn`. Default off.
 	/// `--majority-spawn-bonus`. Missing JSONL replays as off.
 	pub majority_spawn_bonus: bool,
+	/// Which cells the majority-spawn bonus counts. Default
+	/// [`MajoritySpawnSet::ControlSet`] (9 former control cells).
+	/// `--majority-spawn-set`. Missing JSONL replays as control-set.
+	pub majority_spawn_set: MajoritySpawnSet,
 	/// Sparse-endgame extra action: capturing ≥1 opponent piece while the
 	/// board has ≤ [`CAPTURE_CASCADE_SPARSE`] occupied nodes awards the
 	/// capturer the next action as a ratchet reward (same 1st/2nd+ SWAP/FLIP
@@ -3080,6 +3122,7 @@ impl Default for RuleSet {
 			objective: Objective::Control,
 			score_target: SCORE_TARGET_DEFAULT,
 			majority_spawn_bonus: false,
+			majority_spawn_set: MajoritySpawnSet::ControlSet,
 			capture_cascade: false,
 			unlimited_spawn: false,
 		}
@@ -5940,14 +5983,25 @@ impl Game {
 		}
 	}
 
-	/// Once per completed turn: majority of the 9 former control cells earns
-	/// one spawn token. Tied or empty occupancy awards nothing.
+	/// Once per completed turn: majority of [`RuleSet::majority_spawn_set`]
+	/// earns one spawn token. Tied or empty occupancy awards nothing.
 	fn award_majority_spawn(&mut self, who: Player) {
 		if !self.rules.majority_spawn_bonus || self.status.is_over() {
 			return;
 		}
-		let mine = self.control_count(who);
-		let theirs = self.control_count(who.other());
+		let opp = who.other();
+		let (mine, theirs) = match self.rules.majority_spawn_set {
+			MajoritySpawnSet::ControlSet => (self.control_count(who), self.control_count(opp)),
+			MajoritySpawnSet::Inner => (self.petal_count(who), self.petal_count(opp)),
+			MajoritySpawnSet::Center => {
+				let holds_center =
+					self.tile_at(self.board.center()).is_some_and(|t| t.owner == who);
+				if !holds_center {
+					return;
+				}
+				(self.control_count(who), self.control_count(opp))
+			}
+		};
 		if mine > theirs && mine > 0 {
 			self.budget_tokens[who.index()].push(BudgetToken::Blank);
 			self.last_majority_spawn = true;
@@ -14284,6 +14338,73 @@ mod tests {
 		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
 		assert!(game.last_majority_spawn());
 		assert_eq!(game.budget_token_count(Player::One), tokens.max(1)); // spent 1, earned 1
+	}
+
+	#[test]
+	fn majority_spawn_inner_set_ignores_the_center() {
+		let mut rules = capture_score_rules();
+		rules.majority_spawn_bonus = true;
+		rules.majority_spawn_set = MajoritySpawnSet::Inner;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		let center = game.board().center();
+		put(&mut game, inner[0], Player::One, TileColor::Green, 3, 1);
+		put(&mut game, inner[1], Player::One, TileColor::Blue, 3, 1);
+		put(&mut game, inner[2], Player::Two, TileColor::Orange, 3, 1);
+		put(&mut game, center, Player::Two, TileColor::Teal, 3, 1);
+		assert_eq!(game.petal_count(Player::One), 2);
+		assert_eq!(game.control_count(Player::Two), 2);
+		let tokens = game.budget_token_count(Player::One);
+		let spawn = game.isolated_empty_spawn();
+		let tile = game.alloc_tile(Player::One, TileColor::Teal, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; tokens.max(1)]);
+		game.set_current(Player::One);
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert!(game.last_majority_spawn(), "inner-set counts petals, not the origin");
+	}
+
+	#[test]
+	fn majority_spawn_center_set_requires_the_origin() {
+		let mut rules = capture_score_rules();
+		rules.majority_spawn_bonus = true;
+		rules.majority_spawn_set = MajoritySpawnSet::Center;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		put(&mut game, inner[0], Player::One, TileColor::Green, 3, 1);
+		put(&mut game, inner[1], Player::One, TileColor::Blue, 3, 1);
+		put(&mut game, inner[2], Player::Two, TileColor::Orange, 3, 1);
+		let tokens = game.budget_token_count(Player::One);
+		let spawn = game.isolated_empty_spawn();
+		let tile = game.alloc_tile(Player::One, TileColor::Teal, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; tokens.max(1)]);
+		game.set_current(Player::One);
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert!(!game.last_majority_spawn(), "center-set needs the origin occupant");
+	}
+
+	#[test]
+	fn majority_spawn_center_set_awards_when_holding_origin() {
+		let mut rules = capture_score_rules();
+		rules.majority_spawn_bonus = true;
+		rules.majority_spawn_set = MajoritySpawnSet::Center;
+		let mut game = Game::empty(rules);
+		let inner = game.board().inner_ring().to_vec();
+		let center = game.board().center();
+		put(&mut game, center, Player::One, TileColor::Teal, 3, 1);
+		put(&mut game, inner[0], Player::One, TileColor::Green, 3, 1);
+		put(&mut game, inner[1], Player::Two, TileColor::Orange, 3, 1);
+		assert_eq!(game.control_count(Player::One), 2);
+		assert_eq!(game.control_count(Player::Two), 1);
+		let tokens = game.budget_token_count(Player::One);
+		let spawn = game.isolated_empty_spawn();
+		let tile = game.alloc_tile(Player::One, TileColor::Blue, 1, 1);
+		game.set_bench(Player::One, vec![tile]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; tokens.max(1)]);
+		game.set_current(Player::One);
+		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
+		assert!(game.last_majority_spawn(), "center + control majority earns the token");
 	}
 
 	#[test]

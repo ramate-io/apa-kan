@@ -413,9 +413,24 @@ fn race_score(game: &Game, me: Player, opp: Player, config: SearchConfig) -> i32
 		s += 90 * my_petals - 110 * opp_petals;
 	}
 	if game.rules().majority_spawn_bonus {
-		let my_ctl = i32::from(game.control_count(me));
-		let opp_ctl = i32::from(game.control_count(opp));
-		s += 80 * my_ctl - 90 * opp_ctl;
+		use crate::game::MajoritySpawnSet;
+		match game.rules().majority_spawn_set {
+			MajoritySpawnSet::Inner => {
+				s += 80 * my_petals - 90 * opp_petals;
+			}
+			MajoritySpawnSet::ControlSet | MajoritySpawnSet::Center => {
+				let my_ctl = i32::from(game.control_count(me));
+				let opp_ctl = i32::from(game.control_count(opp));
+				s += 80 * my_ctl - 90 * opp_ctl;
+				if game.rules().majority_spawn_set == MajoritySpawnSet::Center {
+					match occupant {
+						Some(t) if t.owner == me => s += 80,
+						Some(t) if t.owner == opp => s -= 90,
+						_ => {}
+					}
+				}
+			}
+		}
 	}
 	if game.rules().petal_majority_win {
 		let n = i32::from(game.rules().petal_majority_n.max(1));

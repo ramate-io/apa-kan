@@ -7,10 +7,10 @@ use crate::game::{
 	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
 	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
 	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game,
-	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, Objective,
-	PassThroughRingCmp, PathConstraint, Player, RatchetKind, RatchetTier, RingCountWeights,
-	RingType, RuleSet, SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind, ZagMismatchCount,
-	DOT_PERCENT_DEFAULT, SCORE_TARGET_DEFAULT,
+	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, MajoritySpawnSet,
+	Objective, PassThroughRingCmp, PathConstraint, Player, RatchetKind, RatchetTier,
+	RingCountWeights, RingType, RuleSet, SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind,
+	ZagMismatchCount, DOT_PERCENT_DEFAULT, SCORE_TARGET_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -497,6 +497,11 @@ pub struct RulesLog {
 	pub score_target: u8,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub majority_spawn_bonus: bool,
+	#[serde(
+		default = "default_majority_spawn_set",
+		skip_serializing_if = "skip_majority_spawn_set"
+	)]
+	pub majority_spawn_set: String,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub capture_cascade: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -517,6 +522,14 @@ fn default_score_target() -> u8 {
 
 fn skip_score_target(v: &u8) -> bool {
 	*v == SCORE_TARGET_DEFAULT
+}
+
+fn default_majority_spawn_set() -> String {
+	MajoritySpawnSet::ControlSet.name().to_string()
+}
+
+fn skip_majority_spawn_set(v: &String) -> bool {
+	v == MajoritySpawnSet::ControlSet.name()
 }
 
 fn default_low_value_endgame() -> String {
@@ -616,6 +629,7 @@ impl RulesLog {
 			objective: r.objective.name().into(),
 			score_target: r.score_target,
 			majority_spawn_bonus: r.majority_spawn_bonus,
+			majority_spawn_set: r.majority_spawn_set.name().into(),
 			capture_cascade: r.capture_cascade,
 			unlimited_spawn: r.unlimited_spawn,
 		}
@@ -688,6 +702,8 @@ impl RulesLog {
 				self.score_target
 			},
 			majority_spawn_bonus: self.majority_spawn_bonus,
+			majority_spawn_set: MajoritySpawnSet::parse(&self.majority_spawn_set)
+				.unwrap_or(MajoritySpawnSet::ControlSet),
 			capture_cascade: self.capture_cascade,
 			unlimited_spawn: self.unlimited_spawn,
 		})
@@ -2147,6 +2163,7 @@ mod tests {
 		let json = serde_json::to_string(&log).unwrap();
 		assert!(!json.contains("objective"), "{json}");
 		assert!(!json.contains("majority_spawn_bonus"), "{json}");
+		assert!(!json.contains("majority_spawn_set"), "{json}");
 		assert!(!json.contains("capture_cascade"), "{json}");
 		assert!(!json.contains("unlimited_spawn"), "{json}");
 		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
