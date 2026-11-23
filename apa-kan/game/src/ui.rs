@@ -48,62 +48,70 @@ pub fn run_app(cfg: GameConfig) {
 	let search = cfg.search;
 	let log_meta = play_log_meta(&cfg, screenshot.is_some());
 	let deck_slots = game.rules().bag_size as usize;
-	let mut resolution = WindowResolution::new(width, height);
-	resolution.set_scale_factor_override(Some(1.0));
-	App::new()
-		.add_plugins(DefaultPlugins.set(WindowPlugin {
-			primary_window: Some(Window { title: "Apa Kan".into(), resolution, ..default() }),
-			..default()
-		}))
-		.insert_resource(ClearColor(Color::srgb(
-			visual::BG_RGB[0],
-			visual::BG_RGB[1],
-			visual::BG_RGB[2],
-		)))
-		.insert_resource(ConfigRes(cfg))
-		.insert_resource({
-			let mut play = PlayState {
-				game,
-				setup: setup_session,
-				selection: Selection::None,
-				log: if screenshot.is_some() && !from_start {
-					"P1 ADD orange w2 d2 at center".into()
-				} else {
-					String::new()
-				},
-				warning: String::new(),
-				last_removals: String::new(),
-				flash: visual::CaptureFlash::empty(),
-				fingerprint: 0,
-				search1: ai::Searcher::with_config(search),
-				search2: ai::Searcher::with_config(search),
-				log_meta,
-				game_log: None,
-			};
-			if play.setup.is_none() {
-				begin_play_log(&mut play);
-			}
-			play
-		})
-		.insert_resource(RngRes(rng))
-		.insert_resource(BotClock { wait: 0.4 })
-		.insert_resource(UiLayout(ViewLayout::from_window_with_deck(
-			width as f32,
-			height as f32,
-			deck_slots,
-		)))
-		.insert_resource(ShotState {
-			frames: 0,
-			requested_at: 0,
-			requested: false,
-			finished: false,
-		})
-		.add_systems(Startup, setup)
-		.add_systems(
-			Update,
-			(sync_layout, handle_click, bot_turn, refresh_view, update_hud, screenshot_capture),
-		)
-		.run();
+	let mut app = App::new();
+	app.add_plugins(
+		DefaultPlugins
+			.set(WindowPlugin { primary_window: Some(primary_window(width, height)), ..default() }),
+	)
+	.add_plugins(crate::platform::PlatformPlugin)
+	.insert_resource(ClearColor(Color::srgb(
+		visual::BG_RGB[0],
+		visual::BG_RGB[1],
+		visual::BG_RGB[2],
+	)))
+	.insert_resource(ConfigRes(cfg))
+	.insert_resource({
+		let mut play = PlayState {
+			game,
+			setup: setup_session,
+			selection: Selection::None,
+			log: if screenshot.is_some() && !from_start {
+				"P1 ADD orange w2 d2 at center".into()
+			} else {
+				String::new()
+			},
+			warning: String::new(),
+			last_removals: String::new(),
+			flash: visual::CaptureFlash::empty(),
+			fingerprint: 0,
+			search1: ai::Searcher::with_config(search),
+			search2: ai::Searcher::with_config(search),
+			log_meta,
+			game_log: None,
+		};
+		if play.setup.is_none() {
+			begin_play_log(&mut play);
+		}
+		play
+	})
+	.insert_resource(RngRes(rng))
+	.insert_resource(BotClock { wait: 0.4 })
+	.insert_resource(UiLayout(ViewLayout::from_window_with_deck(
+		width as f32,
+		height as f32,
+		deck_slots,
+	)))
+	.insert_resource(ShotState { frames: 0, requested_at: 0, requested: false, finished: false })
+	.add_systems(Startup, setup)
+	.add_systems(
+		Update,
+		(sync_layout, handle_click, bot_turn, refresh_view, update_hud, screenshot_capture),
+	);
+	app.run();
+}
+
+fn primary_window(width: u32, height: u32) -> Window {
+	#[cfg(target_os = "ios")]
+	{
+		let _ = (width, height);
+		Window { title: "Apa Kan".into(), resizable: false, ..default() }
+	}
+	#[cfg(not(target_os = "ios"))]
+	{
+		let mut resolution = WindowResolution::new(width, height);
+		resolution.set_scale_factor_override(Some(1.0));
+		Window { title: "Apa Kan".into(), resolution, ..default() }
+	}
 }
 
 #[derive(Resource)]

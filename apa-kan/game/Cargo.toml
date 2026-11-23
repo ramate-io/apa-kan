@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:bevy"]
+desktop = ["dep:bevy", "dep:webbrowser"]
 
 [[bin]]
 name = "apa-kan"
@@ -41,6 +41,13 @@ rand = { version = "0.8", features = ["std", "std_rng"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+webbrowser = { version = "1", optional = true }
+
+[build-dependencies]
+cc = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22"
 
 [dev-dependencies]
 apa-kan-core = { path = "../core", features = ["test-helpers"] }

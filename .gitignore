@@ -11,4 +11,7 @@ dist
 packaging/*.local.md
 packaging/*.local.env
 packaging/identity.local.md
+packaging/ios/*.xcodeproj
+packaging/ios/*.xcworkspace
+packaging/ios/build/
 .DS_Store

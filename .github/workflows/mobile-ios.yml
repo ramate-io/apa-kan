@@ -1,9 +1,10 @@
 name: Mobile - iOS
 
 on:
+  pull_request:
   push:
     branches:
-      - '**'
+      - main
   release:
     types: [published]
   workflow_dispatch:
@@ -17,11 +18,6 @@ permissions:
 
 jobs:
   version:
-    if: >
-      github.event_name == 'release' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.ref == 'refs/heads/main' ||
-      contains(github.event.head_commit.message, 'ci-action::package')
     runs-on: ubuntu-22.04
     outputs:
       version: ${{ steps.ver.outputs.version }}
@@ -33,7 +29,45 @@ jobs:
           echo "version=$(packaging/version.sh)" >> "$GITHUB_OUTPUT"
           echo "rust=$(packaging/version.sh --rust)" >> "$GITHUB_OUTPUT"
 
-  ios:
+  ios-wrapper-check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check wrapper files
+        run: packaging/ios/scripts/check-wrapper.sh
+
+  ios-simulator:
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 180
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.version.outputs.rust }}
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ios-simulator
+          cache-targets: true
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Unsigned iOS Simulator build
+        run: packaging/ios/scripts/ci-simulator.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apa-kan-${{ env.VERSION }}-ios-simulator
+          path: packaging/ios/build/Build/Products/Debug-iphonesimulator/ApaKan.app
+          if-no-files-found: error
+          retention-days: 7
+
+  ios-device-ipa:
+    if: >
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main'
     needs: version
     runs-on: macos-latest
     timeout-minutes: 180
@@ -46,13 +80,12 @@ jobs:
           toolchain: ${{ needs.version.outputs.rust }}
           targets: aarch64-apple-ios
       - uses: Swatinem/rust-cache@v2
-      
-      - name: Build iOS binary
+        with:
+          shared-key: ios-device
+      - name: Build iOS device binary
         run: cargo build -p apa-kan --bin apa-kan --release --target aarch64-apple-ios
-      
-      - name: Package iOS app bundle
+      - name: Package unsigned IPA
         run: packaging/scripts/package-ios.sh
-      
       - uses: actions/upload-artifact@v4
         with:
           name: apa-kan-${{ env.VERSION }}-ios
@@ -62,7 +95,7 @@ jobs:
 
   publish-release:
     if: github.event_name == 'release'
-    needs: [ios]
+    needs: [ios-device-ipa]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

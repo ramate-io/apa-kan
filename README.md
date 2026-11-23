@@ -54,6 +54,8 @@ nix develop
 cargo run -p apa-kan
 ```
 
+iOS (Mac, unsigned Simulator): [`packaging/ios/README.md`](packaging/ios/README.md). Bundle id `io.ramate.apakan`.
+
 A plain `cargo run --no-default-features -p apa-kan` is the playtest package (human vs greedy). With a desktop window: `nix develop && cargo run -p apa-kan`. Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`. Play against the live search bot with `--bot2 minimax` (default profile `exactplay`). `--think-ms 80` only completes iterative-deepening depth 2, which cannot see a 3-ply occupy-then-hold control win; use `--think-ms 400` (or higher) if you want the bot to convert those. `--search-profile enhanced` is the same tree with `eval_margin_scale=100`. Other personalities stay selectable via `--search-profile` / `--bot-config`.
 
 ```text

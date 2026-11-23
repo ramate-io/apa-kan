@@ -2,55 +2,55 @@
 set -euo pipefail
 
 VERSION="${VERSION:?VERSION env var required}"
-DIST="dist"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+DIST="$ROOT/dist"
 NAME="apa-kan"
-BINARY="target/aarch64-apple-ios/release/$NAME"
+IOS="$ROOT/packaging/ios"
+BINARY="${BINARY:-$ROOT/target/aarch64-apple-ios/release/$NAME}"
+
+if [[ ! -x "$BINARY" ]]; then
+	echo "missing iOS binary at $BINARY" >&2
+	echo "build with: cargo build -p apa-kan --bin apa-kan --release --target aarch64-apple-ios" >&2
+	exit 1
+fi
 
 mkdir -p "$DIST"
-
 APP_DIR="$DIST/Payload/ApaKan.app"
+rm -rf "$DIST/Payload"
 mkdir -p "$APP_DIR"
 
-cp "$BINARY" "$APP_DIR/apa-kan"
-chmod +x "$APP_DIR/apa-kan"
+cp "$BINARY" "$APP_DIR/ApaKan"
+chmod +x "$APP_DIR/ApaKan"
 
-cat > "$APP_DIR/Info.plist" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>CFBundleExecutable</key>
-	<string>apa-kan</string>
-	<key>CFBundleIdentifier</key>
-	<string>io.ramate.apa-kan</string>
-	<key>CFBundleName</key>
-	<string>ApaKan</string>
-	<key>CFBundleVersion</key>
-	<string>$VERSION</string>
-	<key>CFBundleShortVersionString</key>
-	<string>$VERSION</string>
-	<key>CFBundlePackageType</key>
-	<string>APPL</string>
-	<key>UIRequiredDeviceCapabilities</key>
-	<array>
-		<string>metal</string>
-	</array>
-	<key>UISupportedInterfaceOrientations</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-</dict>
-</plist>
-EOF
+# Materialize Info.plist so the IPA does not depend on Xcode substitutions.
+python3 - "$IOS/Info.plist" "$APP_DIR/Info.plist" "$VERSION" <<'PY'
+import pathlib, sys
+src, dest, version = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+text = src.read_text()
+text = text.replace("$(EXECUTABLE_NAME)", "ApaKan")
+text = text.replace("$(PRODUCT_BUNDLE_IDENTIFIER)", "io.ramate.apakan")
+text = text.replace("$(MARKETING_VERSION)", version)
+text = text.replace("$(CURRENT_PROJECT_VERSION)", version)
+dest.write_text(text)
+PY
 
-cd "$DIST"
-zip -r "ApaKan-$VERSION-ios.ipa" Payload
+mkdir -p "$APP_DIR/Assets.car" 2>/dev/null || true
+cp "$IOS/LaunchScreen.storyboard" "$APP_DIR/"
+mkdir -p "$APP_DIR/Fonts"
+cp "$IOS/Fonts/ExpletusSans.ttf" "$APP_DIR/Fonts/"
+cp "$IOS/Fonts/ExpletusSans.ttf" "$APP_DIR/"
+cp "$IOS/Assets.xcassets/AppIcon.appiconset/AppIcon.png" "$APP_DIR/AppIcon.png"
+cp "$IOS/Assets.xcassets/LaunchMark.imageset/LaunchMark.png" "$APP_DIR/LaunchMark.png"
+
+# Minimal PkgInfo
+printf 'APPL????' > "$APP_DIR/PkgInfo"
+
+(
+	cd "$DIST"
+	rm -f "ApaKan-$VERSION-ios.ipa"
+	zip -r "ApaKan-$VERSION-ios.ipa" Payload
+)
 
 echo "✅ iOS package created: $DIST/ApaKan-$VERSION-ios.ipa"
-echo "⚠️  NOTE: This IPA is unsigned. To publish:"
-echo "   1. Sign with Apple Developer certificate using Xcode or fastlane"
-echo "   2. Configure App Store Connect account"
-echo "   3. Set up provisioning profiles"
-echo "   4. Add signing certificate secrets to CI/CD"
+echo "⚠️  Unsigned. Simulator: packaging/ios/scripts/ci-simulator.sh"
+echo "    Device signing: packaging/ios/README.md"
