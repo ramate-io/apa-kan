@@ -15,7 +15,7 @@ use crate::game::{Action, Game, Player, RuleSet};
 
 pub use eval::{evaluate, evaluate_with, terminal_score, WIN};
 pub use search_config::SearchConfig;
-pub use search_move::legal_search_moves;
+pub use search_move::{apply_move, is_capture, legal_search_moves, SearchMove};
 pub use zobrist::{hash as visible_hash, occupancy_hash};
 
 /// Mean minimax nodes per move at 1000 ms, single-threaded, release, this VM.
@@ -84,7 +84,7 @@ impl SearchLimit {
 }
 
 use eval::evaluate as eval_pos;
-use search_move::{apply_move, legal_search_moves as search_moves, SearchMove};
+use search_move::{legal_search_moves as search_moves};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Actor {
@@ -157,6 +157,8 @@ pub struct SearchStats {
 	pub root_best_stability: f32,
 	/// Legal real moves at the root (not factored).
 	pub root_legal: u16,
+	/// Root score after the last fully completed ID depth (minimax only).
+	pub root_score: i32,
 }
 
 pub struct HistoryTable {
@@ -255,6 +257,20 @@ impl Searcher {
 
 	pub fn stats(&self) -> SearchStats {
 		self.stats
+	}
+
+	pub fn set_minimax_last_move(&mut self, mv: Option<SearchMove>) {
+		self.minimax.last_move = mv;
+	}
+
+	pub fn set_root_shuffle(&mut self, on: bool) {
+		self.minimax.root_shuffle = on;
+	}
+
+	/// Pre-load occupancy hashes from a JSONL replay (before `choose_with`).
+	pub fn seed_played_hashes(&mut self, hashes: &[u64]) {
+		self.played_hashes.clear();
+		self.played_hashes.extend_from_slice(hashes);
 	}
 
 	pub fn observe(&mut self, game: &Game) {
