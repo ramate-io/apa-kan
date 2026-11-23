@@ -1,0 +1,24 @@
+name: Cargo Core
+
+on:
+  push:
+    branches:
+
+jobs:
+  cargo-core:
+    uses: ./.github/workflows/nix-command.yml
+    with:
+      command: |
+        set -euo pipefail
+        RUSTFLAGS="-Dwarnings" cargo test -p apa-kan-core
+        echo "apa-kan-core dependency tree:"
+        cargo tree -p apa-kan-core --edges normal
+        if cargo tree -p apa-kan-core --edges normal --format '{p}' --prefix none | grep -E -q '^bevy '; then
+          echo "Bevy must not appear in apa-kan-core's dependency tree"
+          cargo tree -p apa-kan-core -i bevy
+          exit 1
+        fi
+        echo "No Bevy in apa-kan-core dependency tree"
+      nix_flake_path: '.'
+      runner: 'ubuntu-latest'
+      rust_cache_key: cargo-core

@@ -928,9 +928,18 @@ mod tests {
 		let game = Game::new(RuleSet::default(), 2);
 		let mut rng = StdRng::seed_from_u64(2);
 		let mut searcher = Searcher::new();
-		let action = searcher.choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(200));
+		// Work, not wall time: cargo-core is debug and shares the runner with
+		// generation tests, so 200ms often aborts before iterative-deepening
+		// finishes depth 1. 8000 nodes is enough to complete that ply.
+		let action =
+			searcher.choose_with(&game, Actor::Minimax, &mut rng, SearchLimit::work(8_000, 8));
 		assert!(game.legal_actions().contains(&action));
-		assert!(searcher.stats().depth >= 1);
+		assert!(
+			searcher.stats().depth >= 1,
+			"depth={} nodes={}",
+			searcher.stats().depth,
+			searcher.stats().nodes
+		);
 	}
 
 	#[test]
