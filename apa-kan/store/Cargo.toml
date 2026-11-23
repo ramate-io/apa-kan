@@ -12,15 +12,19 @@ rust-version = { workspace = true }
 [features]
 default = ["memory"]
 memory = []
-sqlite = ["dep:sqlx"]
+sqlite = ["dep:sqlx", "sqlx/sqlite", "sqlx/runtime-tokio"]
+postgres = ["dep:sqlx", "dep:pgvector", "sqlx/postgres", "sqlx/runtime-tokio", "sqlx/tls-rustls"]
 
 [dependencies]
 apa-kan-account = { workspace = true }
+apa-kan-core = { workspace = true }
 async-trait = { workspace = true }
 hex = { workspace = true }
+pgvector = { version = "0.4", optional = true, default-features = false, features = ["sqlx"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sqlx = { workspace = true, optional = true, features = ["runtime-tokio", "sqlite"] }
+sha3 = { workspace = true }
+sqlx = { workspace = true, optional = true, default-features = false }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
