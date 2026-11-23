@@ -10,7 +10,8 @@ use bevy::window::WindowResolution;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use crate::ai::{self, SearchLimit};
+use crate::ai::{self, SearchLimit, SearchStats};
+use crate::bench_log::{self, GameLog};
 use crate::board::NodeId;
 use crate::config::GameConfig;
 use crate::deck::{
@@ -18,6 +19,7 @@ use crate::deck::{
 };
 use crate::game::{Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile};
 use crate::platform::{replace_browser_route, IncomingUrl, PlatformPlugin};
+use crate::play_log;
 use crate::route::{DeepLink, Route};
 use crate::shell::{self, AppScreen, LeaveMatch, StartMatch};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
@@ -114,7 +116,7 @@ fn play_state_from_config(cfg: &GameConfig) -> PlayState {
 			game.set_time_control(tc);
 		}
 	}
-	PlayState {
+	let mut play = PlayState {
 		game,
 		setup: setup_session,
 		selection: Selection::None,
@@ -131,7 +133,13 @@ fn play_state_from_config(cfg: &GameConfig) -> PlayState {
 		search2: ai::Searcher::with_config(cfg.search),
 		bot_thinking: false,
 		from_shell: cfg.show_shell,
+		log_meta: play_log_meta(cfg, screenshot.is_some()),
+		game_log: None,
+	};
+	if play.setup.is_none() {
+		begin_play_log(&mut play);
 	}
+	play
 }
 
 fn fatal(err: &str) -> ! {
@@ -188,6 +196,18 @@ struct PlayState {
 	search2: ai::Searcher,
 	bot_thinking: bool,
 	from_shell: bool,
+	log_meta: Option<PlayLogMeta>,
+	game_log: Option<GameLog>,
+}
+
+struct PlayLogMeta {
+	path: std::path::PathBuf,
+	think_ms: u64,
+	pairing: String,
+	p1: String,
+	p2: String,
+	search: String,
+	scenario: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -776,6 +796,7 @@ fn complete_setup_if_ready(play: &mut PlayState, time_control: Option<crate::clo
 	play.warning.clear();
 	play.selection = Selection::None;
 	play.fingerprint = 0;
+	begin_play_log(play);
 }
 
 fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
@@ -842,10 +863,16 @@ fn attempt_add(play: &mut PlayState, bench_index: usize, node: NodeId) {
 }
 
 fn apply_action(play: &mut PlayState, action: Action) {
+	apply_action_with_stats(play, action, None);
+}
+
+fn apply_action_with_stats(play: &mut PlayState, action: Action, stats: Option<SearchStats>) {
+	let piece = bench_log::piece_for_action(&play.game, action);
+	let partner = bench_log::partner_for_action(&play.game, action);
 	match play.game.apply(action) {
 		Ok(outcome) => {
 			play.flash = visual::CaptureFlash::from_outcome(&outcome);
-			play.log = outcome.log_line;
+			play.log = outcome.log_line.clone();
 			if outcome.removals.is_empty() {
 				play.last_removals.clear();
 			} else {
@@ -871,9 +898,88 @@ fn apply_action(play: &mut PlayState, action: Action) {
 			play.game.credit_increment(outcome.player);
 			play.search1.advance(&play.game);
 			play.search2.advance(&play.game);
+			record_play_action(play, action, piece, partner, &outcome, stats);
 		}
 		Err(err) => {
 			play.warning = err;
+		}
+	}
+}
+
+fn play_log_meta(cfg: &GameConfig, screenshot: bool) -> Option<PlayLogMeta> {
+	if screenshot || cfg.games_log_off {
+		return None;
+	}
+	let path = cfg.games_log.clone().unwrap_or_else(|| play_log::new_path(cfg.seed));
+	let p1 = cfg.bot1.name();
+	let p2 = cfg.bot2.name();
+	Some(PlayLogMeta {
+		path,
+		think_ms: cfg.think.as_millis() as u64,
+		pairing: format!("{p1} vs {p2}"),
+		p1: p1.to_string(),
+		p2: p2.to_string(),
+		search: cfg.search.label(),
+		scenario: cfg
+			.scenario
+			.as_ref()
+			.map(|s| s.name.clone())
+			.unwrap_or_else(|| "default".into()),
+	})
+}
+
+fn begin_play_log(play: &mut PlayState) {
+	let Some(meta) = play.log_meta.as_ref() else {
+		return;
+	};
+	if play.game_log.is_some() {
+		return;
+	}
+	let mut log = GameLog::begin(
+		1,
+		meta.pairing.clone(),
+		meta.p1.clone(),
+		meta.p2.clone(),
+		meta.think_ms,
+		meta.scenario.clone(),
+		&play.game,
+	);
+	log.p1_search = meta.search.clone();
+	log.p2_search = meta.search.clone();
+	let path = meta.path.clone();
+	play.game_log = Some(log);
+	if let Some(log) = play.game_log.as_ref() {
+		if let Err(err) = play_log::write_log(&path, log) {
+			eprintln!("{err}");
+		} else {
+			eprintln!("game log: {}", path.display());
+		}
+	}
+}
+
+fn record_play_action(
+	play: &mut PlayState,
+	action: Action,
+	piece: Option<crate::game::Tile>,
+	partner: Option<crate::game::Tile>,
+	outcome: &crate::game::ActionOutcome,
+	stats: Option<SearchStats>,
+) {
+	let Some(log) = play.game_log.as_mut() else {
+		return;
+	};
+	if let Some(st) = stats {
+		log.push_action_with_search_partner(action, piece, partner, outcome, &play.game, st);
+	} else {
+		log.push_action_partner(action, piece, partner, outcome, &play.game);
+	}
+	if play.game.status().is_over() {
+		log.finish(&play.game, bench_log::low_value_of(&play.game));
+	}
+	let path = play.log_meta.as_ref().map(|m| m.path.clone());
+	if let (Some(path), Some(log)) = (path, play.game_log.as_ref()) {
+		if let Err(err) = play_log::write_log(&path, log) {
+			eprintln!("{err}");
 		}
 	}
 }
@@ -1032,20 +1138,22 @@ fn bot_turn(
 	let player = play.game.current_player();
 	let think = cfg.think;
 	let slice = search_slice();
-	let action = {
+	let (action, stats) = {
 		let PlayState { game, search1, search2, .. } = &mut *play;
 		let searcher = match player {
 			Player::One => search1,
 			Player::Two => search2,
 		};
-		searcher.think_slice(game, actor, &mut rng.0, SearchLimit::Time(think), slice)
+		let action = searcher.think_slice(game, actor, &mut rng.0, SearchLimit::Time(think), slice);
+		let stats = searcher.stats();
+		(action, stats)
 	};
 	let Some(action) = action else {
 		return;
 	};
 	play.bot_thinking = false;
 	clock.wait = cfg.delay.as_secs_f32();
-	apply_action(&mut play, action);
+	apply_action_with_stats(&mut play, action, Some(stats));
 }
 
 fn tick_clock(time: Res<Time>, mut play: ResMut<PlayState>) {

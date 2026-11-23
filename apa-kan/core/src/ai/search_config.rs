@@ -1,7 +1,11 @@
 //! Independently toggleable search knobs, serializable as a bot profile.
 //!
 //! Named presets (`--search-profile` / `--bot-config`):
-//! - `enhanced` (default): LMR + PVS + quiescence; MCTS progressive widening **off**
+//! - `exactplay` (default): same search tree as `enhanced`, with
+//!   `eval_margin_scale` 200 so the braid-only-exact leaf match term is not
+//!   drowned by material/geometry. Hillclimbed vs enhanced at light budget.
+//!   No extra qsearch, pick bonuses, or move-ordering tactics.
+//! - `enhanced`: LMR + PVS + quiescence; MCTS progressive widening **off**
 //! - `classic`: PR #62 engine (TT + ordering + quiescence, no LMR/PVS/PW)
 //! - `plain`: alpha-beta / uniform cut-off playouts
 //! - `tactical`: aggressive capture/center weights, deeper qsearch, short playouts
@@ -11,20 +15,22 @@
 //!   tree reuse + solver (focused MCTS; extra PW / low PUCT lost strength)
 //! - `counterplay`: downweight sitting on center, score overwhelm-pressure on
 //!   the center holder under control_win, boost claims/threats, higher PUCT
-//! - `exactplay`: same search shape as `enhanced`, but the leaf match/mismatch
-//!   term is rescaled for live braid-only-exact (only braid matches score;
-//!   1-slot exact +1). Coordinate descent over the existing eval knobs did
-//!   not move this point. No extra qsearch, pick bonuses, or move-ordering
-//!   tactics. Missing TOML keys still take `enhanced` defaults.
+//!
+//! Missing TOML keys still take the `enhanced` tree (`eval_margin_scale` 100).
 //!
 //! Overlay any field with `--search k=v,...`. Load a TOML file with `--bot-config`.
+//! Wide-search overlays (`root-noise`, `puct`, `ordering=off`, `lmr=off`,
+//! `pvs=off`, `untried-random`) fan the tree out; they are not a named
+//! personality and default off so live `exactplay` stays bit-identical.
 
 use std::fmt;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-/// Search-algorithm knobs. Missing TOML keys take [`SearchConfig::enhanced`] values.
+/// Search-algorithm knobs. Missing TOML keys take the `enhanced` tree
+/// (including `eval_margin_scale` 100). The live CLI/app default profile is
+/// still [`SearchConfig::exactplay`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchConfig {
@@ -86,6 +92,13 @@ pub struct SearchConfig {
 	pub playout_epsilon: f32,
 	/// Chance `pick_untried` samples uniformly instead of the heuristic.
 	pub mcts_untried_random: f32,
+	/// Mix Dirichlet noise into root PUCT priors:
+	/// `P'(a) = (1 - e) P(a) + e eta`, `eta ~ Dirichlet(alpha)`. `0` = off
+	/// (live default). This is search exploration, not a playstyle.
+	pub mcts_root_noise: f32,
+	/// Dirichlet concentration alpha for [`Self::mcts_root_noise`]. Lower
+	/// is spikier. Default 0.3 (AlphaZero-style). Unused when e = 0.
+	pub mcts_root_dirichlet_alpha: f32,
 
 	/// Independent MCTS trees at the root. `1` is sequential and is the
 	/// only setting that keeps `--jobs` benches bit-identical.
@@ -139,11 +152,17 @@ pub struct SearchConfig {
 	/// braid-only-exact the match count is only fulfilled braids (1-slot
 	/// exact +1); this restores that scoring term against material/geometry
 	/// without adding new eval features. Clamped to 1..=400.
+	///
+	/// Serde missing-key default is 100 (`enhanced`) so personality TOMLs that
+	/// omit this field keep the old leaf. [`SearchConfig::default`] is still
+	/// [`SearchConfig::exactplay`] (200).
+	#[serde(default = "serde_eval_margin_scale")]
 	pub eval_margin_scale: i32,
 }
 
 impl SearchConfig {
-	/// Live default: LMR + PVS + quiescence, heuristic playouts, **no** PW.
+	/// Search-tree base: LMR + PVS + quiescence, heuristic playouts, **no** PW.
+	/// Live default is [`Self::exactplay`] (`eval_margin_scale` 200 on this tree).
 	pub fn enhanced() -> Self {
 		Self {
 			move_ordering: true,
@@ -172,6 +191,8 @@ impl SearchConfig {
 			playout_cutoff: 12,
 			playout_epsilon: 0.18,
 			mcts_untried_random: 0.25,
+			mcts_root_noise: 0.0,
+			mcts_root_dirichlet_alpha: 0.3,
 			mcts_root_threads: 1,
 			puct: 1.6,
 			rave_eq: 300.0,
@@ -308,7 +329,7 @@ impl SearchConfig {
 
 	pub fn parse_profile(s: &str) -> Result<Self, String> {
 		match s.trim().to_ascii_lowercase().as_str() {
-			"enhanced" | "new" | "full" | "pruned" | "default" => Ok(Self::enhanced()),
+			"enhanced" | "new" | "full" | "pruned" => Ok(Self::enhanced()),
 			"classic" | "old" | "baseline" => Ok(Self::classic()),
 			"plain" | "ab" | "alpha-beta" | "alphabeta" => Ok(Self::plain()),
 			"tactical" | "aggressive" | "aggro" => Ok(Self::tactical()),
@@ -316,15 +337,16 @@ impl SearchConfig {
 			"explorative" | "explore" | "curious" => Ok(Self::explorative()),
 			"deep_mcts" | "deep-mcts" | "deep" | "focused" => Ok(Self::deep_mcts()),
 			"counterplay" | "counter" | "contest" => Ok(Self::counterplay()),
-			"exactplay" | "exact" | "playtest" | "liveplay" => Ok(Self::exactplay()),
+			"exactplay" | "exact" | "playtest" | "liveplay" | "default" => Ok(Self::exactplay()),
 			other => Err(format!(
-				"unknown --search-profile '{other}' (expected enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay)"
+				"unknown --search-profile '{other}' (expected exactplay|enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay)"
 			)),
 		}
 	}
 
 	pub fn profile_names() -> &'static [&'static str] {
 		&[
+			"exactplay",
 			"enhanced",
 			"classic",
 			"plain",
@@ -333,7 +355,6 @@ impl SearchConfig {
 			"explorative",
 			"deep_mcts",
 			"counterplay",
-			"exactplay",
 		]
 	}
 
@@ -446,6 +467,15 @@ impl SearchConfig {
 				"untried-random" | "mcts_untried_random" => {
 					self.mcts_untried_random = parse_f32(&key, val)?;
 				}
+				"root-noise" | "mcts_root_noise" | "dirichlet-eps" | "dirichlet-noise" => {
+					self.mcts_root_noise = parse_f32(&key, val)?;
+				}
+				"dirichlet-alpha"
+				| "mcts_root_dirichlet_alpha"
+				| "root-dirichlet-alpha"
+				| "root_dirichlet_alpha" => {
+					self.mcts_root_dirichlet_alpha = parse_f32(&key, val)?;
+				}
 				"threads" | "search-threads" | "root-threads" => {
 					self.mcts_root_threads = parse_u8_range(&key, val, 1, 32)?;
 				}
@@ -550,6 +580,12 @@ impl SearchConfig {
 		}
 		self.playout_epsilon = self.playout_epsilon.clamp(0.0, 1.0);
 		self.mcts_untried_random = self.mcts_untried_random.clamp(0.0, 1.0);
+		self.mcts_root_noise = self.mcts_root_noise.clamp(0.0, 1.0);
+		if self.mcts_root_dirichlet_alpha < 0.01 {
+			self.mcts_root_dirichlet_alpha = 0.01;
+		} else if self.mcts_root_dirichlet_alpha > 10.0 {
+			self.mcts_root_dirichlet_alpha = 10.0;
+		}
 		if self.pw_a < 0.0 {
 			self.pw_a = 0.0;
 		}
@@ -575,7 +611,7 @@ impl SearchConfig {
 
 	pub fn label(self) -> String {
 		format!(
-			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={} eval_center={} eval_inner={} eval_pressure={} order_claim_c={} order_threat={} eval_margin={}",
+			"profile={} ordering={} tt={}/{} lmr={} pvs={} q={}/{} pw={} heur_playouts={} puct={:.2} cutoff={} threads={} priors={} pw_order={} reuse={} mcts_tt={} factored={} leaf={} solver={} eval_center={} eval_inner={} eval_pressure={} order_claim_c={} order_threat={} eval_margin={} root_noise={:.2}/{:.2}",
 			self.profile_name(),
 			on_off(self.move_ordering),
 			on_off(self.transposition),
@@ -601,14 +637,16 @@ impl SearchConfig {
 			self.eval_center_pressure,
 			self.order_claim_center,
 			self.order_center_threat,
-			self.eval_margin_scale
+			self.eval_margin_scale,
+			self.mcts_root_noise,
+			self.mcts_root_dirichlet_alpha
 		)
 	}
 }
 
 impl Default for SearchConfig {
 	fn default() -> Self {
-		Self::enhanced()
+		Self::exactplay()
 	}
 }
 
@@ -644,6 +682,10 @@ fn parse_i32(flag: &str, value: &str) -> Result<i32, String> {
 
 fn parse_f32(flag: &str, value: &str) -> Result<f32, String> {
 	value.parse().map_err(|_| format!("invalid {flag} '{value}' (expected number)"))
+}
+
+fn serde_eval_margin_scale() -> i32 {
+	100
 }
 
 fn on_off(v: bool) -> &'static str {
@@ -687,15 +729,22 @@ mod tests {
 	}
 
 	#[test]
-	fn enhanced_default_keeps_pw_off() {
+	fn enhanced_keeps_pw_off() {
 		let cfg = SearchConfig::enhanced();
 		assert!(cfg.lmr && cfg.pvs && cfg.quiescence);
 		assert!(!cfg.mcts_progressive_widening);
-		assert_eq!(SearchConfig::default(), cfg);
+		assert_eq!(cfg.eval_margin_scale, 100);
 	}
 
 	#[test]
-	fn toml_partial_fills_enhanced_defaults() {
+	fn default_profile_is_exactplay() {
+		assert_eq!(SearchConfig::default(), SearchConfig::exactplay());
+		assert_eq!(SearchConfig::parse_profile("default").unwrap(), SearchConfig::exactplay());
+		assert_eq!(SearchConfig::parse_profile("enhanced").unwrap(), SearchConfig::enhanced());
+	}
+
+	#[test]
+	fn toml_partial_fills_default_profile_values() {
 		let cfg = SearchConfig::parse_toml(
 			"name = \"scratch\"\ndescription = \"pw on\"\nmcts_progressive_widening = true\npuct = 2.0\n",
 		)
@@ -704,6 +753,7 @@ mod tests {
 		assert!(cfg.mcts_progressive_widening);
 		assert!((cfg.puct - 2.0).abs() < 1e-6);
 		assert_eq!(cfg.tt_bits, 18);
+		assert_eq!(cfg.eval_margin_scale, 100);
 	}
 
 	#[test]
@@ -787,5 +837,25 @@ mod tests {
 		let overlay = SearchConfig::enhanced().with_spec("eval-margin=250").unwrap();
 		assert_eq!(overlay.eval_margin_scale, 250);
 		assert_eq!(overlay.profile_name(), "custom");
+	}
+
+	#[test]
+	fn spec_overlays_dirichlet_root_noise_and_wide_search() {
+		let cfg = SearchConfig::exactplay()
+			.with_spec(
+				"puct=8,root-noise=0.25,dirichlet-alpha=0.3,ordering=off,lmr=off,pvs=off,untried-random=1",
+			)
+			.unwrap();
+		assert!((cfg.puct - 8.0).abs() < 1e-6);
+		assert!((cfg.mcts_root_noise - 0.25).abs() < 1e-6);
+		assert!((cfg.mcts_root_dirichlet_alpha - 0.3).abs() < 1e-6);
+		assert!(!cfg.move_ordering && !cfg.lmr && !cfg.pvs);
+		assert!((cfg.mcts_untried_random - 1.0).abs() < 1e-6);
+		assert_eq!(cfg.eval_margin_scale, 200);
+		assert!(cfg.mcts_heuristic_playouts);
+		assert_eq!(cfg.profile_name(), "custom");
+		let live = SearchConfig::exactplay();
+		assert_eq!(live.mcts_root_noise, 0.0);
+		assert!((live.mcts_root_dirichlet_alpha - 0.3).abs() < 1e-6);
 	}
 }

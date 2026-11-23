@@ -63,13 +63,14 @@ packaging/scripts/serve-web.sh   # http://127.0.0.1:8080/
 
 Hash routes (`#/h2h`, `#/game/<id>`) work on any static host. Path routes need a SPA fallback; see [`packaging/web/README.md`](packaging/web/README.md). Bot search is time-sliced (~8 ms per frame) so the tab stays responsive.
 
-A plain `cargo run --no-default-features -p apa-kan` is the playtest package (human vs greedy). With a desktop window: `nix develop && cargo run -p apa-kan`. Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`. Live search is `--search-profile enhanced`. `--search-profile exactplay` is the same tree with `eval_margin_scale=200` (hillclimbed vs enhanced; [`exactplay`](apa-kan/game/bots/exactplay.toml)).
+A plain `cargo run --no-default-features -p apa-kan` is the playtest package (human vs greedy). With a desktop window: `nix develop && cargo run -p apa-kan`. Hot-seat: `--bot1 human --bot2 human`. Watch two bots: `--bot1 mcts --bot2 greedy`. Play against the live search bot with `--bot2 minimax` (default profile `exactplay`). `--think-ms 80` only completes iterative-deepening depth 2, which cannot see a 3-ply occupy-then-hold control win; use `--think-ms 400` (or higher) if you want the bot to convert those. `--search-profile enhanced` is the same tree with `eval_margin_scale=100`. Other personalities stay selectable via `--search-profile` / `--bot-config`.
 
 ```text
 Usage: apa-kan [OPTIONS]
   --bot1 / --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>
-  --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay>
+  --search-profile <exactplay|enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay>
   --bot-config <path.toml>                   Overlay a SearchConfig TOML
+  --games-log <path|off> / --no-games-log    Per-game JSONL (on by default)
   --seed / --deck-seed <u64>
   --same-deck <on|off>                       Identical 27-tile start (default: on)
   --think-ms / --delay-ms <n>
@@ -84,7 +85,7 @@ Usage: apa-kan [OPTIONS]
   -h, --help
 ```
 
-`apa-kan --help` lists generation knobs (ring weights, zags, beads, emblems, drift, deck size, tokens) and search overlays. Per-bot TOML profiles in [`apa-kan/game/bots/`](apa-kan/game/bots/) still load via `--bot-config` / `--search-profile`.
+`apa-kan --help` lists generation knobs (ring weights, zags, beads, emblems, drift, deck size, tokens) and search overlays. Per-bot TOML profiles in [`apa-kan/game/bots/`](apa-kan/game/bots/) still load via `--bot-config` / `--search-profile`. Live default is [`exactplay`](apa-kan/game/bots/exactplay.toml).
 
 Headless screenshot (Bevy window under xvfb, or the PNG renderer without `desktop`):
 
@@ -92,13 +93,46 @@ Headless screenshot (Bevy window under xvfb, or the PNG renderer without `deskto
 cargo run -p apa-kan -- --screenshot apa-kan/game/screenshots/board.png --width 1280 --height 800
 ```
 
-Search head-to-head. Doubles allowed is the locked default. Default search is a work budget (`--budget nodes:132000,iters:2600`) so the same seed replays.
+Search head-to-head. Doubles allowed is the locked default. Default search profile is `exactplay`. Default work budget (`--budget nodes:132000,iters:2600`) keeps the same seed replayable.
 
 ```bash
 cargo run -p apa-kan --bin apa-kan-bench --release --no-default-features -- --games 6
 ```
 
 The locked-ruleset sanity cell (exactplay minimax mirror, light budget, zags on, zag-mismatch sum) lives in [`apa-kan/game/benchmark_results/opening_2211/`](apa-kan/game/benchmark_results/opening_2211/). Historical experiment logs: [`apa-kan/game/benchmark_results/archive/`](apa-kan/game/benchmark_results/archive/).
+
+## Capturing game logs
+
+Human-vs-bot (and bot-vs-bot) games in the playable app write a reconstructable JSONL log **by default**, the same schema `apa-kan-bench` uses. The path is printed to stdout when the game starts (`game log: ...`).
+
+**Where the file goes**
+
+1. `--games-log /path/to/game.jsonl` writes that file.
+2. Else `APA_KAN_GAME_LOG=/path/to/game.jsonl` (or `APA_KAN_GAME_LOG=off` to disable).
+3. Else `$APA_KAN_GAME_LOG_DIR/` if set.
+4. Else `$XDG_DATA_HOME/apa-kan/logs/` (fallback `~/.local/share/apa-kan/logs/`, then `./apa-kan-logs/`).
+5. Filename: `apa-kan-<unix>-seed<N>.jsonl`.
+
+`--no-games-log` disables capture. Screenshots skip logging.
+
+Each file is one JSONL record: seed, ruleset, bot names, search profile, think-ms, opening deal / 7+4 setup, and every action (including SWAP partners). Replay with the same engine:
+
+```bash
+# Search the position before action 17 of game 1
+cargo run -p apa-kan --bin apa-kan-analyze --release --no-default-features -- \
+  --log ~/.local/share/apa-kan/logs/apa-kan-….jsonl --action 17
+
+# Same, but cap ID at depth 6 and use a 4× light budget
+cargo run -p apa-kan --bin apa-kan-analyze --release --no-default-features -- \
+  --log path.jsonl --turn 40 --depth 6 --budget nodes:132000,iters:2600
+
+# Bench logs work too (.jsonl.gz)
+cargo run -p apa-kan --bin apa-kan-analyze --release --no-default-features -- \
+  --log apa-kan/game/benchmark_results/opening_2211/sanity_defaults.jsonl.gz \
+  --game 1 --action 12
+```
+
+The tool prints the best move, score, completed ID depth, nodes, and principal variation. `--diagnose` measures branching and search depth from a log (default: the locked-ruleset 300-game JSONL). Measured numbers and ranked depth fixes: [`apa-kan/game/benchmark_results/search_depth/`](apa-kan/game/benchmark_results/search_depth/).
 
 ## Test
 

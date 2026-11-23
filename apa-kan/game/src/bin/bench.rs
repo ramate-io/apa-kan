@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apa_kan::ai::{
-	self, Actor, BranchingReport, SearchConfig, SearchLimit, Searcher, CALIBRATED_ITERS_PER_MOVE,
-	CALIBRATED_NODES_PER_MOVE,
+	self, Actor, BranchingReport, SearchConfig, SearchLimit, SearchMove, Searcher,
+	CALIBRATED_ITERS_PER_MOVE, CALIBRATED_NODES_PER_MOVE,
 };
 use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
@@ -65,6 +65,9 @@ struct BenchConfig {
 	ply_probe: Option<u8>,
 	/// When true, both players start from the identical 27-tile collection.
 	same_deck: bool,
+	/// Replay a JSONL.gz of games and dump light-budget vs logged (deep) root
+	/// decisions with `cheap_order` fit features. Then exit.
+	compare_roots: Option<PathBuf>,
 }
 
 fn usage() -> &'static str {
@@ -81,9 +84,9 @@ fn usage() -> &'static str {
 	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
 	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
 	                        Each search stays single-threaded unless --search-threads > 1.\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay>\n\
-	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest, playtest)\n\
-	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced defaults)\n\
+	   --search-profile <exactplay|enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay>\n\
+	                        Search preset (default: exactplay; aliases: playtest, default, aggressive, cautious, explore, deep, focused, contest)\n\
+	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced tree, eval_margin_scale 100)\n\
 	   --list-search-profiles    Print named presets and their labels\n\
 	   --search <k=v,...>   Overlay any knob (ordering, tt, lmr, pvs, q-depth, pw, puct, priors,\n\
 	                        pw-order, reuse, mcts-tt, factored, leaf, solver, threads, eval-margin, ...)\n\
@@ -111,6 +114,9 @@ fn usage() -> &'static str {
 	   --record <path>      Full minimax vs mcts game record\n\
 	   --games-log <path>   Per-game JSONL (default: <out>.jsonl.gz; gzip if .gz)\n\
 	   --no-games-log       Disable the per-game JSONL (on by default)\n\
+	   --compare-roots <jsonl[.gz]>  Replay logged games; at each ply run light search\n\
+	                        and dump cheap_order features vs the logged (deep) action, then exit.\n\
+	                        Writes JSONL to --out.\n\
 	   --label <text>       Header label written into the log\n\
 	   --scenario <name|path> Opening deck preset or TOML file\n\
 	   --list-scenarios     Print builtin deck scenarios\n\
@@ -162,7 +168,7 @@ where
 		setup: SetupConfig::default(),
 		pairings: None,
 		matchups: Vec::new(),
-		search: SearchConfig::enhanced(),
+		search: SearchConfig::default(),
 		p1_search: None,
 		p2_search: None,
 		p1_limit: None,
@@ -170,6 +176,7 @@ where
 		ablate: false,
 		ply_probe: None,
 		same_deck: false,
+		compare_roots: None,
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -329,6 +336,9 @@ where
 					return Err("invalid --search-threads (expected 1..32)".into());
 				}
 				cfg.search = cfg.search.with_threads(n as u8);
+			}
+			"--compare-roots" => {
+				cfg.compare_roots = Some(PathBuf::from(need("--compare-roots", it.next())?));
 			}
 			"--ablate-search" => cfg.ablate = true,
 			"--ply-probe" => {
@@ -673,6 +683,161 @@ fn seat_search(cfg: &BenchConfig, p1: bool) -> SearchConfig {
 	s
 }
 
+fn actor_for_pairing(pairing: &str, p1: bool) -> Result<Actor, String> {
+	let mut parts = pairing.split(" vs ");
+	let left = parts.next().ok_or_else(|| format!("bad pairing '{pairing}'"))?;
+	let right = parts.next().ok_or_else(|| format!("bad pairing '{pairing}'"))?;
+	Actor::parse(if p1 { left.trim() } else { right.trim() })
+}
+
+fn action_tag(action: Action) -> serde_json::Value {
+	match action {
+		Action::Add { bench_index, node } => serde_json::json!({
+			"kind": "ADD", "bench_index": bench_index, "to": node
+		}),
+		Action::Move { from, to } => serde_json::json!({
+			"kind": "MOVE", "from": from, "to": to
+		}),
+		Action::Claim { node } => serde_json::json!({
+			"kind": "CLAIM", "to": node
+		}),
+		Action::Swap { from, to } => serde_json::json!({
+			"kind": "SWAP", "from": from, "to": to
+		}),
+		Action::Convert { node } => serde_json::json!({
+			"kind": "CONVERT", "to": node
+		}),
+		Action::Pass => serde_json::json!({"kind": "PASS"}),
+	}
+}
+
+fn features_json(game: &Game, mv: SearchMove) -> serde_json::Value {
+	let f = apa_kan::ai::order_fit_features(game, mv);
+	serde_json::json!({
+		"vacate_healthy": f.vacate_healthy,
+		"vacate_overwhelmed": f.vacate_overwhelmed,
+		"center_threat": f.center_threat,
+		"claim_center": f.claim_center,
+		"onto_center": f.onto_center,
+		"off_center": f.off_center,
+		"base": f.base,
+		"cheap": apa_kan::ai::cheap_order(game, mv, SearchConfig::exactplay()),
+	})
+}
+
+fn run_compare_roots(cfg: &BenchConfig) -> Result<(), String> {
+	let path = cfg.compare_roots.as_ref().ok_or("missing --compare-roots")?;
+	let bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+	let logs = if path.extension().is_some_and(|e| e == "gz")
+		|| path.to_string_lossy().ends_with(".jsonl.gz")
+	{
+		bench_log::decode_jsonl_gz(&bytes)?
+	} else {
+		let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+		bench_log::decode_jsonl(&text)?
+	};
+	let search = cfg.search;
+	let limit = cfg.limit;
+	let jobs: Vec<&GameLog> = logs.iter().collect();
+	println!(
+		"compare-roots {} games from {} at {} ({})...",
+		jobs.len(),
+		path.display(),
+		limit.label(),
+		search.profile_name()
+	);
+	let rows = run_parallel(cfg.jobs, jobs, |log| dump_one_root_game(log, search, limit));
+	let mut out = String::new();
+	let mut n = 0u32;
+	let mut disagree = 0u32;
+	for game_rows in rows {
+		let game_rows = game_rows?;
+		for row in game_rows {
+			if row.get("disagree").and_then(|v| v.as_bool()) == Some(true) {
+				disagree += 1;
+			}
+			n += 1;
+			out.push_str(&serde_json::to_string(&row).map_err(|e| e.to_string())?);
+			out.push('\n');
+		}
+	}
+	fs::write(&cfg.out, out.as_bytes()).map_err(|e| format!("write {}: {e}", cfg.out.display()))?;
+	println!("compare-roots wrote {} roots ({} disagree) to {}", n, disagree, cfg.out.display());
+	Ok(())
+}
+
+fn dump_one_root_game(
+	log: &GameLog,
+	search: SearchConfig,
+	limit: SearchLimit,
+) -> Result<Vec<serde_json::Value>, String> {
+	let mut game = bench_log::start_from_log(log)?;
+	let mut rng = StdRng::seed_from_u64(log.search_rng_seed);
+	let mut searcher = Searcher::with_config(search);
+	let mut rows = Vec::new();
+	for (i, act) in log.actions.iter().enumerate() {
+		if game.status().is_over() {
+			break;
+		}
+		let deep = act.to_action().map_err(|e| format!("game {} action {i}: {e}", log.game))?;
+		let p1 = game.current_player() == Player::One;
+		let actor = actor_for_pairing(&log.pairing, p1)?;
+		let light = searcher.choose_with(&game, actor, &mut rng, limit);
+		let deep_mv = SearchMove::from_action(&game, deep);
+		let light_mv = SearchMove::from_action(&game, light);
+		let legal = apa_kan::ai::legal_search_moves(&game);
+		let mut legal_json = Vec::with_capacity(legal.len());
+		for mv in &legal {
+			let action = mv.to_action(&game).unwrap_or(Action::Pass);
+			let mut obj = features_json(&game, *mv);
+			if let serde_json::Value::Object(map) = &mut obj {
+				if let serde_json::Value::Object(tag) = action_tag(action) {
+					for (k, v) in tag {
+						map.insert(k, v);
+					}
+				}
+			}
+			legal_json.push(obj);
+		}
+		let center_touch = legal_json.iter().any(|v| {
+			v.get("onto_center").and_then(|x| x.as_i64()) == Some(1)
+				|| v.get("off_center").and_then(|x| x.as_i64()) == Some(1)
+				|| v.get("center_threat").and_then(|x| x.as_i64()) == Some(1)
+		}) || matches!(
+			deep,
+			Action::Move { from: 0, .. }
+				| Action::Move { to: 0, .. }
+				| Action::Swap { from: 0, .. }
+				| Action::Swap { to: 0, .. }
+				| Action::Claim { node: 0 }
+				| Action::Convert { node: 0 }
+				| Action::Add { node: 0, .. }
+		);
+		rows.push(serde_json::json!({
+			"pairing": log.pairing,
+			"game": log.game,
+			"turn": act.turn,
+			"player": if p1 { 1 } else { 2 },
+			"actor": actor.name(),
+			"disagree": deep_mv != light_mv,
+			"center_touch": center_touch,
+			"n_legal": legal.len(),
+			"deep": {
+				"action": action_tag(deep),
+				"features": features_json(&game, deep_mv),
+			},
+			"light": {
+				"action": action_tag(light),
+				"features": features_json(&game, light_mv),
+			},
+			"legal": legal_json,
+		}));
+		let _ = game.apply(deep).map_err(|e| format!("game {} apply {i}: {e}", log.game))?;
+		searcher.advance(&game);
+	}
+	Ok(rows)
+}
+
 fn run(cfg: BenchConfig) {
 	if cfg.calibrate {
 		run_calibrate(&cfg);
@@ -684,6 +849,13 @@ fn run(cfg: BenchConfig) {
 	}
 	if cfg.ply_probe.is_some() {
 		run_ply_probe(&cfg);
+		return;
+	}
+	if cfg.compare_roots.is_some() {
+		if let Err(err) = run_compare_roots(&cfg) {
+			eprintln!("{err}");
+			std::process::exit(1);
+		}
 		return;
 	}
 	let started = Instant::now();
@@ -3110,6 +3282,24 @@ mod tests {
 	}
 
 	#[test]
+	fn parse_compare_roots_exits_after_dump() {
+		let cfg = parse(vec![
+			"--compare-roots".to_string(),
+			"apa-kan/game/benchmark_results/exactplay/h2h_deep4x_self.jsonl.gz".to_string(),
+			"--search-profile".to_string(),
+			"exactplay".to_string(),
+			"--budget".to_string(),
+			"nodes:33000,iters:650".to_string(),
+			"--out".to_string(),
+			"/tmp/roots.jsonl".to_string(),
+		])
+		.unwrap();
+		assert!(cfg.compare_roots.is_some());
+		assert_eq!(cfg.search, SearchConfig::exactplay());
+		assert_eq!(cfg.limit, SearchLimit::work(33_000, 650));
+	}
+
+	#[test]
 	fn think_ms_and_budget_are_mutually_exclusive() {
 		let err = match parse(vec![
 			"--think-ms".to_string(),
@@ -3129,6 +3319,7 @@ mod tests {
 		assert_eq!(cfg.limit, SearchLimit::calibrated());
 		assert!(cfg.jobs >= 1);
 		assert_eq!(cfg.matchups, vec![(DeckArchetype::Mixed, DeckArchetype::Mixed)]);
+		assert_eq!(cfg.search, SearchConfig::exactplay());
 	}
 
 	#[test]

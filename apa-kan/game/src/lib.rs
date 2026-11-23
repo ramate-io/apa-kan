@@ -12,6 +12,7 @@ pub mod characters;
 pub mod config;
 #[cfg(feature = "desktop")]
 pub mod platform;
+pub mod play_log;
 pub mod render;
 pub mod route;
 #[cfg(feature = "desktop")]

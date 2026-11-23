@@ -39,6 +39,10 @@ pub struct GameConfig {
 	pub time_control: Option<TimeControl>,
 	/// Deep-link match id (`/game/<id>` or `apakan://game/<id>`).
 	pub match_id: Option<String>,
+	/// Explicit play-log path (`--games-log`). `None` means the documented default.
+	pub games_log: Option<PathBuf>,
+	/// `--no-games-log` / `APA_KAN_GAME_LOG=off`.
+	pub games_log_off: bool,
 }
 
 impl Default for GameConfig {
@@ -60,6 +64,8 @@ impl Default for GameConfig {
 			show_shell: cfg!(any(target_arch = "wasm32", target_os = "android", target_os = "ios")),
 			time_control: None,
 			match_id: None,
+			games_log: None,
+			games_log_off: false,
 		}
 	}
 }
@@ -70,6 +76,7 @@ impl GameConfig {
 		{
 			let mut cfg = Self::default();
 			cfg.show_shell = true;
+			cfg.games_log_off = true;
 			return cfg;
 		}
 		#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
@@ -91,6 +98,7 @@ impl GameConfig {
 	{
 		let mut cfg = Self::default();
 		let mut same_deck = None;
+		let mut games_log_cli = false;
 		let mut it = args.into_iter();
 		while let Some(raw) = it.next() {
 			let arg = raw.as_ref();
@@ -192,6 +200,21 @@ impl GameConfig {
 				"--search" => {
 					cfg.search = cfg.search.with_spec(&require_value("--search", it.next())?)?;
 				}
+				"--games-log" => {
+					games_log_cli = true;
+					let v = require_value("--games-log", it.next())?;
+					match v.trim().to_ascii_lowercase().as_str() {
+						"off" | "none" | "false" | "0" | "no" => cfg.games_log_off = true,
+						_ => {
+							cfg.games_log_off = false;
+							cfg.games_log = Some(PathBuf::from(v));
+						}
+					}
+				}
+				"--no-games-log" => {
+					games_log_cli = true;
+					cfg.games_log_off = true;
+				}
 				"--search-threads" => {
 					let n = parse_u64(
 						"--search-threads",
@@ -237,6 +260,9 @@ impl GameConfig {
 		}
 		cfg.setup.p1_search = cfg.search;
 		cfg.setup.p2_search = cfg.search;
+		if !games_log_cli {
+			crate::play_log::apply_env(&mut cfg.games_log_off, &mut cfg.games_log);
+		}
 		Ok(cfg)
 	}
 
@@ -500,14 +526,16 @@ pub fn usage() -> &'static str {
 	 Options:\n\
 	   --bot1 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 1, light (default: human)\n\
 	   --bot2 <human|random|greedy|minimax|minimax-legacy|mcts>  Player 2, dark (default: greedy)\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay>\n\
-	                                              Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest, playtest)\n\
-	   --bot-config <path.toml>                   Load a SearchConfig TOML (overlays missing keys with enhanced defaults)\n\
+	   --search-profile <exactplay|enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay>\n\
+	                                              Search preset (default: exactplay; aliases: playtest, default, aggressive, cautious, explore, deep, focused, contest)\n\
+	   --bot-config <path.toml>                   Load a SearchConfig TOML (missing keys = enhanced tree, eval_margin_scale 100)\n\
 	   --list-search-profiles                     Print named presets and their labels\n\
 	   --search <k=v,...>                         Overlay any knob: ordering, tt, lmr, pvs, q-depth, pw, puct,\n\
 	                                              priors, pw-order, reuse, mcts-tt, factored, leaf, solver, threads,\n\
 	                                              eval-margin, ...\n\
 	   --search-threads <1..32>                   MCTS root-parallel trees (default: 1; 1 keeps benches deterministic)\n\
+	   --games-log <path|off>                     Per-game JSONL (default: $XDG_DATA_HOME/apa-kan/logs or ~/.local/share/apa-kan/logs)\n\
+	   --no-games-log                             Disable play JSONL (on by default; also APA_KAN_GAME_LOG=off)\n\
 	   --seed <u64>                               Deal/shuffle seed (default: 1)\n\
 	   --deck-seed <u64>                          Collection generation seed (default: --seed)\n\
 	   --deck-noise <0..100>                      Resample that percent of a mirrored collection (default: 0)\n\
@@ -584,7 +612,7 @@ mod tests {
 		assert_eq!(cfg.bot1, Actor::Mcts);
 		assert_eq!(cfg.bot2, Actor::Minimax);
 		assert_eq!(cfg.seed, 42);
-		assert_eq!(cfg.search, SearchConfig::enhanced());
+		assert_eq!(cfg.search, SearchConfig::exactplay());
 	}
 
 	#[test]
@@ -641,6 +669,25 @@ mod tests {
 		assert_eq!(cfg.search.profile_name(), "exactplay");
 		assert_eq!(cfg.setup.p1_search, cfg.search);
 		assert_eq!(cfg.setup.p2_search, cfg.search);
+	}
+
+	#[test]
+	fn parses_games_log_flags() {
+		let cfg = GameConfig::parse(["--no-games-log"]).unwrap();
+		assert!(cfg.games_log_off);
+		let cfg = GameConfig::parse(["--games-log", "/tmp/play.jsonl"]).unwrap();
+		assert!(!cfg.games_log_off);
+		assert_eq!(cfg.games_log, Some(PathBuf::from("/tmp/play.jsonl")));
+		let cfg = GameConfig::parse(["--games-log", "off"]).unwrap();
+		assert!(cfg.games_log_off);
+	}
+
+	#[test]
+	fn default_search_profile_is_exactplay() {
+		let cfg = GameConfig::parse(Vec::<&str>::new()).unwrap();
+		assert_eq!(cfg.search, SearchConfig::exactplay());
+		assert_eq!(cfg.setup.p1_search, SearchConfig::exactplay());
+		assert!(!cfg.games_log_off);
 	}
 
 	#[test]

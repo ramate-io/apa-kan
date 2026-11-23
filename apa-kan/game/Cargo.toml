@@ -30,6 +30,10 @@ required-features = ["desktop"]
 name = "apa-kan-bench"
 path = "src/bin/bench.rs"
 
+[[bin]]
+name = "apa-kan-analyze"
+path = "src/bin/analyze.rs"
+
 [dependencies]
 apa-kan-core = { path = "../core" }
 bevy = { workspace = true, optional = true }

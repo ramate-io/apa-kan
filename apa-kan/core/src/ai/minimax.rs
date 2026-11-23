@@ -10,7 +10,7 @@ use crate::game::{Action, Game, Player};
 use super::eval::{evaluate_legacy, evaluate_with, terminal_score, WIN};
 use super::search_move::{apply_move, cheap_order, is_tactical, legal_search_moves, SearchMove};
 use super::zobrist;
-use super::{count_repeats, HistoryTable, SearchConfig, SearchLimit, SearchStats};
+use super::{count_repeats, HistoryTable, SearchConfig, SearchLimit, SearchStats, SearchTrace};
 
 enum Stop {
 	Time(Instant),
@@ -86,6 +86,7 @@ pub struct MinimaxState {
 	pub last_move: Option<SearchMove>,
 	pub legacy: bool,
 	pub config: SearchConfig,
+	pub max_id_depth: u8,
 	/// Occupancy hash of an in-progress ID search so a later slice can resume.
 	ponder_hash: u64,
 	ponder_depth: u8,
@@ -102,6 +103,7 @@ impl MinimaxState {
 			last_move: None,
 			legacy: false,
 			config,
+			max_id_depth: 16,
 			ponder_hash: 0,
 			ponder_depth: 0,
 			ponder_best: None,
@@ -133,6 +135,7 @@ struct Ctx<'a> {
 	last_move: Option<SearchMove>,
 	legacy: bool,
 	config: SearchConfig,
+	trace: SearchTrace,
 }
 
 impl Ctx<'_> {
@@ -176,7 +179,7 @@ pub fn search(
 	played: &[u64],
 	rng: &mut impl Rng,
 	limit: SearchLimit,
-) -> (Action, SearchStats) {
+) -> (Action, SearchStats, SearchTrace, Vec<Action>) {
 	search_with_yield(state, game, played, rng, limit, None)
 }
 
@@ -187,7 +190,7 @@ pub fn search_with_yield(
 	rng: &mut impl Rng,
 	limit: SearchLimit,
 	yield_at: Option<Instant>,
-) -> (Action, SearchStats) {
+) -> (Action, SearchStats, SearchTrace, Vec<Action>) {
 	let legal = legal_search_moves(game);
 	let fallback = legal
 		.first()
@@ -195,7 +198,7 @@ pub fn search_with_yield(
 		.or_else(|| game.legal_actions().into_iter().next())
 		.unwrap_or(Action::Pass);
 	if legal.is_empty() {
-		return (Action::Pass, SearchStats::default());
+		return (Action::Pass, SearchStats::default(), SearchTrace::default(), Vec::new());
 	}
 
 	let stop = match limit {
@@ -218,6 +221,7 @@ pub fn search_with_yield(
 		last_move: state.last_move,
 		legacy: state.legacy,
 		config: state.config,
+		trace: SearchTrace::default(),
 	};
 
 	let me = game.current_player();
@@ -226,15 +230,23 @@ pub fn search_with_yield(
 		_ => legal[rng.gen_range(0..legal.len())],
 	};
 	let mut completed_depth = if resume { state.ponder_depth } else { 0u8 };
+	let mut completed_score = 0i32;
 	let start_depth = completed_depth.saturating_add(1).max(1);
+	let max_depth = state.max_id_depth.clamp(1, 16);
 
-	for depth in start_depth..=16u8 {
+	for depth in start_depth..=max_depth {
 		if ctx.over_budget() {
 			break;
 		}
 		ctx.abort = false;
 		let mut ordered = legal.clone();
-		order_root(&mut ctx, game, &mut ordered, Some(best_move));
+		if ctx.config.move_ordering {
+			order_root(&mut ctx, game, &mut ordered, Some(best_move));
+		} else {
+			for i in (1..ordered.len()).rev() {
+				ordered.swap(i, rng.gen_range(0..=i));
+			}
+		}
 		let mut alpha = -WIN;
 		let beta = WIN;
 		let mut best = -WIN - 1;
@@ -281,6 +293,7 @@ pub fn search_with_yield(
 		if completed && !ctx.abort {
 			best_move = pick;
 			completed_depth = depth;
+			completed_score = best;
 		} else {
 			break;
 		}
@@ -292,7 +305,14 @@ pub fn search_with_yield(
 	state.ponder_nodes = ctx.nodes;
 
 	let action = best_move.to_action(game).unwrap_or(fallback);
-	(action, SearchStats { depth: completed_depth, nodes: ctx.nodes, ..SearchStats::default() })
+	let pv = extract_pv(game, best_move, ctx.tt, 16);
+	let stats = SearchStats {
+		depth: completed_depth,
+		nodes: ctx.nodes,
+		score: completed_score,
+		..SearchStats::default()
+	};
+	(action, stats, ctx.trace, pv)
 }
 
 /// Fixed-depth root value from the side to move. No iterative deepening,
@@ -319,6 +339,7 @@ fn value_at_depth(game: &Game, depth: u8, played: &[u64], config: SearchConfig) 
 		last_move: None,
 		legacy: false,
 		config,
+		trace: SearchTrace::default(),
 	};
 	let me = game.current_player();
 	let mut ordered = legal;
@@ -362,6 +383,61 @@ fn value_at_depth(game: &Game, depth: u8, played: &[u64], config: SearchConfig) 
 	}
 }
 
+fn note_terminal(trace: &mut SearchTrace, term: i32, ply: usize) {
+	trace.terminals += 1;
+	let ply_u8 = ply.min(255) as u8;
+	if term > WIN / 2 {
+		trace.terminal_wins += 1;
+		if trace.first_win_ply == 0 {
+			trace.first_win_ply = ply_u8.max(1);
+		}
+	} else if term < -WIN / 2 {
+		trace.terminal_losses += 1;
+		if trace.first_loss_ply == 0 {
+			trace.first_loss_ply = ply_u8.max(1);
+		}
+	} else {
+		trace.terminal_draws += 1;
+	}
+}
+
+fn extract_pv(game: &Game, root: SearchMove, tt: &TranspositionTable, max: usize) -> Vec<Action> {
+	let mut out = Vec::new();
+	let Some(action) = root.to_action(game) else {
+		return out;
+	};
+	out.push(action);
+	let mut child = game.clone();
+	if apply_move(&mut child, root).is_err() {
+		return out;
+	}
+	let mut seen = std::collections::HashSet::new();
+	seen.insert(zobrist::hash(game));
+	for _ in 1..max {
+		let h = zobrist::hash(&child);
+		if !seen.insert(h) {
+			break;
+		}
+		if child.status().is_over() {
+			break;
+		}
+		let Some(e) = tt.probe(h) else {
+			break;
+		};
+		let Some(mv) = SearchMove::unpack(e.kind, e.a, e.b) else {
+			break;
+		};
+		let Some(action) = mv.to_action(&child) else {
+			break;
+		};
+		if apply_move(&mut child, mv).is_err() {
+			break;
+		}
+		out.push(action);
+	}
+	out
+}
+
 fn child_pos(game: &Game, mv: SearchMove) -> Option<(Game, bool)> {
 	let mut child = game.clone();
 	let out = apply_move(&mut child, mv).ok()?;
@@ -389,10 +465,14 @@ fn negamax(
 	}
 	let me = game.current_player();
 	if let Some(term) = terminal_score(game, me) {
+		note_terminal(&mut ctx.trace, term, ply);
 		return term;
 	}
 	if ply >= MAX_PLY - 1 {
 		return eval_now(game, ctx);
+	}
+	if ply as u8 > ctx.trace.max_ply {
+		ctx.trace.max_ply = ply as u8;
 	}
 
 	let vis = *ctx.path.last().unwrap_or(&zobrist::hash(game));
@@ -413,13 +493,24 @@ fn negamax(
 
 	let mut tt_move = None;
 	if ctx.config.transposition {
+		ctx.trace.tt_probes += 1;
 		if let Some(e) = ctx.tt.probe(hash) {
+			ctx.trace.tt_hits += 1;
 			if e.depth >= depth {
 				let sc = e.score;
 				match e.flag {
-					x if x == Bound::Exact as u8 => return sc,
-					x if x == Bound::Lower as u8 && sc >= beta => return sc,
-					x if x == Bound::Upper as u8 && sc <= alpha => return sc,
+					x if x == Bound::Exact as u8 => {
+						ctx.trace.tt_cuts += 1;
+						return sc;
+					}
+					x if x == Bound::Lower as u8 && sc >= beta => {
+						ctx.trace.tt_cuts += 1;
+						return sc;
+					}
+					x if x == Bound::Upper as u8 && sc <= alpha => {
+						ctx.trace.tt_cuts += 1;
+						return sc;
+					}
 					_ => {}
 				}
 			}
@@ -480,6 +571,10 @@ fn negamax(
 			alpha = best;
 		}
 		if alpha >= beta {
+			ctx.trace.beta_cuts += 1;
+			if i == 0 {
+				ctx.trace.first_move_cuts += 1;
+			}
 			if ctx.config.move_ordering {
 				store_killer(ctx.killers, ply, mv);
 				ctx.history.bump(mv, depth);
@@ -515,6 +610,7 @@ fn search_child(
 	ctx: &mut Ctx<'_>,
 ) -> i32 {
 	if let Some(term) = terminal_score(child, mover) {
+		note_terminal(&mut ctx.trace, term, ply);
 		return term;
 	}
 
@@ -530,6 +626,7 @@ fn search_child(
 		&& child_depth >= ctx.config.lmr_min_depth
 		&& move_index >= usize::from(ctx.config.lmr_move_skip);
 	if reduce {
+		ctx.trace.lmr_reductions += 1;
 		depth = child_depth.saturating_sub(ctx.config.lmr_reduce.max(1));
 		if move_index >= usize::from(ctx.config.lmr_late_move)
 			&& child_depth >= ctx.config.lmr_late_depth
@@ -542,7 +639,19 @@ fn search_child(
 	// are from the side to move, so those children must keep the parent's
 	// window instead of `(-beta, -alpha)`.
 	let same_side = child.current_player() == mover;
+	if same_side {
+		ctx.trace.same_side_children += 1;
+		if child.last_played_as_opening() {
+			ctx.trace.opening_children += 1;
+		}
+		if child.last_played_as_ratchet_reward() {
+			ctx.trace.ratchet_children += 1;
+		}
+	}
 	let pvs_null = ctx.config.pvs && !in_pv;
+	if pvs_null {
+		ctx.trace.pvs_nulls += 1;
+	}
 	let (search_alpha, search_beta) = child_window(same_side, alpha, beta, pvs_null);
 	let mut score =
 		child_score(same_side, negamax(child, depth, search_alpha, search_beta, ply, ctx));
@@ -556,6 +665,11 @@ fn search_child(
 	let full_a = if same_side { alpha } else { -beta };
 	let full_b = if same_side { beta } else { -alpha };
 	if needs_full && (reduced || search_alpha != full_a || search_beta != full_b) {
+		if reduced {
+			ctx.trace.lmr_researches += 1;
+		} else {
+			ctx.trace.pvs_researches += 1;
+		}
 		score = child_score(same_side, negamax(child, child_depth, full_a, full_b, ply, ctx));
 	}
 	score
@@ -594,8 +708,10 @@ fn quiesce(
 	if ctx.exhausted() || ply >= MAX_PLY - 1 {
 		return eval_now(game, ctx);
 	}
+	ctx.trace.q_nodes += 1;
 	let me = game.current_player();
 	if let Some(term) = terminal_score(game, me) {
+		note_terminal(&mut ctx.trace, term, ply);
 		return term;
 	}
 	let stand = eval_now(game, ctx);
@@ -643,6 +759,7 @@ fn quiesce(
 		ctx.path.push(zobrist::hash(&child));
 		ctx.path_occ.push(zobrist::occupancy_hash(&child));
 		let score = if let Some(term) = terminal_score(&child, me) {
+			note_terminal(&mut ctx.trace, term, ply + 1);
 			term
 		} else if child.current_player() == me {
 			quiesce(&mut child, alpha, beta, qply + 1, ply + 1, ctx)
