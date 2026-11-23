@@ -635,7 +635,7 @@ fn center_relevant(game: &Game, mv: SearchMove) -> bool {
 		SearchMove::Add { node, .. }
 		| SearchMove::Claim { node }
 		| SearchMove::Convert { node } => node == center || inner.contains(&node),
-		SearchMove::Pass => false,
+		SearchMove::Recover | SearchMove::Pass => false,
 	}
 }
 
@@ -742,7 +742,7 @@ fn capture_hint(game: &Game, mv: SearchMove) -> i32 {
 				180_000
 			}
 		}
-		SearchMove::Pass => 0,
+		SearchMove::Recover | SearchMove::Pass => 0,
 	}
 }
 

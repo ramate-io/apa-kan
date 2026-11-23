@@ -191,7 +191,7 @@ impl HistoryTable {
 			SearchMove::Claim { node } => self.claims[node as usize],
 			SearchMove::Swap { from, to } => self.swaps[from as usize * 32 + to as usize],
 			SearchMove::Convert { node } => self.converts[node as usize],
-			SearchMove::Pass => 0,
+			SearchMove::Recover | SearchMove::Pass => 0,
 		}
 	}
 
@@ -218,7 +218,7 @@ impl HistoryTable {
 				let slot = &mut self.converts[node as usize];
 				*slot = (*slot + inc).min(20_000);
 			}
-			SearchMove::Pass => {}
+			SearchMove::Recover | SearchMove::Pass => {}
 		}
 	}
 }

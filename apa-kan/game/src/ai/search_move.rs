@@ -29,6 +29,8 @@ pub enum SearchMove {
 	Convert {
 		node: NodeId,
 	},
+	/// [`Action::Recover`] (graveyard → bench).
+	Recover,
 	Pass,
 }
 
@@ -47,6 +49,7 @@ impl SearchMove {
 			Action::Claim { node } => SearchMove::Claim { node },
 			Action::Swap { from, to } => SearchMove::Swap { from, to },
 			Action::Convert { node } => SearchMove::Convert { node },
+			Action::Recover => SearchMove::Recover,
 			Action::Pass => SearchMove::Pass,
 		}
 	}
@@ -64,6 +67,7 @@ impl SearchMove {
 			SearchMove::Claim { node } => Some(Action::Claim { node }),
 			SearchMove::Swap { from, to } => Some(Action::Swap { from, to }),
 			SearchMove::Convert { node } => Some(Action::Convert { node }),
+			SearchMove::Recover => Some(Action::Recover),
 			SearchMove::Pass => Some(Action::Pass),
 		}
 	}
@@ -87,6 +91,7 @@ impl SearchMove {
 			SearchMove::Claim { node } => (u16::MAX - 1, node, 0),
 			SearchMove::Swap { from, to } => (u16::MAX - 3, from, to),
 			SearchMove::Convert { node } => (u16::MAX - 4, node, 0),
+			SearchMove::Recover => (u16::MAX - 5, 0, 0),
 			SearchMove::Pass => (u16::MAX, 0, 0),
 		}
 	}
@@ -97,6 +102,7 @@ impl SearchMove {
 			k if k == u16::MAX - 1 => Some(SearchMove::Claim { node: a }),
 			k if k == u16::MAX - 3 => Some(SearchMove::Swap { from: a, to: b }),
 			k if k == u16::MAX - 4 => Some(SearchMove::Convert { node: a }),
+			k if k == u16::MAX - 5 => Some(SearchMove::Recover),
 			0 => Some(SearchMove::Move { from: a, to: b }),
 			state
 				if (1..=crate::game::COLOR_STATES as u16).contains(&state)
@@ -177,6 +183,9 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	}
 	for claim in game.legal_claims() {
 		out.push(SearchMove::from_action(game, claim));
+	}
+	for rec in game.legal_recovers() {
+		out.push(SearchMove::from_action(game, rec));
 	}
 	if out.is_empty() && !game.rules().no_moves_loses {
 		out.push(SearchMove::Pass);
@@ -400,6 +409,8 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 			}
 			s
 		}
+		// Neutral: no ordering bias for graveyard returns.
+		SearchMove::Recover => 0,
 		SearchMove::Pass => -1_000,
 	}
 }

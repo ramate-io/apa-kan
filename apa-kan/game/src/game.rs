@@ -3063,6 +3063,19 @@ pub struct RuleSet {
 	/// spent, so occupying spawn nodes is how you draw the opponent down.
 	/// Default off. `--unlimited-spawn`. Missing JSONL replays as off.
 	pub unlimited_spawn: bool,
+	/// Captured tiles go to a graveyard instead of straight to a bench.
+	/// [`Action::Recover`] moves the oldest graveyard tile to the bench and
+	/// costs an action, so self-captures cost tempo. Graveyard tiles count
+	/// toward being alive, and Recover is always legal with a non-empty
+	/// graveyard, so an empty bench plus a full graveyard is never a
+	/// lockout. Default off. `--graveyard`. Missing JSONL replays as off.
+	pub graveyard: bool,
+	/// Captured tiles belong to whoever made the capturing move: they
+	/// change owner and go to the capturer's bench (or graveyard), ignoring
+	/// the dot/triangle destination and [`Self::unlimited_spawn`]'s
+	/// return-to-owner. Default off. `--capture-to-capturer`. Missing JSONL
+	/// replays as off.
+	pub capture_to_capturer: bool,
 }
 
 impl Default for RuleSet {
@@ -3125,6 +3138,8 @@ impl Default for RuleSet {
 			majority_spawn_set: MajoritySpawnSet::ControlSet,
 			capture_cascade: false,
 			unlimited_spawn: false,
+			graveyard: false,
+			capture_to_capturer: false,
 		}
 	}
 }
@@ -3204,6 +3219,10 @@ pub enum Action {
 	Convert {
 		node: NodeId,
 	},
+	/// [`RuleSet::graveyard`]: return the oldest tile in your graveyard to
+	/// your bench. Costs the whole action; places nothing and captures
+	/// nothing. Legal whenever your graveyard is non-empty.
+	Recover,
 	Pass,
 }
 
@@ -3343,6 +3362,8 @@ pub struct Game {
 	/// Opponent pieces captured this game (`[p1, p2]`). Used under
 	/// [`Objective::CaptureScore`].
 	capture_score: [u8; 2],
+	/// [`RuleSet::graveyard`] piles, oldest first (`[p1, p2]`).
+	graveyards: [Vec<Tile>; 2],
 	/// Last action awarded a majority-spawn token.
 	last_majority_spawn: bool,
 	/// Last action captured an opponent piece on a sparse board (capture-cascade).
@@ -3481,6 +3502,7 @@ impl Game {
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
 			capture_score: [0, 0],
+			graveyards: [Vec::new(), Vec::new()],
 			last_majority_spawn: false,
 			score_cascade_hit: false,
 		};
@@ -3566,6 +3588,7 @@ impl Game {
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
 			capture_score: [0, 0],
+			graveyards: [Vec::new(), Vec::new()],
 			last_majority_spawn: false,
 			score_cascade_hit: false,
 		};
@@ -3653,6 +3676,7 @@ impl Game {
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: None,
 			capture_score: [0, 0],
+			graveyards: [Vec::new(), Vec::new()],
 			last_majority_spawn: false,
 			score_cascade_hit: false,
 		}
@@ -3760,6 +3784,35 @@ impl Game {
 	/// Opponent pieces `player` has captured under [`Objective::CaptureScore`].
 	pub fn capture_score(&self, player: Player) -> u8 {
 		self.capture_score[player.index()]
+	}
+
+	/// [`RuleSet::graveyard`] pile for `player`, oldest first.
+	pub fn graveyard(&self, player: Player) -> &[Tile] {
+		&self.graveyards[player.index()]
+	}
+
+	/// [`Action::Recover`] when the graveyard rule is on and the pile is non-empty.
+	pub fn legal_recovers(&self) -> Vec<Action> {
+		if self.status.is_over()
+			|| !self.rules.graveyard
+			|| self.graveyards[self.current.index()].is_empty()
+		{
+			return Vec::new();
+		}
+		vec![Action::Recover]
+	}
+
+	fn apply_recover(&mut self) -> Result<(), String> {
+		if !self.rules.graveyard {
+			return Err("recover needs --graveyard on".into());
+		}
+		let i = self.current.index();
+		if self.graveyards[i].is_empty() {
+			return Err("graveyard is empty".into());
+		}
+		let tile = self.graveyards[i].remove(0);
+		self.benches[i].push(tile);
+		Ok(())
 	}
 
 	/// Occupied board nodes.
@@ -4560,7 +4613,9 @@ impl Game {
 	}
 
 	pub fn is_alive(&self, player: Player) -> bool {
-		self.board_count(player) > 0 || !self.benches[player.index()].is_empty()
+		self.board_count(player) > 0
+			|| !self.benches[player.index()].is_empty()
+			|| !self.graveyards[player.index()].is_empty()
 	}
 
 	pub fn set_current(&mut self, player: Player) {
@@ -4970,7 +5025,7 @@ impl Game {
 	/// neighbors. SWAP checks both landing nodes. Claim never cascades.
 	pub fn collect_captures_for(&self, action: Action) -> Vec<Removal> {
 		match action {
-			Action::Pass => Vec::new(),
+			Action::Pass | Action::Recover => Vec::new(),
 			Action::Claim { node } => self.claim_removal(node).into_iter().collect(),
 			Action::Add { node, .. } | Action::Move { to: node, .. } => {
 				match self.rules.capture_mode {
@@ -5039,6 +5094,7 @@ impl Game {
 		acts.extend(self.legal_swaps());
 		acts.extend(self.legal_converts());
 		acts.extend(self.legal_claims());
+		acts.extend(self.legal_recovers());
 		if acts.is_empty() && !self.rules.no_moves_loses {
 			acts.push(Action::Pass);
 		}
@@ -5294,6 +5350,7 @@ impl Game {
 			|| !self.legal_swaps().is_empty()
 			|| !self.legal_converts().is_empty()
 			|| !self.legal_claims().is_empty()
+			|| !self.legal_recovers().is_empty()
 	}
 
 	/// Destinations that are legal for the tile at `from` under path rules
@@ -5532,6 +5589,7 @@ impl Game {
 			Action::Claim { node } => self.apply_claim(node)?,
 			Action::Swap { from, to } => self.apply_swap(from, to)?,
 			Action::Convert { node } => self.apply_convert(node)?,
+			Action::Recover => self.apply_recover()?,
 			Action::Pass => {
 				if self.has_add_or_move() {
 					return Err(
@@ -5576,6 +5634,13 @@ impl Game {
 				rem.dest = CaptureDest::Owner;
 			}
 		}
+		if self.rules.capture_to_capturer {
+			// Bench dest flips ownership to the mover below. Applies to
+			// every capturing action (CLAIM too); dot/triangle is ignored.
+			for rem in &mut removals {
+				rem.dest = CaptureDest::Bench;
+			}
+		}
 		if self.rules.is_capture_score() {
 			let opp_caps = removals.iter().filter(|r| r.tile.owner == opponent).count() as u8;
 			self.capture_score[player.index()] =
@@ -5590,7 +5655,11 @@ impl Game {
 				CaptureDest::Bench => {
 					let mut tile = rem.tile;
 					tile.owner = player;
-					self.benches[player.index()].push(tile);
+					if self.rules.graveyard {
+						self.graveyards[player.index()].push(tile);
+					} else {
+						self.benches[player.index()].push(tile);
+					}
 				}
 				CaptureDest::Tokens => {
 					// Claim always awards a spawn token, even for the
@@ -5602,7 +5671,11 @@ impl Game {
 					}
 				}
 				CaptureDest::Owner => {
-					self.benches[rem.tile.owner.index()].push(rem.tile);
+					if self.rules.graveyard {
+						self.graveyards[rem.tile.owner.index()].push(rem.tile);
+					} else {
+						self.benches[rem.tile.owner.index()].push(rem.tile);
+					}
 				}
 			}
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
@@ -6187,7 +6260,7 @@ impl Game {
 			| Action::Move { to: node, .. }
 			| Action::Swap { to: node, .. }
 			| Action::Convert { node } => node,
-			Action::Claim { .. } | Action::Pass => return CaptureMark::Triangle,
+			Action::Claim { .. } | Action::Pass | Action::Recover => return CaptureMark::Triangle,
 		};
 		self.tile_at(node).map(|t| t.capture).unwrap_or(CaptureMark::Triangle)
 	}
@@ -6459,6 +6532,7 @@ fn format_log(
 		Action::Claim { node } => format!("CLAIM {}{}", node_tag(board, node), node),
 		Action::Swap { from, to } => format!("SWAP {} <-> {}", from, to),
 		Action::Convert { node } => format!("CONVERT {}{}", node_tag(board, node), node),
+		Action::Recover => "RECOVER".to_string(),
 		Action::Pass => "PASS".to_string(),
 	};
 	let mut line = format!("{} ({}) {}", player.label(), player.shade(), act);
@@ -14436,6 +14510,82 @@ mod tests {
 		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
 		assert_eq!(game.budget_token_count(Player::One), 2);
 		assert_eq!(game.tile_at(spawn).map(|t| t.owner), Some(Player::One));
+	}
+
+	#[test]
+	fn capture_to_capturer_puts_the_tile_on_the_capturers_bench() {
+		let mut rules = capture_score_rules();
+		rules.unlimited_spawn = true;
+		rules.capture_to_capturer = true;
+		let (mut game, node) = claimable_opponent(rules);
+		let p1_bench = game.bench(Player::One).len();
+		let p2_bench = game.bench(Player::Two).len();
+		let captured = game.tile_at(node).unwrap();
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.bench(Player::One).len(), p1_bench + 1);
+		assert_eq!(game.bench(Player::Two).len(), p2_bench);
+		let moved = game.bench(Player::One).iter().find(|t| t.id == captured.id).unwrap();
+		assert_eq!(moved.owner, Player::One, "captured tile changes owner");
+		assert_eq!(game.capture_score(Player::One), 1);
+	}
+
+	#[test]
+	fn graveyard_holds_captures_until_recovered() {
+		let mut rules = capture_score_rules();
+		rules.unlimited_spawn = true;
+		rules.graveyard = true;
+		let (mut game, node) = claimable_opponent(rules);
+		let p2_bench = game.bench(Player::Two).len();
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.bench(Player::Two).len(), p2_bench, "not straight to the bench");
+		assert_eq!(game.graveyard(Player::Two).len(), 1);
+		assert_eq!(game.graveyard(Player::Two)[0].owner, Player::Two);
+		assert_eq!(game.current_player(), Player::Two);
+		assert_eq!(game.legal_recovers(), vec![Action::Recover]);
+		game.apply(Action::Recover).unwrap();
+		assert!(game.graveyard(Player::Two).is_empty());
+		assert_eq!(game.bench(Player::Two).len(), p2_bench + 1);
+		assert_eq!(game.current_player(), Player::One, "recover costs the action");
+	}
+
+	#[test]
+	fn graveyard_with_capture_to_capturer_feeds_the_capturers_pile() {
+		let mut rules = capture_score_rules();
+		rules.unlimited_spawn = true;
+		rules.graveyard = true;
+		rules.capture_to_capturer = true;
+		let (mut game, node) = claimable_opponent(rules);
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.graveyard(Player::One).len(), 1);
+		assert_eq!(game.graveyard(Player::One)[0].owner, Player::One);
+		assert!(game.graveyard(Player::Two).is_empty());
+	}
+
+	#[test]
+	fn graveyard_only_player_is_not_locked_out() {
+		let mut rules = capture_score_rules();
+		rules.unlimited_spawn = true;
+		rules.graveyard = true;
+		let mut game = Game::empty(rules);
+		let far = game.board().spawns()[4];
+		put(&mut game, far, Player::Two, TileColor::Green, 3, 1);
+		let dead = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		game.graveyards[0].push(dead);
+		game.set_bench(Player::One, Vec::new());
+		game.set_current(Player::One);
+		assert!(game.is_alive(Player::One));
+		assert!(game.has_add_or_move());
+		assert_eq!(game.legal_recovers(), vec![Action::Recover]);
+		game.apply(Action::Recover).unwrap();
+		assert_eq!(game.bench(Player::One).len(), 1);
+		assert_eq!(game.status(), GameStatus::InProgress);
+	}
+
+	#[test]
+	fn recover_is_illegal_with_graveyard_off() {
+		let (mut game, _) = claimable_opponent(capture_score_rules());
+		assert!(game.legal_recovers().is_empty());
+		assert!(game.apply(Action::Recover).is_err());
 	}
 
 	#[test]

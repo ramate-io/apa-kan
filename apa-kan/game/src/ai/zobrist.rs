@@ -287,6 +287,15 @@ pub fn hash(game: &Game) -> u64 {
 			h ^= z.capture_score[player.index()][n];
 		}
 	}
+	// Graveyard piles are ordered (RECOVER pops the oldest). Empty piles add
+	// nothing, so hashes with `--graveyard off` are unchanged.
+	for player in [Player::One, Player::Two] {
+		for (i, tile) in game.graveyard(player).iter().enumerate() {
+			let salt = 0x6A09_E667_F3BC_C908u64 ^ ((player.index() as u64) << 40) ^ (i as u64);
+			h ^= mix_id(tile.id).rotate_left((i as u32 * 7 + player.index() as u32 * 3) % 64)
+				^ mix_id(salt as u32 ^ (salt >> 32) as u32);
+		}
+	}
 	h
 }
 
