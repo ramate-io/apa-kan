@@ -7,9 +7,15 @@ use apa_kan_account::link::LinkRequestStatus;
 use apa_kan_account::types::AuthorizedKeyStatus;
 use async_trait::async_trait;
 
+use crate::ann::AnnHit;
+use crate::catalog::*;
 use crate::error::StoreError;
+use crate::ids::validate_character_id;
 use crate::model::*;
+use crate::pass::{PassBook, PassPointer, ROLE_ADMIN};
 use crate::repos::*;
+use apa_kan_core::character_pass::{CoreKey, SnapshotCharacterTables, SparseCharacterRow};
+use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub struct MemoryStore {
@@ -25,6 +31,11 @@ struct MemoryState {
 	next_tile_id: u64,
 	ratings: HashMap<[u8; 32], RatingRow>,
 	recoveries: Vec<RecoveryRow>,
+	characters: HashMap<String, CharacterRecord>,
+	roles: Vec<(AccountId, String, i64)>,
+	pass: PassBook,
+	core_tiles: HashMap<String, CoreTileRecord>,
+	tile_types: HashMap<String, TileTypeRecord>,
 }
 
 impl MemoryStore {
@@ -165,21 +176,26 @@ impl InventoryRepo for MemoryStore {
 	async fn grant_tiles(
 		&self,
 		account_id: &AccountId,
-		tiles: &[(TileKindId, String)],
+		tiles: &[TileGrant],
 		granted_at_unix: i64,
 	) -> Result<Vec<TileInstanceRow>, StoreError> {
 		let mut st = self.inner.lock().unwrap();
 		let trade_bind = granted_at_unix + crate::model::TRADE_BIND_SECS;
 		let mut out = Vec::new();
-		for (kind, origin) in tiles {
+		for grant in tiles {
 			st.next_tile_id += 1;
 			let row = TileInstanceRow {
 				instance_id: st.next_tile_id,
 				account_id: *account_id,
-				tile_kind_id: *kind,
-				origin: origin.clone(),
+				tile_kind_id: grant.tile_kind_id,
+				origin: grant.origin.clone(),
 				frozen: false,
 				trade_bind_until_unix: Some(trade_bind),
+				generation_id: grant.generation_id,
+				core_tile_id: grant.core_tile_id.clone(),
+				tile_type_id: grant.tile_type_id.clone(),
+				character_id: grant.character_id.clone(),
+				pass_version: grant.pass_version,
 			};
 			st.tiles.push(row.clone());
 			out.push(row);
@@ -297,6 +313,168 @@ impl RecoveryRepo for MemoryStore {
 }
 
 #[async_trait]
+impl CatalogRepo for MemoryStore {
+	async fn upsert_character(&self, row: CharacterRecord) -> Result<(), StoreError> {
+		validate_character_id(&row.character_id)?;
+		if row.display_name.trim().is_empty() {
+			return Err(StoreError::InvalidInput("display_name is empty".into()));
+		}
+		let mut st = self.inner.lock().unwrap();
+		st.characters.insert(row.character_id.clone(), row);
+		Ok(())
+	}
+
+	async fn get_character(&self, id: &str) -> Result<Option<CharacterRecord>, StoreError> {
+		let st = self.inner.lock().unwrap();
+		Ok(st.characters.get(id).cloned())
+	}
+
+	async fn list_characters(&self) -> Result<Vec<CharacterRecord>, StoreError> {
+		let st = self.inner.lock().unwrap();
+		let mut rows: Vec<_> = st.characters.values().cloned().collect();
+		rows.sort_by(|a, b| a.character_id.cmp(&b.character_id));
+		Ok(rows)
+	}
+
+	async fn set_character_image(&self, id: &str, png: Vec<u8>) -> Result<(), StoreError> {
+		let mut st = self.inner.lock().unwrap();
+		let rec = st.characters.get_mut(id).ok_or(StoreError::NotFound)?;
+		rec.image_png = Some(png);
+		Ok(())
+	}
+}
+
+#[async_trait]
+impl PassRepo for MemoryStore {
+	async fn pass_pointer(&self) -> Result<PassPointer, StoreError> {
+		Ok(self.inner.lock().unwrap().pass.pointer.clone())
+	}
+
+	async fn load_tables(&self, version: u16) -> Result<SnapshotCharacterTables, StoreError> {
+		self.inner.lock().unwrap().pass.snapshot(version)
+	}
+
+	async fn upsert_draft_embedding(&self, row: SparseCharacterRow) -> Result<u16, StoreError> {
+		self.inner.lock().unwrap().pass.upsert_embedding(row)
+	}
+
+	async fn set_draft_fallback(&self, ids: Vec<String>) -> Result<u16, StoreError> {
+		self.inner.lock().unwrap().pass.set_fallback(ids)
+	}
+
+	async fn set_draft_specific(
+		&self,
+		maps: BTreeMap<CoreKey, Vec<String>>,
+	) -> Result<u16, StoreError> {
+		self.inner.lock().unwrap().pass.set_specific(maps)
+	}
+
+	async fn set_draft_config(&self, tau: f32, k: Option<usize>) -> Result<u16, StoreError> {
+		self.inner.lock().unwrap().pass.set_config(tau, k)
+	}
+
+	async fn publish_draft(&self) -> Result<u16, StoreError> {
+		self.inner.lock().unwrap().pass.publish()
+	}
+
+	async fn seed_snapshot(&self, tables: SnapshotCharacterTables) -> Result<(), StoreError> {
+		let mut st = self.inner.lock().unwrap();
+		if !st.pass.embeddings.is_empty() {
+			return Ok(());
+		}
+		st.pass.seed_from_tables(&tables)
+	}
+}
+
+#[async_trait]
+impl AnnLookup for MemoryStore {
+	async fn nearest(
+		&self,
+		version: u16,
+		query: &[f32],
+		tau: f32,
+		k: Option<usize>,
+	) -> Result<Vec<AnnHit>, StoreError> {
+		Ok(self.inner.lock().unwrap().pass.nearest(version, query, tau, k))
+	}
+}
+
+#[async_trait]
+impl RoleRepo for MemoryStore {
+	async fn grant_role(
+		&self,
+		account_id: &AccountId,
+		role: &str,
+		now_unix: i64,
+	) -> Result<(), StoreError> {
+		let mut st = self.inner.lock().unwrap();
+		if st.roles.iter().any(|(id, r, _)| id == account_id && r == role) {
+			return Ok(());
+		}
+		st.roles.push((*account_id, role.to_string(), now_unix));
+		Ok(())
+	}
+
+	async fn has_role(&self, account_id: &AccountId, role: &str) -> Result<bool, StoreError> {
+		let st = self.inner.lock().unwrap();
+		Ok(st.roles.iter().any(|(id, r, _)| id == account_id && r == role))
+	}
+
+	async fn admin_count(&self) -> Result<u64, StoreError> {
+		let st = self.inner.lock().unwrap();
+		Ok(st.roles.iter().filter(|(_, r, _)| r == ROLE_ADMIN).count() as u64)
+	}
+}
+
+#[async_trait]
+impl IssuedTileRepo for MemoryStore {
+	async fn list_issued(&self, filter: TileFilter) -> Result<Vec<TileInstanceRow>, StoreError> {
+		let st = self.inner.lock().unwrap();
+		let mut rows: Vec<_> = st
+			.tiles
+			.iter()
+			.filter(|t| {
+				filter.character_id.as_ref().map(|c| t.character_id == *c).unwrap_or(true)
+					&& filter.core_tile_id.as_ref().map(|c| t.core_tile_id == *c).unwrap_or(true)
+					&& filter.tile_type_id.as_ref().map(|c| t.tile_type_id == *c).unwrap_or(true)
+					&& filter.account_id.as_ref().map(|a| t.account_id == *a).unwrap_or(true)
+			})
+			.cloned()
+			.collect();
+		rows.sort_by_key(|t| t.instance_id);
+		let offset = filter.offset.unwrap_or(0) as usize;
+		if offset > rows.len() {
+			return Ok(Vec::new());
+		}
+		rows = rows.split_off(offset);
+		if let Some(limit) = filter.limit {
+			rows.truncate(limit as usize);
+		}
+		Ok(rows)
+	}
+
+	async fn upsert_core_tile(&self, rec: CoreTileRecord) -> Result<(), StoreError> {
+		let mut st = self.inner.lock().unwrap();
+		st.core_tiles.insert(rec.core_tile_id.clone(), rec);
+		Ok(())
+	}
+
+	async fn upsert_tile_type(&self, rec: TileTypeRecord) -> Result<(), StoreError> {
+		let mut st = self.inner.lock().unwrap();
+		st.tile_types.insert(rec.tile_type_id.clone(), rec);
+		Ok(())
+	}
+
+	async fn get_core_tile(&self, id: &str) -> Result<Option<CoreTileRecord>, StoreError> {
+		Ok(self.inner.lock().unwrap().core_tiles.get(id).cloned())
+	}
+
+	async fn get_tile_type(&self, id: &str) -> Result<Option<TileTypeRecord>, StoreError> {
+		Ok(self.inner.lock().unwrap().tile_types.get(id).cloned())
+	}
+}
+
+#[async_trait]
 impl Store for MemoryStore {}
 
 #[cfg(test)]
@@ -314,5 +492,45 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!(row.account_id, id);
+	}
+
+	#[tokio::test]
+	async fn draft_edit_does_not_change_published_until_publish() {
+		use crate::seed::seed_bundled_v1;
+		use apa_kan_core::character_pass::{
+			assign_character, JsonCharacterTables, SparseCharacterRow,
+		};
+		use apa_kan_core::core_pass::{CorePass, TileId};
+		use apa_kan_core::game::TileColor;
+		use std::collections::BTreeMap;
+
+		let store = MemoryStore::new();
+		seed_bundled_v1(&store, 0).await.unwrap();
+		let json = JsonCharacterTables::load_v1().unwrap();
+		let published = store.load_tables(1).await.unwrap();
+		let cfg = CorePass::base();
+		let tile = cfg.run(TileId(3));
+		let before = assign_character(&published, &tile, 3);
+		assert_eq!(before, assign_character(&json, &tile, 3));
+
+		store
+			.upsert_draft_embedding(SparseCharacterRow {
+				id: "westerlit".into(),
+				color: BTreeMap::from([(TileColor::Maroon, 4.0)]),
+				ring_type: BTreeMap::new(),
+				emblem: BTreeMap::new(),
+				n_rings: 0.0,
+				capture: BTreeMap::new(),
+				dots: 0.0,
+			})
+			.await
+			.unwrap();
+		let pointer = store.pass_pointer().await.unwrap();
+		assert_eq!(pointer.published_version, Some(1));
+		assert_eq!(pointer.draft_version, 2);
+		let still = store.load_tables(1).await.unwrap();
+		assert_eq!(assign_character(&still, &tile, 3), before);
+		store.publish_draft().await.unwrap();
+		assert_eq!(store.pass_pointer().await.unwrap().published_version, Some(2));
 	}
 }

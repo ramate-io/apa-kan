@@ -12,6 +12,8 @@ pub enum StoreError {
 	Expired,
 	#[error("invalid input: {0}")]
 	InvalidInput(String),
+	#[error("forbidden")]
+	Forbidden,
 	#[error("storage: {0}")]
 	Storage(String),
 	#[error("account error: {0}")]

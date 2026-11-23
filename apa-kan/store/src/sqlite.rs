@@ -8,11 +8,20 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
 use std::str::FromStr;
 
+use crate::ann::{blob_to_vector, brute_force_nearest, vector_to_blob, AnnHit};
+use crate::catalog::*;
 use crate::error::StoreError;
+use crate::ids::validate_character_id;
 use crate::model::*;
+use crate::pass::{is_live, PassPointer, ROLE_ADMIN};
 use crate::repos::*;
+use apa_kan_core::character_pass::{
+	CharacterTables, CoreKey, SnapshotCharacterTables, SparseCharacterRow,
+};
+use std::collections::BTreeMap;
 
 const MIGRATION_001: &str = include_str!("../migrations/001_platform_v1.sql");
+const MIGRATION_002: &str = include_str!("../migrations/002_catalog_ids.sql");
 
 pub struct SqliteStore {
 	pool: SqlitePool,
@@ -28,10 +37,7 @@ impl SqliteStore {
 			.connect_with(options)
 			.await
 			.map_err(|e| StoreError::Storage(e.to_string()))?;
-		sqlx::raw_sql(MIGRATION_001)
-			.execute(&pool)
-			.await
-			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		migrate(&pool).await?;
 		Ok(Self { pool })
 	}
 
@@ -43,12 +49,64 @@ impl SqliteStore {
 			.connect_with(options)
 			.await
 			.map_err(|e| StoreError::Storage(e.to_string()))?;
-		sqlx::raw_sql(MIGRATION_001)
-			.execute(&pool)
-			.await
-			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		migrate(&pool).await?;
 		Ok(Self { pool })
 	}
+}
+
+async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
+	sqlx::raw_sql(MIGRATION_001)
+		.execute(pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+	ensure_tile_instance_columns(pool).await?;
+	sqlx::raw_sql(MIGRATION_002)
+		.execute(pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+	sqlx::query("INSERT INTO schema_version (version) SELECT 2 WHERE NOT EXISTS (SELECT 1 FROM schema_version WHERE version = 2)")
+		.execute(pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+	Ok(())
+}
+
+async fn ensure_tile_instance_columns(pool: &SqlitePool) -> Result<(), StoreError> {
+	let cols = sqlx::query("PRAGMA table_info(tile_instances)")
+		.fetch_all(pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+	let names: Vec<String> = cols.iter().map(|r| r.get::<String, _>("name")).collect();
+	for (name, sql) in [
+		(
+			"generation_id",
+			"ALTER TABLE tile_instances ADD COLUMN generation_id INTEGER NOT NULL DEFAULT 0",
+		),
+		(
+			"core_tile_id",
+			"ALTER TABLE tile_instances ADD COLUMN core_tile_id TEXT NOT NULL DEFAULT ''",
+		),
+		(
+			"tile_type_id",
+			"ALTER TABLE tile_instances ADD COLUMN tile_type_id TEXT NOT NULL DEFAULT ''",
+		),
+		(
+			"character_id",
+			"ALTER TABLE tile_instances ADD COLUMN character_id TEXT NOT NULL DEFAULT ''",
+		),
+		(
+			"pass_version",
+			"ALTER TABLE tile_instances ADD COLUMN pass_version INTEGER NOT NULL DEFAULT 0",
+		),
+	] {
+		if !names.iter().any(|n| n == name) {
+			sqlx::query(sql)
+				.execute(pool)
+				.await
+				.map_err(|e| StoreError::Storage(e.to_string()))?;
+		}
+	}
+	Ok(())
 }
 
 fn status_str(s: &AuthorizedKeyStatus) -> &'static str {
@@ -373,21 +431,29 @@ impl InventoryRepo for SqliteStore {
 	async fn grant_tiles(
 		&self,
 		account_id: &AccountId,
-		tiles: &[(TileKindId, String)],
+		tiles: &[TileGrant],
 		granted_at_unix: i64,
 	) -> Result<Vec<TileInstanceRow>, StoreError> {
 		let mut out = Vec::new();
 		let trade_bind = granted_at_unix + crate::model::TRADE_BIND_SECS;
-		for (kind, origin) in tiles {
+		for grant in tiles {
 			let row = sqlx::query(
-				r#"INSERT INTO tile_instances (account_id, tile_kind_id, origin, frozen, trade_bind_until_unix)
-                   VALUES (?, ?, ?, 0, ?)
+				r#"INSERT INTO tile_instances (
+                    account_id, tile_kind_id, origin, frozen, trade_bind_until_unix,
+                    generation_id, core_tile_id, tile_type_id, character_id, pass_version
+                   )
+                   VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
                    RETURNING instance_id"#,
 			)
 			.bind(account_id.as_bytes().as_slice())
-			.bind(*kind as i64)
-			.bind(origin)
+			.bind(grant.tile_kind_id as i64)
+			.bind(&grant.origin)
 			.bind(trade_bind)
+			.bind(grant.generation_id as i64)
+			.bind(&grant.core_tile_id)
+			.bind(&grant.tile_type_id)
+			.bind(&grant.character_id)
+			.bind(grant.pass_version as i64)
 			.fetch_one(&self.pool)
 			.await
 			.map_err(|e| StoreError::Storage(e.to_string()))?;
@@ -395,10 +461,15 @@ impl InventoryRepo for SqliteStore {
 			out.push(TileInstanceRow {
 				instance_id: instance_id as u64,
 				account_id: *account_id,
-				tile_kind_id: *kind,
-				origin: origin.clone(),
+				tile_kind_id: grant.tile_kind_id,
+				origin: grant.origin.clone(),
 				frozen: false,
 				trade_bind_until_unix: Some(trade_bind),
+				generation_id: grant.generation_id,
+				core_tile_id: grant.core_tile_id.clone(),
+				tile_type_id: grant.tile_type_id.clone(),
+				character_id: grant.character_id.clone(),
+				pass_version: grant.pass_version,
 			});
 		}
 		Ok(out)
@@ -406,7 +477,8 @@ impl InventoryRepo for SqliteStore {
 
 	async fn list_tiles(&self, account_id: &AccountId) -> Result<Vec<TileInstanceRow>, StoreError> {
 		let rows = sqlx::query(
-			r#"SELECT instance_id, tile_kind_id, origin, frozen, trade_bind_until_unix
+			r#"SELECT instance_id, tile_kind_id, origin, frozen, trade_bind_until_unix,
+                      generation_id, core_tile_id, tile_type_id, character_id, pass_version
                FROM tile_instances WHERE account_id = ?"#,
 		)
 		.bind(account_id.as_bytes().as_slice())
@@ -423,6 +495,11 @@ impl InventoryRepo for SqliteStore {
 				origin: row.get(2),
 				frozen: row.get::<i64, _>(3) != 0,
 				trade_bind_until_unix: row.get(4),
+				generation_id: row.get::<i64, _>(5) as u32,
+				core_tile_id: row.get(6),
+				tile_type_id: row.get(7),
+				character_id: row.get(8),
+				pass_version: row.get::<i64, _>(9) as u16,
 			})
 			.collect())
 	}
@@ -560,6 +637,572 @@ impl RecoveryRepo for SqliteStore {
 	}
 }
 
+impl SqliteStore {
+	async fn load_pointer(&self) -> Result<PassPointer, StoreError> {
+		let row =
+			sqlx::query("SELECT draft_version, published_version FROM pass_pointer WHERE id = 1")
+				.fetch_optional(&self.pool)
+				.await
+				.map_err(|e| StoreError::Storage(e.to_string()))?
+				.ok_or(StoreError::NotFound)?;
+		Ok(PassPointer {
+			draft_version: row.get::<i64, _>(0) as u16,
+			published_version: row.get::<Option<i64>, _>(1).map(|v| v as u16),
+		})
+	}
+
+	async fn save_pointer(&self, pointer: &PassPointer) -> Result<(), StoreError> {
+		sqlx::query(
+			"UPDATE pass_pointer SET draft_version = ?, published_version = ? WHERE id = 1",
+		)
+		.bind(pointer.draft_version as i64)
+		.bind(pointer.published_version.map(|v| v as i64))
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(())
+	}
+
+	async fn ensure_draft(&self) -> Result<u16, StoreError> {
+		let mut pointer = self.load_pointer().await?;
+		pointer.ensure_draft();
+		self.save_pointer(&pointer).await?;
+		Ok(pointer.draft_version)
+	}
+}
+
+#[async_trait]
+impl CatalogRepo for SqliteStore {
+	async fn upsert_character(&self, row: CharacterRecord) -> Result<(), StoreError> {
+		validate_character_id(&row.character_id)?;
+		if row.display_name.trim().is_empty() {
+			return Err(StoreError::InvalidInput("display_name is empty".into()));
+		}
+		sqlx::query(
+			r#"INSERT INTO character_catalog (character_id, display_name, image_png, created_at_unix)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(character_id) DO UPDATE SET
+                 display_name = excluded.display_name,
+                 image_png = COALESCE(excluded.image_png, character_catalog.image_png)"#,
+		)
+		.bind(&row.character_id)
+		.bind(&row.display_name)
+		.bind(&row.image_png)
+		.bind(row.created_at_unix)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(())
+	}
+
+	async fn get_character(&self, id: &str) -> Result<Option<CharacterRecord>, StoreError> {
+		let row = sqlx::query(
+			"SELECT character_id, display_name, image_png, created_at_unix FROM character_catalog WHERE character_id = ?",
+		)
+		.bind(id)
+		.fetch_optional(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(row.map(|row| CharacterRecord {
+			character_id: row.get(0),
+			display_name: row.get(1),
+			image_png: row.get(2),
+			created_at_unix: row.get(3),
+		}))
+	}
+
+	async fn list_characters(&self) -> Result<Vec<CharacterRecord>, StoreError> {
+		let rows = sqlx::query(
+			"SELECT character_id, display_name, image_png, created_at_unix FROM character_catalog ORDER BY character_id",
+		)
+		.fetch_all(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(rows
+			.into_iter()
+			.map(|row| CharacterRecord {
+				character_id: row.get(0),
+				display_name: row.get(1),
+				image_png: row.get(2),
+				created_at_unix: row.get(3),
+			})
+			.collect())
+	}
+
+	async fn set_character_image(&self, id: &str, png: Vec<u8>) -> Result<(), StoreError> {
+		let updated =
+			sqlx::query("UPDATE character_catalog SET image_png = ? WHERE character_id = ?")
+				.bind(&png)
+				.bind(id)
+				.execute(&self.pool)
+				.await
+				.map_err(|e| StoreError::Storage(e.to_string()))?;
+		if updated.rows_affected() == 0 {
+			return Err(StoreError::NotFound);
+		}
+		Ok(())
+	}
+}
+
+#[async_trait]
+impl PassRepo for SqliteStore {
+	async fn pass_pointer(&self) -> Result<PassPointer, StoreError> {
+		self.load_pointer().await
+	}
+
+	async fn load_tables(&self, version: u16) -> Result<SnapshotCharacterTables, StoreError> {
+		let cfg_rows = sqlx::query("SELECT valid_from, valid_to, tau, k FROM pass_config_revs")
+			.fetch_all(&self.pool)
+			.await
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let cfg = cfg_rows
+			.into_iter()
+			.find(|row| {
+				is_live(
+					row.get::<i64, _>(0) as u16,
+					row.get::<Option<i64>, _>(1).map(|v| v as u16),
+					version,
+				)
+			})
+			.ok_or(StoreError::NotFound)?;
+		let tau: f64 = cfg.get(2);
+		let k = cfg.get::<Option<i64>, _>(3).map(|v| v as usize);
+
+		let emb_rows = sqlx::query(
+			"SELECT character_id, valid_from, valid_to, sparse_json FROM embedding_revs",
+		)
+		.fetch_all(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let mut rows = Vec::new();
+		for row in emb_rows {
+			if is_live(
+				row.get::<i64, _>(1) as u16,
+				row.get::<Option<i64>, _>(2).map(|v| v as u16),
+				version,
+			) {
+				let json: String = row.get(3);
+				let value: serde_json::Value =
+					serde_json::from_str(&json).map_err(|e| StoreError::Storage(e.to_string()))?;
+				rows.push(
+					SparseCharacterRow::from_json_value(&value)
+						.map_err(StoreError::InvalidInput)?,
+				);
+			}
+		}
+
+		let fb_rows = sqlx::query("SELECT valid_from, valid_to, ids_json FROM fallback_revs")
+			.fetch_all(&self.pool)
+			.await
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let fallback = fb_rows
+			.into_iter()
+			.find(|row| {
+				is_live(
+					row.get::<i64, _>(0) as u16,
+					row.get::<Option<i64>, _>(1).map(|v| v as u16),
+					version,
+				)
+			})
+			.ok_or(StoreError::NotFound)?;
+		let fallback: Vec<String> = serde_json::from_str(fallback.get::<String, _>(2).as_str())
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+
+		let spec_rows = sqlx::query("SELECT valid_from, valid_to, maps_json FROM specific_revs")
+			.fetch_all(&self.pool)
+			.await
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let mut maps = BTreeMap::new();
+		if let Some(spec) = spec_rows.into_iter().find(|row| {
+			is_live(
+				row.get::<i64, _>(0) as u16,
+				row.get::<Option<i64>, _>(1).map(|v| v as u16),
+				version,
+			)
+		}) {
+			let arr: Vec<serde_json::Value> =
+				serde_json::from_str(spec.get::<String, _>(2).as_str())
+					.map_err(|e| StoreError::Storage(e.to_string()))?;
+			for v in arr {
+				let (key, chars) = CoreKey::from_map_json(&v).map_err(StoreError::InvalidInput)?;
+				maps.insert(key, chars);
+			}
+		}
+
+		SnapshotCharacterTables::new(version, tau as f32, k, maps, rows, fallback)
+			.map_err(StoreError::InvalidInput)
+	}
+
+	async fn upsert_draft_embedding(&self, row: SparseCharacterRow) -> Result<u16, StoreError> {
+		row.validate().map_err(StoreError::InvalidInput)?;
+		let draft = self.ensure_draft().await?;
+		sqlx::query(
+			"UPDATE embedding_revs SET valid_to = ? WHERE character_id = ? AND valid_to IS NULL",
+		)
+		.bind(draft as i64)
+		.bind(&row.id)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let json = serde_json::to_string(&row.to_json_value())
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let blob = vector_to_blob(&apa_kan_core::character_pass::encode_character(&row));
+		sqlx::query(
+			"INSERT INTO embedding_revs (character_id, valid_from, valid_to, sparse_json, vector_blob) VALUES (?, ?, NULL, ?, ?)",
+		)
+		.bind(&row.id)
+		.bind(draft as i64)
+		.bind(json)
+		.bind(blob)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(draft)
+	}
+
+	async fn set_draft_fallback(&self, ids: Vec<String>) -> Result<u16, StoreError> {
+		if ids.is_empty() {
+			return Err(StoreError::InvalidInput("fallback set is empty".into()));
+		}
+		let draft = self.ensure_draft().await?;
+		sqlx::query("UPDATE fallback_revs SET valid_to = ? WHERE valid_to IS NULL")
+			.bind(draft as i64)
+			.execute(&self.pool)
+			.await
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let json = serde_json::to_string(&ids).map_err(|e| StoreError::Storage(e.to_string()))?;
+		sqlx::query(
+			"INSERT INTO fallback_revs (valid_from, valid_to, ids_json) VALUES (?, NULL, ?)",
+		)
+		.bind(draft as i64)
+		.bind(json)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(draft)
+	}
+
+	async fn set_draft_specific(
+		&self,
+		maps: BTreeMap<CoreKey, Vec<String>>,
+	) -> Result<u16, StoreError> {
+		let draft = self.ensure_draft().await?;
+		sqlx::query("UPDATE specific_revs SET valid_to = ? WHERE valid_to IS NULL")
+			.bind(draft as i64)
+			.execute(&self.pool)
+			.await
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let arr: Vec<serde_json::Value> = maps.iter().map(|(k, v)| k.to_map_json(v)).collect();
+		let json = serde_json::to_string(&arr).map_err(|e| StoreError::Storage(e.to_string()))?;
+		sqlx::query(
+			"INSERT INTO specific_revs (valid_from, valid_to, maps_json) VALUES (?, NULL, ?)",
+		)
+		.bind(draft as i64)
+		.bind(json)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(draft)
+	}
+
+	async fn set_draft_config(&self, tau: f32, k: Option<usize>) -> Result<u16, StoreError> {
+		if !(0.0..=1.0).contains(&tau) {
+			return Err(StoreError::InvalidInput(format!("tau {tau} is outside [0, 1]")));
+		}
+		if let Some(0) = k {
+			return Err(StoreError::InvalidInput("k must be >= 1 when set".into()));
+		}
+		let draft = self.ensure_draft().await?;
+		sqlx::query("UPDATE pass_config_revs SET valid_to = ? WHERE valid_to IS NULL")
+			.bind(draft as i64)
+			.execute(&self.pool)
+			.await
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		sqlx::query(
+			"INSERT INTO pass_config_revs (valid_from, valid_to, tau, k) VALUES (?, NULL, ?, ?)",
+		)
+		.bind(draft as i64)
+		.bind(tau as f64)
+		.bind(k.map(|v| v as i64))
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(draft)
+	}
+
+	async fn publish_draft(&self) -> Result<u16, StoreError> {
+		let mut pointer = self.load_pointer().await?;
+		let version = pointer.publish()?;
+		let _ = self.load_tables(version).await?;
+		self.save_pointer(&pointer).await?;
+		Ok(version)
+	}
+
+	async fn seed_snapshot(&self, tables: SnapshotCharacterTables) -> Result<(), StoreError> {
+		let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM embedding_revs")
+			.fetch_one(&self.pool)
+			.await
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		if count.0 > 0 {
+			return Ok(());
+		}
+		let version = tables.version();
+		self.save_pointer(&PassPointer {
+			draft_version: version,
+			published_version: Some(version),
+		})
+		.await?;
+		sqlx::query(
+			"INSERT INTO pass_config_revs (valid_from, valid_to, tau, k) VALUES (?, NULL, ?, ?)",
+		)
+		.bind(version as i64)
+		.bind(tables.tau() as f64)
+		.bind(tables.k().map(|v| v as i64))
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		for row in tables.embedding_rows() {
+			let json = serde_json::to_string(&row.to_json_value())
+				.map_err(|e| StoreError::Storage(e.to_string()))?;
+			let blob = vector_to_blob(&apa_kan_core::character_pass::encode_character(row));
+			sqlx::query(
+				"INSERT INTO embedding_revs (character_id, valid_from, valid_to, sparse_json, vector_blob) VALUES (?, ?, NULL, ?, ?)",
+			)
+			.bind(&row.id)
+			.bind(version as i64)
+			.bind(json)
+			.bind(blob)
+			.execute(&self.pool)
+			.await
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		}
+		let fb = serde_json::to_string(tables.fallback_ids())
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		sqlx::query(
+			"INSERT INTO fallback_revs (valid_from, valid_to, ids_json) VALUES (?, NULL, ?)",
+		)
+		.bind(version as i64)
+		.bind(fb)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let arr: Vec<serde_json::Value> =
+			tables.specific_all().iter().map(|(k, v)| k.to_map_json(v)).collect();
+		let spec = serde_json::to_string(&arr).map_err(|e| StoreError::Storage(e.to_string()))?;
+		sqlx::query(
+			"INSERT INTO specific_revs (valid_from, valid_to, maps_json) VALUES (?, NULL, ?)",
+		)
+		.bind(version as i64)
+		.bind(spec)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(())
+	}
+}
+
+#[async_trait]
+impl AnnLookup for SqliteStore {
+	async fn nearest(
+		&self,
+		version: u16,
+		query: &[f32],
+		tau: f32,
+		k: Option<usize>,
+	) -> Result<Vec<AnnHit>, StoreError> {
+		let rows = sqlx::query(
+			"SELECT character_id, valid_from, valid_to, vector_blob FROM embedding_revs",
+		)
+		.fetch_all(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let encoded: Vec<(String, Vec<f32>)> = rows
+			.into_iter()
+			.filter(|row| {
+				is_live(
+					row.get::<i64, _>(1) as u16,
+					row.get::<Option<i64>, _>(2).map(|v| v as u16),
+					version,
+				)
+			})
+			.map(|row| (row.get(0), blob_to_vector(row.get::<Vec<u8>, _>(3).as_slice())))
+			.collect();
+		Ok(brute_force_nearest(&encoded, query, tau, k))
+	}
+}
+
+#[async_trait]
+impl RoleRepo for SqliteStore {
+	async fn grant_role(
+		&self,
+		account_id: &AccountId,
+		role: &str,
+		now_unix: i64,
+	) -> Result<(), StoreError> {
+		sqlx::query(
+			"INSERT OR IGNORE INTO account_roles (account_id, role, granted_at_unix) VALUES (?, ?, ?)",
+		)
+		.bind(account_id.as_bytes().as_slice())
+		.bind(role)
+		.bind(now_unix)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(())
+	}
+
+	async fn has_role(&self, account_id: &AccountId, role: &str) -> Result<bool, StoreError> {
+		let count: (i64,) =
+			sqlx::query_as("SELECT COUNT(*) FROM account_roles WHERE account_id = ? AND role = ?")
+				.bind(account_id.as_bytes().as_slice())
+				.bind(role)
+				.fetch_one(&self.pool)
+				.await
+				.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(count.0 > 0)
+	}
+
+	async fn admin_count(&self) -> Result<u64, StoreError> {
+		let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM account_roles WHERE role = ?")
+			.bind(ROLE_ADMIN)
+			.fetch_one(&self.pool)
+			.await
+			.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(count.0 as u64)
+	}
+}
+
+#[async_trait]
+impl IssuedTileRepo for SqliteStore {
+	async fn list_issued(&self, filter: TileFilter) -> Result<Vec<TileInstanceRow>, StoreError> {
+		let rows = sqlx::query(
+			r#"SELECT instance_id, account_id, tile_kind_id, origin, frozen, trade_bind_until_unix,
+                      generation_id, core_tile_id, tile_type_id, character_id, pass_version
+               FROM tile_instances ORDER BY instance_id"#,
+		)
+		.fetch_all(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		let mut out = Vec::new();
+		for row in rows {
+			let account_id = AccountId::from_bytes(blob32(row.get::<Vec<u8>, _>(1).as_slice())?);
+			let rec = TileInstanceRow {
+				instance_id: row.get::<i64, _>(0) as u64,
+				account_id,
+				tile_kind_id: row.get::<i64, _>(2) as u32,
+				origin: row.get(3),
+				frozen: row.get::<i64, _>(4) != 0,
+				trade_bind_until_unix: row.get(5),
+				generation_id: row.get::<i64, _>(6) as u32,
+				core_tile_id: row.get(7),
+				tile_type_id: row.get(8),
+				character_id: row.get(9),
+				pass_version: row.get::<i64, _>(10) as u16,
+			};
+			if filter.character_id.as_ref().map(|c| rec.character_id == *c).unwrap_or(true)
+				&& filter.core_tile_id.as_ref().map(|c| rec.core_tile_id == *c).unwrap_or(true)
+				&& filter.tile_type_id.as_ref().map(|c| rec.tile_type_id == *c).unwrap_or(true)
+				&& filter.account_id.as_ref().map(|a| rec.account_id == *a).unwrap_or(true)
+			{
+				out.push(rec);
+			}
+		}
+		let offset = filter.offset.unwrap_or(0) as usize;
+		if offset > out.len() {
+			return Ok(Vec::new());
+		}
+		out = out.split_off(offset);
+		if let Some(limit) = filter.limit {
+			out.truncate(limit as usize);
+		}
+		Ok(out)
+	}
+
+	async fn upsert_core_tile(&self, rec: CoreTileRecord) -> Result<(), StoreError> {
+		let rings =
+			serde_json::to_string(&rec.rings).map_err(|e| StoreError::Storage(e.to_string()))?;
+		sqlx::query(
+			r#"INSERT INTO core_tiles (core_tile_id, rings_json, dots, capture, emblem)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(core_tile_id) DO NOTHING"#,
+		)
+		.bind(&rec.core_tile_id)
+		.bind(rings)
+		.bind(rec.dots as i64)
+		.bind(&rec.capture)
+		.bind(&rec.emblem)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(())
+	}
+
+	async fn upsert_tile_type(&self, rec: TileTypeRecord) -> Result<(), StoreError> {
+		let rings =
+			serde_json::to_string(&rec.rings).map_err(|e| StoreError::Storage(e.to_string()))?;
+		sqlx::query(
+			r#"INSERT INTO tile_types (tile_type_id, rings_json, dots, capture, emblem)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(tile_type_id) DO NOTHING"#,
+		)
+		.bind(&rec.tile_type_id)
+		.bind(rings)
+		.bind(rec.dots as i64)
+		.bind(&rec.capture)
+		.bind(&rec.emblem)
+		.execute(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		Ok(())
+	}
+
+	async fn get_core_tile(&self, id: &str) -> Result<Option<CoreTileRecord>, StoreError> {
+		let row = sqlx::query(
+			"SELECT core_tile_id, rings_json, dots, capture, emblem FROM core_tiles WHERE core_tile_id = ?",
+		)
+		.bind(id)
+		.fetch_optional(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		row.map(|row| decode_core_tile_row(row)).transpose()
+	}
+
+	async fn get_tile_type(&self, id: &str) -> Result<Option<TileTypeRecord>, StoreError> {
+		let row = sqlx::query(
+			"SELECT tile_type_id, rings_json, dots, capture, emblem FROM tile_types WHERE tile_type_id = ?",
+		)
+		.bind(id)
+		.fetch_optional(&self.pool)
+		.await
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+		row.map(|row| decode_tile_type_row(row)).transpose()
+	}
+}
+
+fn decode_core_tile_row(row: sqlx::sqlite::SqliteRow) -> Result<CoreTileRecord, StoreError> {
+	let rings: Vec<(String, String)> = serde_json::from_str(row.get::<String, _>(1).as_str())
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+	Ok(CoreTileRecord {
+		core_tile_id: row.get(0),
+		rings,
+		dots: row.get::<i64, _>(2) as u8,
+		capture: row.get(3),
+		emblem: row.get(4),
+	})
+}
+
+fn decode_tile_type_row(row: sqlx::sqlite::SqliteRow) -> Result<TileTypeRecord, StoreError> {
+	let rings: Vec<(String, String)> = serde_json::from_str(row.get::<String, _>(1).as_str())
+		.map_err(|e| StoreError::Storage(e.to_string()))?;
+	Ok(TileTypeRecord {
+		tile_type_id: row.get(0),
+		rings,
+		dots: row.get::<i64, _>(2) as u8,
+		capture: row.get(3),
+		emblem: row.get(4),
+	})
+}
+
 #[async_trait]
 impl Store for SqliteStore {}
 
@@ -578,5 +1221,22 @@ mod tests {
 			.await
 			.unwrap();
 		assert!(store.get_account(&id).await.unwrap().is_some());
+	}
+
+	#[tokio::test]
+	async fn sqlite_seed_matches_json_assign() {
+		use crate::seed::seed_bundled_v1;
+		use apa_kan_core::character_pass::{assign_character, JsonCharacterTables};
+		use apa_kan_core::core_pass::{CorePass, TileId};
+
+		let store = SqliteStore::connect_in_memory().await.unwrap();
+		seed_bundled_v1(&store, 0).await.unwrap();
+		let tables = store.load_tables(1).await.unwrap();
+		let json = JsonCharacterTables::load_v1().unwrap();
+		let cfg = CorePass::base();
+		for id in 0..40u32 {
+			let tile = cfg.run(TileId(id));
+			assert_eq!(assign_character(&tables, &tile, id), assign_character(&json, &tile, id));
+		}
 	}
 }

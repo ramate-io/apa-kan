@@ -7,9 +7,14 @@
 //!
 //! Tile kinds come from `apa-kan-core` (`Tile::kind_index` plus capture mark).
 
+use apa_kan_core::character_pass::{assign_character, bundled};
+use apa_kan_core::core_pass::CoreTile;
 use apa_kan_core::game::{CaptureMark, Player, RingType, Tile, TileColor, KIND_COUNT};
 
-use apa_kan_store::TileKindId;
+use apa_kan_core::character_pass::CoreKey;
+use apa_kan_store::{
+	core_tile_id, tile_type_id_from_core, CoreTileRecord, TileGrant, TileKindId, TileTypeRecord,
+};
 
 /// Decision #58-17: each new account receives 15 starter tiles.
 pub const STARTER_TILE_COUNT: usize = 15;
@@ -24,12 +29,60 @@ pub fn inventory_kind_id(tile: Tile) -> TileKindId {
 	(tile.kind_index() + KIND_COUNT * capture) as TileKindId
 }
 
-/// `(tile_kind_id, origin)` rows granted on account create.
-pub fn starter_grants() -> Vec<(TileKindId, String)> {
-	starter_tiles()
-		.into_iter()
-		.map(|tile| (inventory_kind_id(tile), "starter".to_string()))
-		.collect()
+/// Inventory rows granted on account create, with core/type/character ids.
+pub fn starter_grants() -> Vec<TileGrant> {
+	starter_kit().0
+}
+
+pub fn starter_kit() -> (Vec<TileGrant>, Vec<CoreTileRecord>, Vec<TileTypeRecord>) {
+	let pass = bundled();
+	let mut grants = Vec::new();
+	let mut cores = Vec::new();
+	let mut types = Vec::new();
+	for tile in starter_tiles() {
+		let core = CoreTile::from_tile(&tile);
+		let character_id = pass
+			.map(|p| assign_character(p.tables(), &core, tile.id))
+			.unwrap_or_else(|| "faceless".into());
+		let core_id = core_tile_id(&core);
+		let type_id = tile_type_id_from_core(&core);
+		let rings: Vec<(String, String)> = core
+			.rings
+			.iter()
+			.zip(core.ring_type.iter())
+			.map(|(c, t)| (c.name().to_string(), t.name().to_string()))
+			.collect();
+		let key = CoreKey::from_core(&core);
+		let type_rings: Vec<(String, String)> = key
+			.rings()
+			.iter()
+			.map(|(c, t)| (c.name().to_string(), t.name().to_string()))
+			.collect();
+		cores.push(CoreTileRecord {
+			core_tile_id: core_id.clone(),
+			rings: rings.clone(),
+			dots: core.dots,
+			capture: core.capture.name().into(),
+			emblem: core.emblem.name().into(),
+		});
+		types.push(TileTypeRecord {
+			tile_type_id: type_id.clone(),
+			rings: type_rings,
+			dots: key.dots(),
+			capture: key.capture().name().into(),
+			emblem: key.emblem().name().into(),
+		});
+		grants.push(TileGrant {
+			tile_kind_id: inventory_kind_id(tile),
+			origin: "starter".into(),
+			generation_id: tile.id,
+			core_tile_id: core_id,
+			tile_type_id: type_id,
+			character_id,
+			pass_version: pass.map(|p| p.version()).unwrap_or(1),
+		});
+	}
+	(grants, cores, types)
 }
 
 fn tile(parts: &[(TileColor, RingType)], dots: u8, capture: CaptureMark) -> Tile {

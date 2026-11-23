@@ -24,6 +24,7 @@
 pub mod ai;
 pub mod bench_log;
 pub mod board;
+pub mod canonical;
 pub mod character_pass;
 pub mod characters;
 pub mod clock;
@@ -31,6 +32,7 @@ pub mod core_pass;
 pub mod deck;
 pub mod game;
 pub mod scenario;
+pub mod vocabulary;
 
 pub use board::{Board, NodeId};
 pub use clock::{Clock, ClockTick, TimeControl};

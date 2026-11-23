@@ -1,0 +1,14 @@
+name: Admin E2E
+
+on:
+  push:
+    branches:
+
+jobs:
+  admin-e2e:
+    uses: ./.github/workflows/nix-command.yml
+    with:
+      command: cargo test -p apa-kan-server --test e2e_admin -- --test-threads=1
+      nix_flake_path: '.'
+      runner: 'ubuntu-latest'
+      rust_cache_key: cargo-admin-e2e

@@ -1,0 +1,22 @@
+# Local orchestration fallback: ramate-io/kestrel is not user-ready yet.
+#   process-compose -f deploy/process-compose.yaml up
+version: "0.5"
+processes:
+  postgres:
+    command: docker run --rm --name apa-kan-pg -e POSTGRES_PASSWORD=apa -e POSTGRES_USER=apa -e POSTGRES_DB=apa_kan -p 5432:5432 pgvector/pgvector:pg16
+    availability:
+      restart: on_failure
+  server:
+    command: env APA_KAN_DATABASE_URL=postgres://apa:apa@127.0.0.1:5432/apa_kan APA_KAN_ALLOW_FIRST_ADMIN=1 PORT=8080 cargo run -p apa-kan-server
+    depends_on:
+      postgres:
+        condition: process_started
+    availability:
+      restart: on_failure
+  admin:
+    command: env APA_KAN_SERVER_URL=http://127.0.0.1:8080 ADMIN_PORT=3000 cargo run -p apa-kan-admin
+    depends_on:
+      server:
+        condition: process_started
+    availability:
+      restart: on_failure

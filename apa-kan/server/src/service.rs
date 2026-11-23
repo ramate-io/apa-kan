@@ -12,21 +12,17 @@ use apa_kan_store::StoreError;
 use sha3::{Digest, Sha3_256};
 
 use crate::mailer::Mailer;
-use crate::starter::starter_grants;
 
 pub const DEFAULT_ELO_MILLI: i32 = 1_500_000;
 
-pub struct AccountService<S> {
-	store: Arc<S>,
+pub struct AccountService {
+	store: Arc<dyn Store>,
 	clock: Arc<dyn Clock>,
 	mailer: Arc<dyn Mailer>,
 }
 
-impl<S> AccountService<S>
-where
-	S: Store,
-{
-	pub fn new(store: Arc<S>, clock: Arc<dyn Clock>, mailer: Arc<dyn Mailer>) -> Self {
+impl AccountService {
+	pub fn new(store: Arc<dyn Store>, clock: Arc<dyn Clock>, mailer: Arc<dyn Mailer>) -> Self {
 		Self { store, clock, mailer }
 	}
 
@@ -60,7 +56,14 @@ where
 				usable_at_unix: None,
 			})
 			.await?;
-		self.store.grant_tiles(&account_id, &starter_grants(), now).await?;
+		let (grants, cores, types) = crate::starter::starter_kit();
+		self.store.grant_tiles(&account_id, &grants, now).await?;
+		for rec in cores {
+			self.store.upsert_core_tile(rec).await?;
+		}
+		for rec in types {
+			self.store.upsert_tile_type(rec).await?;
+		}
 		self.store.upsert_default_rating(&account_id, DEFAULT_ELO_MILLI).await?;
 		Ok(row)
 	}
@@ -228,7 +231,7 @@ mod tests {
 
 	use apa_kan_account::crypto::{generate_keypair, Seed};
 	use apa_kan_store::memory::MemoryStore;
-	use apa_kan_store::FakeClock;
+	use apa_kan_store::{FakeClock, Store};
 
 	use super::*;
 	use crate::mailer::NoopMailer;
@@ -236,7 +239,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn create_grants_starter_tiles() {
-		let store = Arc::new(MemoryStore::new());
+		let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 		let clock = Arc::new(FakeClock::new(100));
 		let svc = AccountService::new(store, clock, Arc::new(NoopMailer));
 		let (_sk, vk) = generate_keypair(&Seed::random());

@@ -58,12 +58,19 @@ pub const TRADE_BIND_SECS: i64 = 48 * 3600;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TileInstanceRow {
+	/// Issued tile id (stable per grant).
 	pub instance_id: u64,
 	pub account_id: AccountId,
 	pub tile_kind_id: TileKindId,
 	pub origin: String,
 	pub frozen: bool,
 	pub trade_bind_until_unix: Option<i64>,
+	/// `Tile.id` used by CorePass / CharacterPass.
+	pub generation_id: u32,
+	pub core_tile_id: String,
+	pub tile_type_id: String,
+	pub character_id: String,
+	pub pass_version: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

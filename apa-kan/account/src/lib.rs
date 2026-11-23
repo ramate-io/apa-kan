@@ -1,5 +1,6 @@
 //! Account identity, ML-DSA signing, and link/recovery validation (non-Bevy, no I/O).
 
+pub mod auth;
 pub mod canonical;
 pub mod crypto;
 pub mod envelope;
@@ -10,6 +11,7 @@ pub mod param;
 pub mod recovery;
 pub mod types;
 
+pub use auth::{verify_auth_challenge, AuthChallengePayload, AuthChallengeResponse, AuthError};
 pub use crypto::{
 	sign_bytes, verify_bytes, CryptoError, Param, Seed, SignatureBytes, VerifyingKeyBytes,
 };
