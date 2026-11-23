@@ -708,20 +708,23 @@ mod tests {
 
 	#[test]
 	fn example_personality_tomls_match_presets() {
-		let tactical = SearchConfig::parse_toml(include_str!("../../bots/tactical.toml")).unwrap();
+		let tactical =
+			SearchConfig::parse_toml(include_str!("../../../game/bots/tactical.toml")).unwrap();
 		let positional =
-			SearchConfig::parse_toml(include_str!("../../bots/positional.toml")).unwrap();
+			SearchConfig::parse_toml(include_str!("../../../game/bots/positional.toml")).unwrap();
 		let explorative =
-			SearchConfig::parse_toml(include_str!("../../bots/explorative.toml")).unwrap();
+			SearchConfig::parse_toml(include_str!("../../../game/bots/explorative.toml")).unwrap();
 		assert_eq!(tactical, SearchConfig::tactical());
 		assert_eq!(positional, SearchConfig::positional());
 		assert_eq!(explorative, SearchConfig::explorative());
-		let deep = SearchConfig::parse_toml(include_str!("../../bots/deep_mcts.toml")).unwrap();
+		let deep =
+			SearchConfig::parse_toml(include_str!("../../../game/bots/deep_mcts.toml")).unwrap();
 		assert_eq!(deep, SearchConfig::deep_mcts());
 		let counter =
-			SearchConfig::parse_toml(include_str!("../../bots/counterplay.toml")).unwrap();
+			SearchConfig::parse_toml(include_str!("../../../game/bots/counterplay.toml")).unwrap();
 		assert_eq!(counter, SearchConfig::counterplay());
-		let exact = SearchConfig::parse_toml(include_str!("../../bots/exactplay.toml")).unwrap();
+		let exact =
+			SearchConfig::parse_toml(include_str!("../../../game/bots/exactplay.toml")).unwrap();
 		assert_eq!(exact, SearchConfig::exactplay());
 	}
 
