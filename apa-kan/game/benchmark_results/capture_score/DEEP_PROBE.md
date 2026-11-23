@@ -97,9 +97,12 @@ Scripts: `qualitative_read.py`, `survey.py` on committed logs.
 - **Ratchets:** **10** capture-ratchet rewards; **4 SWAP**s appear (sparse-board capture follow-ups).
 - **Passivity:** still **3/4** games hit **turn_limit** or low capture volume (**3.2** opp caps/game) — cascade **helps finish one** game (**t=47** score win) but does not globally prevent stalls.
 
-### Unlimited spawn (`smoke_unlimited_mm`)
+### Unlimited spawn (`smoke_unlimited_mm`, local 4-game smoke)
 
-_Probe queued after local 4-game smoke completes._
+- **Finishing:** **3/4** score wins (t=21/31/126); one **5–5 turn_limit** draw at t=200 (fast collapses, not grind loops).
+- **Center:** minimal traffic (**12** MOVEs touch center, **9%** center-dest); play stays **outer-heavy** even with bench refills.
+- **Piece types:** **zag1** / **bead1** ADD diversity (w1–w3); MOVE grind still **norm2 w2** + **zag1 w3** + **braid2**.
+- **Counterplay:** **10.0** opp captures/game (high churn); no CLAIMs; unlimited bench does **not** force center occupation in these minimax lines.
 
 ## Deep probe — **majority spawn** (n=12 late positions, fan-out off)
 
@@ -113,14 +116,14 @@ _Probe queued after local 4-game smoke completes._
 
 Still **no** terminal band, but eval **magnitude** rises (spawn tokens spent, center-adjacent ADD/MOVE like `move20->0` in probe lines). Deeper search **disagrees with light play more often** yet does **not** fabricate a forced target-6 win on these late lines.
 
-Fan-out rerun: `deep_probe_majority_fanout.txt` (queued with cascade/unlimited).
+**Majority fan-out (4× @64×):** `fan_uniq_mean=2.58` (max **4**); `ch16/ch64` **identical** to single-seed (`compare_probe.py`); **`term1=0`**. Fan-out surfaces inner-ring ties (`move20->0`, `move11->6` vs `move11->21`) without a hidden terminal score line.
 
-## Deep probe — cascade / unlimited
+## Deep probe — cascade / unlimited (fan-out 4 @64×)
 
-| Log | Probe TSV | Status |
-|-----|-----------|--------|
-| `smoke_cascade_mm.jsonl.gz` | `deep_probe_cascade_fanout.txt` | running (`PROBE_FANOUT=4`) |
-| `smoke_unlimited_mm.jsonl.gz` | `deep_probe_unlimited_fanout.txt` | waiting on 4-game smoke |
+| Log | n | `ch64` | `term1` | `fan_uniq_mean` | Status |
+|-----|--:|-------:|--------:|----------------:|--------|
+| `smoke_cascade_mm.jsonl.gz` | — | — | — | — | running → `deep_probe_cascade_fanout.txt` |
+| `smoke_unlimited_mm.jsonl.gz` | — | — | — | — | queued → `deep_probe_unlimited_fanout.txt` |
 
 ## Verdict
 
