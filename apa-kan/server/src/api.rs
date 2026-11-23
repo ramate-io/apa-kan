@@ -175,19 +175,14 @@ async fn create_game(
 	body: Option<Json<NewGame>>,
 ) -> Result<Json<CreatedGame>, GameApiError> {
 	let req = body.map(|Json(b)| b).unwrap_or_default();
-	let games = state.games.clone();
-	let created = tokio::task::spawn_blocking(move || games.create(req))
-		.await
-		.map_err(|e| tx_error(TxError::Host { reason: e.to_string() }))?
-		.map_err(tx_error)?;
-	Ok(Json(created))
+	state.games.create(req).await.map(Json).map_err(tx_error)
 }
 
 async fn get_game(
 	State(state): State<AppState>,
 	Path(game_id): Path<String>,
 ) -> Result<Json<GameView>, GameApiError> {
-	state.games.view(&game_id).map(Json).map_err(tx_error)
+	state.games.view(&game_id).await.map(Json).map_err(tx_error)
 }
 
 async fn submit_transaction(
@@ -195,7 +190,7 @@ async fn submit_transaction(
 	Path(game_id): Path<String>,
 	Json(tx): Json<Transaction>,
 ) -> Result<Json<TxResponse>, GameApiError> {
-	state.games.submit(&game_id, &tx).map(Json).map_err(tx_error)
+	state.games.submit(&game_id, &tx).await.map(Json).map_err(tx_error)
 }
 
 async fn health() -> Json<HealthResponse> {

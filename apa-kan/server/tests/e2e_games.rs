@@ -4,8 +4,9 @@
 
 use std::sync::Arc;
 
+use apa_kan_server::games::GameHost;
 use apa_kan_server::mailer::NoopMailer;
-use apa_kan_server::testutil::{base_url, spawn_test_server};
+use apa_kan_server::testutil::{base_url, spawn_test_server, spawn_test_server_with_games};
 use apa_kan_store::SystemClock;
 use apa_kan_view::GameView;
 
@@ -96,4 +97,91 @@ async fn e2e_create_view_and_transact() {
 	assert!(pre.headers().get("access-control-allow-origin").is_some());
 
 	handle.abort();
+}
+
+async fn post_move(
+	client: &reqwest::Client,
+	root: &str,
+	view: &GameView,
+	tokens: &[String; 2],
+) -> reqwest::Response {
+	let seat = view.to_move;
+	let body = serde_json::json!({
+		"game_id": view.id,
+		"seq": view.seq,
+		"seat": seat,
+		"action": view.legal[0],
+		"auth": { "type": "seat_token", "token": tokens[usize::from(seat - 1)] },
+	});
+	client
+		.post(format!("{root}/v1/games/{}/transactions", view.id))
+		.json(&body)
+		.send()
+		.await
+		.expect("tx")
+}
+
+/// Acknowledged moves are on disk: a fresh server over the same SQLite file
+/// picks the game up at the same move number and keeps going.
+#[tokio::test]
+async fn e2e_game_survives_server_restart() {
+	let dir = std::env::temp_dir().join(format!("apakan-e2e-restart-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).expect("dir");
+	let url = format!("sqlite:{}", dir.join("games.db").display());
+	let client = reqwest::Client::new();
+
+	let first = apa_kan_game_store::connect(&url).await.expect("store");
+	let (addr, handle) = spawn_test_server_with_games(
+		Arc::new(SystemClock),
+		Arc::new(NoopMailer),
+		GameHost::new(first, 100),
+	)
+	.await
+	.expect("spawn");
+	let root = base_url(addr);
+	let created: serde_json::Value = client
+		.post(format!("{root}/v1/games"))
+		.json(&serde_json::json!({ "seed": 5 }))
+		.send()
+		.await
+		.expect("create")
+		.json()
+		.await
+		.expect("json");
+	let tokens = [
+		created["seats"][0]["token"].as_str().expect("t1").to_string(),
+		created["seats"][1]["token"].as_str().expect("t2").to_string(),
+	];
+	let mut view: GameView = serde_json::from_value(created["view"].clone()).expect("view");
+	for _ in 0..3 {
+		let res = post_move(&client, &root, &view, &tokens).await;
+		assert_eq!(res.status(), 200);
+		let v: serde_json::Value = res.json().await.expect("json");
+		view = serde_json::from_value(v["view"].clone()).expect("view");
+	}
+	handle.abort();
+	let _ = handle.await;
+
+	let second = apa_kan_game_store::connect(&url).await.expect("reopen");
+	let (addr, handle) = spawn_test_server_with_games(
+		Arc::new(SystemClock),
+		Arc::new(NoopMailer),
+		GameHost::new(second, 100),
+	)
+	.await
+	.expect("respawn");
+	let root = base_url(addr);
+	let after: GameView = client
+		.get(format!("{root}/v1/games/{}", view.id))
+		.send()
+		.await
+		.expect("get")
+		.json()
+		.await
+		.expect("view");
+	assert_eq!(serde_json::to_value(&after).expect("a"), serde_json::to_value(&view).expect("b"));
+	let res = post_move(&client, &root, &after, &tokens).await;
+	assert_eq!(res.status(), 200);
+	handle.abort();
+	let _ = std::fs::remove_dir_all(dir);
 }

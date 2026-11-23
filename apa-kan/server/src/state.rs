@@ -19,6 +19,12 @@ impl AppState {
 		Self { store: Arc::new(store), clock, mailer, games: Arc::new(GameHost::default()) }
 	}
 
+	/// Swap in a game host (e.g. one backed by a durable store).
+	pub fn with_games(mut self, games: GameHost) -> Self {
+		self.games = Arc::new(games);
+		self
+	}
+
 	pub fn service(&self) -> crate::service::AccountService<SqliteStore> {
 		crate::service::AccountService::new(
 			self.store.clone(),
