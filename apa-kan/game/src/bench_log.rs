@@ -4,11 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::deck::{DeckArchetype, PickStrategy};
 use crate::game::{
-	Action, ActionOutcome, BeadScoring, BlockerBlocks, BraidFailMismatch, BudgetToken, CaptureMark,
-	CaptureMode, ChannelMode, Emblem, EmblemWeights, EndReason, EndgameRule, Game, GameStatus,
-	HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp, PathConstraint,
-	Player, RingType, RuleSet, SamePieceTwice, Tile, TileColor, TurnGainKind, ZagMismatchCount,
-	DOT_PERCENT_DEFAULT,
+	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
+	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
+	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game,
+	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, PassThroughRingCmp,
+	PathConstraint, Player, RatchetKind, RatchetTier, RingCountWeights, RingType, RuleSet,
+	SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind, ZagMismatchCount, DOT_PERCENT_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -53,6 +54,14 @@ fn skip_independent(v: &String) -> bool {
 	v == BeadScoring::Independent.name()
 }
 
+fn default_current_braid() -> String {
+	BraidScoring::Current.name().to_string()
+}
+
+fn skip_current_braid(v: &String) -> bool {
+	v == BraidScoring::Current.name()
+}
+
 fn default_additive_channel_mode() -> String {
 	ChannelMode::Additive.name().to_string()
 }
@@ -67,6 +76,35 @@ fn default_cascade_capture_mode() -> String {
 
 fn skip_cascade_capture_mode(v: &String) -> bool {
 	v == CaptureMode::Cascade.name()
+}
+
+fn default_ring_count_weights() -> String {
+	RingCountWeights::default().label()
+}
+
+fn skip_default_ring_count_weights(v: &String) -> bool {
+	*v == RingCountWeights::default().label()
+}
+
+fn default_zero_color_drift() -> String {
+	"0".into()
+}
+
+fn skip_zero_str(v: &String) -> bool {
+	v.is_empty() || v == "0"
+}
+
+fn color_drift_label(drift: ColorDrift) -> String {
+	color_drift_diagonal_value(drift).unwrap_or(0).to_string()
+}
+
+fn parse_color_drift(s: &str) -> ColorDrift {
+	if s.is_empty() || s == "0" {
+		return color_drift_zero();
+	}
+	s.parse::<i32>()
+		.map(color_drift_diagonal)
+		.unwrap_or_else(|_| color_drift_zero())
 }
 
 fn default_mixed() -> String {
@@ -298,6 +336,17 @@ pub struct RulesLog {
 	pub bag_one_of_each_kind: bool,
 	pub max_rings: u8,
 	pub zag_numer: u8,
+	/// `singles,doubles,triples` generation weights. Absent on older logs;
+	/// replay uses historical 7:5:4 (tiles themselves are stored). Live
+	/// [`RuleSet`] default is 4:3:1.
+	#[serde(
+		default = "default_ring_count_weights",
+		skip_serializing_if = "skip_default_ring_count_weights"
+	)]
+	pub ring_count_weights: String,
+	/// RFC ColorPass.drift diagonal (or `0`). Absent on older logs; replay uses 0.
+	#[serde(default = "default_zero_color_drift", skip_serializing_if = "skip_zero_str")]
+	pub color_drift: String,
 	#[serde(default)]
 	pub braid_numer: u8,
 	/// Absent/0 on logs from before beads; replay then uses 0 (beads off).
@@ -332,6 +381,36 @@ pub struct RulesLog {
 	/// Absent on older logs; replay uses off (PR #74).
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cascade_turn_gain: bool,
+	/// Next-move ratchet reward when a center occupant is captured (and,
+	/// by default, on a non-winning cascade drop). Absent/false on older logs
+	/// so historical JSONL still replays without the reward. Live `RuleSet`
+	/// default is on; new logs write the field.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub cascade_winner_swap: bool,
+	/// Count non-winning control-cascade drops as ratchets. Absent on older
+	/// logs; replay uses on.
+	#[serde(default = "default_true", skip_serializing_if = "skip_true")]
+	pub ratchet_cascade: bool,
+	/// Historical extra-turn CONVERT vs SWAP. Ignored on replay (the
+	/// ratchet tiers always use SWAP then CONVERT). Absent; not written.
+	#[serde(default, skip_serializing)]
+	pub extra_turn_action: String,
+	/// Historical CONVERT target filter. Ignored on replay (flips are always
+	/// any opponent piece, including the origin). Absent; not written.
+	#[serde(default, skip_serializing)]
+	pub extra_convert_mode: String,
+	/// Historical post-ratchet SWAP partner filter. Ignored on replay
+	/// (reward SWAP is always any occupied partner). Absent; not written.
+	#[serde(default, skip_serializing)]
+	pub extra_swap_mode: String,
+	/// Historical unmatched-center +1 mismatch. Ignored on replay (always
+	/// off). Absent; not written.
+	#[serde(default, skip_serializing)]
+	pub center_mismatch: bool,
+	/// 2-2-1-1 opening. Absent/false on older logs so historical JSONL still
+	/// replays as 1-1-1-1. Live `RuleSet` default is on; new logs write the field.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub opening_double: bool,
 	pub insufficient_tiles_loss: String,
 	pub path_constraint: String,
 	pub counted_pass_through: bool,
@@ -351,12 +430,25 @@ pub struct RulesLog {
 	/// those is skipped because capture outcomes differ.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub zag_match_non_zag: Option<bool>,
-	/// `shared` (rule B, live default for additive) or `independent` (rule A).
+	/// `independent` (rule A, live Additive default) or `shared` (rule B fold).
 	/// Absent on older logs; replay uses independent, which matches those captures.
 	#[serde(default = "default_independent", skip_serializing_if = "skip_independent")]
 	pub bead_scoring: String,
-	/// `independent-max` (live default) or `additive` (RFC 001-001-002).
-	/// Absent on older logs; replay uses additive, which matches those captures.
+	/// Live RuleSet default is `braid-only-exact`. Absent on older logs;
+	/// replay uses `current` (coverage) so pre-exact captures still match.
+	#[serde(default = "default_current_braid", skip_serializing_if = "skip_current_braid")]
+	pub braid_scoring: String,
+	/// Lone-heavy 1-slot braids (`--single-braids`). Absent/false on older logs.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub allow_single_braids: bool,
+	/// Unique node-pair scoring (`--link-once`). Absent/false on older logs
+	/// that scored each generating-circle petal. When `score_incident_arcs`
+	/// is `Some(false)`, replay also treats this as on.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub score_unique_neighbors: bool,
+	/// Live RuleSet default is `additive`. Absent on older logs; replay uses
+	/// additive, which matches those captures. Independent-max logs write
+	/// the field (skip only serializes additive).
 	#[serde(
 		default = "default_additive_channel_mode",
 		skip_serializing_if = "skip_additive_channel_mode"
@@ -384,6 +476,16 @@ pub struct RulesLog {
 		skip_serializing_if = "skip_default_blocker_blocks"
 	)]
 	pub blocker_blocks: String,
+	/// Live RuleSet default is `normal-only`. Absent on older logs; replay
+	/// uses off. Historical comparison-mode names fold to on.
+	#[serde(default = "default_swap_off", skip_serializing_if = "skip_swap_off")]
+	pub swap_mode: String,
+	/// Historical. Live swaps always ban echoing the last pair.
+	#[serde(default, skip_serializing)]
+	pub swap_no_immediate_back: bool,
+	/// Historical flag; ignored.
+	#[serde(default, skip_serializing)]
+	pub swap_no_just_moved: bool,
 }
 
 fn default_low_value_endgame() -> String {
@@ -402,6 +504,22 @@ fn skip_default_blocker_blocks(v: &String) -> bool {
 	*v == BlockerBlocks::default().name()
 }
 
+fn default_swap_off() -> String {
+	SwapMode::Off.name().to_string()
+}
+
+fn skip_swap_off(v: &String) -> bool {
+	*v == SwapMode::Off.name()
+}
+
+fn default_true() -> bool {
+	true
+}
+
+fn skip_true(v: &bool) -> bool {
+	*v
+}
+
 impl RulesLog {
 	pub fn from_rules(r: RuleSet) -> Self {
 		Self {
@@ -413,6 +531,8 @@ impl RulesLog {
 			bag_one_of_each_kind: r.bag_one_of_each_kind,
 			max_rings: r.max_rings,
 			zag_numer: r.zag_numer,
+			ring_count_weights: r.ring_count_weights.label(),
+			color_drift: color_drift_label(r.color_drift),
 			braid_numer: r.braid_numer,
 			bead_numer: r.bead_numer,
 			dot_percent: r.dot_percent,
@@ -436,19 +556,32 @@ impl RulesLog {
 			control_hold_turns: r.control_hold_turns,
 			endgame_rule: r.endgame_rule.name().into(),
 			cascade_turn_gain: r.cascade_turn_gain,
+			cascade_winner_swap: r.cascade_winner_swap,
+			ratchet_cascade: r.ratchet_cascade,
+			extra_turn_action: String::new(),
+			extra_convert_mode: String::new(),
+			extra_swap_mode: String::new(),
+			center_mismatch: false,
+			opening_double: r.opening_double,
 			insufficient_tiles_loss: r.insufficient_tiles_loss.name().into(),
 			path_constraint: r.path_constraint.name().into(),
 			counted_pass_through: r.counted_pass_through,
 			pass_through_ring_cmp: r.pass_through_ring_cmp.name().into(),
 			zag_mismatch: r.zag_mismatch.name().into(),
 			braid_fail_mismatch: Some(r.braid_fail_mismatch.name().into()),
-			score_incident_arcs: Some(true),
+			score_incident_arcs: Some(!r.score_unique_neighbors),
 			zag_match_non_zag: Some(true),
 			bead_scoring: r.bead_scoring.name().into(),
+			braid_scoring: r.braid_scoring.name().into(),
+			allow_single_braids: r.allow_single_braids,
+			score_unique_neighbors: r.score_unique_neighbors,
 			channel_mode: r.channel_mode.name().into(),
 			capture_mode: r.capture_mode.name().into(),
 			emblem_weights: r.emblem_weights.label(),
 			blocker_blocks: r.blocker_blocks.name().into(),
+			swap_mode: r.swap_mode.name().into(),
+			swap_no_immediate_back: false,
+			swap_no_just_moved: false,
 		}
 	}
 
@@ -462,6 +595,9 @@ impl RulesLog {
 			bag_one_of_each_kind: self.bag_one_of_each_kind,
 			max_rings: self.max_rings,
 			zag_numer: self.zag_numer,
+			ring_count_weights: RingCountWeights::parse(&self.ring_count_weights)
+				.unwrap_or_default(),
+			color_drift: parse_color_drift(&self.color_drift),
 			braid_numer: self.braid_numer,
 			bead_numer: self.bead_numer,
 			dot_percent: self.dot_percent,
@@ -485,6 +621,9 @@ impl RulesLog {
 			control_hold_turns: self.control_hold_turns,
 			endgame_rule: EndgameRule::parse(&self.endgame_rule)?,
 			cascade_turn_gain: self.cascade_turn_gain,
+			cascade_winner_swap: self.cascade_winner_swap,
+			ratchet_cascade: self.ratchet_cascade,
+			opening_double: self.opening_double,
 			insufficient_tiles_loss: InsufficientTilesLoss::parse(&self.insufficient_tiles_loss)?,
 			path_constraint: PathConstraint::parse(&self.path_constraint)?,
 			counted_pass_through: self.counted_pass_through,
@@ -494,12 +633,18 @@ impl RulesLog {
 				Some(s) => BraidFailMismatch::parse(s)?,
 				None => BraidFailMismatch::One,
 			},
+			braid_scoring: BraidScoring::parse(&self.braid_scoring)
+				.unwrap_or(BraidScoring::Current),
+			allow_single_braids: self.allow_single_braids,
 			bead_scoring: BeadScoring::parse(&self.bead_scoring)?,
+			score_unique_neighbors: self.score_unique_neighbors
+				|| self.score_incident_arcs == Some(false),
 			channel_mode: ChannelMode::parse(&self.channel_mode)?,
 			capture_mode: CaptureMode::parse(&self.capture_mode)?,
 			emblem_weights: EmblemWeights::parse(&self.emblem_weights)
 				.unwrap_or_else(|_| EmblemWeights::default()),
 			blocker_blocks: BlockerBlocks::parse(&self.blocker_blocks).unwrap_or_default(),
+			swap_mode: SwapMode::parse_log(&self.swap_mode).unwrap_or(SwapMode::Off),
 		})
 	}
 }
@@ -620,6 +765,11 @@ pub struct ActionLog {
 	pub captures: Vec<CaptureEventLog>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub piece: Option<PieceRef>,
+	/// Partner tile on a SWAP (the occupant of `to` before the exchange).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub partner: Option<PieceRef>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub partner_owner: Option<u8>,
 	pub tokens: usize,
 	pub budget: usize,
 	#[serde(default, skip_serializing_if = "skip_zero_usize")]
@@ -670,6 +820,27 @@ pub struct ActionLog {
 	/// `mover` or `opponent` when this action awarded cascade turn gain.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub turn_gain: Option<String>,
+	/// `mover` or `opponent` when this action awarded a ratchet.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub fight_gain: Option<String>,
+	/// `fight`, `cascade`, or `both`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ratchet_kind: Option<String>,
+	/// Awarded ratchets after this action.
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub ratchet_count: u32,
+	/// `first` or `later` when this action was the immediate post-ratchet reward.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ratchet_tier: Option<String>,
+	/// True when this action was taken as a consumed extra turn.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub played_as_extra: bool,
+	/// True when this action was the immediate post-ratchet reward move.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub played_as_ratchet: bool,
+	/// True when this action was one of a 2-2-1-1 opening pair.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub played_as_opening: bool,
 }
 
 /// One captured tile: original owner and where it went.
@@ -703,6 +874,8 @@ impl ActionLog {
 			}
 			Action::Move { from, to } => ("MOVE".to_string(), Some(from), Some(to), None),
 			Action::Claim { node } => ("CLAIM".to_string(), None, Some(node), None),
+			Action::Swap { from, to } => ("SWAP".to_string(), Some(from), Some(to), None),
+			Action::Convert { node } => ("CONVERT".to_string(), None, Some(node), None),
 			Action::Pass => ("PASS".to_string(), None, None, None),
 		};
 		let capture = outcome.removals.iter().filter(|r| r.tile.owner != player).count() as u8;
@@ -733,6 +906,8 @@ impl ActionLog {
 			capture_dest,
 			captures,
 			piece: piece.map(PieceRef::from_tile),
+			partner: None,
+			partner_owner: None,
 			tokens: game_after.budget_token_count(player),
 			budget: game_after.budget(player),
 			surplus: game_after.budget_surplus(player),
@@ -755,11 +930,28 @@ impl ActionLog {
 			extra_turns_p2: game_after.extra_turns(Player::Two),
 			extra_turn_active: game_after.extra_turn_active(),
 			turn_gain: game_after.last_turn_gain().map(TurnGainKind::name).map(str::to_string),
+			fight_gain: game_after.last_fight_gain().map(TurnGainKind::name).map(str::to_string),
+			ratchet_kind: game_after.last_ratchet_kind().map(RatchetKind::name).map(str::to_string),
+			ratchet_count: game_after.ratchet_count(),
+			ratchet_tier: game_after
+				.last_ratchet_tier()
+				.filter(|_| game_after.last_played_as_ratchet_reward())
+				.map(RatchetTier::name)
+				.map(str::to_string),
+			played_as_extra: game_after.last_played_as_extra(),
+			played_as_ratchet: game_after.last_played_as_ratchet_reward(),
+			played_as_opening: game_after.last_played_as_opening(),
 		}
 	}
 
 	pub fn with_overwhelm_delta(mut self, healed: u8) -> Self {
 		self.healed = healed;
+		self
+	}
+
+	pub fn with_partner(mut self, tile: Tile) -> Self {
+		self.partner_owner = Some(player_num(tile.owner));
+		self.partner = Some(PieceRef::from_tile(tile));
 		self
 	}
 
@@ -793,6 +985,15 @@ impl ActionLog {
 				let node = self.to.ok_or("CLAIM missing to")?;
 				Ok(Action::Claim { node })
 			}
+			"SWAP" => {
+				let from = self.from.ok_or("SWAP missing from")?;
+				let to = self.to.ok_or("SWAP missing to")?;
+				Ok(Action::Swap { from, to })
+			}
+			"CONVERT" => {
+				let node = self.to.ok_or("CONVERT missing to")?;
+				Ok(Action::Convert { node })
+			}
 			"PASS" => Ok(Action::Pass),
 			other => Err(format!("unknown action kind '{other}'")),
 		}
@@ -804,6 +1005,8 @@ impl ActionLog {
 			"ADD" => tags.push("ADD"),
 			"MOVE" => tags.push("MOVE"),
 			"CLAIM" => tags.push("CLAIM"),
+			"SWAP" => tags.push("SWAP"),
+			"CONVERT" => tags.push("CONVERT"),
 			"PASS" => tags.push("PASS"),
 			_ => {}
 		}
@@ -874,6 +1077,14 @@ pub struct EndLog {
 	pub turn_gain_opponent: u32,
 	#[serde(default, skip_serializing_if = "skip_zero_u32")]
 	pub extra_turns_played: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub fight_gain_awarded: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub fight_gain_mover: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub fight_gain_opponent: u32,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub ratchet_count: u32,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub ended_on_extra: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -897,6 +1108,10 @@ impl EndLog {
 				turn_gain_mover: 0,
 				turn_gain_opponent: 0,
 				extra_turns_played: 0,
+				fight_gain_awarded: 0,
+				fight_gain_mover: 0,
+				fight_gain_opponent: 0,
+				ratchet_count: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
 			},
@@ -913,6 +1128,10 @@ impl EndLog {
 				turn_gain_mover: 0,
 				turn_gain_opponent: 0,
 				extra_turns_played: 0,
+				fight_gain_awarded: 0,
+				fight_gain_mover: 0,
+				fight_gain_opponent: 0,
+				ratchet_count: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
 			},
@@ -929,6 +1148,10 @@ impl EndLog {
 				turn_gain_mover: 0,
 				turn_gain_opponent: 0,
 				extra_turns_played: 0,
+				fight_gain_awarded: 0,
+				fight_gain_mover: 0,
+				fight_gain_opponent: 0,
+				ratchet_count: 0,
 				ended_on_extra: false,
 				ended_after_extra: false,
 			},
@@ -1016,6 +1239,12 @@ pub struct FinalLog {
 	pub extra_turns_p2: u8,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub extra_turn_active: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub ratchet_reward_active: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ratchet_tier: Option<String>,
+	#[serde(default, skip_serializing_if = "skip_zero_u32")]
+	pub ratchet_count: u32,
 }
 
 impl FinalLog {
@@ -1041,6 +1270,9 @@ impl FinalLog {
 			extra_turns_p1: game.extra_turns(Player::One),
 			extra_turns_p2: game.extra_turns(Player::Two),
 			extra_turn_active: game.extra_turn_active(),
+			ratchet_reward_active: game.ratchet_reward_active(),
+			ratchet_tier: game.active_ratchet_tier().map(RatchetTier::name).map(str::to_string),
+			ratchet_count: game.ratchet_count(),
 		}
 	}
 }
@@ -1060,6 +1292,15 @@ pub struct GameLog {
 	pub budget_nodes: Option<u64>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub budget_iters: Option<u32>,
+	/// In-game work budget for P1 when it differs from search-pick (`budget_*`).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub p1_budget_nodes: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub p1_budget_iters: Option<u32>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub p2_budget_nodes: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub p2_budget_iters: Option<u32>,
 	pub scenario: String,
 	pub rules: RulesLog,
 	pub opening: OpeningLog,
@@ -1135,6 +1376,10 @@ impl GameLog {
 			think_ms,
 			budget_nodes: None,
 			budget_iters: None,
+			p1_budget_nodes: None,
+			p1_budget_iters: None,
+			p2_budget_nodes: None,
+			p2_budget_iters: None,
 			scenario: scenario.into(),
 			rules: RulesLog::from_rules(*live.rules()),
 			opening: OpeningLog::from_game(live),
@@ -1174,7 +1419,22 @@ impl GameLog {
 		outcome: &ActionOutcome,
 		game_after: &Game,
 	) {
-		self.actions.push(ActionLog::record(action, piece, outcome, game_after));
+		self.push_action_partner(action, piece, None, outcome, game_after);
+	}
+
+	pub fn push_action_partner(
+		&mut self,
+		action: Action,
+		piece: Option<Tile>,
+		partner: Option<Tile>,
+		outcome: &ActionOutcome,
+		game_after: &Game,
+	) {
+		let mut rec = ActionLog::record(action, piece, outcome, game_after);
+		if let Some(p) = partner {
+			rec = rec.with_partner(p);
+		}
+		self.actions.push(rec);
 	}
 
 	pub fn push_action_with_search(
@@ -1185,8 +1445,23 @@ impl GameLog {
 		game_after: &Game,
 		stats: crate::ai::SearchStats,
 	) {
-		self.actions
-			.push(ActionLog::record(action, piece, outcome, game_after).with_search(stats));
+		self.push_action_with_search_partner(action, piece, None, outcome, game_after, stats);
+	}
+
+	pub fn push_action_with_search_partner(
+		&mut self,
+		action: Action,
+		piece: Option<Tile>,
+		partner: Option<Tile>,
+		outcome: &ActionOutcome,
+		game_after: &Game,
+		stats: crate::ai::SearchStats,
+	) {
+		let mut rec = ActionLog::record(action, piece, outcome, game_after).with_search(stats);
+		if let Some(p) = partner {
+			rec = rec.with_partner(p);
+		}
+		self.actions.push(rec);
 	}
 
 	pub fn finish(&mut self, live: &Game, low_value: Option<LowValueResolution>) {
@@ -1204,6 +1479,10 @@ impl GameLog {
 		self.end.turn_gain_mover = live.turn_gain_mover();
 		self.end.turn_gain_opponent = live.turn_gain_opponent();
 		self.end.extra_turns_played = live.extra_turns_played();
+		self.end.fight_gain_awarded = live.fight_gain_awarded();
+		self.end.fight_gain_mover = live.fight_gain_mover();
+		self.end.fight_gain_opponent = live.fight_gain_opponent();
+		self.end.ratchet_count = live.ratchet_count();
 		self.end.ended_on_extra = live.ended_on_extra_turn();
 		self.end.ended_after_extra = live.ended_after_extra_turn();
 		self.final_state = Some(FinalLog::from_game(live));
@@ -1437,7 +1716,17 @@ pub fn piece_for_action(game: &Game, action: Action) -> Option<Tile> {
 		}
 		Action::Move { from, .. } => game.tile_at(from),
 		Action::Claim { node } => game.tile_at(node),
+		Action::Swap { from, .. } => game.tile_at(from),
+		Action::Convert { node } => game.tile_at(node),
 		Action::Pass => None,
+	}
+}
+
+/// Partner tile looked up *before* `apply` (occupant of SWAP `to`).
+pub fn partner_for_action(game: &Game, action: Action) -> Option<Tile> {
+	match action {
+		Action::Swap { to, .. } => game.tile_at(to),
+		_ => None,
 	}
 }
 
@@ -1491,13 +1780,17 @@ mod tests {
 			};
 			let action = searcher.choose(&game, actor, &mut rng, think);
 			let piece = piece_for_action(&game, action);
+			let partner = partner_for_action(&game, action);
 			match game.apply(action) {
-				Ok(outcome) => log.push_action(action, piece, &outcome, &game),
+				Ok(outcome) => {
+					log.push_action_partner(action, piece, partner, &outcome, &game);
+				}
 				Err(_) => {
 					let fallback = game.legal_actions().into_iter().next().unwrap_or(Action::Pass);
 					let piece = piece_for_action(&game, fallback);
+					let partner = partner_for_action(&game, fallback);
 					if let Ok(outcome) = game.apply(fallback) {
-						log.push_action(fallback, piece, &outcome, &game);
+						log.push_action_partner(fallback, piece, partner, &outcome, &game);
 					}
 					break;
 				}
@@ -1568,7 +1861,7 @@ mod tests {
 		assert!(!log.actions.is_empty());
 		for act in &log.actions {
 			assert!(
-				matches!(act.kind.as_str(), "ADD" | "MOVE" | "PASS"),
+				matches!(act.kind.as_str(), "ADD" | "MOVE" | "CLAIM" | "SWAP" | "CONVERT" | "PASS"),
 				"unexpected kind {}",
 				act.kind
 			);
@@ -1578,7 +1871,7 @@ mod tests {
 					assert!(act.to.is_some());
 					assert!(act.piece.is_some());
 				}
-				"MOVE" => {
+				"MOVE" | "SWAP" => {
 					assert!(act.from.is_some());
 					assert!(act.to.is_some());
 					assert!(act.piece.is_some());
@@ -1587,6 +1880,14 @@ mod tests {
 						piece.n_rings,
 						piece.normal_rings + piece.zag_rings + piece.braid_rings + piece.bead_rings
 					);
+					if act.kind == "SWAP" {
+						assert_eq!(piece.n_rings, 1);
+						assert!(act.partner.is_some());
+						assert!(act.partner_owner.is_some());
+					}
+				}
+				"CLAIM" | "CONVERT" => {
+					assert!(act.to.is_some());
 				}
 				"PASS" => {
 					assert!(act.from.is_none());
@@ -1701,10 +2002,47 @@ mod tests {
 		r.turn_limit = 50;
 		r.braid_fail_mismatch = BraidFailMismatch::Sum;
 		r.bead_scoring = BeadScoring::SharedChannel;
+		r.braid_scoring = BraidScoring::BraidOnlyMatch;
+		r.score_unique_neighbors = true;
 		let log = RulesLog::from_rules(r);
 		assert_eq!(log.to_rules().unwrap(), r);
 		assert_eq!(log.dot_percent, DOT_PERCENT_DEFAULT);
 		assert_eq!(log.bead_scoring, "shared");
+		assert_eq!(log.braid_scoring, "braid-only-match");
+		assert!(log.allow_single_braids);
+		assert!(log.score_unique_neighbors);
+		assert_eq!(log.score_incident_arcs, Some(false));
+	}
+
+	#[test]
+	fn missing_braid_scoring_replays_as_current() {
+		let mut r = RuleSet::default();
+		r.braid_scoring = BraidScoring::Current;
+		r.allow_single_braids = false;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("braid_scoring"), "{json}");
+		assert!(!json.contains("score_unique_neighbors"), "{json}");
+		assert!(!json.contains("allow_single_braids"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.braid_scoring, "current");
+		assert!(!parsed.score_unique_neighbors);
+		assert!(!parsed.allow_single_braids);
+		assert_eq!(parsed.to_rules().unwrap().braid_scoring, BraidScoring::Current);
+		assert!(!parsed.to_rules().unwrap().score_unique_neighbors);
+	}
+
+	#[test]
+	fn live_defaults_write_exact_single_braids_and_normal_only_swap() {
+		let log = RulesLog::from_rules(RuleSet::default());
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(json.contains("braid-only-exact"), "{json}");
+		assert!(json.contains("allow_single_braids"), "{json}");
+		assert!(json.contains("normal-only"), "{json}");
+		assert!(json.contains("4,3,1"), "{json}");
+		assert!(json.contains("\"160\""), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert_eq!(parsed.to_rules().unwrap(), RuleSet::default());
 	}
 
 	#[test]
@@ -1729,6 +2067,38 @@ mod tests {
 		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
 		assert_eq!(parsed.channel_mode, "additive");
 		assert_eq!(parsed.to_rules().unwrap().channel_mode, ChannelMode::Additive);
+	}
+
+	#[test]
+	fn missing_cascade_winner_swap_and_opening_replay_as_off() {
+		let mut r = RuleSet::default();
+		r.cascade_winner_swap = false;
+		r.opening_double = false;
+		let log = RulesLog::from_rules(r);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("cascade_winner_swap"), "{json}");
+		assert!(!json.contains("center_mismatch"), "{json}");
+		assert!(!json.contains("extra_swap_mode"), "{json}");
+		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
+		assert!(!parsed.cascade_winner_swap);
+		assert!(!parsed.center_mismatch);
+		assert!(!parsed.opening_double);
+		assert!(!json.contains("opening_double"), "{json}");
+		assert!(!parsed.to_rules().unwrap().cascade_winner_swap);
+		assert!(!parsed.to_rules().unwrap().opening_double);
+		assert!(parsed.to_rules().unwrap().ratchet_cascade);
+		assert!(!json.contains("extra_turn_action"), "{json}");
+		assert!(!json.contains("extra_convert_mode"), "{json}");
+		assert!(!json.contains("ratchet_cascade"), "{json}");
+		let live = RulesLog::from_rules(RuleSet::default());
+		let json = serde_json::to_string(&live).unwrap();
+		assert!(json.contains("cascade_winner_swap"), "{json}");
+		assert!(json.contains("opening_double"), "{json}");
+		let mut off_cas = RuleSet::default();
+		off_cas.ratchet_cascade = false;
+		let written = RulesLog::from_rules(off_cas);
+		let json = serde_json::to_string(&written).unwrap();
+		assert!(json.contains("ratchet_cascade"), "{json}");
 	}
 
 	#[test]
@@ -1959,8 +2329,7 @@ mod tests {
 		assert_eq!(logs.len(), expected, "{rel} expected {expected} games");
 		let derived_weight = logs.iter().all(opening_weight_equals_rings);
 		let independent_channels = logs.iter().all(|log| log.rules.braid_fail_mismatch.is_some());
-		let incident_arc_scoring =
-			logs.iter().all(|log| log.rules.score_incident_arcs == Some(true));
+		let incident_arc_scoring = logs.iter().all(|log| log.rules.score_incident_arcs.is_some());
 		let zag_match_non_zag = logs.iter().all(|log| log.rules.zag_match_non_zag == Some(true));
 		for (i, log) in logs.iter().enumerate() {
 			assert_eq!(log.v, SCHEMA_VERSION);
@@ -2171,6 +2540,88 @@ mod tests {
 			"benchmark_results/control_cascade_turn_gain/h2h_shallow.jsonl.gz",
 			100,
 		);
+	}
+
+	#[test]
+	fn committed_ring_dist_channels_shallow_replays() {
+		for rel in [
+			"benchmark_results/ring_dist_channels/h2h_a_additive_enhanced.jsonl.gz",
+			"benchmark_results/ring_dist_channels/h2h_b_imax_enhanced.jsonl.gz",
+			"benchmark_results/ring_dist_channels/h2h_a_additive_counterplay.jsonl.gz",
+			"benchmark_results/ring_dist_channels/h2h_b_imax_counterplay.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
+	fn committed_singles_swap_shallow_replays() {
+		for rel in [
+			"benchmark_results/singles_swap/h2h_b_adj_any_counterplay_noback.jsonl.gz",
+			"benchmark_results/singles_swap/h2h_b_locked_counterplay.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
+	fn committed_single_braid_exact_swap_shallow_replays() {
+		for rel in [
+			"benchmark_results/single_braid_exact_swap/h2h_full_link_once.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_full_double.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_full_double_noswap.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_full_double_nobraid.jsonl.gz",
+			"benchmark_results/single_braid_exact_swap/h2h_defaults.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+	}
+
+	#[test]
+	fn committed_exactplay_shallow_replays() {
+		for rel in [
+			"benchmark_results/exactplay/h2h_self.jsonl.gz",
+			"benchmark_results/exactplay/h2h_exact_as_p1.jsonl.gz",
+			"benchmark_results/exactplay/h2h_exact_as_p2.jsonl.gz",
+			"benchmark_results/exactplay/h2h_exact_vs_enh_p1.jsonl.gz",
+			"benchmark_results/exactplay/h2h_exact_vs_enh_p2.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
+		for rel in [
+			"benchmark_results/exactplay/h2h_counter_vs_enh_p1.jsonl.gz",
+			"benchmark_results/exactplay/h2h_counter_vs_enh_p2.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 50);
+		}
+	}
+
+	#[test]
+	fn committed_exactplay_deep_replays() {
+		for rel in [
+			"benchmark_results/exactplay/h2h_deep4x_self.jsonl.gz",
+			"benchmark_results/exactplay/h2h_deep4x_vs_light_p1.jsonl.gz",
+			"benchmark_results/exactplay/h2h_deep4x_vs_light_p2.jsonl.gz",
+			"benchmark_results/exactplay/h2h_deep8x_self.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 10);
+		}
+	}
+
+	#[test]
+	fn committed_center_link_once_shallow_replays() {
+		for rel in [
+			"benchmark_results/center_link_once/h2h_431_add_bom.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_431_add.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_431_imax.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_431_imax_bom.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_add.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_add_bom.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_imax.jsonl.gz",
+			"benchmark_results/center_link_once/h2h_754_imax_bom.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 100);
+		}
 	}
 
 	#[test]

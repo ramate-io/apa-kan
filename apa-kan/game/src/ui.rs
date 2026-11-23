@@ -1,4 +1,4 @@
-//! Bevy 0.19 desktop UI: both public decks, ADD/MOVE targeting, last-action log.
+//! Bevy 0.19 desktop UI: both public decks, ADD/MOVE/SWAP targeting, last-action log.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -319,6 +319,7 @@ impl SetupSession {
 					self.cfg.pick,
 					self.cfg.limit,
 					self.cfg.deck_seed(self.seed) ^ 0x0707,
+					self.cfg.search_for(p),
 				);
 				self.pick7[p.index()] = indices_of(&self.decks[p.index()], &tiles);
 				self.selected.clear();
@@ -339,6 +340,7 @@ impl SetupSession {
 					self.cfg.pick,
 					self.cfg.limit,
 					self.cfg.deck_seed(self.seed) ^ 0xE4E4,
+					self.cfg.search_for(p),
 				);
 				self.extend[p.index()] = indices_of(&self.decks[p.index()], &tiles);
 				self.selected.clear();
@@ -708,10 +710,18 @@ fn try_click(play: &mut PlayState, layout: &ViewLayout, pos: Vec2) {
 					apply_action(play, Action::Move { from, to: node });
 					return;
 				}
+				if play.game.legal_swap_partners(from).contains(&node) {
+					apply_action(play, Action::Swap { from, to: node });
+					return;
+				}
 			}
 			_ => {}
 		}
 		if let Some(tile) = play.game.tile_at(node) {
+			if play.game.legal_converts().contains(&Action::Convert { node }) {
+				apply_action(play, Action::Convert { node });
+				return;
+			}
 			if play.game.rules().capture_mode.allows_claim() && play.game.is_overwhelmed(node) {
 				apply_action(play, Action::Claim { node });
 				return;
@@ -954,6 +964,21 @@ fn refresh_view(
 		Selection::Piece(n) => play.game.legal_destinations(n),
 		_ => Vec::new(),
 	};
+	// Pink rings on legal SWAP partners only. Under NormalOnly that is
+	// empty unless the selected tile is a 1-ring normal.
+	let swap_partners: Vec<NodeId> = match play.selection {
+		Selection::Piece(n) => play.game.legal_swap_partners(n),
+		_ => Vec::new(),
+	};
+	let convert_targets: Vec<NodeId> = play
+		.game
+		.legal_converts()
+		.into_iter()
+		.filter_map(|a| match a {
+			Action::Convert { node } => Some(node),
+			_ => None,
+		})
+		.collect();
 
 	for arc in board.arcs() {
 		spawn_arc(
@@ -991,6 +1016,30 @@ fn refresh_view(
 				layout.tile_radius + 4.0,
 				layout.tile_radius + 7.0,
 				rgb(visual::DEST_RGB),
+				visual::Z_HIGHLIGHT,
+			);
+		}
+		if swap_partners.contains(&id) {
+			spawn_ring(
+				&mut commands,
+				&mut meshes,
+				&mut materials,
+				p,
+				layout.tile_radius + 4.0,
+				layout.tile_radius + 7.0,
+				rgb(visual::SWAP_RGB),
+				visual::Z_HIGHLIGHT,
+			);
+		}
+		if convert_targets.contains(&id) {
+			spawn_ring(
+				&mut commands,
+				&mut meshes,
+				&mut materials,
+				p,
+				layout.tile_radius + 4.0,
+				layout.tile_radius + 7.0,
+				rgb(visual::CONVERT_RGB),
 				visual::Z_HIGHLIGHT,
 			);
 		}
@@ -1041,6 +1090,13 @@ fn refresh_view(
 					world_v(layout, board.position(id))
 						+ Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
 					"CLAIM",
+				);
+			} else if swap_partners.contains(&id) {
+				spawn_label(
+					&mut commands,
+					world_v(layout, board.position(id))
+						+ Vec2::Y * (layout.tile_radius * 0.55 + 12.0),
+					"SWAP",
 				);
 			}
 		} else if board.is_spawn(id) && matches!(play.selection, Selection::Bench(_)) {
@@ -2225,6 +2281,8 @@ fn view_fingerprint(play: &PlayState, layout: &ViewLayout) -> u64 {
 	let mut h = DefaultHasher::new();
 	play.game.turn_count().hash(&mut h);
 	play.game.current_player().hash(&mut h);
+	play.game.extra_convert_active().hash(&mut h);
+	play.game.extra_swap_active().hash(&mut h);
 	play.selection.hash(&mut h);
 	((layout.width * 10.0) as i32).hash(&mut h);
 	((layout.height * 10.0) as i32).hash(&mut h);

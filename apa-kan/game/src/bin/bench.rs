@@ -12,10 +12,11 @@ use apa_kan::ai::{
 };
 use apa_kan::bench_log::{self, GameLog};
 use apa_kan::config::{apply_rule_flag, validate_rule_flags};
-use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig};
+use apa_kan::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT};
 use apa_kan::game::{
-	sample_tile_from_rules, Action, EndReason, Game, GameStatus, LowValueResolution, Player,
-	RuleSet, Tile, TileColor,
+	base_color_weights, color_drift_diagonal_value, sample_tile_from_rules,
+	sample_tile_from_rules_with_colors, Action, EndReason, Game, GameStatus, LowValueResolution,
+	Player, RuleSet, Tile, TileColor,
 };
 use apa_kan::scenario::{self, DeckStrength, Scenario};
 use rand::rngs::StdRng;
@@ -54,10 +55,16 @@ struct BenchConfig {
 	search: SearchConfig,
 	p1_search: Option<SearchConfig>,
 	p2_search: Option<SearchConfig>,
+	/// In-game work budget for P1 (default: `--budget`). Search-pick stays on `limit`.
+	p1_limit: Option<SearchLimit>,
+	/// In-game work budget for P2 (default: `--budget`).
+	p2_limit: Option<SearchLimit>,
 	/// Opening/midgame depth table for each search lever, then exit.
 	ablate: bool,
 	/// Time a handful of positions trying to complete this minimax ID depth.
 	ply_probe: Option<u8>,
+	/// When true, both players start from the identical 27-tile collection.
+	same_deck: bool,
 }
 
 fn usage() -> &'static str {
@@ -68,15 +75,18 @@ fn usage() -> &'static str {
 	   --budget <spec>      Work budget: nodes:N,iters:M (default: calibrated 1000 ms)\n\
 	                        nodes caps minimax nodes/move; iters caps MCTS iterations/move.\n\
 	                        Pass `calibrated` for the documented 1000 ms single-thread means.\n\
+	                        Also used for search-pick. Per-seat in-game overrides: --p1-budget / --p2-budget.\n\
+	   --p1-budget / --p2-budget <spec>  Per-seat in-game work budget (default: --budget).\n\
+	                        Search-pick still uses --budget so mixed-depth H2H keeps the same draft.\n\
 	   --think-ms <n>       Wall-clock think time in ms (not reproducible). Mutually exclusive with --budget.\n\
 	   --jobs <n>           Independent games in parallel (default: available_parallelism).\n\
 	                        Each search stays single-threaded unless --search-threads > 1.\n\
-	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts>\n\
-	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused)\n\
+	   --search-profile <enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay>\n\
+	                        Search preset (default: enhanced; aliases: aggressive, cautious, explore, deep, focused, contest, playtest)\n\
 	   --bot-config <path.toml>  Load a SearchConfig TOML (missing keys = enhanced defaults)\n\
 	   --list-search-profiles    Print named presets and their labels\n\
 	   --search <k=v,...>   Overlay any knob (ordering, tt, lmr, pvs, q-depth, pw, puct, priors,\n\
-	                        pw-order, reuse, mcts-tt, factored, leaf, solver, threads, ...)\n\
+	                        pw-order, reuse, mcts-tt, factored, leaf, solver, threads, eval-margin, ...)\n\
 	   --p1-search-profile / --p2-search-profile  Per-seat profile (default: --search-profile)\n\
 	   --p1-bot-config / --p2-bot-config          Per-seat TOML profile\n\
 	   --p1-search / --p2-search                  Per-seat overlay\n\
@@ -94,6 +104,7 @@ fn usage() -> &'static str {
 	   --p1-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P1 collection archetype when --deck-matchups is omitted\n\
 	   --p2-deck <mixed|braid|bead|crescent|zs|emblem|blocker|rosette>  P2 collection archetype\n\
 	   --deck-matchups <list>  a:b,c:d archetype pairs (mixed|braid|bead|crescent|zs|emblem|blocker|rosette). Default: --p1-deck vs --p2-deck\n\
+	   --same-deck <on|off>  Identical 27-tile start for both players (forces mixed:mixed, identical_bags, deck-size 27, noise 0)\n\
 	   --depth-probe        Also time minimax ID depth at 1000 ms and 3000 ms\n\
 	   --measure-games <n>  Games for branching sample (default: 12)\n\
 	   --out <path>         Output log path\n\
@@ -105,14 +116,13 @@ fn usage() -> &'static str {
 	   --list-scenarios     Print builtin deck scenarios\n\
 	   Doubles allowed (--no-same-piece-twice off) is the locked default and the only\n\
 	   H2H-benchmarked configuration. Other --no-same-piece-twice values remain as CLI variants.\n\
-	   Rule flags (same as apa-kan): --no-moves-loses, --center-hold-win,\n\
-	   --center-hold-n, --no-same-piece-twice, --color-restricted-hops,\n\
+	   Rule flags (same as apa-kan): --no-moves-loses, --no-same-piece-twice, --color-restricted-hops,\n\
 	   --hop-weight-cmp, --counted-pass-through, --graph-hops, --pass-through-ring-cmp,\n\
-	   --petal-majority-win, --petal-majority-n,\n\
-	   --control-win, --control-n, --control-hold-turns, --endgame-rule, --cascade-turn-gain,\n\
-	   --insufficient-tiles-loss, --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
-	   --max-rings, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
-	   --braid-fail-mismatch, --bead-scoring, --channel-mode, --capture-mode, --dot-chance,\n\
+	   --control-win, --control-n, --endgame-rule, --cascade-turn-gain,\n\
+	   --cascade-winner-swap, --ratchet-cascade, --opening-double, --opening,\n\
+	   --starting-tokens, --starting-bench, --deck-size, --bag-size, --self-capture-budget,\n\
+	   --max-rings, --ring-count-weights, --color-drift, --zag-chance, --zags, --braid-chance, --braids, --bead-chance, --dot-chance, --zag-mismatch,\n\
+	   --single-braids, --capture-mode, --singles-swap,\n\
 	   --emblem-weights, --emblems, --blocker-blocks,\n\
 	   --path-constraint, --no-repeated-edge, --turn-limit\n\
 	   -h, --help\n"
@@ -128,9 +138,12 @@ where
 	let mut games_log_set = false;
 	let mut think_ms_set = false;
 	let mut budget_set = false;
+	let mut seat_budget_set = false;
 	let mut think = Duration::from_millis(1000);
 	let mut budget_nodes = CALIBRATED_NODES_PER_MOVE;
 	let mut budget_iters = CALIBRATED_ITERS_PER_MOVE;
+	let mut p1_budget_spec: Option<(Option<u64>, Option<u32>)> = None;
+	let mut p2_budget_spec: Option<(Option<u64>, Option<u32>)> = None;
 	let mut cfg = BenchConfig {
 		games: 6,
 		limit: SearchLimit::calibrated(),
@@ -152,8 +165,11 @@ where
 		search: SearchConfig::enhanced(),
 		p1_search: None,
 		p2_search: None,
+		p1_limit: None,
+		p2_limit: None,
 		ablate: false,
 		ply_probe: None,
+		same_deck: false,
 	};
 	let mut it = args.into_iter();
 	while let Some(raw) = it.next() {
@@ -183,6 +199,14 @@ where
 				if let Some(i) = iters {
 					budget_iters = i;
 				}
+			}
+			"--p1-budget" => {
+				seat_budget_set = true;
+				p1_budget_spec = Some(parse_budget(&need("--p1-budget", it.next())?)?);
+			}
+			"--p2-budget" => {
+				seat_budget_set = true;
+				p2_budget_spec = Some(parse_budget(&need("--p2-budget", it.next())?)?);
 			}
 			"--jobs" => {
 				let n = parse_u64("--jobs", &need("--jobs", it.next())?)?;
@@ -215,6 +239,16 @@ where
 			}
 			"--deck-matchups" => {
 				cfg.matchups = parse_deck_matchups(&need("--deck-matchups", it.next())?)?;
+			}
+			"--same-deck" => {
+				let v = need("--same-deck", it.next())?;
+				cfg.same_deck = match v.to_ascii_lowercase().as_str() {
+					"on" | "true" | "1" | "yes" => true,
+					"off" | "false" | "0" | "no" => false,
+					other => {
+						return Err(format!("invalid --same-deck '{other}' (expected on|off)"));
+					}
+				};
 			}
 			"--pairings" => {
 				cfg.pairings = Some(parse_pairings_flag(&need("--pairings", it.next())?)?);
@@ -325,6 +359,9 @@ where
 	if think_ms_set && budget_set {
 		return Err("use either --think-ms or --budget, not both".into());
 	}
+	if think_ms_set && seat_budget_set {
+		return Err("use either --think-ms or --p1-budget/--p2-budget, not both".into());
+	}
 	if cfg.calibrate && budget_set {
 		return Err("--calibrate measures wall-clock --think-ms; do not pass --budget".into());
 	}
@@ -333,7 +370,15 @@ where
 	} else {
 		SearchLimit::work(budget_nodes, budget_iters)
 	};
+	cfg.p1_limit = overlay_work_limit(cfg.limit, p1_budget_spec)?;
+	cfg.p2_limit = overlay_work_limit(cfg.limit, p2_budget_spec)?;
 	cfg.setup.limit = cfg.limit;
+	if cfg.same_deck {
+		cfg.rules.identical_bags = true;
+		cfg.rules.deck_size = DECK_SIZE_DEFAULT as u8;
+		cfg.setup.apply_same_deck();
+		cfg.matchups = vec![(DeckArchetype::Mixed, DeckArchetype::Mixed)];
+	}
 	if cfg.matchups.is_empty() {
 		cfg.matchups = vec![(cfg.setup.p1_deck, cfg.setup.p2_deck)];
 	}
@@ -343,6 +388,27 @@ where
 
 fn default_jobs() -> usize {
 	std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+fn overlay_work_limit(
+	base: SearchLimit,
+	spec: Option<(Option<u64>, Option<u32>)>,
+) -> Result<Option<SearchLimit>, String> {
+	let Some((nodes, iters)) = spec else {
+		return Ok(None);
+	};
+	let SearchLimit::Work { nodes: bn, iters: bi } = base else {
+		return Err("--p1-budget/--p2-budget require a work --budget (not --think-ms)".into());
+	};
+	Ok(Some(SearchLimit::work(nodes.unwrap_or(bn), iters.unwrap_or(bi))))
+}
+
+fn seat_limit(cfg: &BenchConfig, p1: bool) -> SearchLimit {
+	if p1 {
+		cfg.p1_limit.unwrap_or(cfg.limit)
+	} else {
+		cfg.p2_limit.unwrap_or(cfg.limit)
+	}
 }
 
 fn parse_budget(spec: &str) -> Result<(Option<u64>, Option<u32>), String> {
@@ -517,6 +583,14 @@ struct SeatStats {
 	extra_turns_played: u32,
 	ended_on_extra: u32,
 	ended_after_extra: u32,
+	fight_gain_awarded: u32,
+	fight_gain_mover: u32,
+	fight_gain_opponent: u32,
+	extra_used_convert: u32,
+	extra_used_swap: u32,
+	extra_used_move: u32,
+	extra_used_add: u32,
+	extra_used_claim: u32,
 	insuff: u32,
 	low_value: u32,
 	low_value_wins: u32,
@@ -552,6 +626,10 @@ struct SeatStats {
 	claims: u32,
 	claim_own: u32,
 	claim_opp: u32,
+	swaps: u32,
+	center_swaps: u32,
+	converts: u32,
+	center_converts: u32,
 	healed: u32,
 	crescent_saves: u32,
 	zs_bonuses: u32,
@@ -639,8 +717,18 @@ fn run(cfg: BenchConfig) {
 		seat_search(&cfg, true).label(),
 		seat_search(&cfg, false).label()
 	));
+	let p1_lim = seat_limit(&cfg, true);
+	let p2_lim = seat_limit(&cfg, false);
+	if p1_lim != cfg.limit || p2_lim != cfg.limit {
+		lines.push(format!(
+			"# in_game_budget  p1={}  p2={}  pick={}",
+			p1_lim.label(),
+			p2_lim.label(),
+			cfg.limit.label()
+		));
+	}
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} channel_mode={} capture_mode={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} ratchet_cascade={} opening_double={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -656,6 +744,9 @@ fn run(cfg: BenchConfig) {
 		rules.control_hold_turns,
 		rules.endgame_rule.name(),
 		on_off(rules.cascade_turn_gain),
+		on_off(rules.cascade_winner_swap),
+		on_off(rules.ratchet_cascade),
+		on_off(rules.opening_double),
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
 		rules.bag_size,
@@ -664,12 +755,18 @@ fn run(cfg: BenchConfig) {
 		cfg.setup.deck_noise,
 		on_off(rules.self_capture_budget),
 		rules.max_rings,
+		rules.ring_count_weights.label(),
+		color_drift_diagonal_value(rules.color_drift).unwrap_or(0),
 		rules.zag_numer,
 		rules.braid_numer,
 		rules.bead_numer,
 		rules.bead_scoring.name(),
+		rules.braid_scoring.name(),
+		on_off(rules.score_unique_neighbors),
 		rules.channel_mode.name(),
 		rules.capture_mode.name(),
+		rules.swap_mode.name(),
+		on_off(rules.allow_single_braids),
 		rules.dot_percent,
 		rules.emblem_weights.label(),
 		rules.blocker_blocks.name(),
@@ -730,20 +827,24 @@ fn run(cfg: BenchConfig) {
 		cfg.limit.label()
 	);
 	let scenario = cfg.scenario.clone();
-	let limit = cfg.limit;
 	let setup = cfg.setup;
 	let p1_search = seat_search(&cfg, true);
 	let p2_search = seat_search(&cfg, false);
+	let p1_limit = seat_limit(&cfg, true);
+	let p2_limit = seat_limit(&cfg, false);
 	let outs = run_parallel(cfg.jobs, jobs, |job| {
 		let mut job_setup = setup;
 		job_setup.p1_deck = job.p1_deck;
 		job_setup.p2_deck = job.p2_deck;
+		job_setup.p1_search = p1_search;
+		job_setup.p2_search = p2_search;
 		let result = play_game(
 			rules,
 			job.seed,
 			job.p1,
 			job.p2,
-			limit,
+			p1_limit,
+			p2_limit,
 			job.want_record,
 			keep_log,
 			scenario.as_ref(),
@@ -836,6 +937,14 @@ fn run(cfg: BenchConfig) {
 	let mut extra_turns_played = 0u32;
 	let mut ended_on_extra = 0u32;
 	let mut ended_after_extra = 0u32;
+	let mut fight_gain_awarded = 0u32;
+	let mut fight_gain_mover = 0u32;
+	let mut fight_gain_opponent = 0u32;
+	let mut extra_used_convert = 0u32;
+	let mut extra_used_swap = 0u32;
+	let mut extra_used_move = 0u32;
+	let mut extra_used_add = 0u32;
+	let mut extra_used_claim = 0u32;
 	let mut end_insuff = 0u32;
 	let mut end_low_value = 0u32;
 	let mut end_low_value_wins = 0u32;
@@ -860,6 +969,10 @@ fn run(cfg: BenchConfig) {
 	let mut claims = 0u32;
 	let mut claim_own = 0u32;
 	let mut claim_opp = 0u32;
+	let mut swaps = 0u32;
+	let mut center_swaps = 0u32;
+	let mut converts = 0u32;
+	let mut center_converts = 0u32;
 	let mut healed = 0u32;
 	let mut crescent_saves = 0u32;
 	let mut zs_bonuses = 0u32;
@@ -900,6 +1013,14 @@ fn run(cfg: BenchConfig) {
 		extra_turns_played += stats.extra_turns_played;
 		ended_on_extra += stats.ended_on_extra;
 		ended_after_extra += stats.ended_after_extra;
+		fight_gain_awarded += stats.fight_gain_awarded;
+		fight_gain_mover += stats.fight_gain_mover;
+		fight_gain_opponent += stats.fight_gain_opponent;
+		extra_used_convert += stats.extra_used_convert;
+		extra_used_swap += stats.extra_used_swap;
+		extra_used_move += stats.extra_used_move;
+		extra_used_add += stats.extra_used_add;
+		extra_used_claim += stats.extra_used_claim;
 		end_insuff += stats.insuff;
 		end_low_value += stats.low_value;
 		end_low_value_wins += stats.low_value_wins;
@@ -924,6 +1045,10 @@ fn run(cfg: BenchConfig) {
 		claims += stats.claims;
 		claim_own += stats.claim_own;
 		claim_opp += stats.claim_opp;
+		swaps += stats.swaps;
+		center_swaps += stats.center_swaps;
+		converts += stats.converts;
+		center_converts += stats.center_converts;
 		healed += stats.healed;
 		crescent_saves += stats.crescent_saves;
 		zs_bonuses += stats.zs_bonuses;
@@ -1001,6 +1126,18 @@ fn run(cfg: BenchConfig) {
 	lines.push(format!(
 		"# claims  total={claims} avg_per_game={avg_claims:.2}  own={claim_own} opponent={claim_opp}  healed={healed} healed_avg_per_game={avg_healed:.2}"
 	));
+	let avg_swaps = if games_n == 0 { 0.0 } else { f64::from(swaps) / f64::from(games_n) };
+	let avg_center_swaps =
+		if games_n == 0 { 0.0 } else { f64::from(center_swaps) / f64::from(games_n) };
+	lines.push(format!(
+		"# swaps  total={swaps} avg_per_game={avg_swaps:.2}  center={center_swaps} avg_center_per_game={avg_center_swaps:.2}"
+	));
+	let avg_converts = if games_n == 0 { 0.0 } else { f64::from(converts) / f64::from(games_n) };
+	let avg_center_converts =
+		if games_n == 0 { 0.0 } else { f64::from(center_converts) / f64::from(games_n) };
+	lines.push(format!(
+		"# converts  total={converts} avg_per_game={avg_converts:.2}  center={center_converts} avg_center_per_game={avg_center_converts:.2}"
+	));
 	let avg_gain =
 		if games_n == 0 { 0.0 } else { f64::from(turn_gain_awarded) / f64::from(games_n) };
 	let ended_extra = ended_on_extra + ended_after_extra;
@@ -1009,6 +1146,14 @@ fn run(cfg: BenchConfig) {
 	));
 	println!(
 		"# turn_gain  awarded={turn_gain_awarded} avg_per_game={avg_gain:.2}  mover={turn_gain_mover} opponent={turn_gain_opponent}  played={extra_turns_played}  ended_on={ended_on_extra} ended_after={ended_after_extra} ended_on_or_after={ended_extra}"
+	);
+	let avg_fight =
+		if games_n == 0 { 0.0 } else { f64::from(fight_gain_awarded) / f64::from(games_n) };
+	lines.push(format!(
+		"# fight_gain  awarded={fight_gain_awarded} avg_per_game={avg_fight:.2}  mover={fight_gain_mover} opponent={fight_gain_opponent}  reward_used convert={extra_used_convert} swap={extra_used_swap} move={extra_used_move} add={extra_used_add} claim={extra_used_claim}"
+	));
+	println!(
+		"# fight_gain  awarded={fight_gain_awarded} avg_per_game={avg_fight:.2}  mover={fight_gain_mover} opponent={fight_gain_opponent}  reward_used convert={extra_used_convert} swap={extra_used_swap} move={extra_used_move} add={extra_used_add} claim={extra_used_claim}"
 	);
 	let avg_moon = if games_n == 0 { 0.0 } else { f64::from(crescent_saves) / f64::from(games_n) };
 	let avg_zs = if games_n == 0 { 0.0 } else { f64::from(zs_bonuses) / f64::from(games_n) };
@@ -1168,6 +1313,12 @@ fn run(cfg: BenchConfig) {
 	);
 	println!(
 		"# claims  total={claims} avg_per_game={avg_claims:.2}  own={claim_own} opponent={claim_opp}  healed={healed} healed_avg_per_game={avg_healed:.2}"
+	);
+	println!(
+		"# swaps  total={swaps} avg_per_game={avg_swaps:.2}  center={center_swaps} avg_center_per_game={avg_center_swaps:.2}"
+	);
+	println!(
+		"# converts  total={converts} avg_per_game={avg_converts:.2}  center={center_converts} avg_center_per_game={avg_center_converts:.2}"
 	);
 	println!(
 		"# emblems  crescent_saves={crescent_saves} avg_per_game={avg_moon:.2}  zs_bonuses={zs_bonuses} avg_per_game={avg_zs:.2}"
@@ -1378,6 +1529,8 @@ fn push_branching(
 	lines.push(format!("ADD       {:<12} {:<6.2} {}", b.add_n, b.add_avg(), b.add_max));
 	lines.push(format!("MOVE      {:<12} {:<6.2} {}", b.move_n, b.move_avg(), b.move_max));
 	lines.push(format!("CLAIM     {:<12} {:<6.2} {}", b.claim_n, b.claim_avg(), b.claim_max));
+	lines.push(format!("SWAP      {:<12} {:<6.2} {}", b.swap_n, b.swap_avg(), b.swap_max));
+	lines.push(format!("CONVERT   {:<12} {:<6.2} {}", b.convert_n, b.convert_avg(), b.convert_max));
 	lines.push(format!("ALL       {:<12} {:<6.2} {}", b.all_n, b.all_avg(), b.all_max));
 }
 
@@ -1497,6 +1650,10 @@ fn summarize_pairing(
 		stats.claims += result.claims;
 		stats.claim_own += result.claim_own;
 		stats.claim_opp += result.claim_opp;
+		stats.swaps += result.swaps;
+		stats.center_swaps += result.center_swaps;
+		stats.converts += result.converts;
+		stats.center_converts += result.center_converts;
 		stats.healed += result.healed;
 		stats.crescent_saves += result.crescent_saves;
 		stats.zs_bonuses += result.zs_bonuses;
@@ -1506,6 +1663,14 @@ fn summarize_pairing(
 		stats.extra_turns_played += result.extra_turns_played;
 		stats.ended_on_extra += u32::from(result.ended_on_extra);
 		stats.ended_after_extra += u32::from(result.ended_after_extra);
+		stats.fight_gain_awarded += result.fight_gain_awarded;
+		stats.fight_gain_mover += result.fight_gain_mover;
+		stats.fight_gain_opponent += result.fight_gain_opponent;
+		stats.extra_used_convert += result.extra_used_convert;
+		stats.extra_used_swap += result.extra_used_swap;
+		stats.extra_used_move += result.extra_used_move;
+		stats.extra_used_add += result.extra_used_add;
+		stats.extra_used_claim += result.extra_used_claim;
 		match result.status {
 			GameStatus::Won { winner, reason } => {
 				if winner == Player::One {
@@ -1918,6 +2083,10 @@ struct PlayResult {
 	claims: u32,
 	claim_own: u32,
 	claim_opp: u32,
+	swaps: u32,
+	center_swaps: u32,
+	converts: u32,
+	center_converts: u32,
 	healed: u32,
 	crescent_saves: u32,
 	zs_bonuses: u32,
@@ -1927,6 +2096,14 @@ struct PlayResult {
 	extra_turns_played: u32,
 	ended_on_extra: bool,
 	ended_after_extra: bool,
+	fight_gain_awarded: u32,
+	fight_gain_mover: u32,
+	fight_gain_opponent: u32,
+	extra_used_convert: u32,
+	extra_used_swap: u32,
+	extra_used_move: u32,
+	extra_used_add: u32,
+	extra_used_claim: u32,
 	record: Option<GameRecord>,
 	log: Option<GameLog>,
 	deck: DeckRow,
@@ -1962,7 +2139,8 @@ fn play_game(
 	seed: u64,
 	p1: Actor,
 	p2: Actor,
-	limit: SearchLimit,
+	p1_limit: SearchLimit,
+	p2_limit: SearchLimit,
 	keep_record: bool,
 	keep_log: bool,
 	scenario: Option<&Scenario>,
@@ -2015,12 +2193,20 @@ fn play_game(
 			String::new(),
 			p1.name(),
 			p2.name(),
-			limit.think_ms(),
+			p1_limit.think_ms(),
 			scenario.map(|s| s.name.as_str()).unwrap_or("default"),
 			&game,
 		);
-		log.budget_nodes = limit.nodes();
-		log.budget_iters = limit.iters();
+		log.budget_nodes = setup.limit.nodes();
+		log.budget_iters = setup.limit.iters();
+		if p1_limit != setup.limit {
+			log.p1_budget_nodes = p1_limit.nodes();
+			log.p1_budget_iters = p1_limit.iters();
+		}
+		if p2_limit != setup.limit {
+			log.p2_budget_nodes = p2_limit.nodes();
+			log.p2_budget_iters = p2_limit.iters();
+		}
 		log.p1_search = p1_search.label();
 		log.p2_search = p2_search.label();
 		log
@@ -2037,6 +2223,15 @@ fn play_game(
 	let mut claims = 0u32;
 	let mut claim_own = 0u32;
 	let mut claim_opp = 0u32;
+	let mut swaps = 0u32;
+	let mut center_swaps = 0u32;
+	let mut converts = 0u32;
+	let mut center_converts = 0u32;
+	let mut extra_used_convert = 0u32;
+	let mut extra_used_swap = 0u32;
+	let mut extra_used_move = 0u32;
+	let mut extra_used_add = 0u32;
+	let mut extra_used_claim = 0u32;
 	let mut healed = 0u32;
 	let mut crescent_saves = 0u32;
 	let mut zs_bonuses = 0u32;
@@ -2096,8 +2291,13 @@ fn play_game(
 			Player::One => &mut s1,
 			Player::Two => &mut s2,
 		};
-		let action = searcher.choose_with(&game, actor, &mut rng, limit);
+		let seat_limit = match game.current_player() {
+			Player::One => p1_limit,
+			Player::Two => p2_limit,
+		};
+		let action = searcher.choose_with(&game, actor, &mut rng, seat_limit);
 		let piece = bench_log::piece_for_action(&game, action);
+		let partner = bench_log::partner_for_action(&game, action);
 		let st = searcher.stats();
 		if actor == Actor::Minimax {
 			depth_sum += f64::from(st.depth);
@@ -2128,6 +2328,18 @@ fn play_game(
 			Action::Move { from, .. } => {
 				if let Some(t) = game.tile_at(from) {
 					move_rings[t.n_rings.clamp(1, 3) as usize] += 1;
+				}
+			}
+			Action::Swap { from, to } => {
+				swaps += 1;
+				if from == center || to == center {
+					center_swaps += 1;
+				}
+			}
+			Action::Convert { node } => {
+				converts += 1;
+				if node == center {
+					center_converts += 1;
 				}
 			}
 			Action::Claim { .. } | Action::Pass => {}
@@ -2180,6 +2392,16 @@ fn play_game(
 						outcome.removals.iter().filter(|r| r.tile.owner != outcome.player).count()
 							as u32;
 				}
+				if game.last_played_as_ratchet_reward() || game.last_played_as_extra() {
+					match action {
+						Action::Convert { .. } => extra_used_convert += 1,
+						Action::Swap { .. } => extra_used_swap += 1,
+						Action::Move { .. } => extra_used_move += 1,
+						Action::Add { .. } => extra_used_add += 1,
+						Action::Claim { .. } => extra_used_claim += 1,
+						Action::Pass => {}
+					}
+				}
 				let healed_now = before_overwhelmed
 					.iter()
 					.filter(|(n, id)| {
@@ -2199,7 +2421,9 @@ fn play_game(
 					));
 				}
 				if let Some(log) = game_log.as_mut() {
-					log.push_action_with_search(action, piece, &outcome, &game, st);
+					log.push_action_with_search_partner(
+						action, piece, partner, &outcome, &game, st,
+					);
 					if let Some(last) = log.actions.last_mut() {
 						last.healed = healed_now as u8;
 					}
@@ -2208,9 +2432,10 @@ fn play_game(
 			Err(_) => {
 				if let Some(fallback) = game.legal_actions().into_iter().next() {
 					let piece = bench_log::piece_for_action(&game, fallback);
+					let partner = bench_log::partner_for_action(&game, fallback);
 					if let Ok(outcome) = game.apply(fallback) {
 						if let Some(log) = game_log.as_mut() {
-							log.push_action(fallback, piece, &outcome, &game);
+							log.push_action_partner(fallback, piece, partner, &outcome, &game);
 						}
 					}
 				} else {
@@ -2233,7 +2458,7 @@ fn play_game(
 			p1,
 			p2,
 			seed,
-			limit,
+			limit: p1_limit,
 			lines: record_lines,
 			status: game.status(),
 			turns: game.turn_count(),
@@ -2308,6 +2533,10 @@ fn play_game(
 		claims,
 		claim_own,
 		claim_opp,
+		swaps,
+		center_swaps,
+		converts,
+		center_converts,
 		healed,
 		crescent_saves,
 		zs_bonuses,
@@ -2317,6 +2546,14 @@ fn play_game(
 		extra_turns_played: game.extra_turns_played(),
 		ended_on_extra: game.ended_on_extra_turn(),
 		ended_after_extra: game.ended_after_extra_turn(),
+		fight_gain_awarded: game.fight_gain_awarded(),
+		fight_gain_mover: game.fight_gain_mover(),
+		fight_gain_opponent: game.fight_gain_opponent(),
+		extra_used_convert,
+		extra_used_swap,
+		extra_used_move,
+		extra_used_add,
+		extra_used_claim,
 		record,
 		log: game_log,
 		deck: DeckRow {
@@ -2397,26 +2634,41 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 	let mut zag_rings = 0u32;
 	let mut braid_rings = 0u32;
 	let mut braid_pieces = 0u32;
+	let mut single_braid_pieces = 0u32;
 	let mut bead_rings = 0u32;
 	let mut bead_pieces = 0u32;
+	let mut bead_any = 0u32;
 	let mut crescent = 0u32;
 	let mut zs = 0u32;
 	let mut blocker = 0u32;
 	let mut rosette = 0u32;
 	let mut rings = 0u32;
+	let mut multi_tiles = 0u32;
+	let mut distinct_sum = 0u32;
 	for _ in 0..n {
 		let t = sample_tile_from_rules(Player::One, &rules, &mut next_id, &mut rng);
 		tally_tiles(std::iter::once(&t), &mut ring_n, &mut color_n);
+		let dc = u32::from(t.distinct_color_count());
+		distinct_sum += dc;
+		if dc >= 2 {
+			multi_tiles += 1;
+		}
 		let k = t.n_rings.clamp(1, 3) as usize;
 		zag_rings += u32::from(t.zag_ring_count());
 		let b = t.braid_ring_count();
 		braid_rings += u32::from(b);
-		if b >= 2 {
+		if b > 0 {
 			braid_pieces += 1;
+			if b == 1 {
+				single_braid_pieces += 1;
+			}
 		}
 		bead_rings += u32::from(t.bead_ring_count());
 		if t.bead_ring_count() >= 2 {
 			bead_pieces += 1;
+		}
+		if t.bead_ring_count() > 0 {
+			bead_any += 1;
 		}
 		if t.emblem.is_crescent() {
 			crescent += 1;
@@ -2442,12 +2694,14 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 			f64::from(zag_rings) / f64::from(rings)
 		));
 		lines.push(format!(
-			"# ring_process_braids  pieces={n} braided={braid_pieces} piece_rate={:.4} rings={rings} braid_rings={braid_rings} ring_rate={:.4}",
+			"# ring_process_braids  pieces={n} braided={braid_pieces} tile_rate={:.4} single_braid={single_braid_pieces} single_rate={:.4} rings={rings} braid_rings={braid_rings} ring_rate={:.4}",
 			f64::from(braid_pieces) / f64::from(n),
+			f64::from(single_braid_pieces) / f64::from(n),
 			f64::from(braid_rings) / f64::from(rings)
 		));
 		lines.push(format!(
-			"# ring_process_beads  pieces={n} grouped={bead_pieces} piece_rate={:.4} rings={rings} beads={bead_rings} ring_rate={:.4}",
+			"# ring_process_beads  pieces={n} any={bead_any} any_rate={:.4} grouped={bead_pieces} grouped_rate={:.4} rings={rings} beads={bead_rings} ring_rate={:.4}",
+			f64::from(bead_any) / f64::from(n),
 			f64::from(bead_pieces) / f64::from(n),
 			f64::from(bead_rings) / f64::from(rings)
 		));
@@ -2466,6 +2720,67 @@ fn push_ring_process(lines: &mut Vec<String>, rules: RuleSet, seed: u64) {
 		bits.push(format!("{name}={}", color_n[i]));
 	}
 	lines.push(format!("# ring_process_colors  {}", bits.join(" ")));
+	let drift_n = color_drift_diagonal_value(rules.color_drift).unwrap_or(0);
+	lines.push(format!(
+		"# ring_process_multicolor  tiles={n} multi={multi_tiles} multi_rate={:.4} mean_distinct_per_tile={:.3} color_drift={drift_n}",
+		f64::from(multi_tiles) / f64::from(n),
+		f64::from(distinct_sum) / f64::from(n)
+	));
+	let decks = 2_000u32;
+	let deck_size = usize::from(rules.deck_size.max(1));
+	let mut deck_braid_tiles = 0u32;
+	let mut deck_single_braid_tiles = 0u32;
+	let mut decks_with_braid = 0u32;
+	let mut deck_distinct_sum = 0u32;
+	let mut deck_tile_multi = 0u32;
+	let mut deck_tile_distinct = 0u32;
+	for _ in 0..decks {
+		let mut has_braid = false;
+		let mut color_w = base_color_weights();
+		let mut deck_mask = 0u8;
+		for _ in 0..deck_size {
+			let t = sample_tile_from_rules_with_colors(
+				Player::One,
+				&rules,
+				&mut next_id,
+				&mut rng,
+				&mut color_w,
+			);
+			let b = t.braid_ring_count();
+			if b > 0 {
+				deck_braid_tiles += 1;
+				has_braid = true;
+				if b == 1 {
+					deck_single_braid_tiles += 1;
+				}
+			}
+			let dc = t.distinct_color_count();
+			deck_tile_distinct += u32::from(dc);
+			if dc >= 2 {
+				deck_tile_multi += 1;
+			}
+			for k in 0..t.n_rings.min(3) {
+				deck_mask |= t.rings[k as usize].bit();
+			}
+		}
+		deck_distinct_sum += u32::from(deck_mask.count_ones());
+		if has_braid {
+			decks_with_braid += 1;
+		}
+	}
+	let deck_tiles = decks * deck_size as u32;
+	lines.push(format!(
+		"# ring_process_decks  decks={decks} size={deck_size} braid_tiles={deck_braid_tiles} tile_rate={:.4} single_braid={deck_single_braid_tiles} single_rate={:.4} decks_with_braid={decks_with_braid} deck_rate={:.4}",
+		f64::from(deck_braid_tiles) / f64::from(deck_tiles),
+		f64::from(deck_single_braid_tiles) / f64::from(deck_tiles),
+		f64::from(decks_with_braid) / f64::from(decks)
+	));
+	lines.push(format!(
+		"# ring_process_deck_colors  decks={decks} size={deck_size} multi_tiles={deck_tile_multi} multi_rate={:.4} mean_distinct_per_tile={:.3} mean_distinct_per_deck={:.3} color_drift={drift_n}",
+		f64::from(deck_tile_multi) / f64::from(deck_tiles),
+		f64::from(deck_tile_distinct) / f64::from(deck_tiles),
+		f64::from(deck_distinct_sum) / f64::from(decks)
+	));
 }
 
 fn push_observed_rings(lines: &mut Vec<String>, rows: &[DeckRow]) {
@@ -2692,12 +3007,14 @@ mod tests {
 					|| line.starts_with("# end_reasons")
 					|| line.starts_with("# control_cascade")
 					|| line.starts_with("# turn_gain")
+					|| line.starts_with("# fight_gain")
 					|| line.starts_with("# low_value_pairs")
 					|| line.starts_with("# captures")
 					|| line.starts_with("# center_captures")
 					|| line.starts_with("# capture_dest")
 					|| line.starts_with("# bead_captures")
 					|| line.starts_with("# claims")
+					|| line.starts_with("# swaps")
 					|| line.starts_with("# emblems")
 					|| line.starts_with("# search_depth")
 					|| line.starts_with("# root_spread")
@@ -2758,6 +3075,40 @@ mod tests {
 	}
 
 	#[test]
+	fn parse_per_seat_budget_overrides_in_game_only() {
+		let cfg = parse(vec![
+			"--budget".to_string(),
+			"nodes:33000,iters:650".to_string(),
+			"--p1-budget".to_string(),
+			"nodes:132000,iters:2600".to_string(),
+			"--p2-budget".to_string(),
+			"nodes:33000,iters:650".to_string(),
+		])
+		.unwrap();
+		assert_eq!(cfg.limit, SearchLimit::work(33_000, 650));
+		assert_eq!(cfg.setup.limit, SearchLimit::work(33_000, 650));
+		assert_eq!(seat_limit(&cfg, true), SearchLimit::work(132_000, 2_600));
+		assert_eq!(seat_limit(&cfg, false), SearchLimit::work(33_000, 650));
+	}
+
+	#[test]
+	fn parse_both_seat_budgets_keep_search_pick() {
+		let cfg = parse(vec![
+			"--budget".to_string(),
+			"nodes:33000,iters:650".to_string(),
+			"--p1-budget".to_string(),
+			"nodes:264000,iters:5200".to_string(),
+			"--p2-budget".to_string(),
+			"nodes:264000,iters:5200".to_string(),
+		])
+		.unwrap();
+		assert_eq!(cfg.limit, SearchLimit::work(33_000, 650));
+		assert_eq!(cfg.setup.limit, SearchLimit::work(33_000, 650));
+		assert_eq!(seat_limit(&cfg, true), SearchLimit::work(264_000, 5_200));
+		assert_eq!(seat_limit(&cfg, false), SearchLimit::work(264_000, 5_200));
+	}
+
+	#[test]
 	fn think_ms_and_budget_are_mutually_exclusive() {
 		let err = match parse(vec![
 			"--think-ms".to_string(),
@@ -2811,6 +3162,39 @@ mod tests {
 		let cfg = parse(vec!["--search-profile".to_string(), "deep_mcts".to_string()]).unwrap();
 		assert_eq!(cfg.search, SearchConfig::deep_mcts());
 		assert_eq!(cfg.search.profile_name(), "deep_mcts");
+		let cfg = parse(vec!["--search-profile".to_string(), "counterplay".to_string()]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::counterplay());
+		assert_eq!(cfg.search.profile_name(), "counterplay");
+		let cfg = parse(vec!["--search-profile".to_string(), "exactplay".to_string()]).unwrap();
+		assert_eq!(cfg.search, SearchConfig::exactplay());
+		assert_eq!(cfg.search.profile_name(), "exactplay");
+		let mixed = parse(vec![
+			"--p1-search-profile".to_string(),
+			"exactplay".to_string(),
+			"--p2-search-profile".to_string(),
+			"counterplay".to_string(),
+		])
+		.unwrap();
+		assert_eq!(seat_search(&mixed, true), SearchConfig::exactplay());
+		assert_eq!(seat_search(&mixed, false), SearchConfig::counterplay());
+	}
+
+	#[test]
+	fn parse_same_deck_forces_identical_27_mixed() {
+		let cfg = parse(vec![
+			"--same-deck".to_string(),
+			"on".to_string(),
+			"--deck-matchups".to_string(),
+			"braid:bead".to_string(),
+			"--deck-noise".to_string(),
+			"40".to_string(),
+		])
+		.unwrap();
+		assert!(cfg.same_deck);
+		assert!(cfg.rules.identical_bags);
+		assert_eq!(cfg.rules.deck_size as usize, DECK_SIZE_DEFAULT);
+		assert_eq!(cfg.setup.deck_noise, 0);
+		assert_eq!(cfg.matchups, vec![(DeckArchetype::Mixed, DeckArchetype::Mixed)]);
 	}
 
 	#[test]
@@ -2820,15 +3204,14 @@ mod tests {
 			"minimax:mcts,mcts:minimax".to_string(),
 			"--deck-matchups".to_string(),
 			"braid:bead,bead:braid,mixed:mixed".to_string(),
-			"--bead-scoring".to_string(),
-			"shared".to_string(),
 		])
 		.unwrap();
 		assert_eq!(cfg.pairings.as_ref().map(|p| p.len()), Some(2));
 		assert_eq!(cfg.matchups.len(), 3);
 		assert_eq!(cfg.matchups[0], (DeckArchetype::BraidHeavy, DeckArchetype::BeadHeavy));
-		assert_eq!(cfg.rules.bead_scoring, apa_kan::game::BeadScoring::SharedChannel);
-		assert_eq!(cfg.rules.channel_mode, apa_kan::game::ChannelMode::IndependentMax);
+		assert_eq!(cfg.rules.bead_scoring, apa_kan::game::BeadScoring::Independent);
+		assert_eq!(cfg.rules.channel_mode, apa_kan::game::ChannelMode::Additive);
+		assert_eq!(cfg.rules.braid_scoring, apa_kan::game::BraidScoring::BraidOnlyExact);
 		let emblems = parse(vec![
 			"--deck-matchups".to_string(),
 			"crescent:mixed,zs:emblem,emblem:bead".to_string(),

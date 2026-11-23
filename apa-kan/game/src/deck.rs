@@ -3,10 +3,10 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use crate::ai::{evaluate, SearchLimit};
+use crate::ai::{evaluate_with, SearchConfig, SearchLimit};
 use crate::game::{
-	sample_tile_from_rules, EmblemWeights, Game, Player, RingType, RuleSet, Tile, BAG_SIZE,
-	MAX_COLOR_RINGS,
+	base_color_weights, sample_tile_from_rules, sample_tile_from_rules_with_colors, BraidScoring,
+	EmblemWeights, Game, Player, RingType, RuleSet, Tile, BAG_SIZE, MAX_COLOR_RINGS,
 };
 
 /// Maximum collection size (historical 27 unique 3-color kinds).
@@ -52,16 +52,16 @@ pub enum DeckArchetype {
 	/// Multi-braid tiles (2–3 slots) and leftover braid+normal packing.
 	BraidHeavy,
 	/// Strong bead opportunities: `bead_numer=5`, `braid_numer=0`, zags on.
-	/// Under [`crate::game::ChannelMode::IndependentMax`] singles are allowed
-	/// (beads are light); under additive mode generation is still 2–3 groups.
+	/// Collector: many bead tiles. Light election stuffed (`bead_numer=5`);
+	/// singles are allowed.
 	BeadHeavy,
 	/// Collector: many Crescent Moon tiles. Default ring mix, emblem weights
 	/// stuffed toward crescent (`none=1,crescent=20`, others 0).
 	Crescent,
 	/// Collector: many Two Zag Zs tiles. Emblem weights `none=1,zs=20`.
 	Zs,
-	/// Collector: emblem-heavy braid/bead mix. Crescent and Zs stuffed, braids
-	/// and 2–3 bead groups still roll.
+	/// Collector: emblem-heavy braid/bead mix. Crescent and Zs stuffed, plus
+	/// a modest braid/bead light-election bump.
 	EmblemMix,
 	/// Collector: many Blocker tiles. Emblem weights `none=1,blocker=20`.
 	Blocker,
@@ -69,13 +69,12 @@ pub enum DeckArchetype {
 	Rosette,
 }
 
-/// Braid roll used for [`DeckArchetype::BraidHeavy`]. Independent-max: per-slot
-/// heavy chance; 7/7 so every 2–3 ring tile clusters into a braid (1-ring
-/// tiles never braid under consecutive-heavy clustering). Additive: 7/7
-/// piece-level group.
+/// Braid roll used for [`DeckArchetype::BraidHeavy`]. Per-slot heavy chance
+/// 7/7 so every 2–3 ring tile clusters into a braid (1-ring tiles never
+/// braid under consecutive-heavy clustering).
 pub const ARCHETYPE_BRAID_NUMER: u8 = 7;
-/// Bead roll used for [`DeckArchetype::BeadHeavy`]. Additive: 5/7 piece-level
-/// 2–3 group. Independent-max: bead weight 5 in the light election.
+/// Bead roll used for [`DeckArchetype::BeadHeavy`]. Bead weight 5 in the
+/// light election.
 pub const ARCHETYPE_BEAD_NUMER: u8 = 5;
 /// Minimum braid rings in a 27-tile braid-heavy collection.
 pub const BRAID_HEAVY_MIN_RINGS: u8 = 10;
@@ -156,6 +155,9 @@ impl DeckArchetype {
 			Self::BraidHeavy => {
 				rules.braid_numer = ARCHETYPE_BRAID_NUMER;
 				rules.bead_numer = 0;
+				// Stuffed heavy coin is for 2–3 slot groups. 1-ring fall-through
+				// keeps a legal 11-tile bench under the 6-braid-ring cap.
+				rules.allow_single_braids = false;
 			}
 			Self::BeadHeavy => {
 				rules.bead_numer = ARCHETYPE_BEAD_NUMER;
@@ -264,7 +266,7 @@ impl PickStrategy {
 }
 
 /// Match-level deck generation and picking (not in-game RuleSet).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SetupConfig {
 	/// RNG seed for collection sampling. `None` uses the game seed.
 	pub deck_seed: Option<u64>,
@@ -279,6 +281,11 @@ pub struct SetupConfig {
 	/// P2 collection bias. When this differs from [`Self::p1_deck`], the
 	/// collections are generated independently even if `identical_bags`.
 	pub p2_deck: DeckArchetype,
+	/// Per-seat leaf eval used by search-pick rollouts. Defaults to
+	/// [`SearchConfig::enhanced`]. Heuristic/greedy pick ignore this
+	/// (no pick-phase bonuses).
+	pub p1_search: SearchConfig,
+	pub p2_search: SearchConfig,
 }
 
 impl Default for SetupConfig {
@@ -290,6 +297,8 @@ impl Default for SetupConfig {
 			limit: SearchLimit::calibrated(),
 			p1_deck: DeckArchetype::Mixed,
 			p2_deck: DeckArchetype::Mixed,
+			p1_search: SearchConfig::enhanced(),
+			p2_search: SearchConfig::enhanced(),
 		}
 	}
 }
@@ -299,8 +308,37 @@ impl SetupConfig {
 		Self { deck_seed: Some(seed), ..Self::default() }
 	}
 
+	/// Both players begin with the identical 27-tile collection (mixed
+	/// archetype, zero noise). Draft 7+4 may still differ by picker.
+	pub fn same_deck() -> Self {
+		Self {
+			deck_noise: 0,
+			p1_deck: DeckArchetype::Mixed,
+			p2_deck: DeckArchetype::Mixed,
+			..Self::default()
+		}
+	}
+
+	pub fn with_seed(mut self, seed: u64) -> Self {
+		self.deck_seed = Some(seed);
+		self
+	}
+
+	pub fn apply_same_deck(&mut self) {
+		self.deck_noise = 0;
+		self.p1_deck = DeckArchetype::Mixed;
+		self.p2_deck = DeckArchetype::Mixed;
+	}
+
 	pub fn deck_seed(self, game_seed: u64) -> u64 {
 		self.deck_seed.unwrap_or(game_seed)
+	}
+
+	pub fn search_for(self, player: Player) -> SearchConfig {
+		match player {
+			Player::One => self.p1_search,
+			Player::Two => self.p2_search,
+		}
 	}
 }
 
@@ -508,8 +546,15 @@ pub fn generate_archetype_collection(
 	let mut best_score = -1i32;
 	for _ in 0..128 {
 		let mut deck = Vec::with_capacity(size);
+		let mut color_w = base_color_weights();
 		for _ in 0..size {
-			deck.push(sample_tile_from_rules(owner, &rules, next_id, rng));
+			deck.push(sample_tile_from_rules_with_colors(
+				owner,
+				&rules,
+				next_id,
+				rng,
+				&mut color_w,
+			));
 		}
 		if !has_legal_subset(&deck, want) {
 			continue;
@@ -535,8 +580,9 @@ fn repair_collection(
 	want: usize,
 ) -> Vec<Tile> {
 	let mut deck = Vec::with_capacity(size);
+	let mut color_w = base_color_weights();
 	for _ in 0..size {
-		deck.push(sample_tile_from_rules(owner, rules, next_id, rng));
+		deck.push(sample_tile_from_rules_with_colors(owner, rules, next_id, rng, &mut color_w));
 	}
 	let mut guard = 0u32;
 	while !has_legal_subset(&deck, want) && guard < 64 {
@@ -622,14 +668,7 @@ pub fn generate_both_collections(
 }
 
 fn kind_key(t: Tile) -> (u8, u8, [u8; 3], [u8; 3], u8, u8) {
-	(
-		t.n_rings,
-		t.dots,
-		t.rings.map(|c| c as u8),
-		t.ring_type.map(|r| r as u8),
-		t.capture.bit(),
-		t.emblem.bit(),
-	)
+	t.collection_kind()
 }
 
 fn tile_score(tile: Tile) -> i32 {
@@ -663,7 +702,7 @@ fn tile_score(tile: Tile) -> i32 {
 	s
 }
 
-fn set_score(tiles: &[Tile], opponent: &[Tile]) -> i32 {
+fn set_score(tiles: &[Tile], opponent: &[Tile], braid_scoring: BraidScoring) -> i32 {
 	let mut s: i32 = tiles.iter().map(|t| tile_score(*t)).sum();
 	let mut colors = [false; 6];
 	let mut dots = [false; 4];
@@ -708,7 +747,8 @@ fn set_score(tiles: &[Tile], opponent: &[Tile]) -> i32 {
 				if mine.shares_normal(opp) {
 					s += 6;
 				}
-				if mine.braid_fulfilled_by(opp).is_some() || opp.braid_fulfilled_by(mine).is_some()
+				if mine.braid_fulfilled_by_with(opp, braid_scoring).is_some()
+					|| opp.braid_fulfilled_by_with(mine, braid_scoring).is_some()
 				{
 					s += 14;
 				}
@@ -884,6 +924,7 @@ fn best_enumerated(
 	opponent: &[Tile],
 	need_extend: usize,
 	max_combos: u64,
+	braid_scoring: BraidScoring,
 ) -> Option<Vec<usize>> {
 	let n = pool.len();
 	if enumerate_limit(n, k) > max_combos {
@@ -908,7 +949,7 @@ fn best_enumerated(
 				return true;
 			}
 		}
-		let score = set_score(&trial, opponent);
+		let score = set_score(&trial, opponent, braid_scoring);
 		let cand = idx.to_vec();
 		match &best {
 			None => best = Some((score, cand)),
@@ -930,6 +971,7 @@ fn hill_climb(
 	opponent: &[Tile],
 	need_extend: usize,
 	nodes: u64,
+	braid_scoring: BraidScoring,
 ) -> Vec<usize> {
 	let n = pool.len();
 	let mut best = start;
@@ -937,7 +979,7 @@ fn hill_climb(
 	let score_of = |idx: &[usize]| {
 		let mut trial = prefix.to_vec();
 		trial.extend(combo_tiles(pool, idx));
-		set_score(&trial, opponent)
+		set_score(&trial, opponent, braid_scoring)
 	};
 	let legal = |idx: &[usize]| {
 		let mut trial = prefix.to_vec();
@@ -998,13 +1040,16 @@ fn pick_indices(
 	need_extend: usize,
 	strategy: PickStrategy,
 	limit: SearchLimit,
+	braid_scoring: BraidScoring,
 ) -> Vec<usize> {
 	if k == 0 || pool.is_empty() {
 		return Vec::new();
 	}
 	let k = k.min(pool.len());
 	let nodes = work_nodes(limit);
-	if let Some(idx) = best_enumerated(pool, k, prefix, opponent, need_extend, nodes.max(8_000)) {
+	if let Some(idx) =
+		best_enumerated(pool, k, prefix, opponent, need_extend, nodes.max(8_000), braid_scoring)
+	{
 		return idx;
 	}
 	let greedy = greedy_indices(pool, k, prefix, need_extend)
@@ -1013,7 +1058,7 @@ fn pick_indices(
 	if strategy == PickStrategy::Greedy {
 		return greedy;
 	}
-	hill_climb(pool, greedy, k, prefix, opponent, need_extend, nodes)
+	hill_climb(pool, greedy, k, prefix, opponent, need_extend, nodes, braid_scoring)
 }
 
 fn rollout_bonus(
@@ -1023,6 +1068,7 @@ fn rollout_bonus(
 	rules: RuleSet,
 	seed: u64,
 	iters: u32,
+	config: SearchConfig,
 ) -> i32 {
 	if iters == 0 {
 		return 0;
@@ -1056,7 +1102,7 @@ fn rollout_bonus(
 				break;
 			}
 		}
-		sum += evaluate(&game, Player::One, 0);
+		sum += evaluate_with(&game, Player::One, 0, config);
 	}
 	sum / (iters.max(1) as i32)
 }
@@ -1075,16 +1121,19 @@ pub fn pick_from_pool(
 	strategy: PickStrategy,
 	limit: SearchLimit,
 	seed: u64,
+	config: SearchConfig,
 ) -> Vec<Tile> {
-	let mut idx = pick_indices(pool, k, prefix, opponent, need_extend, strategy, limit);
+	let braid_scoring = rules.braid_scoring;
+	let mut idx =
+		pick_indices(pool, k, prefix, opponent, need_extend, strategy, limit, braid_scoring);
 	if strategy == PickStrategy::Search && k > 0 && !idx.is_empty() {
 		let iters = work_iters(limit);
 		let mut best = idx.clone();
 		let mut best_s = {
 			let mut trial = prefix.to_vec();
 			trial.extend(combo_tiles(pool, &best));
-			set_score(&trial, opponent)
-				+ rollout_bonus(&trial, opponent, player, *rules, seed, iters)
+			set_score(&trial, opponent, braid_scoring)
+				+ rollout_bonus(&trial, opponent, player, *rules, seed, iters, config)
 		};
 		let n = pool.len();
 		let k = idx.len();
@@ -1107,8 +1156,16 @@ pub fn pick_from_pool(
 				if !respects_type_cap(&trial) {
 					continue;
 				}
-				let sc = set_score(&trial, opponent)
-					+ rollout_bonus(&trial, opponent, player, *rules, seed ^ cand as u64, iters);
+				let sc = set_score(&trial, opponent, braid_scoring)
+					+ rollout_bonus(
+						&trial,
+						opponent,
+						player,
+						*rules,
+						seed ^ cand as u64,
+						iters,
+						config,
+					);
 				if sc > best_s || (sc == best_s && trial_idx < best) {
 					best = trial_idx;
 					best_s = sc;
@@ -1158,6 +1215,7 @@ pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) 
 			setup.pick,
 			setup.limit,
 			seed ^ 0x0707,
+			setup.search_for(p),
 		);
 	}
 	let mut extend_picks = [Vec::new(), Vec::new()];
@@ -1179,6 +1237,7 @@ pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) 
 			setup.pick,
 			setup.limit,
 			seed ^ 0xE4E4,
+			setup.search_for(p),
 		);
 	}
 	SetupRecord {
@@ -1355,8 +1414,14 @@ mod tests {
 			.collect();
 		let all_tri: Vec<Tile> =
 			(0..11).map(|i| normal_tile(i + 41, TileColor::ALL[i as usize % 6])).collect();
-		assert!(set_score(&mixed, &[]) > set_score(&all_dot, &[]));
-		assert!(set_score(&mixed, &[]) > set_score(&all_tri, &[]));
+		assert!(
+			set_score(&mixed, &[], BraidScoring::Current)
+				> set_score(&all_dot, &[], BraidScoring::Current)
+		);
+		assert!(
+			set_score(&mixed, &[], BraidScoring::Current)
+				> set_score(&all_tri, &[], BraidScoring::Current)
+		);
 	}
 
 	#[test]
@@ -1404,6 +1469,24 @@ mod tests {
 		let kinds = |tiles: &[Tile]| tiles.iter().map(|t| kind_key(*t)).collect::<Vec<_>>();
 		assert_eq!(kinds(&rec.decks[0]), kinds(&rec.decks[1]));
 		assert_eq!(kinds(&b1), kinds(&b2));
+	}
+
+	#[test]
+	fn same_deck_mode_mirrors_the_full_27_tile_start() {
+		let mut rules = RuleSet::default();
+		rules.identical_bags = true;
+		rules.deck_size = DECK_SIZE_DEFAULT as u8;
+		let setup = SetupConfig::same_deck().with_seed(17);
+		let mut next = 1u32;
+		let rec = deal_and_pick(&rules, &setup, 17, &mut next);
+		assert_eq!(rec.decks[0].len(), 27);
+		assert_eq!(rec.decks[1].len(), 27);
+		let k1: Vec<_> = rec.decks[0].iter().map(|t| t.collection_kind()).collect();
+		let k2: Vec<_> = rec.decks[1].iter().map(|t| t.collection_kind()).collect();
+		assert_eq!(k1, k2, "same-deck: identical 27-tile collections");
+		assert_eq!(setup.deck_noise, 0);
+		assert_eq!(setup.p1_deck, DeckArchetype::Mixed);
+		assert_eq!(setup.p2_deck, DeckArchetype::Mixed);
 	}
 
 	#[test]

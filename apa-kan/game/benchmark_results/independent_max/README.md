@@ -1,5 +1,9 @@
 # Independent-max vs additive (light H2H) and shallow independent-max
 
+> **Archived.** `--channel-mode` was removed from the CLI. Live scoring is
+> additive. See [`../archive/`](../archive/).
+
+
 Compares the experimental default (`--channel-mode independent-max`) with
 RFC 002 additive stacking (`--channel-mode additive`). Doubles allowed,
 zags on, `zag_mismatch=sum`. Do not overwrite; quote numbers from the

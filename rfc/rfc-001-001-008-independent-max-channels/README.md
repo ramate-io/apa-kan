@@ -16,7 +16,9 @@ should be playable over the board.
 `--channel-mode independent-max`:
 
 1. **Independent channels.** Normal, zag, bead, and braid each keep their
-   own component math. There is no shared bead/normal channel.
+   own component math. Beads **paint and HUD as part of the normal
+   channel** (discs sit on the normal lane; IndependentMax does not drop
+   them just because zag won a mismatch tie).
 2. **Max match / max mismatch.** For each undirected edge, the totals used
    by overwhelm, HUD `tile_score`, capture logging, and search are
 
@@ -26,17 +28,23 @@ should be playable over the board.
    signed   = mismatch − match
    ```
 
-   Tile-level `effective` is still the **sum of those per-edge signed
-   values** over `Board::incident_others` (inner↔center is two petals).
-3. **Generation.** Each ring slot rolls a heavy coin (`braid_numer / 7`).
-   Two or more consecutive heavies become a braid. A lone or gapped heavy
-   falls through to the light election (can be a single bead). Remaining
-   light slots elect `normal : zag : bead = 5 : 3 : 1`. `--zags off` /
+   (`max(normal, bead)` is associative, so folding beads into normal does
+   not change IndependentMax numbers.) Tile-level `effective` is still the
+   **sum of those per-edge signed values** over `Board::incident_others`
+   (inner↔center is two petals).
+3. **Generation is not tied to channel mode.** Every deal uses the
+   IndependentMax clustering path: each ring slot rolls a heavy coin
+   (default 5:3 light:heavy so ~10% of **tiles** braid). Two or more
+   consecutive heavies become a braid. A lone or gapped heavy falls
+   through to the light election (can be a single bead). Remaining light
+   slots elect `normal : zag : bead = 5 : 3 : 1`. `--zags off` /
    `--bead-chance 0` drop that weight. Emblems stay None 200 / Crescent 1 /
    Zs 1 / Blocker 1 / Rosette 1.
 
 `--channel-mode additive` keeps RFC 002 stacking (`--bead-scoring` then
-zag+braid add) and 2–3 bead groups.
+zag+braid **sum**). Default `--bead-scoring shared` means beads are part
+of the normal channel (`max` then add zag/braid). Additive no longer
+stuffs 2–3 braid/bead groups.
 
 ## Rule mapping (current totals → max)
 
@@ -99,7 +107,8 @@ rings and ≥2 stacked (2+) bead tiles. Custom TOML may list a single bead.
 
 HUD lanes paint only the max-match channel and the max-mismatch channel
 (tie-break: match normal → bead → braid; mismatch normal → zag → bead →
-braid). Additive still paints every firing channel.
+braid), but bead discs stay on the normal lane whenever that channel is
+kept. Additive still paints every firing channel.
 
 ## Open design questions
 
@@ -110,9 +119,11 @@ braid). Additive still paints every firing channel.
 2. **Bead collector triples.** Dropped the ≥1 triple quota so bead-heavy
    27-tile bags still form under 5:3:5 light stuffing. Revisit if collectors
    should force a 3-bead tile some other way.
-3. **Braid piece rate.** Per-slot `1/7` consecutive clustering is rarer
-   than the old piece-level 1/7 (1-ring tiles never braid). Collectors stuff
-   `braid_numer=7` so every 2–3 ring tile clusters into a braid.
+3. **Braid tile rate.** Default IndependentMax heavy coin is 5:3
+   light:heavy so ~10% of **tiles** contain a braid at 7:5:4 and 4:3:2
+   counts (4:3:1 is a bit under). Collectors still stuff `braid_numer=7`
+   so every 2–3 ring tile clusters into a braid. `--braid-chance k` for
+   k≠1 keeps the `k/7` coin.
 
 ## Tests
 

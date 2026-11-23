@@ -2,6 +2,8 @@
 
 This directory contains Request for Comments (RFCs) for Apa Kan game features and technical designs.
 
+Live play is the locked ruleset in the [root README How to play](../README.md) (ratchet reward + 2-2-1-1 on the additive braid-only-exact package). RFCs below are the design history; CLI flags they name may have been removed.
+
 ## Structure
 
 Each RFC should be placed in its own directory with the naming convention:

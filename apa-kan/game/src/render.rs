@@ -494,6 +494,16 @@ fn draw_marks(
 			3.2,
 		);
 	}
+	for id in game.legal_swap_partners(from) {
+		let p = image_pt(layout, board.position(id));
+		stroke_circle(
+			img,
+			tup(p),
+			f64::from(layout.tile_radius + 5.0),
+			rgb_of(visual::SWAP_RGB),
+			3.2,
+		);
+	}
 	let p = image_pt(layout, board.position(from));
 	stroke_circle(
 		img,

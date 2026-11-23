@@ -1,0 +1,13 @@
+# Exact-play personality: same search tree as `enhanced`, with the leaf
+# match/mismatch term scaled for live braid-only-exact scoring (only
+# fulfilled braids add to the match total; 1-slot exact +1). Missing keys
+# take the `enhanced` defaults (eval_center_occ=180, eval_inner_ring=55,
+# eval_center_pressure=0). No pick bonuses, extra qsearch, or
+# move-ordering tactics.
+#
+# Coordinate descent over those four SearchConfig eval knobs
+# (`tune_eval.py climb --start exactplay --seed 7 --games 10`, 40-game
+# neighbor samples, promote-net 4) did not replace this point.
+name = "exactplay"
+description = "Braid-only-exact leaf margin scale (hillclimb-confirmed)"
+eval_margin_scale = 200

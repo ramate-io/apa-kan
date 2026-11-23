@@ -7,8 +7,8 @@ use rand::Rng;
 
 use crate::game::{Action, Game, Player};
 
-use super::eval::{evaluate, evaluate_legacy, terminal_score, WIN};
-use super::search_move::{apply_move, cheap_order, is_capture, legal_search_moves, SearchMove};
+use super::eval::{evaluate_legacy, evaluate_with, terminal_score, WIN};
+use super::search_move::{apply_move, cheap_order, is_tactical, legal_search_moves, SearchMove};
 use super::zobrist;
 use super::{count_repeats, HistoryTable, SearchConfig, SearchLimit, SearchStats};
 
@@ -314,7 +314,7 @@ fn value_at_depth(game: &Game, depth: u8, played: &[u64], config: SearchConfig) 
 fn child_pos(game: &Game, mv: SearchMove) -> Option<(Game, bool)> {
 	let mut child = game.clone();
 	let out = apply_move(&mut child, mv).ok()?;
-	let cap = is_capture(&out, game.current_player());
+	let cap = is_tactical(game, mv, &out);
 	Some((child, cap))
 }
 
@@ -565,10 +565,19 @@ fn quiesce(
 		let Ok(out) = apply_move(&mut child, mv) else {
 			continue;
 		};
-		if !is_capture(&out, me) {
+		if !is_tactical(game, mv, &out) {
 			continue;
 		}
-		let gain = out.removals.iter().filter(|r| r.tile.owner != me).count() as i32;
+		let mut gain = out.removals.iter().filter(|r| r.tile.owner != me).count() as i32;
+		if matches!(mv, SearchMove::Swap { from, to } if from == game.board().center() || to == game.board().center())
+		{
+			gain = gain.saturating_add(2);
+		}
+		if matches!(mv, SearchMove::Convert { node } if node == game.board().center()) {
+			gain = gain.saturating_add(4);
+		} else if matches!(mv, SearchMove::Convert { .. }) {
+			gain = gain.saturating_add(3);
+		}
 		captures.push((gain, mv, child));
 	}
 	captures.sort_by(|a, b| b.0.cmp(&a.0));
@@ -611,17 +620,21 @@ fn eval_now(game: &Game, ctx: &Ctx<'_>) -> i32 {
 	if ctx.legacy {
 		evaluate_legacy(game, me, repeats)
 	} else {
-		evaluate(game, me, repeats)
+		evaluate_with(game, me, repeats, ctx.config)
 	}
 }
 
 fn center_relevant(game: &Game, mv: SearchMove) -> bool {
 	let center = game.board().center();
+	let inner = game.board().inner_ring();
 	match mv {
-		SearchMove::Move { to, .. } => to == center || game.board().inner_ring().contains(&to),
-		SearchMove::Add { node, .. } | SearchMove::Claim { node } => {
-			node == center || game.board().inner_ring().contains(&node)
+		SearchMove::Move { to, .. } => to == center || inner.contains(&to),
+		SearchMove::Swap { from, to } => {
+			from == center || to == center || inner.contains(&from) || inner.contains(&to)
 		}
+		SearchMove::Add { node, .. }
+		| SearchMove::Claim { node }
+		| SearchMove::Convert { node } => node == center || inner.contains(&node),
 		SearchMove::Pass => false,
 	}
 }
@@ -645,6 +658,10 @@ fn is_reverse(mv: SearchMove, last: Option<SearchMove>) -> bool {
 			SearchMove::Move { from, to },
 			Some(SearchMove::Move { from: prev_from, to: prev_to }),
 		) => from == prev_to && to == prev_from,
+		(
+			SearchMove::Swap { from, to },
+			Some(SearchMove::Swap { from: prev_from, to: prev_to }),
+		) => (from == prev_from && to == prev_to) || (from == prev_to && to == prev_from),
 		_ => false,
 	}
 }
@@ -702,6 +719,29 @@ fn capture_hint(game: &Game, mv: SearchMove) -> i32 {
 				90_000
 			}
 		}
+		SearchMove::Swap { from, to } => {
+			let center = game.board().center();
+			let partner_opp = game.tile_at(to).is_some_and(|t| t.owner != game.current_player());
+			if to == center && partner_opp {
+				280_000
+			} else if from == center || to == center {
+				220_000
+			} else if partner_opp {
+				160_000
+			} else {
+				40_000
+			}
+		}
+		SearchMove::Convert { node } => {
+			let center = game.board().center();
+			if node == center {
+				320_000
+			} else if game.board().inner_ring().contains(&node) {
+				220_000
+			} else {
+				180_000
+			}
+		}
 		SearchMove::Pass => 0,
 	}
 }
@@ -725,7 +765,7 @@ fn order_moves(
 		return;
 	}
 	moves.sort_by_cached_key(|mv| {
-		let mut s = cheap_order(game, *mv);
+		let mut s = cheap_order(game, *mv, config);
 		let hint = capture_hint(game, *mv);
 		s += hint.saturating_mul(config.order_capture_scale) / 100;
 		if Some(*mv) == tt_move {

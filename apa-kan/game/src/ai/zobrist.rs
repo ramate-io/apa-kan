@@ -37,8 +37,17 @@ pub struct Zobrist {
 	control_ratchet: [u64; 16],
 	extra_turns: [[u64; 16]; 2],
 	extra_turn_active: u64,
+	ratchet_reward_active: u64,
+	ratchet_tier: [u64; 2],
+	ratchet_count: [u64; 16],
+	opening_stays: [[u64; 4]; 2],
+	opening_double_active: u64,
 	moved_this_turn_none: u64,
 	moved_this_turn_some: u64,
+	last_swap_none: [u64; 2],
+	last_swap_some: [u64; 2],
+	swapped_this_turn_none: u64,
+	swapped_this_turn_some: u64,
 	budget: [[u64; 64]; 2],
 }
 
@@ -64,8 +73,17 @@ impl Zobrist {
 			control_ratchet: [0; 16],
 			extra_turns: [[0; 16]; 2],
 			extra_turn_active: next(),
+			ratchet_reward_active: next(),
+			ratchet_tier: [next(), next()],
+			ratchet_count: [0; 16],
+			opening_stays: [[0; 4]; 2],
+			opening_double_active: 0,
 			moved_this_turn_none: next(),
 			moved_this_turn_some: next(),
+			last_swap_none: [next(), next()],
+			last_swap_some: [next(), next()],
+			swapped_this_turn_none: next(),
+			swapped_this_turn_some: next(),
 			budget: [[0; 64]; 2],
 		};
 		for node in 0..MAX_NODES {
@@ -117,7 +135,16 @@ impl Zobrist {
 		}
 		for n in 0..16 {
 			z.control_ratchet[n] = next();
+			z.ratchet_count[n] = next();
 		}
+		// Appended after the live key stream so off-by-default 2-2-1-1
+		// positions keep the same hash as before this flag existed.
+		for player in 0..2 {
+			for n in 0..4 {
+				z.opening_stays[player][n] = next();
+			}
+		}
+		z.opening_double_active = next();
 		z
 	}
 }
@@ -213,9 +240,38 @@ pub fn hash(game: &Game) -> u64 {
 		None => h ^= z.moved_this_turn_none,
 		Some(id) => h ^= z.moved_this_turn_some ^ mix_id(id),
 	}
+	for player in [Player::One, Player::Two] {
+		match game.last_swap_pair(player) {
+			None => h ^= z.last_swap_none[player.index()],
+			Some((a, b)) => h ^= z.last_swap_some[player.index()] ^ mix_id(a) ^ mix_id(b),
+		}
+	}
+	match game.swapped_this_turn() {
+		None => h ^= z.swapped_this_turn_none,
+		Some((a, b)) => h ^= z.swapped_this_turn_some ^ mix_id(a) ^ mix_id(b),
+	}
 	h ^= z.control_ratchet[game.control_ratchet().min(15) as usize];
 	if game.extra_turn_active() {
 		h ^= z.extra_turn_active;
+	}
+	if game.ratchet_reward_active() {
+		h ^= z.ratchet_reward_active;
+	}
+	if let Some(tier) = game.active_ratchet_tier() {
+		h ^= z.ratchet_tier[match tier {
+			crate::game::RatchetTier::First => 0,
+			crate::game::RatchetTier::Later => 1,
+		}];
+	}
+	h ^= z.ratchet_count[game.ratchet_count().min(15) as usize];
+	for player in [Player::One, Player::Two] {
+		let n = game.opening_stays_left(player).min(3) as usize;
+		if n > 0 {
+			h ^= z.opening_stays[player.index()][n];
+		}
+	}
+	if game.opening_double_pending() {
+		h ^= z.opening_double_active;
 	}
 	h
 }
@@ -352,6 +408,7 @@ mod tests {
 		use crate::game::{Game, Player, SamePieceTwice, TileColor};
 
 		let mut rules = RuleSet::default();
+		rules.opening_double = false;
 		rules.center_hold_win = true;
 		rules.center_hold_n = 5;
 		rules.no_same_piece_twice = SamePieceTwice::Always;
@@ -425,5 +482,30 @@ mod tests {
 		active.set_extra_turn_active(true);
 		assert_ne!(hash(&none), hash(&active), "TT key must include an active extra turn");
 		assert_ne!(hash(&banked), hash(&active));
+
+		let mut reward = Game::empty(RuleSet::default());
+		reward.set_ratchet_reward(crate::game::RatchetTier::First);
+		assert_ne!(hash(&none), hash(&reward), "TT key must include an active post-ratchet reward");
+		let mut later = Game::empty(RuleSet::default());
+		later.set_ratchet_reward(crate::game::RatchetTier::Later);
+		assert_ne!(hash(&reward), hash(&later), "first vs later ratchet tiers must not collide");
+	}
+
+	#[test]
+	fn hash_distinguishes_opening_double_stays() {
+		use crate::game::Game;
+
+		let mut off = RuleSet::default();
+		off.opening_double = false;
+		let none = Game::empty(off);
+		let doubled = Game::empty(RuleSet::default());
+		assert_eq!(none.opening_stays_left(crate::game::Player::One), 0);
+		assert_eq!(doubled.opening_stays_left(crate::game::Player::One), 1);
+		assert_ne!(
+			hash(&none),
+			hash(&doubled),
+			"TT key must include remaining 2-2-1-1 opening stays"
+		);
+		assert_eq!(occupancy_hash(&none), occupancy_hash(&doubled));
 	}
 }

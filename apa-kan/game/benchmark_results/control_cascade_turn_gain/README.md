@@ -1,5 +1,10 @@
 # Control-cascade turn-gain (shallow H2H)
 
+> **Archived as the live extra-turn rule.** The ratchet reward replaced
+> cascade extras. `--cascade-turn-gain` remains only when the ratchet is
+> off. See [`../archive/`](../archive/).
+
+
 Stacked on PR #74 (`control-cascade` one-way ratchet + immediate unique-holder
 drop wins, local-claim, independent-max). `--cascade-turn-gain on` awards one
 extra turn to the strict material leader when a checkpoint drops and nobody
