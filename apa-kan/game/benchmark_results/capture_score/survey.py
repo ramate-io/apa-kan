@@ -124,7 +124,7 @@ def survey(games: list[dict]) -> None:
             ring = node_ring(dest_of(act))
             dest_rings[ring] += 1
             piece = act.get("piece") or {}
-            w = piece.get("weight")
+            w = piece.get("weight") or piece.get("n_rings")
             if w is not None:
                 piece_weights[int(w)] += 1
             if act.get("majority_spawn"):

@@ -34,20 +34,44 @@ Release `apa-kan-bench`, `--no-default-features`, `--budget nodes:33000,iters:65
 
 ## Results
 
-_Filled after the light H2H runs._
+Light package: release, `--no-default-features`, `nodes:33000,iters:650`, exactplay, zag-mismatch sum, `--jobs 4`. Full cells are 150-game mm-mm (seed 300) and 100-game mm-mcts (seed 10300). Smokes below are n=4 (seed 1) used only to pick the next lever.
+
+### Smoke (n=4, mm-mm, seed 1)
+
+| Arm | n | P1 W-D-L | mean/med turns | caps/game | score mean P1/P2 (abs margin) | how games end |
+|---|---|---|---|---|---|---|
+| control (live) | 4 | 1-0-3 | 59.5 / 62 | 6.75 | — | 3 control, 1 lockout |
+| capture-score base (`eval_capture_score=0`) | 4 | 2-1-1 | **200 / 200** | 8.00 | 4.00 / 4.00 (1.00) | **0 target, 4 turn-limit** |
+| + `eval_capture_score=80` | 4 | 2-0-2 | 192 / 200 | 7.25 | 3.25 / 4.00 (1.75) | 1 target, 3 turn-limit |
+| + `eval_capture_score=400` | 4 | 0-1-3 | 200 / 200 | 4.75 | 1.75 / 3.00 (1.25) | 0 target, 4 turn-limit (more timid) |
+| + majority_spawn_bonus | 4 | 2-0-2 | **73 / 79** | 9.25 | 4.75 / 4.50 (2.75) | **4/4 score-target** |
+| + capture_cascade | 4 | 2-0-2 | 119 / 124 | 5.50 | 2.75 / 2.75 (3.50) | 1 score, 1 lockout, 2 turn-limit |
+| + unlimited_spawn | 4 | 1-1-2 | 142 / 166 | 9.75 opp, **58.5 self** | 4.50 / 5.25 (1.75) | 2 score, 2 turn-limit |
+
+Full 150-game arms are running.
+
+### Full H2H
 
 | Arm | Pairing | n | P1 W-D-L | P1 WR | mean/med turns | caps/game | score margin | target vs turn-limit | comebacks |
 |---|---|---|---|---|---|---|---|---|---|
-| control (live) | mm-mm |  |  |  |  |  | — | — |  |
+| control (live) | mm-mm | _running_ |  |  |  |  | — | — |  |
 | capture-score base | mm-mm |  |  |  |  |  |  |  |  |
 | + majority_spawn_bonus | mm-mm |  |  |  |  |  |  |  |  |
 | + capture_cascade | mm-mm |  |  |  |  |  |  |  |  |
 | + unlimited_spawn | mm-mm |  |  |  |  |  |  |  |  |
 
-## Qualitative
+## Qualitative (smoke)
 
-_Read from JSONL samples after the first completed arms._
+Base scoring with weight 0 does not hunt captures. Smoke_base game seed=1: opening ADDs on outer spawns (t1–t6), first capture at **t23** (P1 MOVE to node 1, takes P2 off center). End is **t200 TurnLimit, 5–4**. Late ply is MOVE ping-pong on the inner ring (t196–t200, score stuck 5–4). Dest mix: 559 outer / 217 inner / 24 center over 800 actions. Zero CLAIM/SWAP/CONVERT.
+
+`eval_capture_score=400` made this worse (fewer opponent captures). Do not bake a large score weight from this n=4.
+
+`majority_spawn_bonus` is the first lever that actually finishes games (all four hit target 6 around turn 46–88). Mean tokens/side 7.30 vs 0.95 on base — the extra spawn token is spent, so more pieces hit the board and get captured.
+
+`capture_cascade` does fire (13 capture-ratchets, 3 CONVERT / 2 SWAP / 8 extra ADD) but two of four games still hit the cap.
+
+`unlimited_spawn` returns every capture to the owner; self-captures explode (58/game) and one game had max_repeat=51 (looping).
 
 ## Honest take
 
-_Pending benches._
+Pending the 150-game cells. Smoke says **bare capture-score is not yet a better game** — it stalls, bots shuffle on the outer ring, and they stop one point short of the target. Majority-of-former-control as a spawn bonus looks like the bones of a scoring game that still has a reason to fight the center. Control remains shorter and more decisive.
