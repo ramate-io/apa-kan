@@ -1,7 +1,8 @@
-# Live default (`--search-profile enhanced`).
+# Search-tree base (`--search-profile enhanced`). Live default is `exactplay`
+# (this tree plus eval_margin_scale 200).
 # LMR + PVS + quiescence on; MCTS progressive widening off.
 name = "enhanced"
-description = "Recommended search defaults"
+description = "Search tree without the exactplay leaf-margin scale"
 move_ordering = true
 transposition = true
 tt_bits = 18

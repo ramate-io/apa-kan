@@ -1,7 +1,11 @@
 //! Independently toggleable search knobs, serializable as a bot profile.
 //!
 //! Named presets (`--search-profile` / `--bot-config`):
-//! - `enhanced` (default): LMR + PVS + quiescence; MCTS progressive widening **off**
+//! - `exactplay` (default): same search tree as `enhanced`, with
+//!   `eval_margin_scale` 200 so the braid-only-exact leaf match term is not
+//!   drowned by material/geometry. Hillclimbed vs enhanced at light budget.
+//!   No extra qsearch, pick bonuses, or move-ordering tactics.
+//! - `enhanced`: LMR + PVS + quiescence; MCTS progressive widening **off**
 //! - `classic`: PR #62 engine (TT + ordering + quiescence, no LMR/PVS/PW)
 //! - `plain`: alpha-beta / uniform cut-off playouts
 //! - `tactical`: aggressive capture/center weights, deeper qsearch, short playouts
@@ -11,11 +15,8 @@
 //!   tree reuse + solver (focused MCTS; extra PW / low PUCT lost strength)
 //! - `counterplay`: downweight sitting on center, score overwhelm-pressure on
 //!   the center holder under control_win, boost claims/threats, higher PUCT
-//! - `exactplay`: same search shape as `enhanced`, but the leaf match/mismatch
-//!   term is rescaled for live braid-only-exact (only braid matches score;
-//!   1-slot exact +1). Coordinate descent over the existing eval knobs did
-//!   not move this point. No extra qsearch, pick bonuses, or move-ordering
-//!   tactics. Missing TOML keys still take `enhanced` defaults.
+//!
+//! Missing TOML keys still take the `enhanced` tree (`eval_margin_scale` 100).
 //!
 //! Overlay any field with `--search k=v,...`. Load a TOML file with `--bot-config`.
 
@@ -24,7 +25,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-/// Search-algorithm knobs. Missing TOML keys take [`SearchConfig::enhanced`] values.
+/// Search-algorithm knobs. Missing TOML keys take the `enhanced` tree
+/// (including `eval_margin_scale` 100). The live CLI/app default profile is
+/// still [`SearchConfig::exactplay`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchConfig {
@@ -139,11 +142,17 @@ pub struct SearchConfig {
 	/// braid-only-exact the match count is only fulfilled braids (1-slot
 	/// exact +1); this restores that scoring term against material/geometry
 	/// without adding new eval features. Clamped to 1..=400.
+	///
+	/// Serde missing-key default is 100 (`enhanced`) so personality TOMLs that
+	/// omit this field keep the old leaf. [`SearchConfig::default`] is still
+	/// [`SearchConfig::exactplay`] (200).
+	#[serde(default = "serde_eval_margin_scale")]
 	pub eval_margin_scale: i32,
 }
 
 impl SearchConfig {
-	/// Live default: LMR + PVS + quiescence, heuristic playouts, **no** PW.
+	/// Search-tree base: LMR + PVS + quiescence, heuristic playouts, **no** PW.
+	/// Live default is [`Self::exactplay`] (`eval_margin_scale` 200 on this tree).
 	pub fn enhanced() -> Self {
 		Self {
 			move_ordering: true,
@@ -308,7 +317,7 @@ impl SearchConfig {
 
 	pub fn parse_profile(s: &str) -> Result<Self, String> {
 		match s.trim().to_ascii_lowercase().as_str() {
-			"enhanced" | "new" | "full" | "pruned" | "default" => Ok(Self::enhanced()),
+			"enhanced" | "new" | "full" | "pruned" => Ok(Self::enhanced()),
 			"classic" | "old" | "baseline" => Ok(Self::classic()),
 			"plain" | "ab" | "alpha-beta" | "alphabeta" => Ok(Self::plain()),
 			"tactical" | "aggressive" | "aggro" => Ok(Self::tactical()),
@@ -316,15 +325,16 @@ impl SearchConfig {
 			"explorative" | "explore" | "curious" => Ok(Self::explorative()),
 			"deep_mcts" | "deep-mcts" | "deep" | "focused" => Ok(Self::deep_mcts()),
 			"counterplay" | "counter" | "contest" => Ok(Self::counterplay()),
-			"exactplay" | "exact" | "playtest" | "liveplay" => Ok(Self::exactplay()),
+			"exactplay" | "exact" | "playtest" | "liveplay" | "default" => Ok(Self::exactplay()),
 			other => Err(format!(
-				"unknown --search-profile '{other}' (expected enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay|exactplay)"
+				"unknown --search-profile '{other}' (expected exactplay|enhanced|classic|plain|tactical|positional|explorative|deep_mcts|counterplay)"
 			)),
 		}
 	}
 
 	pub fn profile_names() -> &'static [&'static str] {
 		&[
+			"exactplay",
 			"enhanced",
 			"classic",
 			"plain",
@@ -333,7 +343,6 @@ impl SearchConfig {
 			"explorative",
 			"deep_mcts",
 			"counterplay",
-			"exactplay",
 		]
 	}
 
@@ -608,7 +617,7 @@ impl SearchConfig {
 
 impl Default for SearchConfig {
 	fn default() -> Self {
-		Self::enhanced()
+		Self::exactplay()
 	}
 }
 
@@ -644,6 +653,10 @@ fn parse_i32(flag: &str, value: &str) -> Result<i32, String> {
 
 fn parse_f32(flag: &str, value: &str) -> Result<f32, String> {
 	value.parse().map_err(|_| format!("invalid {flag} '{value}' (expected number)"))
+}
+
+fn serde_eval_margin_scale() -> i32 {
+	100
 }
 
 fn on_off(v: bool) -> &'static str {
@@ -687,15 +700,22 @@ mod tests {
 	}
 
 	#[test]
-	fn enhanced_default_keeps_pw_off() {
+	fn enhanced_keeps_pw_off() {
 		let cfg = SearchConfig::enhanced();
 		assert!(cfg.lmr && cfg.pvs && cfg.quiescence);
 		assert!(!cfg.mcts_progressive_widening);
-		assert_eq!(SearchConfig::default(), cfg);
+		assert_eq!(cfg.eval_margin_scale, 100);
 	}
 
 	#[test]
-	fn toml_partial_fills_enhanced_defaults() {
+	fn default_profile_is_exactplay() {
+		assert_eq!(SearchConfig::default(), SearchConfig::exactplay());
+		assert_eq!(SearchConfig::parse_profile("default").unwrap(), SearchConfig::exactplay());
+		assert_eq!(SearchConfig::parse_profile("enhanced").unwrap(), SearchConfig::enhanced());
+	}
+
+	#[test]
+	fn toml_partial_fills_default_profile_values() {
 		let cfg = SearchConfig::parse_toml(
 			"name = \"scratch\"\ndescription = \"pw on\"\nmcts_progressive_widening = true\npuct = 2.0\n",
 		)
@@ -704,6 +724,7 @@ mod tests {
 		assert!(cfg.mcts_progressive_widening);
 		assert!((cfg.puct - 2.0).abs() < 1e-6);
 		assert_eq!(cfg.tt_bits, 18);
+		assert_eq!(cfg.eval_margin_scale, 100);
 	}
 
 	#[test]

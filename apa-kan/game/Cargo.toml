@@ -28,6 +28,10 @@ required-features = ["desktop"]
 name = "apa-kan-bench"
 path = "src/bin/bench.rs"
 
+[[bin]]
+name = "apa-kan-analyze"
+path = "src/bin/analyze.rs"
+
 [dependencies]
 bevy = { workspace = true, optional = true, features = ["android-native-activity"] }
 flate2 = "1"

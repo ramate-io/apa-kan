@@ -1,0 +1,70 @@
+# search depth diagnosis  log=apa-kan/game/benchmark_results/opening_2211/h2h_n300_mm_r1.jsonl.gz  games=300
+# search=profile=exactplay ordering=on tt=on/18 lmr=on pvs=on q=on/4 pw=off heur_playouts=on puct=1.60 cutoff=12 threads=1 priors=off pw_order=off reuse=on mcts_tt=off factored=off leaf=0 solver=off eval_center=180 eval_inner=55 eval_pressure=0 order_claim_c=0 order_threat=0 eval_margin=200
+# budget=nodes:33000,iters:650
+
+# branching (legal actions by phase; search= kind-collapsed ADD)
+# terminals: control=201 lockout=75 elimination=8
+all  n=14847  all=47.4/116  search=45.9/116  add=28.5/96  move=18.6/64  swap=0.3/50  claim=0.0/1  convert=0.0/6
+early(t<=8)  n=2700  all=65.2/100  search=63.8/100  add=54.5/96  move=10.7/52  swap=0.0/3  claim=0.0/0  convert=0.0/0
+mid(t<=35)  n=7474  all=47.5/116  search=45.7/116  add=27.7/96  move=19.5/64  swap=0.3/50  claim=0.0/1  convert=0.0/6
+late  n=4673  all=37.0/104  search=35.8/102  add=14.7/84  move=21.8/54  swap=0.5/45  claim=0.0/1  convert=0.1/5
+ratchet  n=549  all=54.4/116  search=51.3/116  add=30.6/96  move=15.4/41  swap=7.5/50  claim=0.0/1  convert=0.9/6
+
+# timed exactplay minimax on sampled positions (light budget unless overridden)
+# phase  game  action  turn  legal  depth  score  nodes  nps  ms  first_cut%  tt_cut%  lmr  pvs_re  same_side  q_nodes  term_w/l  first_win_ply  max_ply
+early  g1  a1  t0  legal=88  depth=2  score=556  nodes=33000  nps=144657  ms=228  first_cut=96%  tt_cut=12.6%  lmr=0/0  pvs_re=14  same_side=2773  q=10012  term=0/0  win_ply=0  max_ply=3
+early  g1  a2  t1  legal=77  depth=2  score=-5  nodes=33000  nps=238520  ms=138  first_cut=67%  tt_cut=0.0%  lmr=0/0  pvs_re=13  same_side=1051  q=11007  term=0/0  win_ply=0  max_ply=3
+early  g1  a3  t2  legal=66  depth=2  score=472  nodes=33000  nps=121708  ms=271  first_cut=97%  tt_cut=30.4%  lmr=0/0  pvs_re=6  same_side=172  q=11424  term=0/0  win_ply=0  max_ply=3
+mid  g1  a10  t9  legal=49  depth=3  score=771  nodes=33000  nps=84357  ms=391  first_cut=71%  tt_cut=2.8%  lmr=0/0  pvs_re=31  same_side=0  q=12605  term=0/0  win_ply=0  max_ply=4
+mid  g1  a11  t10  legal=66  depth=3  score=-527  nodes=33000  nps=71215  ms=463  first_cut=84%  tt_cut=3.2%  lmr=0/0  pvs_re=22  same_side=0  q=13264  term=0/0  win_ply=0  max_ply=4
+mid  g1  a12  t11  legal=49  depth=2  score=527  nodes=33000  nps=55178  ms=598  first_cut=44%  tt_cut=26.9%  lmr=0/0  pvs_re=21  same_side=2  q=14548  term=0/0  win_ply=0  max_ply=3
+late  g1  a37  t36  legal=11  depth=4  score=-2685  nodes=33000  nps=50664  ms=651  first_cut=51%  tt_cut=17.0%  lmr=1/1  pvs_re=34  same_side=0  q=12463  term=0/0  win_ply=0  max_ply=5
+late  g1  a38  t37  legal=66  depth=3  score=2685  nodes=33000  nps=51731  ms=638  first_cut=44%  tt_cut=19.5%  lmr=0/0  pvs_re=12  same_side=0  q=12599  term=2/0  win_ply=5  max_ply=4
+late  g1  a39  t38  legal=9  depth=4  score=-2332  nodes=33000  nps=52507  ms=628  first_cut=52%  tt_cut=22.3%  lmr=9/5  pvs_re=19  same_side=0  q=12504  term=1/0  win_ply=4  max_ply=5
+
+# forced control wins: last N actions of control-ended games; min ID depth to score > WIN/2
+# game 1 winner=Some(1) kind=Some("hold") turns=50 actions=50
+  back=1 t=49 legal=46  min_depth=1 nodes=426 ms=5 score=49950 winish=true
+    ctrl-1x-light-b1  g1  a50  t49  legal=46  depth=4  score=49950  nodes=33000  nps=189546  ms=174  first_cut=100%  tt_cut=10.3%  lmr=0/0  pvs_re=1  same_side=374  q=10271  term=248/5  win_ply=1  max_ply=5
+    ctrl-4x-b1  g1  a50  t49  legal=46  depth=6  score=49950  nodes=132000  nps=147976  ms=892  first_cut=100%  tt_cut=25.1%  lmr=724/0  pvs_re=1  same_side=1118  q=44369  term=1405/30  win_ply=1  max_ply=7
+  back=2 t=48 legal=27  min_depth=2 nodes=1498 ms=46 score=49950 winish=true
+  back=3 t=47 legal=30  min_depth=none (no win score through depth 8)
+    ctrl-1x-light-b3  g1  a48  t47  legal=30  depth=5  score=-49950  nodes=33000  nps=83548  ms=395  first_cut=98%  tt_cut=17.0%  lmr=73/0  pvs_re=8  same_side=375  q=12534  term=407/0  win_ply=3  max_ply=6
+    ctrl-4x-b3  g1  a48  t47  legal=30  depth=7  score=-49950  nodes=132000  nps=104798  ms=1260  first_cut=100%  tt_cut=19.9%  lmr=412/0  pvs_re=8  same_side=1343  q=47861  term=2055/16  win_ply=3  max_ply=8
+# game 2 winner=Some(2) kind=Some("hold") turns=27 actions=27
+  back=1 t=26 legal=92  min_depth=1 nodes=262 ms=1 score=49973 winish=true
+    ctrl-1x-light-b1  g2  a27  t26  legal=92  depth=5  score=49973  nodes=33000  nps=232409  ms=142  first_cut=100%  tt_cut=12.4%  lmr=270/0  pvs_re=0  same_side=0  q=8977  term=443/151  win_ply=1  max_ply=6
+    ctrl-4x-b1  g2  a27  t26  legal=92  depth=7  score=49973  nodes=132000  nps=217137  ms=608  first_cut=100%  tt_cut=19.8%  lmr=952/0  pvs_re=0  same_side=1  q=33431  term=2918/528  win_ply=1  max_ply=8
+  back=2 t=25 legal=74  min_depth=1 nodes=266 ms=2 score=49973 winish=true
+  back=3 t=24 legal=61  min_depth=1 nodes=472 ms=6 score=49973 winish=true
+    ctrl-1x-light-b3  g2  a25  t24  legal=61  depth=3  score=49973  nodes=33000  nps=131876  ms=250  first_cut=100%  tt_cut=17.3%  lmr=0/0  pvs_re=4  same_side=410  q=11172  term=1140/146  win_ply=4  max_ply=4
+    ctrl-4x-b3  g2  a25  t24  legal=61  depth=4  score=49973  nodes=132000  nps=145440  ms=908  first_cut=100%  tt_cut=17.6%  lmr=67/0  pvs_re=4  same_side=2326  q=43458  term=3879/461  win_ply=4  max_ply=5
+# game 2 winner=Some(1) kind=Some("hold") turns=39 actions=39
+  back=1 t=38 legal=46  min_depth=1 nodes=142 ms=1 score=49961 winish=true
+    ctrl-1x-light-b1  g2  a39  t38  legal=46  depth=4  score=49961  nodes=33000  nps=102368  ms=322  first_cut=100%  tt_cut=13.4%  lmr=0/0  pvs_re=3  same_side=28  q=9903  term=1052/0  win_ply=1  max_ply=5
+    ctrl-4x-b1  g2  a39  t38  legal=46  depth=6  score=49961  nodes=132000  nps=91447  ms=1443  first_cut=100%  tt_cut=22.3%  lmr=994/0  pvs_re=3  same_side=57  q=37489  term=5457/0  win_ply=1  max_ply=7
+  back=2 t=37 legal=17  min_depth=none (no win score through depth 8)
+  back=3 t=36 legal=43  min_depth=3 nodes=3029 ms=26 score=49961 winish=true
+    ctrl-1x-light-b3  g2  a37  t36  legal=43  depth=5  score=49961  nodes=33000  nps=145547  ms=227  first_cut=99%  tt_cut=16.5%  lmr=23/0  pvs_re=3  same_side=0  q=9248  term=852/0  win_ply=3  max_ply=6
+    ctrl-4x-b3  g2  a37  t36  legal=43  depth=6  score=49961  nodes=132000  nps=104339  ms=1265  first_cut=100%  tt_cut=21.3%  lmr=1072/0  pvs_re=4  same_side=6  q=37043  term=3095/0  win_ply=3  max_ply=7
+# game 3 winner=Some(1) kind=Some("hold") turns=38 actions=38
+  back=1 t=37 legal=18  min_depth=1 nodes=75 ms=2 score=49962 winish=true
+    ctrl-1x-light-b1  g3  a38  t37  legal=18  depth=4  score=49962  nodes=33000  nps=158865  ms=208  first_cut=100%  tt_cut=15.7%  lmr=0/0  pvs_re=1  same_side=0  q=10077  term=81/1  win_ply=1  max_ply=5
+    ctrl-4x-b1  g3  a38  t37  legal=18  depth=7  score=49962  nodes=132000  nps=67998  ms=1941  first_cut=100%  tt_cut=41.9%  lmr=1041/0  pvs_re=1  same_side=8  q=34410  term=479/9  win_ply=1  max_ply=8
+  back=2 t=36 legal=31  min_depth=none (no win score through depth 8)
+  back=3 t=35 legal=82  min_depth=3 nodes=29507 ms=1058 score=49962 winish=true
+    ctrl-1x-light-b3  g3  a36  t35  legal=82  depth=3  score=49962  nodes=33000  nps=30062  ms=1098  first_cut=65%  tt_cut=17.2%  lmr=0/0  pvs_re=19  same_side=102  q=13002  term=1033/33  win_ply=3  max_ply=4
+    ctrl-4x-b3  g3  a36  t35  legal=82  depth=4  score=49962  nodes=132000  nps=46286  ms=2852  first_cut=95%  tt_cut=12.6%  lmr=26/0  pvs_re=19  same_side=599  q=48252  term=3077/37  win_ply=3  max_ply=5
+
+# playable-app --think-ms 80 on the same early/mid/late sample (all completed ID depth 2)
+# early g1 a1: depth=2 nodes=22208 score=556 ms~80
+# mid   g1 a10: depth=2 nodes=4864
+# late  g1 a37: depth=2 nodes=3264
+#
+# 16x (528k) / 64x (2.11M) from an earlier run on the same control leaves:
+# g1 b1 16x d7 3.7s; 64x d8 14.7s (win_ply=1)
+# g2 a27 b1 16x d8 2.3s; 64x d10 10.3s (win_ply=1)
+# g2 a39 b3 16x d8 5.5s; 64x d9 20.2s (win_ply=1 at the 1-ply leaf)
+# g3 a38 b3 16x d8 5.7s; 64x d10 24.1s
+# g1 hold back=6: min_depth=7 nodes=1.3M ms=16s (not found at 33k)
+

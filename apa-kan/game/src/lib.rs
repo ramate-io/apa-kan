@@ -7,6 +7,7 @@ pub mod characters;
 pub mod config;
 pub mod deck;
 pub mod game;
+pub mod play_log;
 pub mod render;
 pub mod scenario;
 #[cfg(feature = "desktop")]
