@@ -1,0 +1,53 @@
+name: Admin Smoke
+
+on:
+  push:
+    branches:
+
+jobs:
+  admin-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: apa
+          POSTGRES_USER: apa
+          POSTGRES_DB: apa_kan
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U apa -d apa_kan"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+      - name: Enable Nix Flakes
+        run: |
+          mkdir -p ~/.config/nix
+          echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
+      - name: Read Rust toolchain channel
+        id: rust_toolchain
+        run: echo "channel=$(packaging/version.sh --rust)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nix-${{ steps.rust_toolchain.outputs.channel }}-admin-smoke
+          cache-all-crates: true
+          cache-on-failure: true
+      - name: Postgres ANN + server/admin check
+        run: |
+          cat > /tmp/nix_command.sh << 'EOF'
+          set -euo pipefail
+          export APA_KAN_POSTGRES_URL=postgres://apa:apa@127.0.0.1:5432/apa_kan
+          cargo test -p apa-kan-store --features postgres,memory -- --test-threads=1 postgres_generation
+          cargo test -p apa-kan-server --test e2e_admin -- --test-threads=1
+          cargo check -p apa-kan-admin
+          EOF
+          chmod +x /tmp/nix_command.sh
+          nix develop . --command /tmp/nix_command.sh

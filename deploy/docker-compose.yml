@@ -1,0 +1,42 @@
+services:
+  postgres:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.postgres
+    environment:
+      POSTGRES_DB: apa_kan
+      POSTGRES_USER: apa
+      POSTGRES_PASSWORD: apa
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apa -d apa_kan"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    environment:
+      APA_KAN_DATABASE_URL: postgres://apa:apa@postgres:5432/apa_kan
+      APA_KAN_ALLOW_FIRST_ADMIN: "1"
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  admin:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.admin
+    environment:
+      APA_KAN_SERVER_URL: http://server:8080
+      ADMIN_PORT: "3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server

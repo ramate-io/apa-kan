@@ -1,0 +1,4 @@
+FROM pgvector/pgvector:pg16
+ENV POSTGRES_DB=apa_kan
+ENV POSTGRES_USER=apa
+ENV POSTGRES_PASSWORD=apa
