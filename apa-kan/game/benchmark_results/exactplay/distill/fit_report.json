@@ -1,0 +1,86 @@
+{
+  "n_roots": 1011,
+  "n_train": 513,
+  "n_hold": 498,
+  "tried": 120,
+  "current": {
+    "order_vacate_center": 1200,
+    "order_vacate_overwhelmed": 1200,
+    "order_center_threat": 0,
+    "order_claim_center": 0
+  },
+  "current_train": {
+    "n": 331,
+    "disagree": 331,
+    "beat_light": 112,
+    "beat_light_rate": 0.338368580060423,
+    "mean_rank": 16.090634441087612,
+    "mrr": 0.2195974270696689,
+    "weighted_mrr": 0.21740220785565015,
+    "center_mean_rank": 14.131147540983607,
+    "vacate_dis_mean_rank": 16.09090909090909,
+    "threat_dis_mean_rank": 2.8,
+    "vacate_chosen": 11,
+    "threat_chosen": 20,
+    "top1": 0.08157099697885196
+  },
+  "current_hold": {
+    "n": 333,
+    "disagree": 333,
+    "beat_light": 144,
+    "beat_light_rate": 0.43243243243243246,
+    "mean_rank": 19.126126126126128,
+    "mrr": 0.15048829435809624,
+    "weighted_mrr": 0.15127618277225263,
+    "center_mean_rank": 18.3321554770318,
+    "vacate_dis_mean_rank": 35.5,
+    "threat_dis_mean_rank": 6.256410256410256,
+    "vacate_chosen": 14,
+    "threat_chosen": 39,
+    "top1": 0.05105105105105105
+  },
+  "best": {
+    "order_vacate_center": 1200,
+    "order_vacate_overwhelmed": 1200,
+    "order_center_threat": 0,
+    "order_claim_center": 0
+  },
+  "best_train": {
+    "n": 331,
+    "disagree": 331,
+    "beat_light": 112,
+    "beat_light_rate": 0.338368580060423,
+    "mean_rank": 16.090634441087612,
+    "mrr": 0.2195974270696689,
+    "weighted_mrr": 0.21740220785565015,
+    "center_mean_rank": 14.131147540983607,
+    "vacate_dis_mean_rank": 16.09090909090909,
+    "threat_dis_mean_rank": 2.8,
+    "vacate_chosen": 11,
+    "threat_chosen": 20,
+    "top1": 0.08157099697885196
+  },
+  "best_hold": {
+    "n": 333,
+    "disagree": 333,
+    "beat_light": 144,
+    "beat_light_rate": 0.43243243243243246,
+    "mean_rank": 19.126126126126128,
+    "mrr": 0.15048829435809624,
+    "weighted_mrr": 0.15127618277225263,
+    "center_mean_rank": 18.3321554770318,
+    "vacate_dis_mean_rank": 35.5,
+    "threat_dis_mean_rank": 6.256410256410256,
+    "vacate_chosen": 14,
+    "threat_chosen": 39,
+    "top1": 0.05105105105105105
+  },
+  "changed": false,
+  "holdout_mrr_improved": false,
+  "neighbors_note": {
+    "vacate_0_hurts_overall_mrr_but_helps_vacate_rank": "train wMRR 0.217\u21920.201, vacate rank 16.1\u21926.8; 11 vacate disagrees vs 331 total",
+    "threat_3500_noop": "threat disagrees already rank 2.8 via capture bonuses",
+    "claim_5000_noop": "deep never chose CLAIM",
+    "light_vs_deep_kinds_train": "MOVE\u2192MOVE 210, ADD\u2192ADD 64, ADD\u2192MOVE 32, MOVE\u2192ADD 23"
+  }
+}

@@ -404,6 +404,92 @@ pub fn cheap_order(game: &Game, mv: SearchMove, config: SearchConfig) -> i32 {
 	}
 }
 
+/// Binary `cheap_order` knobs for a move, plus the score with those knobs zeroed.
+///
+/// Fitted integers are `order_vacate_center`, `order_vacate_overwhelmed`,
+/// `order_center_threat`, and `order_claim_center`. `onto_center` / `off_center`
+/// are diagnostics only (not new tactics).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrderFitFeatures {
+	pub vacate_healthy: i8,
+	pub vacate_overwhelmed: i8,
+	pub center_threat: i8,
+	pub claim_center: i8,
+	pub onto_center: i8,
+	pub off_center: i8,
+	pub base: i32,
+}
+
+/// `cheap_order` = `base` − vacate_healthy * vacate − vacate_overwhelmed * ow
+/// + center_threat * threat + claim_center * claim_center.
+pub fn order_fit_features(game: &Game, mv: SearchMove) -> OrderFitFeatures {
+	let center = game.board().center();
+	let inner = game.board().inner_ring();
+	let mut vacate_healthy = 0i8;
+	let mut vacate_overwhelmed = 0i8;
+	let mut onto_center = 0i8;
+	let mut off_center = 0i8;
+	let dest = match mv {
+		SearchMove::Move { from, to } | SearchMove::Swap { from, to } => {
+			if to == center {
+				onto_center = 1;
+			}
+			if from == center {
+				off_center = 1;
+				if game.rules().center_hold_win || game.rules().control_win {
+					if game.is_overwhelmed(from) {
+						vacate_overwhelmed = 1;
+					} else {
+						vacate_healthy = 1;
+					}
+				}
+			}
+			Some(to)
+		}
+		SearchMove::Add { node, .. } => {
+			if node == center {
+				onto_center = 1;
+			}
+			Some(node)
+		}
+		SearchMove::Claim { node } => {
+			if node == center {
+				onto_center = 1;
+			}
+			None
+		}
+		SearchMove::Convert { node } => {
+			if node == center {
+				onto_center = 1;
+			}
+			Some(node)
+		}
+		SearchMove::Pass => None,
+	};
+	let mut probe = SearchConfig::enhanced();
+	probe.order_center_threat = 1;
+	let center_threat =
+		dest.map(|to| i8::from(center_threat_bonus(game, to, probe) != 0)).unwrap_or(0);
+	let claim_center = match mv {
+		SearchMove::Claim { node } if node == center || inner.contains(&node) => 1,
+		_ => 0,
+	};
+	let mut zero = SearchConfig::enhanced();
+	zero.order_vacate_center = 0;
+	zero.order_vacate_overwhelmed = 0;
+	zero.order_center_threat = 0;
+	zero.order_claim_center = 0;
+	OrderFitFeatures {
+		vacate_healthy,
+		vacate_overwhelmed,
+		center_threat,
+		claim_center,
+		onto_center,
+		off_center,
+		base: cheap_order(game, mv, zero),
+	}
+}
+
 fn center_threat_bonus(game: &Game, dest: crate::board::NodeId, config: SearchConfig) -> i32 {
 	if config.order_center_threat == 0 {
 		return 0;

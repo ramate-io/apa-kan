@@ -15,7 +15,9 @@ use crate::game::{Action, Game, Player, RuleSet};
 
 pub use eval::{evaluate, evaluate_with, terminal_score, WIN};
 pub use search_config::SearchConfig;
-pub use search_move::legal_search_moves;
+pub use search_move::{
+	cheap_order, legal_search_moves, order_fit_features, OrderFitFeatures, SearchMove,
+};
 pub use zobrist::{hash as visible_hash, occupancy_hash};
 
 /// Mean minimax nodes per move at 1000 ms, single-threaded, release, this VM.
@@ -89,7 +91,7 @@ impl SearchLimit {
 }
 
 use eval::evaluate as eval_pos;
-use search_move::{apply_move, legal_search_moves as search_moves, SearchMove};
+use search_move::{apply_move, legal_search_moves as search_moves};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Actor {
