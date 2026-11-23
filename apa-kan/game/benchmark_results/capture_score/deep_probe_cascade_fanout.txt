@@ -1,0 +1,24 @@
+# deep_probe  search=profile=enhanced ordering=on tt=on/18 lmr=on pvs=on q=on/4 pw=off heur_playouts=on puct=1.60 cutoff=12 threads=1 priors=off pw_order=off reuse=on mcts_tt=off factored=off leaf=0 solver=off eval_center=180 eval_inner=55 eval_pressure=0 order_claim_c=0 order_threat=0 eval_margin=100 eval_capture=0
+# budget_base_nodes=132000  mult=[1, 16, 64]  fanout=4@max  shuffle=true jobs=8
+# positions_scheduled=12
+# columns: log game action turn player scores claim counts imm_cap budgets moves
+pos	smoke_cascade_mm.jsonl.gz	g2	ix79	t80	P1	0-1	co=0	cs=0	ic=30	sw=false	m1:move19->13 d4 n132000 sc-351 ringouter term0	m16:move19->18 d7 n2112000 sc-356 ringinner term0	m64:move19->18 d8 n8448000 sc-368 ringinner term0	fan64_uniq=2 fan64_n=4	d16=7	d64=8	ch16=1	ch64=1
+pos	smoke_cascade_mm.jsonl.gz	g2	ix80	t81	P2	0-1	co=0	cs=0	ic=24	sw=false	m1:move16->12 d4 n132000 sc351 ringinner term0	m16:move17->12 d6 n2112000 sc359 ringinner term0	m64:move24->1 d7 n8448000 sc376 ringinner term0	fan64_uniq=3 fan64_n=4	d16=6	d64=7	ch16=1	ch64=1
+pos	smoke_cascade_mm.jsonl.gz	g2	ix81	t82	P1	0-1	co=0	cs=0	ic=35	sw=false	m1:move18->13 d4 n132000 sc-351 ringouter term0	m16:move18->13 d7 n2112000 sc-333 ringouter term0	m64:move18->13 d7 n8448000 sc-333 ringouter term0	fan64_uniq=1 fan64_n=4	d16=7	d64=7	ch16=0	ch64=0
+pos	smoke_cascade_mm.jsonl.gz	g2	ix82	t83	P2	0-1	co=0	cs=0	ic=25	sw=false	m1:move24->15 d4 n132000 sc356 ringouter term0	m16:move16->12 d7 n2112000 sc377 ringinner term0	m64:move16->12 d8 n8448000 sc351 ringinner term0	fan64_uniq=1 fan64_n=4	d16=7	d64=8	ch16=1	ch64=1
+pos	smoke_cascade_mm.jsonl.gz	g3	ix79	t80	P2	1-1	co=0	cs=0	ic=0	sw=false	m1:move11->14 d4 n132000 sc41 ringouter term0	m16:move21->8 d6 n2112000 sc41 ringouter term0	m64:move21->8 d8 n8448000 sc39 ringouter term0	fan64_uniq=3 fan64_n=4	d16=6	d64=8	ch16=1	ch64=1
+pos	smoke_cascade_mm.jsonl.gz	g3	ix80	t81	P1	1-1	co=0	cs=0	ic=0	sw=false	m1:move23->2 d5 n132000 sc-34 ringouter term0	m16:move20->17 d7 n2112000 sc-39 ringouter term0	m64:move20->17 d7 n8448000 sc-39 ringouter term0	fan64_uniq=1 fan64_n=4	d16=7	d64=7	ch16=1	ch64=1
+pos	smoke_cascade_mm.jsonl.gz	g3	ix81	t82	P2	1-1	co=0	cs=0	ic=3	sw=false	m1:move21->8 d5 n132000 sc39 ringouter term0	m16:move21->8 d6 n2112000 sc39 ringouter term0	m64:move21->8 d7 n8448000 sc39 ringouter term0	fan64_uniq=3 fan64_n=4	d16=6	d64=7	ch16=0	ch64=0
+pos	smoke_cascade_mm.jsonl.gz	g3	ix82	t83	P1	1-1	co=0	cs=0	ic=0	sw=false	m1:move5->16 d4 n132000 sc-39 ringinner term0	m16:move5->11 d7 n2112000 sc-39 ringouter term0	m64:move5->11 d8 n8448000 sc-39 ringouter term0	fan64_uniq=3 fan64_n=4	d16=7	d64=8	ch16=1	ch64=1
+pos	smoke_cascade_mm.jsonl.gz	g4	ix53	t54	P1	0-2	co=0	cs=0	ic=2	sw=false	m1:move10->13 d6 n132000 sc-416 ringouter term0	m16:move10->13 d8 n2112000 sc-416 ringouter term0	m64:move10->13 d8 n8448000 sc-416 ringouter term0	fan64_uniq=2 fan64_n=4	d16=8	d64=8	ch16=0	ch64=0
+pos	smoke_cascade_mm.jsonl.gz	g4	ix65	t66	P1	0-2	co=0	cs=0	ic=0	sw=false	m1:move2->24 d5 n132000 sc-384 ringouter term0	m16:move10->13 d8 n2112000 sc-392 ringouter term0	m64:move10->13 d9 n8448000 sc-384 ringouter term0	fan64_uniq=4 fan64_n=4	d16=8	d64=9	ch16=1	ch64=1
+pos	smoke_cascade_mm.jsonl.gz	g4	ix77	t78	P1	0-2	co=0	cs=0	ic=0	sw=false	m1:move9->13 d4 n132000 sc-415 ringouter term0	m16:move9->13 d7 n2112000 sc-383 ringouter term0	m64:move22->15 d8 n8448000 sc-400 ringouter term0	fan64_uniq=1 fan64_n=4	d16=7	d64=8	ch16=0	ch64=1
+pos	smoke_cascade_mm.jsonl.gz	g4	ix89	t90	P1	0-2	co=0	cs=0	ic=0	sw=false	m1:move24->4 d5 n132000 sc-400 ringouter term0	m16:move15->22 d7 n2112000 sc-412 ringouter term0	m64:move13->4 d9 n8448000 sc-412 ringouter term0	fan64_uniq=4 fan64_n=4	d16=7	d64=9	ch16=1	ch64=1
+
+# summary
+positions=12
+move_change_rate  x16=0.667 x64=0.750
+deep_only_terminal_win_flags=0
+imm_capture_positions=6 shallow_missed_tactical=3
+fanout_unique_mean=2.33
+dest_ring_light={"outer": 10, "inner": 2} dest_ring_max_mult={"outer": 9, "inner": 3}

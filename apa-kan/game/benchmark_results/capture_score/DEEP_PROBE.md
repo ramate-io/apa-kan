@@ -118,18 +118,48 @@ Still **no** terminal band, but eval **magnitude** rises (spawn tokens spent, ce
 
 **Majority fan-out (4× @64×):** `fan_uniq_mean=2.58` (max **4**); `ch16/ch64` **identical** to single-seed (`compare_probe.py`); **`term1=0`**. Fan-out surfaces inner-ring ties (`move20->0`, `move11->6` vs `move11->21`) without a hidden terminal score line.
 
-## Deep probe — cascade / unlimited (fan-out 4 @64×)
+## Deep probe — capture cascade (n=12, fan-out 4 @64×)
 
-| Log | n | `ch64` | `term1` | `fan_uniq_mean` | Status |
-|-----|--:|-------:|--------:|----------------:|--------|
-| `smoke_cascade_mm.jsonl.gz` | — | — | — | — | running → `deep_probe_cascade_fanout.txt` |
-| `smoke_unlimited_mm.jsonl.gz` | — | — | — | — | queued → `deep_probe_unlimited_fanout.txt` |
+| Metric | Base | Cascade |
+|--------|-----:|--------:|
+| `ch64` vs 1× | 50% | **75.0%** |
+| `ch16` vs 1× | 37.5% | **66.7%** |
+| `term1` | 0 | **0** |
+| `co>0` | 0/16 | **0/12** |
+| `fan_uniq_mean` | 2.75 | **2.33** (max 4) |
+
+Ratchet / SWAP **finish** one smoke game early (t=47), but **late tied** lines probed here still show **no** terminal root scores at 64×—deeper search **reorders** outer shuffles (`move19->18` vs `move19->13`, `move24->1`) without a forced target-6 line. TSV: `deep_probe_cascade_fanout.txt`.
+
+## Deep probe — unlimited spawn (n=8 late, fan-out 4 @64×)
+
+Most unlimited games end by **score** quickly; only **one** 5–5 turn_limit supplies late tied samples (**n=8**). On that grind:
+
+| Metric | Base | Unlimited (late 5–5) |
+|--------|-----:|---------------------:|
+| `ch64` vs 1× | 50% | **50.0%** |
+| `ch16` vs 1× | 37.5% | **37.5%** |
+| `term1` | 0 | **0** |
+| `fan_uniq_mean` | 2.75 | **2.38** |
+| Root \|sc\| @ 64× | ~400 | **~40–100** (near-draw eval) |
+
+High one-ply capture counts (`ic` up to 33) but **`term1=0`**; fan-out disagrees on inner vs outer ties (`move11->6` vs `move11->12`). TSV: `deep_probe_unlimited_fanout.txt`.
+
+## Variant fan-out sweep (summary)
+
+| Log | n | `ch64` | `term1` | `fan_uniq_mean` |
+|-----|--:|-------:|--------:|----------------:|
+| base | 16 | 50% | 0 | 2.75 |
+| majority | 12 | 67% | 0 | 2.58 |
+| cascade | 12 | 75% | 0 | 2.33 |
+| unlimited (late) | 8 | 50% | 0 | 2.38 |
+
+Across rules levers, **randomized 64× fan-out never introduces a terminal score win** that single-seed 64× missed; it only widens **tied-move** ambiguity.
 
 ## Verdict
 
 **Base capture-score passivity is largely structural, not a shallow-search artifact.** Late tied games show **no** terminal winning lines even at **64×** calibrated nodes and **depth 11**; search only **swaps among safe outer/inner shuffles** (~50% of positions change the exact move at 64×). Tactical capture **choices** exist one-ply, but they do not compose into score-target wins in the search tree — consistent with **4–4 turn-limit stalls** under `eval_capture_score=0`. Deeper search is still useful for **move stability** (fan-out + 16× needed for agreement), not for uncovering a forced breakthrough.
 
-**Not under-search** in the sense of “one hidden winning tactic”; **yes under-incentivized** — without spawn/ratchet levers (cf. majority_spawn on #94), rational search **accepts heuristic draws** and ping-pong.
+**Not under-search** in the sense of “one hidden winning tactic”; **yes under-incentivized** — without spawn/ratchet levers (cf. majority_spawn / cascade on #94), rational search **accepts heuristic draws** and ping-pong. Majority and cascade **raise** `ch64` (more depth disagreement) and **finish** some smoke games faster, but probed **late tied** lines remain **`term1=0`** with **`co=0`**—same structural passivity class as base.
 
 ## Reproduce
 
