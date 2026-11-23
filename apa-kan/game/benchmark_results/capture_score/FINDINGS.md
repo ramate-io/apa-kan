@@ -49,7 +49,7 @@ Light package: release, `--no-default-features`, `nodes:33000,iters:650`, exactp
 | + capture_cascade | 4 | 2-0-2 | 119 / 124 | 5.50 | 2.75 / 2.75 (3.50) | 1 score, 1 lockout, 2 turn-limit |
 | + unlimited_spawn | 4 | 1-1-2 | 142 / 166 | 9.75 opp, **58.5 self** | 4.50 / 5.25 (1.75) | 2 score, 2 turn-limit |
 
-Control and capture-score base 150-game mm-mm are in. Majority-spawn mm-mm is running. Follow-up combos / trigger / target / weight sweeps wait behind `all_light` + MCTS.
+Control, capture-score base, and majority-spawn 150-game mm-mm are in. Capture-cascade mm-mm is running. Follow-up combos / trigger / target / weight sweeps wait behind `all_light` + MCTS.
 
 ### Smoke concentration (dest share of all actions)
 
@@ -87,13 +87,15 @@ Do not bake 400. Weight 80 is only barely less stalled (1/4 target wins). Tune f
 |---|---|---|---|---|---|---|---|---|---|
 | control (live) | mm-mm | 150 | 75-3-72 | 0.500 [0.421, 0.579] | 49.0 / 40.5 | 6.48 | — | 97 control, 39 lockout, 5 elim, 6 LV, **3 TL draws** | n/a |
 | capture-score base | mm-mm | 150 | **40-27-83** | 0.267 [0.202, 0.343] | **165.7 / 200** | 6.00 | P1 2.57 / P2 3.43 (abs 2.00) | **23 target / 86 TL wins / 27 TL draws** (113/150 hit cap) | 35/123 (28.5%) |
-| + majority_spawn_bonus | mm-mm |  |  |  |  |  |  |  |  |
+| + majority_spawn_bonus | mm-mm | 150 | 58-24-68 | 0.387 [0.312, 0.467] | **123.4 / 108.5** | 8.56 | 4.13 / 4.43 (abs 2.07) | **76 target / 38 TL wins / 24 TL draws** | **69/126 (54.8%)** |
 | + capture_cascade | mm-mm |  |  |  |  |  |  |  |  |
 | + unlimited_spawn | mm-mm |  |  |  |  |  |  |  |  |
 
 Control concentration (150 games): dest rings **C 5.4 / I 26.5 / S 52.6 / O 15.5%**. Capture nodes 7.3 / 29.8 / 44.3 / 18.6%. Inner MOVEs that actually take an opponent piece: **16.2%** (307/1893). End occupancy is inner-heavy even though actions go through spawn: remaining pieces C 11.3 / **I 55.8** / S 23.7 / O 9.2%, center held at end **86/150**. First opponent capture mean turn 8.1. Recapture-within-2: 14.1% (137/972). Piece usage: 2-ring 3847, 3-ring 3052, 1-ring 464; marks ~50/50 dot/triangle; lights normal 5806 / zag 2640 / bead 1732 / braid 1390. SWAP 78, CONVERT 99 (ratchet counterplay).
 
 Base scoring concentration (150 games): dest **C 2.6 / I 24.6 / S 35.5 / O 37.2%** — more outer, less spawn/center than control. Capture nodes 4.0 / 25.9 / 44.3 / 25.8%. Inner MOVE capturing **5.3%** (327/6118) vs control 16.2%. End occupancy C 9.5 / I 34.0 / S 20.9 / **O 35.6%**, center held 87/150. First capture mean t7.1. Recapture-within-2 14.0% (same as control). CONVERT 0, SWAP 28, CLAIM 2. Tokens/side 1.04 vs control 2.73. P2 leads 47.9% of plies. Piece usage still 2-ring then 3-ring (14132 / 9976 / 763).
+
+Majority-spawn concentration (150 games): dest **C 3.4 / I 25.2 / S 46.9 / O 24.4%** — spawn-heavy like control, not outer like base. Capture nodes 6.9 / 25.3 / 51.7 / 16.1%. Inner MOVE capturing **10.1%** (468/4638). End occupancy C 8.3 / I 41.6 / S 31.6 / O 18.5%, center held 88/150. Majority awards **7241** (tokens/side 13.41). SWAP 104, CONVERT 0. Comebacks **54.8%**. Score plies nearly even (P1 33% / P2 36% / tied 31%).
 
 ## Qualitative (control 150 + smoke)
 
@@ -109,7 +111,9 @@ Base scoring seed=313 (short P2 blowout, t27, 2–6): P2 farms inner 3/6/6/6/9/1
 
 Base scoring seed=300 (turn-limit 3–2 P1): score stuck 3–2 from **t88 to t200**, 183 MOVEs, ping-pong outer/spawn. Center sits at t26/t74/t89 do not score. This is the median game.
 
-Smoke notes below picked the majority lever.
+Majority-spawn seed=302 (target, t45, 5–6 P2): P2 wins on target after trailing −2. 76/150 games actually hit 6; 54.8% of decided games are comebacks. Tokens/side 13.4 vs 1.0 on base — extra spawn is spent, more pieces hit the board, more get captured (8.56 vs 6.00). Still 62/150 hit the cap, so the lever is real but not sufficient alone.
+
+Smoke notes below first picked this lever.
 
 Base scoring with weight 0 does not hunt captures. Smoke_base game seed=1: opening ADDs on outer spawns (t1–t6), first capture at **t23** (P1 MOVE to node 1, takes P2 off center). End is **t200 TurnLimit, 5–4**. Late ply is MOVE ping-pong on the inner ring (t196–t200, score stuck 5–4). Dest mix: 559 outer / 217 inner / 24 center over 800 actions. Zero CLAIM/SWAP/CONVERT.
 
@@ -123,4 +127,4 @@ Base scoring with weight 0 does not hunt captures. Smoke_base game seed=1: openi
 
 ## Honest take
 
-Control 150-game mirror is a **fair, short game** (P1 WR 0.500, mean 49 turns, 97/150 control wins, ratchet CONVERT/SWAP actually fire). Bare capture-score at n=150 is **not a better game**: P1 WR 0.267 (P2 farms the first capture at t4), median length 200, only 23/150 hit target 6, dest mix shifts outer (37% vs control 16%), inner takes drop from 16% to 5%, and CONVERT never fires. Comebacks exist (28%) but most games stall one-to-three points short. Majority-of-former-control as a spawn bonus is still the lever; that 150-game cell is running.
+Control 150-game mirror is a **fair, short game** (P1 WR 0.500, mean 49 turns). Bare capture-score at n=150 is **not a better game**: P1 WR 0.267, median 200, 23/150 hit target 6, dest mix shifts outer, inner takes drop 16%→5%. Majority-spawn is the lever that actually finishes games (**76/150 target**, median 108.5, spawn dest 47% like control, 55% comebacks) but P2 still leads (WR 0.387), CONVERT is still off, and 41% still hit the cap. Combos and the inner/center trigger sweep are next.
