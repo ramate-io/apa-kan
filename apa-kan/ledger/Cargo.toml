@@ -1,5 +1,5 @@
 [package]
-name = "apa-kan-game-store"
+name = "apa-kan-ledger"
 version = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
@@ -8,10 +8,10 @@ repository = { workspace = true }
 homepage = { workspace = true }
 publish = { workspace = true }
 rust-version = { workspace = true }
-description = "Durable, append-only storage for hosted Apa Kan games: opening record plus one row per accepted transaction."
+description = "Append-only, hash-linked transaction log for Apa Kan state streams (games today), with CAS on (stream, seq). Memory, SQLite, Postgres."
 
 [lib]
-name = "apa_kan_game_store"
+name = "apa_kan_ledger"
 path = "src/lib.rs"
 
 [features]
@@ -20,8 +20,6 @@ sqlite = ["dep:sqlx", "sqlx/sqlite", "sqlx/runtime-tokio"]
 postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/runtime-tokio", "sqlx/tls-rustls"]
 
 [dependencies]
-apa-kan-core = { workspace = true }
-apa-kan-view = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

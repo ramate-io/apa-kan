@@ -6,16 +6,16 @@ use std::str::FromStr;
 
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
-use crate::sql::{is_unique_violation, sql_game_store, storage};
+use crate::sql::{sql_ledger, storage};
 use crate::Result;
 
-const MIGRATION_001: &str = include_str!("../migrations/postgres/001_hosted_games.sql");
+const MIGRATION_001: &str = include_str!("../migrations/postgres/001_ledger.sql");
 
-pub struct PostgresGameStore {
+pub struct PostgresLedger {
 	pool: PgPool,
 }
 
-impl PostgresGameStore {
+impl PostgresLedger {
 	pub async fn connect(url: &str) -> Result<Self> {
 		let options = PgConnectOptions::from_str(url).map_err(storage)?;
 		let pool = PgPoolOptions::new()
@@ -28,14 +28,14 @@ impl PostgresGameStore {
 	}
 }
 
-sql_game_store!(PostgresGameStore, sqlx::Postgres, "postgres", is_unique_violation);
+sql_ledger!(PostgresLedger, "postgres");
 
 #[cfg(test)]
 mod tests {
 	use std::sync::Arc;
 
 	use super::*;
-	use crate::{conformance, GameStore};
+	use crate::{conformance, LedgerStore};
 
 	/// Runs when `APAKAN_TEST_POSTGRES_URL` points at a scratch database
 	/// (CI sets it with a Postgres service); skipped otherwise.
@@ -45,8 +45,8 @@ mod tests {
 			eprintln!("APAKAN_TEST_POSTGRES_URL unset; skipping Postgres conformance");
 			return;
 		};
-		let store: Arc<dyn GameStore> =
-			Arc::new(PostgresGameStore::connect(&url).await.unwrap_or_else(|e| panic!("{e}")));
+		let store: Arc<dyn LedgerStore> =
+			Arc::new(PostgresLedger::connect(&url).await.unwrap_or_else(|e| panic!("{e}")));
 		let prefix = format!("pg{}", std::process::id());
 		conformance::run(store.clone(), &prefix).await;
 		conformance::race(store, &prefix).await;
