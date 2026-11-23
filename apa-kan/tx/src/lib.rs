@@ -104,6 +104,47 @@ impl SeatSecret {
 	pub fn to_hex(&self) -> String {
 		hex::encode(self.hash)
 	}
+
+	/// Parse a stored [`Self::to_hex`] value.
+	pub fn from_hex(s: &str) -> Option<Self> {
+		let bytes = hex::decode(s.trim()).ok()?;
+		let hash: [u8; 32] = bytes.try_into().ok()?;
+		Some(Self { hash })
+	}
+}
+
+/// Domain tag for [`Transaction::signing_payload`].
+pub const TX_SIGNING_DOMAIN: &str = "apa-kan/tx/v1";
+
+/// What a signature over a transaction covers: everything but `auth`.
+#[derive(Serialize)]
+struct SigningPayload<'a> {
+	domain: &'static str,
+	game_id: &'a str,
+	seq: u64,
+	seat: Seat,
+	action: ActionWire,
+}
+
+impl Transaction {
+	/// Deterministic bytes a future signed `TxAuth` variant (ML-DSA, account
+	/// key) signs. Same bytes over HTTP, a store log, or a peer-to-peer UDP
+	/// datagram, so any transport can carry and re-verify the transaction.
+	pub fn signing_payload(&self) -> Vec<u8> {
+		serde_json::to_vec(&SigningPayload {
+			domain: TX_SIGNING_DOMAIN,
+			game_id: &self.game_id,
+			seq: self.seq,
+			seat: self.seat,
+			action: self.action,
+		})
+		.unwrap_or_default()
+	}
+
+	/// `(game_id, seq)`: the total order every transport and store agrees on.
+	pub fn key(&self) -> (&str, u64) {
+		(&self.game_id, self.seq)
+	}
 }
 
 /// Check `tx.auth` against the seat secrets. Seat range is checked first.
@@ -265,6 +306,31 @@ mod tests {
 		assert_eq!(authorize(&t, &secrets), Err(TxError::Unauthorized));
 		t.seat = 0;
 		assert_eq!(authorize(&t, &secrets), Err(TxError::BadSeat { seat: 0 }));
+	}
+
+	#[test]
+	fn secret_hex_round_trip_and_signing_payload_ignores_auth() {
+		let s = SeatSecret::from_token("abc");
+		assert_eq!(SeatSecret::from_hex(&s.to_hex()), Some(s));
+		assert_eq!(SeatSecret::from_hex("zz"), None);
+		assert_eq!(SeatSecret::from_hex("00"), None);
+		let a = Transaction {
+			game_id: "g".into(),
+			seq: 7,
+			seat: 1,
+			action: ActionWire::Move { from: 1, to: 2 },
+			auth: TxAuth::SeatToken { token: "one".into() },
+		};
+		let mut b = a.clone();
+		b.auth = TxAuth::SeatToken { token: "two".into() };
+		assert_eq!(a.signing_payload(), b.signing_payload());
+		assert_eq!(
+			String::from_utf8(a.signing_payload()).unwrap(),
+			r#"{"domain":"apa-kan/tx/v1","game_id":"g","seq":7,"seat":1,"action":{"kind":"move","from":1,"to":2}}"#
+		);
+		b.seq = 8;
+		assert_ne!(a.signing_payload(), b.signing_payload());
+		assert_eq!(a.key(), ("g", 7));
 	}
 
 	#[test]
