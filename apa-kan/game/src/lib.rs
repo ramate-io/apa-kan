@@ -1,10 +1,12 @@
 //! Apa Kan — Bevy client (display and in-match UI).
 //!
-//! Rules, bots, JSONL replay, and clocks live in [`apa_kan_core`]. This crate
-//! re-exports those modules so in-match UI can keep `crate::game::…` paths.
-//! Character art stays here (`characters`).
+//! Rules, bots, JSONL replay, clocks, and generation passes live in
+//! [`apa_kan_core`]. This crate re-exports those modules so in-match UI can
+//! keep `crate::game::…` paths. Character PNG art stays here (`characters`).
 
-pub use apa_kan_core::{ai, bench_log, board, clock, deck, game, scenario};
+pub use apa_kan_core::{
+	ai, bench_log, board, character_pass, clock, core_pass, deck, game, scenario,
+};
 
 pub mod characters;
 pub mod config;

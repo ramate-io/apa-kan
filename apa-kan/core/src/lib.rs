@@ -17,12 +17,17 @@
 //! passes `elapsed_ms`. Rating / account / store types stay out of this crate
 //! so a platform server can depend on it without pulling Bevy.
 //!
-//! Character art (`apa-kan/game/src/characters.rs`) stays in the client.
+//! Character art PNGs stay in the Bevy client. Catalog ids, CorePass, and
+//! the character assignment pass live here so deals are identical on every
+//! platform.
 
 pub mod ai;
 pub mod bench_log;
 pub mod board;
+pub mod character_pass;
+pub mod characters;
 pub mod clock;
+pub mod core_pass;
 pub mod deck;
 pub mod game;
 pub mod scenario;

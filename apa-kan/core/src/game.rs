@@ -7,6 +7,7 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 
 use crate::board::{Board, NodeId};
+use crate::characters::CharacterId;
 pub use crate::clock::{Clock, ClockTick, TimeControl};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -45,7 +46,7 @@ impl Player {
 	}
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum TileColor {
 	Green = 0,
@@ -188,7 +189,7 @@ pub const COLOR_STATES: usize = SLOT_KINDS * SLOT_KINDS * SLOT_KINDS;
 /// part of one braid group occupying 1–3 slots (1-slot only when
 /// [`RuleSet::allow_single_braids`] is on), or a bead (a bomb against
 /// non-matching colors on the bead channel).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum RingType {
 	#[default]
@@ -289,6 +290,19 @@ impl TileColor {
 
 	pub fn bit(self) -> u8 {
 		1u8 << (self as u8)
+	}
+
+	/// Display RGB used by the renderer and the character-pass embedding.
+	/// Frozen: changing these values would retarget the v1 aesthetic table.
+	pub fn rgb(self) -> [f32; 3] {
+		match self {
+			TileColor::Green => [0.18, 0.66, 0.32],
+			TileColor::Blue => [0.24, 0.48, 0.90],
+			TileColor::Orange => [0.91, 0.52, 0.16],
+			TileColor::LavenderPink => [0.90, 0.48, 0.74],
+			TileColor::Teal => [0.08, 0.66, 0.64],
+			TileColor::Maroon => [0.52, 0.10, 0.18],
+		}
 	}
 }
 
@@ -720,7 +734,7 @@ pub fn sample_rings_colored(
 /// Capture destination encoded by the marks drawn in place of move-length
 /// dots. Every tile has one: there is no unmarked tile. The **number** of
 /// marks is [`Tile::dots`] (MOVE length 1–3); the **shape** is this mark.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum CaptureMark {
 	/// Captures on a move/ADD made with this tile become spawn tokens (+1
@@ -815,7 +829,7 @@ impl CaptureDest {
 /// [`Tile::cost`]. Rosette subtracts 1, floored at [`TILE_COST_MIN`].
 /// Overwhelm still compares against [`Tile::weight`] (`n_rings`); Crescent
 /// Moon changes that comparison when the piece has one adjacency.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum Emblem {
 	#[default]
@@ -1043,6 +1057,10 @@ pub struct Tile {
 	/// the empty slot. [`Self::cost`] is `n_rings` plus [`Emblem::cost`],
 	/// floored at [`TILE_COST_MIN`].
 	pub emblem: Emblem,
+	/// Cosmetic catalog character. Always a [`CharacterId`], including the
+	/// explicit [`crate::characters::FACELESS_ID`] empty face. Not part of
+	/// [`Self::kind_index`], overwhelm, or deck cost.
+	pub character: CharacterId,
 }
 
 /// Kind space: color-state × dots. Weight is the ring-slot count, already
@@ -1113,6 +1131,7 @@ impl Tile {
 			dots,
 			capture: CaptureMark::Triangle,
 			emblem: Emblem::None,
+			character: CharacterId::faceless(),
 		}
 	}
 
@@ -1125,6 +1144,12 @@ impl Tile {
 	/// Fixtures and constructors default to [`Emblem::None`].
 	pub fn with_emblem(mut self, emblem: Emblem) -> Self {
 		self.emblem = emblem;
+		self
+	}
+
+	/// Fixtures and constructors default to [`CharacterId::faceless`].
+	pub fn with_character(mut self, character: CharacterId) -> Self {
+		self.character = character;
 		self
 	}
 
@@ -6186,26 +6211,9 @@ pub fn sample_tile_from_rules_with_colors(
 	color_w: &mut [i32; 6],
 ) -> Tile {
 	let _ = rules.channel_mode;
-	let (rings, n_rings) = sample_rings_colored(
-		rng,
-		rules.max_rings,
-		rules.ring_count_weights,
-		rules.color_drift,
-		color_w,
-	);
-	finish_sampled_tile(
-		owner,
-		rings,
-		n_rings,
-		rules.zag_numer,
-		rules.braid_numer,
-		rules.bead_numer,
-		rules.dot_percent,
-		rules.emblem_weights,
-		rules.allow_single_braids,
-		next_id,
-		rng,
-	)
+	let id = next_deal_id(next_id, rng);
+	let cfg = crate::core_pass::CorePass::from_rules(rules);
+	sample_tile_from_pass_with_colors(owner, id, &cfg, color_w)
 }
 
 pub fn sample_tile_with(
@@ -6222,49 +6230,54 @@ pub fn sample_tile_with(
 	rng: &mut impl Rng,
 ) -> Tile {
 	let _ = channel_mode; // scoring-only; generation always IndependentMax clustering
-	let (rings, n_rings) = sample_rings_with(rng, max_rings, ring_count_weights);
-	finish_sampled_tile(
-		owner,
-		rings,
-		n_rings,
+	let id = next_deal_id(next_id, rng);
+	let cfg = crate::core_pass::CorePass::from_sampling(
+		max_rings,
 		zag_numer,
 		braid_numer,
 		bead_numer,
 		dot_percent,
 		emblem_weights,
+		ring_count_weights,
+		color_drift_zero(),
 		false,
-		next_id,
-		rng,
-	)
+	);
+	sample_tile_from_pass(owner, id, &cfg)
 }
 
-fn finish_sampled_tile(
+/// Mix the sequential counter with a deal nonce so collections still vary
+/// with the RNG while [`Tile::id`] remains the CorePass replay seed.
+fn next_deal_id(next_id: &mut u32, rng: &mut impl Rng) -> u32 {
+	let nonce = rng.gen::<u32>();
+	let id = crate::core_pass::TileId(*next_id).mix(("deal", nonce)).0;
+	*next_id = next_id.saturating_add(1);
+	if id >= *next_id {
+		*next_id = id.saturating_add(1);
+	}
+	id
+}
+
+/// Core pass + character pass for a known [`Tile::id`].
+pub fn sample_tile_from_pass(owner: Player, id: u32, cfg: &crate::core_pass::CorePass) -> Tile {
+	let core = cfg.run(crate::core_pass::TileId(id));
+	assign_character(owner, id, core)
+}
+
+fn sample_tile_from_pass_with_colors(
 	owner: Player,
-	rings: [TileColor; 3],
-	n_rings: u8,
-	zag_numer: u8,
-	braid_numer: u8,
-	bead_numer: u8,
-	dot_percent: u8,
-	emblem_weights: EmblemWeights,
-	single_braids: bool,
-	next_id: &mut u32,
-	rng: &mut impl Rng,
+	id: u32,
+	cfg: &crate::core_pass::CorePass,
+	color_w: &mut [i32; 6],
 ) -> Tile {
-	let heavy = sample_heavy_slots(rng, n_rings, braid_numer);
-	let mut ring_type = cluster_heavies(heavy, n_rings, single_braids);
-	sample_light_types(rng, n_rings, &mut ring_type, zag_numer, bead_numer);
-	let weight = n_rings.max(1);
-	let dots = rng.gen_range(1..=3);
-	let capture = if rng.gen_range(0..100u8) < dot_percent.min(100) {
-		CaptureMark::Dot
-	} else {
-		CaptureMark::Triangle
-	};
-	let emblem = sample_emblem(rng, emblem_weights);
-	let id = *next_id;
-	*next_id += 1;
-	Tile { id, owner, rings, n_rings, ring_type, weight, dots, capture, emblem }
+	let core = cfg.run_with_color_weights(crate::core_pass::TileId(id), color_w);
+	assign_character(owner, id, core)
+}
+
+fn assign_character(owner: Player, id: u32, core: crate::core_pass::CoreTile) -> Tile {
+	let character = crate::character_pass::bundled()
+		.map(|p| p.assign(&core, id))
+		.unwrap_or_else(CharacterId::faceless);
+	core.into_tile(id, owner, character)
 }
 
 fn format_log(
@@ -12725,7 +12738,32 @@ mod tests {
 		assert_eq!(t.capture, CaptureMark::Triangle);
 		assert_eq!(t.dots, 2);
 		assert_eq!(t.emblem, Emblem::None);
+		assert!(t.character.is_faceless());
 		assert_eq!(t.cost(), t.n_rings);
+	}
+
+	#[test]
+	fn generated_tiles_always_get_a_catalog_character() {
+		let mut rng = StdRng::seed_from_u64(41);
+		let mut next_id = 1u32;
+		let lib = crate::characters::CharacterLibrary::load().unwrap();
+		for _ in 0..200 {
+			let t = sample_tile(
+				Player::One,
+				3,
+				ZAG_NUMER_DEFAULT,
+				BRAID_NUMER_DEFAULT,
+				BEAD_NUMER_DEFAULT,
+				DOT_PERCENT_DEFAULT,
+				&mut next_id,
+				&mut rng,
+			);
+			assert!(
+				lib.get(t.character.as_str()).is_some(),
+				"character pass always assigns a catalog id, got {}",
+				t.character.as_str()
+			);
+		}
 	}
 
 	#[test]
