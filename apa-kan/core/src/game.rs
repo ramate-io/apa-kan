@@ -8,6 +8,7 @@ use rand::Rng;
 
 use crate::board::{Board, NodeId};
 use crate::characters::CharacterId;
+pub use crate::clock::{Clock, ClockTick, TimeControl};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Player {
@@ -289,6 +290,19 @@ impl TileColor {
 
 	pub fn bit(self) -> u8 {
 		1u8 << (self as u8)
+	}
+
+	/// Display RGB used by the renderer and the character-pass embedding.
+	/// Frozen: changing these values would retarget the v1 aesthetic table.
+	pub fn rgb(self) -> [f32; 3] {
+		match self {
+			TileColor::Green => [0.18, 0.66, 0.32],
+			TileColor::Blue => [0.24, 0.48, 0.90],
+			TileColor::Orange => [0.91, 0.52, 0.16],
+			TileColor::LavenderPink => [0.90, 0.48, 0.74],
+			TileColor::Teal => [0.08, 0.66, 0.64],
+			TileColor::Maroon => [0.52, 0.10, 0.18],
+		}
 	}
 }
 
@@ -1768,6 +1782,12 @@ pub enum EndReason {
 	/// Under [`EndgameRule::ControlCascade`] it is the final tie-breaker once
 	/// `max_mat <= 1` (both sides have at most one total material).
 	LowValue,
+	/// Player to move ran out of clock. OPEN-Q #23: may instead be
+	/// [`Self::FlagDraw`] when [`Game::flag_opponent_cannot_win`] is true.
+	Flag,
+	/// Flag-fall draw: opponent cannot win by cheap checks (issue #50 rec).
+	/// OPEN-Q #23.
+	FlagDraw,
 }
 
 /// Restriction on moving the same tile on two consecutive own turns.
@@ -3217,6 +3237,9 @@ pub struct Game {
 	/// Reconstructible 27-tile collections and 7+4 picks. `None` on
 	/// constructed [`Self::empty`] fixtures.
 	setup: Option<crate::deck::SetupRecord>,
+	/// Match clock. `None` on today's unclocked games and fixtures so
+	/// [`Self::apply`] is unchanged.
+	clock: Option<Clock>,
 }
 
 impl Game {
@@ -3350,6 +3373,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
+			clock: None,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -3432,6 +3456,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: Some(record),
+			clock: None,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -3516,6 +3541,7 @@ impl Game {
 			],
 			opening_deck: [Vec::new(), Vec::new()],
 			setup: None,
+			clock: None,
 		}
 	}
 
@@ -3573,6 +3599,108 @@ impl Game {
 
 	pub fn status(&self) -> GameStatus {
 		self.status
+	}
+
+	pub fn clock(&self) -> Option<&Clock> {
+		self.clock.as_ref()
+	}
+
+	pub fn remaining_ms(&self, player: Player) -> Option<u64> {
+		self.clock.as_ref().map(|c| c.remaining_ms(player))
+	}
+
+	pub fn with_time_control(mut self, time_control: TimeControl) -> Self {
+		self.clock = Some(Clock::new(time_control));
+		self
+	}
+
+	pub fn set_time_control(&mut self, time_control: TimeControl) {
+		self.clock = Some(Clock::new(time_control));
+	}
+
+	/// Deduct `elapsed_ms` from `player`'s remaining time.
+	///
+	/// No-op when this game has no clock. Decision (#58 Q26): core never
+	/// pauses; the caller chooses which elapsed value to pass, including a
+	/// reconnect window that still consumes time.
+	pub fn apply_elapsed(&mut self, player: Player, elapsed_ms: u64) -> Result<ClockTick, String> {
+		if self.clock.is_none() {
+			return Ok(ClockTick::Ok);
+		}
+		if self.status.is_over() {
+			return Err("game is over".into());
+		}
+		if player != self.current {
+			return Err("elapsed applies to the player to move".into());
+		}
+		let tick = self
+			.clock
+			.as_mut()
+			.map(|clock| clock.apply_elapsed(player, elapsed_ms))
+			.unwrap_or(ClockTick::Ok);
+		if tick == ClockTick::Flagged {
+			self.status = self.flag_status(player);
+		}
+		Ok(tick)
+	}
+
+	/// Add the time-control increment after a completed legal action.
+	pub fn credit_increment(&mut self, player: Player) {
+		if let Some(clock) = self.clock.as_mut() {
+			clock.credit_increment(player);
+		}
+	}
+
+	/// Deduct elapsed time, apply `action` if the player has not flagged, then
+	/// credit the increment.
+	pub fn apply_timed(
+		&mut self,
+		action: Action,
+		elapsed_ms: u64,
+	) -> Result<ActionOutcome, String> {
+		let player = self.current;
+		if self.apply_elapsed(player, elapsed_ms)? == ClockTick::Flagged {
+			return Err("flag-fall".into());
+		}
+		let outcome = self.apply(action)?;
+		self.credit_increment(player);
+		Ok(outcome)
+	}
+
+	fn flag_status(&self, flagged: Player) -> GameStatus {
+		if self.flag_opponent_cannot_win(flagged.other()) {
+			GameStatus::Draw { reason: EndReason::FlagDraw }
+		} else {
+			GameStatus::Won { winner: flagged.other(), reason: EndReason::Flag }
+		}
+	}
+
+	/// OPEN-Q #23: cheap checks only (not a search). Issue #50 recommendation.
+	///
+	/// Return `true` when a flag should be a draw because `opponent` cannot
+	/// win from this position. Flip this to always `false` if flag-fall
+	/// becomes a loss in every case.
+	pub fn flag_opponent_cannot_win(&self, opponent: Player) -> bool {
+		if !self.is_alive(opponent) {
+			return true;
+		}
+		if self.rules.no_moves_loses {
+			let mut probe = self.clone();
+			probe.clock = None;
+			probe.status = GameStatus::InProgress;
+			probe.current = opponent;
+			if !probe.has_add_or_move() {
+				return true;
+			}
+		}
+		if self.low_value_applies() {
+			match self.low_value_resolution() {
+				LowValueResolution::Draw => return true,
+				LowValueResolution::Win { winner, .. } if winner != opponent => return true,
+				_ => {}
+			}
+		}
+		false
 	}
 
 	pub fn turn_count(&self) -> u32 {
@@ -3916,8 +4044,9 @@ impl Game {
 	/// P1 occupies 3 of 9. Claiming `extra` drops 5→4 with no unique holder.
 	/// `p1_mat` / `p2_mat` are totals before the claim; afterwards P2 is
 	/// `p2_mat - 1` and P1 stays `p1_mat` (the claim token is surplus).
-	#[cfg(test)]
-	pub(crate) fn cascade_turn_gain_drop_position(p1_mat: usize, p2_mat: usize) -> (Self, NodeId) {
+	#[cfg(any(test, feature = "test-helpers"))]
+	#[doc(hidden)]
+	pub fn cascade_turn_gain_drop_position(p1_mat: usize, p2_mat: usize) -> (Self, NodeId) {
 		let mut game = Self::cascade_turn_gain_base(3);
 		let extra = Self::overwhelmed_p2_spawn_for(&game);
 		let victim = game.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
@@ -3932,7 +4061,7 @@ impl Game {
 		(game, extra)
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn cascade_turn_gain_base(p1_control: usize) -> Self {
 		let mut rules = RuleSet::default();
 		rules.center_hold_win = false;
@@ -3957,7 +4086,7 @@ impl Game {
 		game
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn overwhelmed_p2_spawn_for(game: &Self) -> NodeId {
 		let control: std::collections::HashSet<_> = std::iter::once(game.board.center())
 			.chain(game.board.inner_ring().iter().copied())
@@ -3980,13 +4109,14 @@ impl Game {
 
 	/// ADD onto `dest` captures two weak P2 neighbors, dropping 5→4 with P1
 	/// strictly leading (4 vs 3). No unique holder of 4.
-	#[cfg(test)]
-	pub(crate) fn cascade_turn_gain_mover_add_drop() -> (Self, NodeId) {
+	#[cfg(any(test, feature = "test-helpers"))]
+	#[doc(hidden)]
+	pub fn cascade_turn_gain_mover_add_drop() -> (Self, NodeId) {
 		let (game, dest, _) = Self::cascade_turn_gain_mover_add_drop_inner(false);
 		(game, dest)
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn touches_player(game: &Self, node: NodeId, player: Player) -> bool {
 		game.board
 			.neighbors(node)
@@ -4006,7 +4136,7 @@ impl Game {
 			.expect("an empty spawn with no occupied neighbors")
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn cascade_turn_gain_mover_add_drop_inner(need_land: bool) -> (Self, NodeId, NodeId) {
 		// Center stays empty so dest's two inner-ring neighbors are not
 		// pre-overwhelmed by a P1 origin. Those two inners are not adjacent
@@ -4130,7 +4260,7 @@ impl Game {
 		(game, dest, dest, land)
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-helpers"))]
 	fn pin_total_material(&mut self, player: Player, total: usize) {
 		let board = self.board_count(player);
 		assert!(board <= total, "{player:?} board {board} exceeds material {total}");

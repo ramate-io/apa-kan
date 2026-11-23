@@ -15,12 +15,14 @@ use serde::Deserialize;
 use crate::characters::{CharacterId, CharacterLibrary};
 use crate::core_pass::CoreTile;
 use crate::game::{CaptureMark, Emblem, RingType, TileColor};
-use crate::visual;
 
-pub const PASS_CONFIG_JSON: &str = include_str!("../assets/characters/pass/v1/config.json");
-pub const PASS_SPECIFIC_JSON: &str = include_str!("../assets/characters/pass/v1/specific.json");
-pub const PASS_EMBEDDING_JSON: &str = include_str!("../assets/characters/pass/v1/embedding.json");
-pub const PASS_FALLBACK_JSON: &str = include_str!("../assets/characters/pass/v1/fallback.json");
+pub const PASS_CONFIG_JSON: &str = include_str!("../../game/assets/characters/pass/v1/config.json");
+pub const PASS_SPECIFIC_JSON: &str =
+	include_str!("../../game/assets/characters/pass/v1/specific.json");
+pub const PASS_EMBEDDING_JSON: &str =
+	include_str!("../../game/assets/characters/pass/v1/embedding.json");
+pub const PASS_FALLBACK_JSON: &str =
+	include_str!("../../game/assets/characters/pass/v1/fallback.json");
 
 /// Frozen vector layout (tile and character encodings share this space):
 /// 12 ring atoms + 4 emblem + 1 n_rings + 2 capture + 1 dots.
@@ -438,7 +440,7 @@ pub fn encode_tile(tile: &CoreTile) -> Vec<f32> {
 	let mut atoms = [0.0f32; RING_DIM];
 	let n = tile.n_rings();
 	for i in 0..n {
-		add_kronecker(&mut atoms, visual::tile_rgb(tile.rings[i]), tile.ring_type[i], 1.0);
+		add_kronecker(&mut atoms, tile.rings[i].rgb(), tile.ring_type[i], 1.0);
 	}
 	l2_normalize(&mut atoms);
 	let mut v = vec![0.0f32; EMBED_DIM];
@@ -526,7 +528,7 @@ fn add_kronecker(atoms: &mut [f32; RING_DIM], rgb: [f32; 3], typ: RingType, w: f
 }
 
 fn add_color_anchor(atoms: &mut [f32; RING_DIM], color: TileColor, w: f32) {
-	let rgb = visual::tile_rgb(color);
+	let rgb = color.rgb();
 	for typ in [RingType::Normal, RingType::Zag, RingType::Braid, RingType::Bead] {
 		add_kronecker(atoms, rgb, typ, w * 0.25);
 	}
@@ -535,7 +537,7 @@ fn add_color_anchor(atoms: &mut [f32; RING_DIM], color: TileColor, w: f32) {
 fn add_type_anchor(atoms: &mut [f32; RING_DIM], typ: RingType, w: f32) {
 	let mut rgb = [0.0f32; 3];
 	for c in TileColor::ALL {
-		let r = visual::tile_rgb(c);
+		let r = c.rgb();
 		rgb[0] += r[0];
 		rgb[1] += r[1];
 		rgb[2] += r[2];

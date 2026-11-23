@@ -1712,14 +1712,7 @@ pub fn capture_mark_count(tile: Tile) -> u8 {
 }
 
 pub fn tile_rgb(color: TileColor) -> [f32; 3] {
-	match color {
-		TileColor::Green => [0.18, 0.66, 0.32],
-		TileColor::Blue => [0.24, 0.48, 0.90],
-		TileColor::Orange => [0.91, 0.52, 0.16],
-		TileColor::LavenderPink => [0.90, 0.48, 0.74],
-		TileColor::Teal => [0.08, 0.66, 0.64],
-		TileColor::Maroon => [0.52, 0.10, 0.18],
-	}
+	color.rgb()
 }
 
 pub fn rgb8(rgb: [f32; 3]) -> [u8; 3] {
