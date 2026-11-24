@@ -23,6 +23,7 @@ Control: P1 0.500, median 40.5 turns.
 | mark A | 150 | 60-31-59 | 59-31-60 | 0.400 | 102.5 / 74.0 | 8.05 / 26.18 | 4.11 / 3.95 (abs 1.48) | score 107, draw turn_limit 31, turn_limit 7, locked_out 5 | 17 rep≥3 (avg max 4.82) | 68/119 (57.1%) | 2.3/19.2/58.8/19.8 | 3.6/9.6/74.8/12.0 | 0.5 / 45 / 32/116 | 10.2 |
 | mark A-discard | 150 | 70-26-54 | 54-26-70 | 0.467 | 102.0 / 78.0 | 7.51 / 26.17 | 3.90 / 3.61 (abs 1.81) | score 109, draw turn_limit 26, turn_limit 12, locked_out 3 | 17 rep≥3 (avg max 4.57) | 57/124 (46.0%) | 2.5/19.5/56.7/21.3 | 4.3/11.1/71.3/13.2 | 17.0 / 71 / 43/122 | 6.6 |
 | mark B | 150 | 65-23-62 | 62-23-65 | 0.433 | 98.1 / 74.5 | 8.08 / 13.93 | 4.03 / 4.05 (abs 1.47) | score 116, draw turn_limit 23, turn_limit 7, locked_out 4 | 8 rep≥3 (avg max 1.85) | 88/127 (69.3%) | 3.1/21.5/52.0/23.4 | 2.6/12.7/68.8/15.8 | 0 / 48 / 34/125 | 14.5 |
+| B + repetition-ends | 150 | 64-24-62 | 62-24-64 | 0.427 | 94.9 / 74.0 | 8.08 / 12.25 | 4.03 / 4.05 (abs 1.47) | score 116, draw turn_limit 22, locked_out 4, repetition 3, turn_limit 3, draw repetition 2 | 5 rep≥3 (avg max 1.20) | 88/126 (69.8%) | 3.1/21.6/51.1/24.2 | 2.6/12.7/68.6/16.0 | 0.0 / 47 / 33/124 | 12.9 |
 
 ## Do triangles and dots diverge into distinct plans?
 
@@ -62,6 +63,43 @@ Examples (B):
 
 Example (A-discard): seed 300, P2 leads from the first capture and wins 1-5 with no lead change.
 
+## B + repetition-ends (`MARK_MODE=b unl_mark_rep_mm`)
+
+- **It doesn't break the 4-4 standoff.**
+  - Only 5 of 150 games end on repetition: 3 won on points and 2 drawn at 4-4, with a median of 84 turns.
+  - Tied match point is reached in 92 games, with a median wait of 36 (against 91 / 35 for B), and 21 of those still hit the cap.
+  - The standoff isn't an exact position loop. The bots keep trading, recovering and shuffling, so the visible position (board, benches, graveyards, scores) rarely repeats three times.
+  - B had already cut loops to 8 games with rep≥3; with the rule it is 5.
+- **Pace barely moves:** mean 98.1 to 94.9 turns, median 74.5 to 74.0. Draws at the turn limit drop from 23 to 22.
+- **Everything else matches B:** P1 0.427, comebacks 69.8%, the same mark split (self-captures 5.9 triangle / 6.4 dot per game; triangle share of opponent captures 0.58, with winners at 0.55 and losers at 0.64).
+- **Verdict:** keep it as cheap insurance against exact loops, but it isn't a pace lever under B. The standoff needs a rule that changes incentives near match point, not one that detects repeats.
+
+- **Seat check.** Repetition-ends didn't change P1's choices.
+  - Only 11 of 150 games diverge from plain B at all, at a median of action 95: 7 at a P2 decision, 4 at a P1 decision.
+  - All 5 repetition endings are move for move identical to B up to the ending, and their result is the one B reached at the cap.
+  - 3 results changed (309, 10303, 10321), and they net to zero. See NO_RETURN.md, "Seat split".
+
+## Capturer-owns + repetition-ends (`unl_capturer_rep_mm`)
+
+Base: unlimited spawn, no 2-2-1-1, target 5, `--capture-to-capturer on`, no routing. This is the base of the #106 no-return cell, with repetition-ends instead.
+
+| Cell | n | P1 W-D-L | P2 W-D-L | P1 WR | mean / med turns | opp / self caps per game | mean score P1 / P2 (margin) | end reasons | repetition | comebacks | dest C/I/S/O % | capture C/I/S/O % | lead tail med / ≥10 / loser counterplay | RECOVER/game |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| capturer + rep-ends | 150 | 72-26-52 | 52-26-72 | 0.480 | 110.7 / 89.0 | 7.11 / 25.07 | 3.69 / 3.43 (abs 1.62) | score 93, draw turn_limit 21, turn_limit 16, locked_out 10, repetition 5, draw repetition 5 | 10 rep≥3 (avg max 1.45) | 63/124 (50.8%) | 2.6/21.6/51.9/23.8 | 1.7/17.8/61.2/19.3 | 19 / 73 / 36/123 | 0.0 |
+| capturer + no-return (#106) | 150 | 79-18-53 | 53-18-79 | 0.527 | 113.0 / 92.5 | 6.99 / 37.01 | 3.73 / 3.26 (abs 1.85) | score 96, turn_limit 28, draw turn_limit 18, locked_out 8 | 19 rep≥3 (avg max 7.45) | 61/132 (46.2%) | 2.2/17.3/59.3/21.1 | 2.7/15.7/62.6/19.0 | 24.0 / 86 / 40/130 | 0.0 |
+
+- **Repetition-ends works on this base, unlike under B.**
+  - 10 games end on repetition: 3 P1 wins, 2 P2 wins and 5 draws, with a median of 88 turns.
+  - Loop depth collapses: average max repetition is 1.45, against 7.45 under no-return.
+  - The free tempo pass goes away. Self-captures drop to 25.1 per game from 37.0 under no-return, and triangle ADDs drop to 22.9 per game from 28.5. Under capturer-owns that pass is how the bots loop.
+- **Pace is about the same as no-return:** median 89 against 92.5. It is still far slower than control (t5, median 54.5) and B (74.5).
+- **Seats are fine:** P1 0.480, against 0.527 for no-return.
+- **It still snowballs, which confirms that capturer-owns is the cause.**
+  - The first player to lead by 2 won 87/96, against 93/99 under no-return and 72/136 under B + no-return.
+  - Lead-tail median is 19 (no-return 24, B 0). Comebacks are 50.8% (no-return 46.2%, B 69.3%).
+  - Tied match point is reached in 52 games, with a median wait of 13; 11 of those hit the cap.
+- The mark split is flat, as expected without routing: triangle share of opponent captures is 0.51.
+
 ## Take
 
-B is the best routing mode: the same pace as A, the most comebacks, the least self-capture spam and the fewest loops. It is the base for the repetition-ends and no-immediate-return combination cells (`MARK_MODE=b`). A gives the clearest triangle/dot role split, but most of that split is self-capture churn. A-discard snowballs. None of them beats control on pace yet. All of them beat it on the center-lock snowball.
+B is the best routing mode: the same pace as A, the most comebacks, the least self-capture spam and the fewest loops. It is the base for the repetition-ends and no-immediate-return combination cells (`MARK_MODE=b`). Neither combination changes pace or the standoff; see above and NO_RETURN.md (#106). On the capturer-owns base, repetition-ends does cut loops and self-capture churn, but that base snowballs whichever of the two rules is on. A gives the clearest triangle/dot role split, but most of that split is self-capture churn. A-discard snowballs. None of them beats control on pace yet. All of them beat it on the center-lock snowball.
