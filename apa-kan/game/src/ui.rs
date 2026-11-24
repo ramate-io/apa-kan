@@ -10,6 +10,8 @@ use bevy::window::WindowResolution;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
+mod smoke;
+
 use crate::ai::{self, SearchLimit, SearchStats};
 use crate::bench_log::{self, GameLog};
 use crate::board::NodeId;
@@ -93,6 +95,7 @@ pub fn run_app(cfg: GameConfig) {
 	.insert_resource(host)
 	.add_plugins(PlatformPlugin)
 	.add_plugins(shell::plugin)
+	.add_plugins(smoke::plugin)
 	.add_systems(Startup, setup_camera)
 	.add_systems(OnEnter(AppScreen::Match), spawn_match_hud)
 	.add_systems(OnExit(AppScreen::Match), despawn_match_hud)

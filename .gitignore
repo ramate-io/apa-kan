@@ -12,3 +12,6 @@ packaging/*.local.md
 packaging/*.local.env
 packaging/identity.local.md
 .DS_Store
+.tools
+/smoke-out/
+packaging/web/smoke/node_modules/
