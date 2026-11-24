@@ -5515,21 +5515,21 @@ impl Game {
 
 	/// Under [`RuleSet::no_suicide_add`]: would ADDing bench tile
 	/// `bench_index` at `node` remove the added tile and nothing else?
-	/// Resolved on a clone with the rule off, so it sees the full action
-	/// (captures, self-captures, surround flips).
+	/// Uses the same removal collection `apply` runs after placing the tile.
 	pub fn add_is_bare_suicide(&self, bench_index: usize, node: NodeId) -> bool {
 		let Some(tile) = self.benches[self.current.index()].get(bench_index).copied() else {
 			return false;
 		};
-		let mut g = self.clone();
-		g.rules.no_suicide_add = false;
-		match g.apply(Action::Add { bench_index, node }) {
-			Ok(out) => {
-				out.removals.iter().any(|r| r.tile.id == tile.id)
-					&& out.removals.iter().all(|r| r.tile.id == tile.id)
-			}
-			Err(_) => false,
+		if self.tile_at(node).is_some() {
+			return false;
 		}
+		// Removals are collected from the post-placement snapshot (the same
+		// call `apply` makes); flips and scoring don't remove tiles.
+		let mut g = self.clone();
+		g.tiles[node as usize] = Some(tile);
+		let removals = g.collect_captures_for(Action::Add { bench_index, node });
+		removals.iter().any(|r| r.tile.id == tile.id)
+			&& removals.iter().all(|r| r.tile.id == tile.id)
 	}
 
 	pub fn legal_moves(&self) -> Vec<Action> {

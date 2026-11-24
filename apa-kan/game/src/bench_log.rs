@@ -2912,6 +2912,54 @@ mod tests {
 		}
 	}
 
+	/// `Game::add_is_bare_suicide` agrees with actually applying each ADD, at
+	/// every ply of committed combo + surround-flip games (where bots made
+	/// thousands of suicide ADDs).
+	#[test]
+	fn bare_suicide_check_matches_apply_on_committed_games() {
+		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+			.join("benchmark_results/team_spawn/h2h_ts_l1_l3_cap17_flip_mm.jsonl.gz");
+		if !path.exists() {
+			return;
+		}
+		let logs = decode_jsonl_gz(&std::fs::read(&path).unwrap()).unwrap();
+		let mut seen_bare = 0usize;
+		for log in logs.iter().take(12) {
+			let rules = log.rules.to_rules().unwrap();
+			let mut game = Game::from_setup_record(
+				rules,
+				log.seed,
+				log.setup.as_ref().unwrap().to_record().unwrap(),
+			);
+			game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; log.opening.p1_tokens]);
+			game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; log.opening.p2_tokens]);
+			game.set_current(Player::One);
+			for act in &log.actions {
+				let me = game.current_player();
+				for i in 0..game.bench(me).len() {
+					for node in game.add_spawns(me).to_vec() {
+						let id = game.bench(me)[i].id;
+						let mut g = game.clone();
+						let Ok(out) = g.apply(Action::Add { bench_index: i, node }) else {
+							continue;
+						};
+						let bare = out.removals.iter().any(|x| x.tile.id == id)
+							&& out.removals.iter().all(|x| x.tile.id == id);
+						seen_bare += usize::from(bare);
+						assert_eq!(
+							game.add_is_bare_suicide(i, node),
+							bare,
+							"seed {} node {node}",
+							log.seed
+						);
+					}
+				}
+				game.apply(act.to_action().unwrap()).unwrap();
+			}
+		}
+		assert!(seen_bare > 0);
+	}
+
 	#[test]
 	fn team_spawn_rule_toggles_round_trip_through_the_log() {
 		let mut r = RuleSet::capture_b();
