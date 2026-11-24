@@ -22,7 +22,25 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y binaryen pkg-config
+          sudo apt-get install -y pkg-config
+
+      # Ubuntu's binaryen (105) mangles wasm-bindgen's externref table; use a
+      # current release. build-web.sh also refuses wasm-opt older than 116.
+      - name: Cache binaryen
+        id: binaryen
+        uses: actions/cache@v4
+        with:
+          path: .tools/binaryen-version_133
+          key: binaryen-${{ runner.os }}-133
+
+      - name: Install binaryen 133
+        if: steps.binaryen.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .tools
+          curl -fsSL https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz | tar xz -C .tools
+
+      - name: Put binaryen on PATH
+        run: echo "$PWD/.tools/binaryen-version_133/bin" >> "$GITHUB_PATH"
 
       - name: Read versions
         id: ver
@@ -39,6 +57,21 @@ jobs:
         with:
           shared-key: wasm32-unknown-unknown
 
+      - name: wasm-bindgen version from Cargo.lock
+        id: bindgen
+        run: |
+          v=$(awk '$0 == "name = \"wasm-bindgen\"" { f=1; next } f && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' Cargo.lock)
+          test -n "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Cache wasm-bindgen-cli
+        uses: actions/cache@v4
+        with:
+          path: .tools/wasm-bindgen-${{ steps.bindgen.outputs.version }}
+          key: wasm-bindgen-cli-${{ runner.os }}-${{ steps.bindgen.outputs.version }}
+
+      # build-web.sh installs exactly the Cargo.lock wasm-bindgen-cli under
+      # .tools/ when PATH has no match, and fails loudly on any mismatch.
       - name: Build wasm bundle
         run: packaging/scripts/build-web.sh
 
@@ -53,4 +86,42 @@ jobs:
           name: apa-kan-${{ steps.ver.outputs.version }}-web
           path: dist/web
           if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packaging/web/smoke/package-lock.json
+
+      - name: Install smoke driver
+        working-directory: packaging/web/smoke
+        run: npm ci --no-audit --no-fund
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('packaging/web/smoke/package-lock.json') }}
+
+      - name: Install Chromium for Playwright
+        working-directory: packaging/web/smoke
+        run: npx playwright install --with-deps chromium
+
+      # Kestrel orchestration (apa-kan/smoke): spawns apa-kan-server and the
+      # bundle server, waits for their ready lines, runs the headless-browser
+      # smoke, tears down. Same command runs locally.
+      - name: Browser smoke (Kestrel)
+        env:
+          SMOKE_SKIP_BROWSER_INSTALL: "1"
+        run: cargo run --release --locked -p apa-kan-smoke -- --hosted --out smoke-out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-smoke-${{ github.run_id }}
+          path: |
+            smoke-out/*.png
+            smoke-out/console.log
+          if-no-files-found: warn
           retention-days: 14
