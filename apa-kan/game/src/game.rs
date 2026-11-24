@@ -3173,10 +3173,12 @@ pub enum MatchGain {
 	/// `mismatch - match >= weight` (live).
 	#[default]
 	Flat,
-	/// `mismatch - max(0, match - weight) >= weight`: matches only defend
-	/// beyond the tile's ring count. `match` counts every channel (see
-	/// [`EdgeChannels::gain_score`]), so under the live braid-only scoring
-	/// normal-color matches start to defend once they exceed the rings.
+	/// Defense is `max(rings, matches)`: overwhelmed when
+	/// `mismatch >= max(weight, match)`, written as
+	/// `mismatch - max(0, match - weight) >= weight`. No match type adds
+	/// defense until the matches exceed the ring count. `match` counts every
+	/// channel (see [`EdgeChannels::gain_score`]), replacing the braid-only
+	/// filter of the live scoring with this threshold.
 	MinusRings,
 }
 
@@ -15319,6 +15321,19 @@ mod team_spawn_rules_tests {
 		assert_eq!(g.effective(3, 3, 1), 1, "two bonus matches on a single");
 		assert_eq!(g.effective(3, 3, 3), 3, "a triple needs four matches to gain");
 		assert_eq!(MatchGain::Flat.effective(3, 3, 3), 0);
+		// Same rule as "defense = max(rings, matches)": overwhelmed iff
+		// mismatch >= max(rings, matches).
+		for w in 1u8..=3 {
+			for m in 0..=12 {
+				for x in 0..=12 {
+					assert_eq!(
+						g.effective(m, x, w) >= i32::from(w),
+						x >= m.max(i32::from(w)),
+						"m={m} x={x} w={w}"
+					);
+				}
+			}
+		}
 	}
 
 	#[test]

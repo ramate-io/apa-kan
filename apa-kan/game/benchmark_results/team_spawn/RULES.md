@@ -26,9 +26,11 @@ Each team ADDs only onto its own **spawn diamond**, all game long. The two diamo
 
 ## Matched gain (`--match-gain minus-rings`)
 
-- **Rule.** Overwhelm when `mismatch − max(0, matches − n_rings) >= n_rings`. Mismatches sum exactly as before.
-- **What counts as a match.** Every channel's match: normal, bead and braid.
-- **Framing (confirmed by Liam).** Base capture-b (`braid_scoring=braid-only-exact`) gives defense only to braid matches, so a normal-color match shown in the HUD adds nothing. That is intended. L3 replaces that blanket filter with a threshold: any match type counts, but only the matches beyond the piece's ring count add defense. A single with 3 matches gets +2 defense; a triple needs 4 matches before it gains anything.
+- **Rule.** A piece's defense is `max(rings, matches)`: it is overwhelmed when `mismatch >= max(rings, matches)`. Until its matches exceed its ring count, a piece defends with its ring count alone, and no match type adds anything. Past that point, defense equals the match count. Mismatches sum exactly as before.
+- **In the code** this is written as `mismatch − max(0, matches − rings) >= rings`. That's the same inequality, and a unit test checks it exhaustively against `mismatch >= max(rings, matches)`.
+- **What counts as a match.** Every channel (normal + bead + braid), summed over the scoring neighbors, the same matches the HUD shows. A neighbor that matches on two channels counts 2.
+- **Framing (confirmed by Liam).** In base capture-b (`braid_scoring=braid-only-exact`), only braid matches defend and normal-color matches add nothing, which is intended. L3 replaces that type filter with a threshold: no type adds immediately, and you start adding past your ring count.
+- **Intent.** Well-connected singles quickly become as strong as poorly connected doubles and triples. A single with 3 matches defends like an unsupported triple, and singles stay the most mobile pieces.
 
 ## Bench ring budget (`--bench-ring-cap 17`)
 
