@@ -12,6 +12,28 @@ packaging/scripts/serve-web.sh   # http://127.0.0.1:8080/
 
 `build-web.sh` compiles the `apa-kan` binary for `wasm32-unknown-unknown` with WebGL2, runs `wasm-bindgen --target web`, optionally `wasm-opt -Oz`, copies `apa-kan/game/web/index.html`, and writes `dist/web/size.txt`.
 
+`wasm-bindgen-cli` must equal the `wasm-bindgen` version in `Cargo.lock` (the bindgen schema changes between releases). `build-web.sh` reads that version, uses a matching `wasm-bindgen` from `PATH` if there is one, and otherwise installs exactly that version into `.tools/wasm-bindgen-<version>/` (git-ignored). It stops with a fix-it command instead of writing a half bundle.
+
+## Browser smoke test (Kestrel)
+
+One command builds the bundle and runs the smoke as a [Kestrel](https://github.com/ramate-io/kestrel) orchestration:
+
+```bash
+cargo run --release -p apa-kan-smoke -- --build            # offline bot game + Settings
+cargo run --release -p apa-kan-smoke -- --build --hosted   # + hosted create/join/move (stacks with server routes)
+```
+
+Needs `node` (18+) and `python3`. The orchestration (`apa-kan/smoke`):
+
+1. runs `build-web.sh` (`--build`; omit it to reuse `dist/web`), builds `apa-kan-server`, and installs the Playwright driver in `packaging/web/smoke` on first use;
+2. spawns `apa-kan-server` and a static server for the bundle as Kestrel processes on free ports, each gated on its ready line;
+3. runs `packaging/web/smoke/smoke.mjs` in headless Chromium (SwiftShader WebGL2): load, Head-to-Head → Bot → Play, the setup picks and three moves by clicking the canvas, Esc back to the shell, Settings; with `--hosted`, a second browser context opens the invite link and both sides make a move the other sees;
+4. kills both processes.
+
+It fails on any page error, console error, wasm panic, failed request, or missing canvas. Screenshots and `console.log` go to `smoke-out/`. CI (`Web WASM`) runs the same command and uploads them.
+
+The canvas has no DOM to query, so with `?smoke` in the URL the game writes a JSON snapshot (button labels and centres, and the canvas points for one legal move) to `#bevy-canvas[data-apakan-smoke]`; see `apa-kan/game/src/ui/smoke.rs`. The driver only clicks; it never changes game state directly.
+
 WebGPU is a trivial feature override, not the default:
 
 ```bash
