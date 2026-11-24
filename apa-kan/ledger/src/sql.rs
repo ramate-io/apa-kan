@@ -21,14 +21,14 @@ macro_rules! sql_ledger {
 				if e.seq == 0 {
 					// Genesis: creating the stream row is the CAS.
 					let res = sqlx::query(
-								"INSERT INTO ledger_streams (stream_id, next_seq, head_hash, created_at_unix) \
+										"INSERT INTO ledger_streams (stream_id, next_seq, head_hash, created_at_unix) \
 						 VALUES ($1, 1, $2, $3)",
-							)
-							.bind(&e.stream)
-							.bind(&e.hash)
-							.bind(e.committed_at_unix)
-							.execute(&mut *db)
-							.await;
+									)
+									.bind(&e.stream)
+									.bind(&e.hash)
+									.bind(e.committed_at_unix)
+									.execute(&mut *db)
+									.await;
 					match res {
 						Ok(_) => {}
 						Err(err) if is_unique_violation(&err) => {
@@ -59,19 +59,19 @@ macro_rules! sql_ledger {
 					}
 				}
 				let res = sqlx::query(
-							"INSERT INTO ledger_entries (stream_id, seq, tx_hash, prev_hash, signer, kind, \
+									"INSERT INTO ledger_entries (stream_id, seq, tx_hash, prev_hash, signer, kind, \
 					 tx_json, committed_at_unix) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-						)
-						.bind(&e.stream)
-						.bind(e.seq as i64)
-						.bind(&e.hash)
-						.bind(&e.prev)
-						.bind(&e.signer)
-						.bind(&e.kind)
-						.bind(&e.tx_json)
-						.bind(e.committed_at_unix)
-						.execute(&mut *db)
-						.await;
+								)
+								.bind(&e.stream)
+								.bind(e.seq as i64)
+								.bind(&e.hash)
+								.bind(&e.prev)
+								.bind(&e.signer)
+								.bind(&e.kind)
+								.bind(&e.tx_json)
+								.bind(e.committed_at_unix)
+								.execute(&mut *db)
+								.await;
 				match res {
 					Ok(_) => {}
 					Err(err) if is_unique_violation(&err) => {
