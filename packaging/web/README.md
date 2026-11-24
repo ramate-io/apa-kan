@@ -96,13 +96,15 @@ The wire contract is two small crates:
 - **`apa-kan-view`**: `ActionWire` (tagged JSON action), `GameRecord` (rules + seed + the completed 7+4 deal + the ordered action list), and `GameView` (status, side to move, seats, board, legal actions, plus the record). Core is deterministic, so any client rebuilds the exact position with `GameRecord::replay`.
 - **`apa-kan-tx`**: `Transaction { game_id, seq, seat, action, auth }`, `TxReceipt`, `TxError`, and `apply_transaction`. `seq` must equal the record's action count, so two clients can't both play move *n*; a stale client gets `409 stale_seq` and refetches.
 
-Server routes (`apa-kan-server`, in-memory for now):
+Server routes (`apa-kan-server`):
 
 | Route | Does |
 |---|---|
 | `POST /v1/games` `{ "seed"?, "labels"? }` | Deal a human-vs-human, unclocked, default-rules game. Returns `game_id`, one bearer token + `/game/<id>?seat=N&token=…` path per seat, and the view |
 | `GET /v1/games/<id>` | `GameView` |
 | `POST /v1/games/<id>/transactions` | Apply one `Transaction`. `200 { receipt, view }`, or a typed error: `401 unauthorized`, `409 stale_seq / not_your_turn / game_over`, `422 illegal`, `404` |
+
+Hosted games are durable. Every accepted transaction is appended to a per-game log keyed by `(game_id, seq)` (`apa-kan-game-store`) and committed before the `200` goes out; a restart rebuilds each game by replaying its opening record plus the log. Pick the backend with `APAKAN_GAME_STORE_URL`: `memory`, `sqlite:/path/games.db` (default: `apa-kan-games.db` in the temp dir, or `APA_KAN_DATABASE_URL` if set), or `postgres://…` (build the server with `--features postgres`). Ordering, engine validation, and how peer-to-peer transport would reconcile with the store are in [`apa-kan/game-store/DESIGN.md`](../../apa-kan/game-store/DESIGN.md).
 
 CORS allows any origin (auth is in the body, never cookies); set `APAKAN_CORS_ORIGINS=https://play.example` to restrict it.
 

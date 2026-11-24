@@ -1,0 +1,49 @@
+name: Game Store
+
+on:
+  push:
+    branches:
+
+jobs:
+  game-store:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: apakan_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      APAKAN_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/apakan_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Rust toolchain channel
+        id: rust_toolchain
+        run: echo "channel=$(packaging/version.sh --rust)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: game-store-${{ steps.rust_toolchain.outputs.channel }}
+          cache-on-failure: true
+
+      - name: Clippy (all backends)
+        run: cargo clippy -p apa-kan-game-store --all-features --all-targets --no-deps -- -D warnings
+
+      - name: Conformance (memory, SQLite, Postgres)
+        run: cargo test -p apa-kan-game-store --all-features
+
+      - name: Server over Postgres feature compiles
+        run: cargo check -p apa-kan-server --features postgres
