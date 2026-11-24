@@ -159,9 +159,6 @@ pub const STARTING_TOKENS_DEFAULT: u8 = 7;
 /// game is more than an opening skirmish (2–3) but finishes before wiping an
 /// 11-tile bench. Benches keep [`RuleSet::turn_limit`] as the safety net.
 pub const SCORE_TARGET_DEFAULT: u8 = 6;
-/// Occupied-node threshold for [`RuleSet::capture_cascade`]: a capture extra
-/// action only fires on a sparse board (≤ this many tiles still down).
-pub const CAPTURE_CASCADE_SPARSE: u8 = 8;
 pub const MAX_COLOR_RINGS: u8 = 3;
 /// Generated tiles are dots with this percent chance; the rest are triangles.
 /// CLI `--dot-chance 0..100`. Default 50/50.
@@ -803,8 +800,6 @@ pub enum CaptureDest {
 	Graveyard,
 	/// [`RuleSet::mark_capture_routing`]: the opponent's graveyard (owner = opponent).
 	OppGraveyard,
-	/// [`RuleSet::mark_capture_routing`]: removed from the game.
-	Discard,
 }
 
 impl CaptureDest {
@@ -816,7 +811,6 @@ impl CaptureDest {
 			Self::Hand => "hand",
 			Self::Graveyard => "graveyard",
 			Self::OppGraveyard => "opp_graveyard",
-			Self::Discard => "discard",
 		}
 	}
 
@@ -828,7 +822,6 @@ impl CaptureDest {
 			"hand" => Ok(Self::Hand),
 			"graveyard" => Ok(Self::Graveyard),
 			"opp_graveyard" => Ok(Self::OppGraveyard),
-			"discard" => Ok(Self::Discard),
 			other => Err(format!("unknown capture dest '{other}' (expected bench|tokens|owner)")),
 		}
 	}
@@ -2379,8 +2372,6 @@ pub enum RatchetKind {
 	Fight,
 	Cascade,
 	Both,
-	/// Sparse-board opponent capture under [`RuleSet::capture_cascade`].
-	Capture,
 }
 
 impl RatchetKind {
@@ -2389,7 +2380,6 @@ impl RatchetKind {
 			Self::Fight => "fight",
 			Self::Cascade => "cascade",
 			Self::Both => "both",
-			Self::Capture => "capture",
 		}
 	}
 }
@@ -2697,25 +2687,22 @@ impl Objective {
 	}
 }
 
-/// Liam's mark-based capture routing (`--mark-capture-routing`). The mark of
-/// the tile that made the capturing move (the MOVEd / ADDed / SWAP-initiator /
-/// CONVERTed tile; CLAIM has no acting tile and counts as triangle) decides
-/// where every removed tile goes. Overrides the dot/triangle bench/tokens
-/// split, [`RuleSet::unlimited_spawn`]'s return-to-owner, and
-/// [`RuleSet::capture_to_capturer`]. Dots always soak: self and opponent
-/// captures go to the mover's graveyard (needs [`RuleSet::graveyard`] to be
-/// recoverable).
+/// Liam's mark-based capture routing (`--mark-capture-routing b`). The mark
+/// of the tile that made the capturing move (the MOVEd / ADDed /
+/// SWAP-initiator / CONVERTed tile; CLAIM has no acting tile and counts as
+/// triangle) decides where every removed tile goes. Overrides the
+/// dot/triangle bench/tokens split and [`RuleSet::unlimited_spawn`]'s
+/// return-to-owner. Dots always soak: self and opponent captures go to the
+/// mover's graveyard (recoverable with [`Action::Recover`]). Triangles are the
+/// aggressive swap: a triangle self-capture goes to the opponent's graveyard
+/// (they own it); a triangle opponent capture goes to the mover's bench (the
+/// mover owns it). Modes A and A-discard were removed after the #105 sweep;
+/// their logs stay in `benchmark_results/capture_score/` as history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum MarkCaptureRouting {
 	#[default]
 	Off,
-	/// Tempo vs soak: triangle self-captures go straight to the mover's
-	/// bench; triangle opponent captures go to the opponent's graveyard.
-	A,
-	/// As [`Self::A`], but triangle opponent captures leave the game.
-	ADiscard,
-	/// Aggressive swap: triangle self-captures go to the opponent's
-	/// graveyard; triangle opponent captures go to the mover's bench.
+	/// Aggressive swap (see the type docs).
 	B,
 }
 
@@ -2723,20 +2710,17 @@ impl MarkCaptureRouting {
 	pub fn parse(s: &str) -> Result<Self, String> {
 		match s.to_ascii_lowercase().as_str() {
 			"off" | "none" => Ok(Self::Off),
-			"a" | "tempo" => Ok(Self::A),
-			"a-discard" | "a_discard" | "discard" => Ok(Self::ADiscard),
 			"b" | "swap" => Ok(Self::B),
-			other => Err(format!(
-				"unknown --mark-capture-routing '{other}' (expected off|a|a-discard|b)"
-			)),
+			"a" | "tempo" | "a-discard" | "a_discard" | "discard" => {
+				Err(format!("--mark-capture-routing '{s}' was removed (only off|b remain)"))
+			}
+			other => Err(format!("unknown --mark-capture-routing '{other}' (expected off|b)")),
 		}
 	}
 
 	pub fn name(self) -> &'static str {
 		match self {
 			Self::Off => "off",
-			Self::A => "a",
-			Self::ADiscard => "a-discard",
 			Self::B => "b",
 		}
 	}
@@ -2749,51 +2733,10 @@ impl MarkCaptureRouting {
 	pub fn route(self, mark: CaptureMark, self_capture: bool) -> Option<CaptureDest> {
 		Some(match (self, mark, self_capture) {
 			(Self::Off, _, _) => return None,
-			(_, CaptureMark::Dot, _) => CaptureDest::Graveyard,
-			(Self::A | Self::ADiscard, CaptureMark::Triangle, true) => CaptureDest::Hand,
-			(Self::A, CaptureMark::Triangle, false) => CaptureDest::OppGraveyard,
-			(Self::ADiscard, CaptureMark::Triangle, false) => CaptureDest::Discard,
+			(Self::B, CaptureMark::Dot, _) => CaptureDest::Graveyard,
 			(Self::B, CaptureMark::Triangle, true) => CaptureDest::OppGraveyard,
 			(Self::B, CaptureMark::Triangle, false) => CaptureDest::Hand,
 		})
-	}
-}
-
-/// Which cells [`RuleSet::majority_spawn_bonus`] counts. Default is the
-/// former 9-node control set. Sweep variants for the capture-score cell;
-/// ignored when the bonus is off. Missing JSONL replays as control-set.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum MajoritySpawnSet {
-	#[default]
-	ControlSet,
-	/// Strict majority of the 8 inner-ring (petal) nodes.
-	Inner,
-	/// Occupy the center and a strict majority of the 9 control-set cells.
-	Center,
-}
-
-impl MajoritySpawnSet {
-	pub fn parse(s: &str) -> Result<Self, String> {
-		match s.to_ascii_lowercase().as_str() {
-			"control-set" | "control_set" | "control" | "9" => Ok(Self::ControlSet),
-			"inner" | "petals" | "petal" | "8" => Ok(Self::Inner),
-			"center" | "center-plus" | "center_plus" | "origin" => Ok(Self::Center),
-			other => Err(format!(
-				"unknown --majority-spawn-set '{other}' (expected control-set|inner|center)"
-			)),
-		}
-	}
-
-	pub fn name(self) -> &'static str {
-		match self {
-			Self::ControlSet => "control-set",
-			Self::Inner => "inner",
-			Self::Center => "center",
-		}
-	}
-
-	pub fn is_control_set(self) -> bool {
-		matches!(self, Self::ControlSet)
 	}
 }
 
@@ -3124,22 +3067,6 @@ pub struct RuleSet {
 	/// [`Objective::CaptureScore`]. Default [`SCORE_TARGET_DEFAULT`] (6).
 	/// `--score-target`. Unused under control. Missing JSONL replays as 6.
 	pub score_target: u8,
-	/// At the end of your turn, if you occupy strictly more of the 9 former
-	/// control-set cells (center + inner ring) than the opponent, gain one
-	/// spawn token. Once per `finish_turn`. Default off.
-	/// `--majority-spawn-bonus`. Missing JSONL replays as off.
-	pub majority_spawn_bonus: bool,
-	/// Which cells the majority-spawn bonus counts. Default
-	/// [`MajoritySpawnSet::ControlSet`] (9 former control cells).
-	/// `--majority-spawn-set`. Missing JSONL replays as control-set.
-	pub majority_spawn_set: MajoritySpawnSet,
-	/// Sparse-endgame extra action: capturing ≥1 opponent piece while the
-	/// board has ≤ [`CAPTURE_CASCADE_SPARSE`] occupied nodes awards the
-	/// capturer the next action as a ratchet reward (same 1st/2nd+ SWAP/FLIP
-	/// ladder). Default off. `--capture-cascade`. Intended for capture-score;
-	/// ignored under control so the live game stays unchanged. Missing JSONL
-	/// replays as off.
-	pub capture_cascade: bool,
 	/// Captured tiles return to the owner's bench and spawn tokens are not
 	/// spent, so occupying spawn nodes is how you draw the opponent down.
 	/// Default off. `--unlimited-spawn`. Missing JSONL replays as off.
@@ -3151,12 +3078,6 @@ pub struct RuleSet {
 	/// graveyard, so an empty bench plus a full graveyard is never a
 	/// lockout. Default off. `--graveyard`. Missing JSONL replays as off.
 	pub graveyard: bool,
-	/// Captured tiles belong to whoever made the capturing move: they
-	/// change owner and go to the capturer's bench (or graveyard), ignoring
-	/// the dot/triangle destination and [`Self::unlimited_spawn`]'s
-	/// return-to-owner. Default off. `--capture-to-capturer`. Missing JSONL
-	/// replays as off.
-	pub capture_to_capturer: bool,
 	/// [`MarkCaptureRouting`]. Default off. `--mark-capture-routing`.
 	/// Missing JSONL replays as off.
 	pub mark_capture_routing: MarkCaptureRouting,
@@ -3175,6 +3096,104 @@ pub struct RuleSet {
 	/// clean. ADD, CLAIM, RECOVER and Pass never record. Default off.
 	/// `--no-immediate-return`. Missing JSONL replays as off.
 	pub no_immediate_return: bool,
+	/// Per-tile self-capture points for the opponent. Default off.
+	pub self_capture_penalty: SelfCapturePenalty,
+}
+
+/// Points awarded to the opponent for each self-captured tile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum SelfCapturePenalty {
+	#[default]
+	Off,
+	Always,
+	/// Active only if the acting player's pre-action score is target - 1.
+	MatchPoint,
+}
+
+impl SelfCapturePenalty {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s {
+			"off" => Ok(Self::Off),
+			"always" => Ok(Self::Always),
+			"match-point" => Ok(Self::MatchPoint),
+			_ => Err(format!(
+				"invalid --self-capture-penalty '{s}' (expected off|always|match-point)"
+			)),
+		}
+	}
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Off => "off",
+			Self::Always => "always",
+			Self::MatchPoint => "match-point",
+		}
+	}
+	pub fn active(self, score: u8, target: u8) -> bool {
+		match self {
+			Self::Off => false,
+			Self::Always => true,
+			Self::MatchPoint => score == target.max(1) - 1,
+		}
+	}
+}
+
+/// Named one-switch rule bundles (`--ruleset`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RulesetPreset {
+	/// Live control game: resets every capture-score field to its default.
+	Control,
+	/// The simplified capture-score game: [`Objective::CaptureScore`]
+	/// to 5, [`RuleSet::unlimited_spawn`], 1-1-1-1 opening,
+	/// [`RuleSet::graveyard`], [`MarkCaptureRouting::B`],
+	/// [`RuleSet::no_immediate_return`] and [`RuleSet::repetition_ends`].
+	CaptureB,
+}
+
+/// Score target of [`RulesetPreset::CaptureB`]. At a tied
+/// `target - 1` (4-4) the next opponent capture reaches the target with a
+/// strict lead, so "overtime: next capture wins" holds without an extra rule.
+pub const CAPTURE_B_SCORE_TARGET: u8 = 5;
+
+impl RulesetPreset {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"control" | "default" => Ok(Self::Control),
+			"capture-b" | "capture_b" | "capture" | "capture-score" => Ok(Self::CaptureB),
+			other => Err(format!("unknown --ruleset '{other}' (expected control|capture-b)")),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Control => "control",
+			Self::CaptureB => "capture-b",
+		}
+	}
+}
+
+impl RuleSet {
+	/// Overwrite the fields [`RulesetPreset`] owns; everything else stays.
+	pub fn apply_preset(&mut self, preset: RulesetPreset) {
+		let d = RuleSet::default();
+		let capture = matches!(preset, RulesetPreset::CaptureB);
+		self.objective = if capture { Objective::CaptureScore } else { d.objective };
+		self.score_target = if capture { CAPTURE_B_SCORE_TARGET } else { d.score_target };
+		self.unlimited_spawn = capture;
+		self.opening_double = if capture { false } else { d.opening_double };
+		self.graveyard = capture;
+		self.mark_capture_routing =
+			if capture { MarkCaptureRouting::B } else { MarkCaptureRouting::Off };
+		self.no_immediate_return = capture;
+		self.repetition_ends = capture;
+		self.self_capture_penalty = SelfCapturePenalty::Off;
+	}
+
+	/// [`RuleSet::default`] with [`RulesetPreset::CaptureB`] applied.
+	pub fn capture_b() -> Self {
+		let mut r = Self::default();
+		r.apply_preset(RulesetPreset::CaptureB);
+		r
+	}
 }
 
 impl Default for RuleSet {
@@ -3233,15 +3252,12 @@ impl Default for RuleSet {
 			opening_double: true,
 			objective: Objective::Control,
 			score_target: SCORE_TARGET_DEFAULT,
-			majority_spawn_bonus: false,
-			majority_spawn_set: MajoritySpawnSet::ControlSet,
-			capture_cascade: false,
 			unlimited_spawn: false,
 			graveyard: false,
-			capture_to_capturer: false,
 			mark_capture_routing: MarkCaptureRouting::Off,
 			repetition_ends: false,
 			no_immediate_return: false,
+			self_capture_penalty: SelfCapturePenalty::Off,
 		}
 	}
 }
@@ -3473,10 +3489,6 @@ pub struct Game {
 	return_block: [Vec<(u32, NodeId)>; 2],
 	/// Same, for tiles moved so far this turn (latest move per tile).
 	moved_from_this_turn: Vec<(u32, NodeId)>,
-	/// Last action awarded a majority-spawn token.
-	last_majority_spawn: bool,
-	/// Last action captured an opponent piece on a sparse board (capture-cascade).
-	score_cascade_hit: bool,
 }
 
 impl Game {
@@ -3615,8 +3627,6 @@ impl Game {
 			position_history: Vec::new(),
 			return_block: [Vec::new(), Vec::new()],
 			moved_from_this_turn: Vec::new(),
-			last_majority_spawn: false,
-			score_cascade_hit: false,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -3704,8 +3714,6 @@ impl Game {
 			position_history: Vec::new(),
 			return_block: [Vec::new(), Vec::new()],
 			moved_from_this_turn: Vec::new(),
-			last_majority_spawn: false,
-			score_cascade_hit: false,
 		};
 		game.sync_public_bench_size();
 		game.snapshot_opening_decks();
@@ -3795,8 +3803,6 @@ impl Game {
 			position_history: Vec::new(),
 			return_block: [Vec::new(), Vec::new()],
 			moved_from_this_turn: Vec::new(),
-			last_majority_spawn: false,
-			score_cascade_hit: false,
 		}
 	}
 
@@ -3942,11 +3948,6 @@ impl Game {
 	/// Occupied board nodes.
 	pub fn occupied_count(&self) -> u8 {
 		self.tiles.iter().filter(|t| t.is_some()).count() as u8
-	}
-
-	/// Last action awarded a majority-spawn token.
-	pub fn last_majority_spawn(&self) -> bool {
-		self.last_majority_spawn
 	}
 
 	/// Compare capture scores and end the game. Used at the turn limit and
@@ -5737,8 +5738,6 @@ impl Game {
 		self.last_fight_gain = None;
 		self.last_ratchet_kind = None;
 		self.cascade_drop_nonwin = false;
-		self.last_majority_spawn = false;
-		self.score_cascade_hit = false;
 		self.last_played_as_extra = self.playing_extra_turn;
 		self.last_played_as_ratchet_reward = self.playing_ratchet_reward;
 		self.last_ratchet_tier = self.active_ratchet_tier;
@@ -5804,13 +5803,6 @@ impl Game {
 				rem.dest = CaptureDest::Owner;
 			}
 		}
-		if self.rules.capture_to_capturer {
-			// Bench dest flips ownership to the mover below. Applies to
-			// every capturing action (CLAIM too); dot/triangle is ignored.
-			for rem in &mut removals {
-				rem.dest = CaptureDest::Bench;
-			}
-		}
 		if self.rules.mark_capture_routing.is_on() && !removals.is_empty() {
 			let mark = self.acting_capture(action);
 			for rem in &mut removals {
@@ -5822,6 +5814,20 @@ impl Game {
 			}
 		}
 		if self.rules.is_capture_score() {
+			// Resolve both awards simultaneously, using the pre-action score
+			// for match-point eligibility. A mixed capture does not evade a
+			// penalty by increasing the mover's score first.
+			let penalty = if self
+				.rules
+				.self_capture_penalty
+				.active(self.capture_score[player.index()], self.rules.score_target)
+			{
+				removals.iter().filter(|r| r.tile.owner == player).count() as u8
+			} else {
+				0
+			};
+			self.capture_score[opponent.index()] =
+				self.capture_score[opponent.index()].saturating_add(penalty);
 			let opp_caps = removals.iter().filter(|r| r.tile.owner == opponent).count() as u8;
 			self.capture_score[player.index()] =
 				self.capture_score[player.index()].saturating_add(opp_caps);
@@ -5875,7 +5881,6 @@ impl Game {
 					tile.owner = opponent;
 					self.graveyards[opponent.index()].push(tile);
 				}
-				CaptureDest::Discard => {}
 			}
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
 				if self.draw_from_bag(player).is_some() {
@@ -5883,14 +5888,6 @@ impl Game {
 				}
 			}
 		}
-		if self.rules.is_capture_score()
-			&& self.rules.capture_cascade
-			&& removals.iter().any(|r| r.tile.owner == opponent)
-			&& self.occupied_count() <= CAPTURE_CASCADE_SPARSE
-		{
-			self.score_cascade_hit = true;
-		}
-
 		let log_line = format_log(player, action, &removals, draws, self.board.as_ref());
 
 		self.check_elimination();
@@ -5946,9 +5943,6 @@ impl Game {
 		}
 		if !self.status.is_over() {
 			self.update_control(who);
-		}
-		if !self.status.is_over() {
-			self.award_majority_spawn(who);
 		}
 		if !self.status.is_over() {
 			self.check_insufficient_tiles();
@@ -6193,16 +6187,10 @@ impl Game {
 	) {
 		let cascade = self.cascade_drop_nonwin;
 		self.cascade_drop_nonwin = false;
-		let score_hit = self.score_cascade_hit;
-		self.score_cascade_hit = false;
 		if self.status.is_over() {
 			return;
 		}
 		if self.rules.is_capture_score() {
-			if !score_hit {
-				return;
-			}
-			self.seat_ratchet(self.current, RatchetKind::Capture);
 			return;
 		}
 		if !self.rules.cascade_winner_swap {
@@ -6268,31 +6256,6 @@ impl Game {
 			self.status = GameStatus::Won { winner: Player::One, reason: EndReason::Score };
 		} else if p2 >= target && p2 > p1 {
 			self.status = GameStatus::Won { winner: Player::Two, reason: EndReason::Score };
-		}
-	}
-
-	/// Once per completed turn: majority of [`RuleSet::majority_spawn_set`]
-	/// earns one spawn token. Tied or empty occupancy awards nothing.
-	fn award_majority_spawn(&mut self, who: Player) {
-		if !self.rules.majority_spawn_bonus || self.status.is_over() {
-			return;
-		}
-		let opp = who.other();
-		let (mine, theirs) = match self.rules.majority_spawn_set {
-			MajoritySpawnSet::ControlSet => (self.control_count(who), self.control_count(opp)),
-			MajoritySpawnSet::Inner => (self.petal_count(who), self.petal_count(opp)),
-			MajoritySpawnSet::Center => {
-				let holds_center =
-					self.tile_at(self.board.center()).is_some_and(|t| t.owner == who);
-				if !holds_center {
-					return;
-				}
-				(self.control_count(who), self.control_count(opp))
-			}
-		};
-		if mine > theirs && mine > 0 {
-			self.budget_tokens[who.index()].push(BudgetToken::Blank);
-			self.last_majority_spawn = true;
 		}
 	}
 
@@ -6982,8 +6945,6 @@ mod tests {
 	fn default_rules_are_control_win_with_seven_tokens() {
 		let rules = RuleSet::default();
 		assert_eq!(rules.objective, Objective::Control);
-		assert!(!rules.majority_spawn_bonus);
-		assert!(!rules.capture_cascade);
 		assert!(!rules.unlimited_spawn);
 		assert_eq!(rules.score_target, SCORE_TARGET_DEFAULT);
 		assert!(!rules.center_hold_win);
@@ -14692,94 +14653,6 @@ mod tests {
 	}
 
 	#[test]
-	fn majority_spawn_bonus_awards_one_token_per_turn() {
-		let mut rules = capture_score_rules();
-		rules.majority_spawn_bonus = true;
-		let mut game = Game::empty(rules);
-		let inner = game.board().inner_ring().to_vec();
-		put(&mut game, inner[0], Player::One, TileColor::Green, 3, 1);
-		put(&mut game, inner[1], Player::One, TileColor::Blue, 3, 1);
-		put(&mut game, inner[2], Player::Two, TileColor::Orange, 3, 1);
-		assert!(game.control_count(Player::One) > game.control_count(Player::Two));
-		let tokens = game.budget_token_count(Player::One);
-		let spawn = game.isolated_empty_spawn();
-		let tile = game.alloc_tile(Player::One, TileColor::Teal, 1, 1);
-		game.set_bench(Player::One, vec![tile]);
-		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; tokens.max(1)]);
-		game.set_current(Player::One);
-		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
-		assert!(game.last_majority_spawn());
-		assert_eq!(game.budget_token_count(Player::One), tokens.max(1)); // spent 1, earned 1
-	}
-
-	#[test]
-	fn majority_spawn_inner_set_ignores_the_center() {
-		let mut rules = capture_score_rules();
-		rules.majority_spawn_bonus = true;
-		rules.majority_spawn_set = MajoritySpawnSet::Inner;
-		let mut game = Game::empty(rules);
-		let inner = game.board().inner_ring().to_vec();
-		let center = game.board().center();
-		put(&mut game, inner[0], Player::One, TileColor::Green, 3, 1);
-		put(&mut game, inner[1], Player::One, TileColor::Blue, 3, 1);
-		put(&mut game, inner[2], Player::Two, TileColor::Orange, 3, 1);
-		put(&mut game, center, Player::Two, TileColor::Teal, 3, 1);
-		assert_eq!(game.petal_count(Player::One), 2);
-		assert_eq!(game.control_count(Player::Two), 2);
-		let tokens = game.budget_token_count(Player::One);
-		let spawn = game.isolated_empty_spawn();
-		let tile = game.alloc_tile(Player::One, TileColor::Teal, 1, 1);
-		game.set_bench(Player::One, vec![tile]);
-		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; tokens.max(1)]);
-		game.set_current(Player::One);
-		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
-		assert!(game.last_majority_spawn(), "inner-set counts petals, not the origin");
-	}
-
-	#[test]
-	fn majority_spawn_center_set_requires_the_origin() {
-		let mut rules = capture_score_rules();
-		rules.majority_spawn_bonus = true;
-		rules.majority_spawn_set = MajoritySpawnSet::Center;
-		let mut game = Game::empty(rules);
-		let inner = game.board().inner_ring().to_vec();
-		put(&mut game, inner[0], Player::One, TileColor::Green, 3, 1);
-		put(&mut game, inner[1], Player::One, TileColor::Blue, 3, 1);
-		put(&mut game, inner[2], Player::Two, TileColor::Orange, 3, 1);
-		let tokens = game.budget_token_count(Player::One);
-		let spawn = game.isolated_empty_spawn();
-		let tile = game.alloc_tile(Player::One, TileColor::Teal, 1, 1);
-		game.set_bench(Player::One, vec![tile]);
-		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; tokens.max(1)]);
-		game.set_current(Player::One);
-		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
-		assert!(!game.last_majority_spawn(), "center-set needs the origin occupant");
-	}
-
-	#[test]
-	fn majority_spawn_center_set_awards_when_holding_origin() {
-		let mut rules = capture_score_rules();
-		rules.majority_spawn_bonus = true;
-		rules.majority_spawn_set = MajoritySpawnSet::Center;
-		let mut game = Game::empty(rules);
-		let inner = game.board().inner_ring().to_vec();
-		let center = game.board().center();
-		put(&mut game, center, Player::One, TileColor::Teal, 3, 1);
-		put(&mut game, inner[0], Player::One, TileColor::Green, 3, 1);
-		put(&mut game, inner[1], Player::Two, TileColor::Orange, 3, 1);
-		assert_eq!(game.control_count(Player::One), 2);
-		assert_eq!(game.control_count(Player::Two), 1);
-		let tokens = game.budget_token_count(Player::One);
-		let spawn = game.isolated_empty_spawn();
-		let tile = game.alloc_tile(Player::One, TileColor::Blue, 1, 1);
-		game.set_bench(Player::One, vec![tile]);
-		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; tokens.max(1)]);
-		game.set_current(Player::One);
-		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
-		assert!(game.last_majority_spawn(), "center + control majority earns the token");
-	}
-
-	#[test]
 	fn unlimited_spawn_returns_captures_to_the_owner() {
 		let mut rules = capture_score_rules();
 		rules.unlimited_spawn = true;
@@ -14811,23 +14684,6 @@ mod tests {
 	}
 
 	#[test]
-	fn capture_to_capturer_puts_the_tile_on_the_capturers_bench() {
-		let mut rules = capture_score_rules();
-		rules.unlimited_spawn = true;
-		rules.capture_to_capturer = true;
-		let (mut game, node) = claimable_opponent(rules);
-		let p1_bench = game.bench(Player::One).len();
-		let p2_bench = game.bench(Player::Two).len();
-		let captured = game.tile_at(node).unwrap();
-		game.apply(Action::Claim { node }).unwrap();
-		assert_eq!(game.bench(Player::One).len(), p1_bench + 1);
-		assert_eq!(game.bench(Player::Two).len(), p2_bench);
-		let moved = game.bench(Player::One).iter().find(|t| t.id == captured.id).unwrap();
-		assert_eq!(moved.owner, Player::One, "captured tile changes owner");
-		assert_eq!(game.capture_score(Player::One), 1);
-	}
-
-	#[test]
 	fn graveyard_holds_captures_until_recovered() {
 		let mut rules = capture_score_rules();
 		rules.unlimited_spawn = true;
@@ -14844,19 +14700,6 @@ mod tests {
 		assert!(game.graveyard(Player::Two).is_empty());
 		assert_eq!(game.bench(Player::Two).len(), p2_bench + 1);
 		assert_eq!(game.current_player(), Player::One, "recover costs the action");
-	}
-
-	#[test]
-	fn graveyard_with_capture_to_capturer_feeds_the_capturers_pile() {
-		let mut rules = capture_score_rules();
-		rules.unlimited_spawn = true;
-		rules.graveyard = true;
-		rules.capture_to_capturer = true;
-		let (mut game, node) = claimable_opponent(rules);
-		game.apply(Action::Claim { node }).unwrap();
-		assert_eq!(game.graveyard(Player::One).len(), 1);
-		assert_eq!(game.graveyard(Player::One)[0].owner, Player::One);
-		assert!(game.graveyard(Player::Two).is_empty());
 	}
 
 	#[test]
@@ -14892,18 +14735,15 @@ mod tests {
 		use CaptureMark::{Dot, Triangle};
 		use MarkCaptureRouting as M;
 		assert_eq!(M::Off.route(Triangle, true), None);
-		for m in [M::A, M::ADiscard, M::B] {
-			assert_eq!(m.route(Dot, true), Some(D::Graveyard));
-			assert_eq!(m.route(Dot, false), Some(D::Graveyard));
-		}
-		assert_eq!(M::A.route(Triangle, true), Some(D::Hand));
-		assert_eq!(M::A.route(Triangle, false), Some(D::OppGraveyard));
-		assert_eq!(M::ADiscard.route(Triangle, true), Some(D::Hand));
-		assert_eq!(M::ADiscard.route(Triangle, false), Some(D::Discard));
+		assert_eq!(M::B.route(Dot, true), Some(D::Graveyard));
+		assert_eq!(M::B.route(Dot, false), Some(D::Graveyard));
 		assert_eq!(M::B.route(Triangle, true), Some(D::OppGraveyard));
 		assert_eq!(M::B.route(Triangle, false), Some(D::Hand));
-		for m in [M::Off, M::A, M::ADiscard, M::B] {
+		for m in [M::Off, M::B] {
 			assert_eq!(MarkCaptureRouting::parse(m.name()), Ok(m));
+		}
+		for gone in ["a", "a-discard"] {
+			assert!(MarkCaptureRouting::parse(gone).unwrap_err().contains("removed"));
 		}
 	}
 
@@ -14913,36 +14753,6 @@ mod tests {
 		rules.graveyard = true;
 		rules.mark_capture_routing = mode;
 		rules
-	}
-
-	#[test]
-	fn mark_routing_a_sends_triangle_opponent_captures_to_their_graveyard() {
-		let (mut game, node) = claimable_opponent(routing_rules(MarkCaptureRouting::A));
-		let id = game.tile_at(node).unwrap().id;
-		let p2_bench = game.bench(Player::Two).len();
-		game.apply(Action::Claim { node }).unwrap();
-		assert_eq!(game.capture_score(Player::One), 1);
-		assert_eq!(game.bench(Player::Two).len(), p2_bench);
-		assert_eq!(game.graveyard(Player::Two).len(), 1);
-		assert_eq!(game.graveyard(Player::Two)[0].id, id);
-		assert_eq!(game.graveyard(Player::Two)[0].owner, Player::Two);
-		assert!(game.graveyard(Player::One).is_empty());
-		assert_eq!(game.legal_recovers(), vec![Action::Recover]);
-	}
-
-	#[test]
-	fn mark_routing_a_discard_removes_triangle_opponent_captures() {
-		let (mut game, node) = claimable_opponent(routing_rules(MarkCaptureRouting::ADiscard));
-		let id = game.tile_at(node).unwrap().id;
-		let p1_bench = game.bench(Player::One).len();
-		let p2_bench = game.bench(Player::Two).len();
-		game.apply(Action::Claim { node }).unwrap();
-		assert_eq!(game.capture_score(Player::One), 1);
-		assert_eq!(game.bench(Player::One).len(), p1_bench);
-		assert_eq!(game.bench(Player::Two).len(), p2_bench);
-		assert!(game.graveyard(Player::One).is_empty());
-		assert!(game.graveyard(Player::Two).is_empty());
-		assert!(game.bench(Player::Two).iter().all(|t| t.id != id));
 	}
 
 	#[test]
@@ -14962,7 +14772,10 @@ mod tests {
 	/// tile with `mark` from `spawns[4]`. Returns the game after the move,
 	/// the captured tile id, and P1's bench length before.
 	fn routed_self_capture(mode: MarkCaptureRouting, mark: CaptureMark) -> (Game, u32, usize) {
-		let mut rules = routing_rules(mode);
+		routed_self_capture_with(routing_rules(mode), mark)
+	}
+
+	fn routed_self_capture_with(mut rules: RuleSet, mark: CaptureMark) -> (Game, u32, usize) {
 		rules.capture_mode = CaptureMode::Cascade;
 		let mut game = Game::empty(rules);
 		let spawn = game.board().spawns()[0];
@@ -14986,14 +14799,6 @@ mod tests {
 	}
 
 	#[test]
-	fn mark_routing_a_returns_triangle_self_captures_to_hand() {
-		let (game, id, bench_n) = routed_self_capture(MarkCaptureRouting::A, CaptureMark::Triangle);
-		assert_eq!(game.bench(Player::One).len(), bench_n + 1);
-		assert!(game.bench(Player::One).iter().any(|t| t.id == id && t.owner == Player::One));
-		assert!(game.graveyard(Player::One).is_empty());
-	}
-
-	#[test]
 	fn mark_routing_b_sends_triangle_self_captures_to_the_opponents_graveyard() {
 		let (game, id, bench_n) = routed_self_capture(MarkCaptureRouting::B, CaptureMark::Triangle);
 		assert_eq!(game.bench(Player::One).len(), bench_n);
@@ -15005,25 +14810,121 @@ mod tests {
 
 	#[test]
 	fn mark_routing_dot_self_captures_soak_into_the_movers_graveyard() {
-		for mode in [MarkCaptureRouting::A, MarkCaptureRouting::ADiscard, MarkCaptureRouting::B] {
-			let (game, id, bench_n) = routed_self_capture(mode, CaptureMark::Dot);
-			assert_eq!(game.bench(Player::One).len(), bench_n, "{mode:?}");
-			assert_eq!(game.graveyard(Player::One).len(), 1, "{mode:?}");
-			assert_eq!(game.graveyard(Player::One)[0].id, id);
-			assert!(game.graveyard(Player::Two).is_empty());
-		}
+		let (game, id, bench_n) = routed_self_capture(MarkCaptureRouting::B, CaptureMark::Dot);
+		assert_eq!(game.bench(Player::One).len(), bench_n);
+		assert_eq!(game.graveyard(Player::One).len(), 1);
+		assert_eq!(game.graveyard(Player::One)[0].id, id);
+		assert!(game.graveyard(Player::Two).is_empty());
 	}
 
 	#[test]
 	fn mark_routing_without_graveyard_flag_still_allows_recover() {
-		let mut rules = routing_rules(MarkCaptureRouting::A);
+		let mut rules = routing_rules(MarkCaptureRouting::B);
 		rules.graveyard = false;
-		let (mut game, node) = claimable_opponent(rules);
-		game.apply(Action::Claim { node }).unwrap();
-		assert_eq!(game.graveyard(Player::Two).len(), 1);
+		let (mut game, _, _) = routed_self_capture_with(rules, CaptureMark::Dot);
+		assert_eq!(game.graveyard(Player::One).len(), 1);
+		game.set_current(Player::One);
 		assert_eq!(game.legal_recovers(), vec![Action::Recover]);
 		game.apply(Action::Recover).unwrap();
-		assert!(game.graveyard(Player::Two).is_empty());
+		assert!(game.graveyard(Player::One).is_empty());
+	}
+
+	#[test]
+	fn capture_b_tied_match_point_next_opponent_capture_wins() {
+		// "Overtime: next capture wins" at 4-4 is already the score rule: the
+		// capture reaches the target with a strict lead. Under routing B the
+		// triangle (CLAIM) capture goes to the capturer's hand and still wins.
+		let (mut game, node) = claimable_opponent(RuleSet::capture_b());
+		game.capture_score = [4, 4];
+		let id = game.tile_at(node).unwrap().id;
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Score }
+		);
+		assert_eq!(game.capture_score(Player::One), 5);
+		let taken = game.bench(Player::One).iter().find(|t| t.id == id).expect("in hand");
+		assert_eq!(taken.owner, Player::One);
+	}
+
+	#[test]
+	fn capture_b_tied_match_point_self_capture_does_not_end_the_game() {
+		let mut rules = RuleSet::capture_b();
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
+		let from = game.board().spawns()[4];
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, CaptureMark::Dot);
+		game.capture_score = [4, 4];
+		game.set_current(Player::One);
+		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(outcome.removals.iter().all(|r| r.tile.owner == Player::One));
+		assert!(!outcome.removals.is_empty());
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert_eq!(game.capture_score, [4, 4]);
+	}
+
+	fn penalty_self_capture(
+		penalty: SelfCapturePenalty,
+		scores: [u8; 2],
+		mark: CaptureMark,
+	) -> (Game, usize) {
+		let mut rules = RuleSet::capture_b();
+		rules.capture_mode = CaptureMode::Cascade;
+		rules.self_capture_penalty = penalty;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
+		let from = game.board().spawns()[4];
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, mark);
+		let second = game.board().spawns()[1];
+		overwhelm_neighbors(&mut game, second, Player::Two);
+		put_capture(&mut game, second, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
+		game.capture_score = scores;
+		game.set_current(Player::One);
+		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		let selfs = outcome.removals.iter().filter(|r| r.tile.owner == Player::One).count();
+		assert!(selfs >= 2);
+		assert!(outcome.removals.iter().all(|r| r.tile.owner == Player::One));
+		(game, selfs)
+	}
+
+	#[test]
+	fn self_capture_penalty_always_scores_each_tile_for_the_opponent() {
+		let (game, n) = penalty_self_capture(SelfCapturePenalty::Always, [1, 1], CaptureMark::Dot);
+		assert_eq!(game.capture_score, [1, 1 + n as u8]);
+		assert_eq!(game.graveyard(Player::One).len(), n, "dot routing is unchanged");
+	}
+
+	#[test]
+	fn self_capture_penalty_can_win_for_the_opponent() {
+		let (game, _) =
+			penalty_self_capture(SelfCapturePenalty::Always, [2, 4], CaptureMark::Triangle);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::Score }
+		);
+		assert!(game.graveyard(Player::Two).len() >= 2, "triangle routing is unchanged");
+		assert!(
+			crate::ai::evaluate(&game, Player::One, 0) <= -25_000,
+			"terminal loss seen by search"
+		);
+	}
+
+	#[test]
+	fn self_capture_penalty_match_point_uses_the_self_capturers_score() {
+		let (off, _) =
+			penalty_self_capture(SelfCapturePenalty::MatchPoint, [3, 4], CaptureMark::Dot);
+		assert_eq!(off.capture_score, [3, 4]);
+		assert_eq!(off.status(), GameStatus::InProgress);
+		let (on, n) =
+			penalty_self_capture(SelfCapturePenalty::MatchPoint, [4, 2], CaptureMark::Dot);
+		assert_eq!(on.capture_score, [4, 2 + n as u8]);
 	}
 
 	#[test]
@@ -15062,18 +14963,6 @@ mod tests {
 		}
 		assert_eq!(game.status(), GameStatus::InProgress);
 		assert!(game.position_history.is_empty());
-	}
-
-	#[test]
-	fn capture_cascade_awards_the_capturer_an_extra_action_when_sparse() {
-		let mut rules = capture_score_rules();
-		rules.capture_cascade = true;
-		let (mut game, node) = claimable_opponent(rules);
-		assert!(game.occupied_count() <= CAPTURE_CASCADE_SPARSE);
-		game.apply(Action::Claim { node }).unwrap();
-		assert_eq!(game.last_ratchet_kind(), Some(RatchetKind::Capture));
-		assert_eq!(game.current_player(), Player::One);
-		assert!(game.ratchet_reward_active());
 	}
 
 	#[test]

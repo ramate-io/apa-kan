@@ -33,7 +33,7 @@ The next action always belongs to the ratchet winner. If the opponent triggered 
 
 **How the game ends.** You win by occupying the current control target, by eliminating the opponent (nothing on the board and nothing left on their bench), or by **lockout**: if the player to move has no legal add, move, swap, claim, or flip, they lose. When both sides are down to at most one piece of material, the lowest remaining pieces decide. Turn 200 is a draw.
 
-**Capture-score experiment** (`--objective capture-score`). Control occupancy, cascade drops, and center-fight ratchets do not win. You score 1 per opponent piece captured (self-captures do not). First to `--score-target` (default 6) wins; at the turn limit the higher scorer wins and a tie is a draw. Spawn points, the 2-2-1-1 opening, local-claim captures, swaps, and tokens stay. Flip is off unless `--capture-cascade` reuses the ratchet reward on a sparse-board capture. Independent toggles, all off by default: `--majority-spawn-bonus` (majority of `--majority-spawn-set` cells — default the former 9 control cells; `inner` and `center` are sweep variants — earns one spawn token at end of turn), `--capture-cascade` (capturing on a board with ≤8 tiles awards the capturer the next action as a ratchet reward), `--unlimited-spawn` (captures return to the owner's bench; ADD does not spend tokens).
+**Capture-score experiment** (`--ruleset capture-b`). One switch turns on the capture-score game: you score 1 per opponent piece captured, first to 5 wins, and control, cascade and ratchet wins are off. It also turns on unlimited spawn, the 1-1-1-1 opening, a graveyard with RECOVER, mark routing B, no-immediate-return and repetition-ends. Rules and results are in `apa-kan/game/benchmark_results/capture_score/RULES.md`. The building blocks stay available as separate flags for comparisons: `--objective capture-score`, `--score-target`, `--unlimited-spawn`, `--graveyard`, `--mark-capture-routing off|b`, `--no-immediate-return` and `--repetition-ends`.
 
 ## Locked defaults
 
@@ -68,7 +68,9 @@ Usage: apa-kan [OPTIONS]
   --ratchet-cascade <on|off>                 Cascade drops count as ratchets (default: on)
   --opening-double <on|off> / --opening <2-2-1-1|1-1-1-1>
   --objective <control|capture-score>        Win condition (default: control)
-  --score-target <n> / --majority-spawn-bonus / --majority-spawn-set / --capture-cascade / --unlimited-spawn
+  --ruleset <control|capture-b>              One-switch preset; later flags override (default: control)
+  --score-target <n> / --unlimited-spawn / --graveyard / --mark-capture-routing <off|b>
+  --no-immediate-return / --repetition-ends
   --cascade-turn-gain <on|off>               Extra-turn on cascade drop when the ratchet is off (default: on)
   --endgame-rule <control-cascade|low-value>
   --capture-mode <local-claim|cascade>
