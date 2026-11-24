@@ -8,6 +8,7 @@ members = [
   "apa-kan/game",
   "apa-kan/game-store",
   "apa-kan/server",
+  "apa-kan/smoke",
   "apa-kan/store",
   "apa-kan/tx",
   "apa-kan/view",
