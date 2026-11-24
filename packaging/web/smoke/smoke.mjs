@@ -77,7 +77,27 @@ async function waitSnap(page, pred, what, timeout = 60_000) {
 		if (last && pred(last)) return last;
 		await page.waitForTimeout(150);
 	}
-	throw new Error(`timed out waiting for ${what}; last snapshot: ${JSON.stringify(last)?.slice(0, 600)}`);
+	const stack = await mainThreadStack(page);
+	throw new Error(`timed out waiting for ${what}; last snapshot: ${JSON.stringify(last)?.slice(0, 600)}${stack}`);
+}
+
+// When the game stops producing frames, pause the page's main thread over CDP and
+// report where it is stuck (wasm function names survive in the bundle).
+async function mainThreadStack(page) {
+	try {
+		const cdp = await page.context().newCDPSession(page);
+		await cdp.send("Debugger.enable");
+		const paused = new Promise((resolve) => cdp.once("Debugger.paused", resolve));
+		await cdp.send("Debugger.pause");
+		const ev = await Promise.race([paused, new Promise((r) => setTimeout(() => r(null), 5000))]);
+		if (!ev) return "\nmain thread: idle (no pause within 5s)";
+		const frames = ev.callFrames.slice(0, 40).map((f) => `    at ${f.functionName || "<anon>"} (${f.url.split("/").pop()}:${f.location.lineNumber})`);
+		await cdp.send("Debugger.resume").catch(() => {});
+		await cdp.detach().catch(() => {});
+		return `\nmain thread stack:\n${frames.join("\n")}`;
+	} catch (e) {
+		return `\n(could not sample the main thread: ${e.message})`;
+	}
 }
 
 async function shot(page, name) {
@@ -140,10 +160,10 @@ async function humanAction(page, name, timeout = 90_000) {
 		await page.mouse.click(x, y);
 		// One click per rendered frame at least: SwiftShader can run at a few fps, and
 		// two clicks inside one frame collapse into a single press at the last position.
-		frame = (await waitSnap(page, (n) => n.frame > frame, `${name}: next frame`, 20_000)).frame;
+		frame = (await waitSnap(page, (n) => n.frame > frame, `${name}: next frame`, 60_000)).frame;
 	}
 	// Snapshots are written every 10 frames; never act on one taken before the click landed.
-	const fresh = await waitSnap(page, (n) => n.frame > frame, `${name}: fresh snapshot`, 20_000);
+	const fresh = await waitSnap(page, (n) => n.frame > frame, `${name}: fresh snapshot`, 60_000);
 	const after = key(fresh) !== before ? fresh : await waitSnap(page, (n) => n.screen !== "match" || key(n) !== before, `${name}: response to click`, 10_000);
 	if (after.match?.warning) log(`${name}: warning after click: ${after.match.warning}`);
 	return true;
