@@ -29,7 +29,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const logLines = [];
 const failures = [];
-const stalls = [];
+const wakeups = [];
 const IGNORED = [/favicon\.ico/, /fonts\.(googleapis|gstatic)\.com/];
 
 function log(msg) {
@@ -49,6 +49,7 @@ function watch(page, name) {
 		const text = m.text();
 		logLines.push(`[${name}] console.${m.type()}: ${text}`);
 		if (IGNORED.some((re) => re.test(text))) return;
+		if (/apa-kan: frame loop idle/.test(text)) wakeups.push(`${name}: ${text}`);
 		if (m.type() === "error" || /panicked at|RuntimeError|unreachable executed/.test(text)) {
 			failures.push(`${name}: console ${m.type()}: ${text}`);
 		}
@@ -81,16 +82,12 @@ async function waitSnap(page, pred, what, timeout = 60_000) {
 		if (last && last.frame !== seenFrame) {
 			seenFrame = last.frame;
 			seenAt = Date.now();
-		} else if (Date.now() - seenAt > 5_000) {
-			// The page sometimes stops ticking Bevy (frame counter frozen, main thread
-			// idle) until the next input event. Record it, then wake it with a pointer
-			// move, which a real player would always produce.
-			const env = await page.evaluate(() => `visibility=${document.visibilityState} focus=${document.hasFocus()}`).catch(() => "?");
-			log(`WARN stall: no new frame for 5s at frame ${seenFrame} (${env}) while waiting for ${what}; nudging pointer`);
-			stalls.push({ what, frame: seenFrame, env });
-			await page.mouse.move(2, 2);
-			await page.mouse.move(4, 4);
-			seenAt = Date.now();
+		} else if (Date.now() - seenAt > 10_000) {
+			// The game must keep ticking without input (bot turns, clock, hosted polling).
+			// A frozen frame counter is a hang a player would see: fail, don't nudge.
+			const env = await page.evaluate(() => `visibility=${document.visibilityState} focus=${document.hasFocus()} active=${document.activeElement?.id || document.activeElement?.tagName}`).catch(() => "?");
+			const stack = await mainThreadStack(page);
+			throw new Error(`frame stall: no new frame for 10s at frame ${seenFrame} (${env}) while waiting for ${what}${stack}`);
 		}
 		await page.waitForTimeout(150);
 	}
@@ -306,7 +303,7 @@ try {
 		console.error("SMOKE FAILED:\n" + failures.map((f) => `  - ${f}`).join("\n"));
 		code = 1;
 	} else {
-		if (stalls.length) log(`note: ${stalls.length} frame stall(s) recovered by a pointer move`);
+		if (wakeups.length) log(`note: the host page's frame-loop watchdog woke Bevy ${wakeups.length}x:\n  ${wakeups.join("\n  ")}`);
 		log(`SMOKE PASSED (${HOSTED ? "offline + hosted" : "offline"}); artifacts in ${OUT}`);
 	}
 }
