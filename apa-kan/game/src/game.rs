@@ -14881,12 +14881,15 @@ mod tests {
 		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
 		let from = game.board().spawns()[4];
 		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, mark);
+		let second = game.board().spawns()[1];
+		overwhelm_neighbors(&mut game, second, Player::Two);
+		put_capture(&mut game, second, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
 		game.capture_score = scores;
 		game.set_current(Player::One);
 		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
 		let outcome = game.apply(Action::Move { from, to }).unwrap();
 		let selfs = outcome.removals.iter().filter(|r| r.tile.owner == Player::One).count();
-		assert!(selfs > 0);
+		assert!(selfs >= 2);
 		assert!(outcome.removals.iter().all(|r| r.tile.owner == Player::One));
 		(game, selfs)
 	}
@@ -14906,7 +14909,11 @@ mod tests {
 			game.status(),
 			GameStatus::Won { winner: Player::Two, reason: EndReason::Score }
 		);
-		assert_eq!(game.graveyard(Player::Two).len(), 1, "triangle routing is unchanged");
+		assert!(game.graveyard(Player::Two).len() >= 2, "triangle routing is unchanged");
+		assert!(
+			crate::ai::evaluate(&game, Player::One, 0) <= -25_000,
+			"terminal loss seen by search"
+		);
 	}
 
 	#[test]
