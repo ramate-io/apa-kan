@@ -1,126 +1,167 @@
-# Hosted game persistence and transaction transport
+# Signed transactions, the ledger, and derived views
 
-How hosted games are stored, and how the same transactions can later travel
-peer-to-peer (e.g. over UDP) without changing their format.
+Apa Kan's hosted state is a small state-machine / chain-style service:
 
-## Model
+- **Transactions** are the only way to change state. One common, signed
+  envelope (`apa-kan-tx::SignedTx`) carries every mutation: game creation,
+  seat joins, moves, resignations, cancellation, and later account and admin
+  actions.
+- **The ledger** (`apa-kan-ledger`) is an ordered, append-only,
+  hash-linked log of accepted transactions, one chain per **stream**.
+- **State** is the fold of a stream through a deterministic transition
+  function (`apa-kan-tx::game::GameState::apply`).
+- **Views** (`apa-kan-view`) are read models derived from state. Views never
+  mutate; transactions never read except through the state they fold into.
 
-A hosted game is:
+HTTP is one transport (`POST /v1/tx` to write; `GET` views to read). The same
+bytes can travel peer-to-peer over UDP later.
 
-- an **opening record** (`apa_kan_view::GameRecord` with no actions): rules,
-  seed, the completed deal, budgets. Written once at create time.
-- an **append-only log** of accepted transactions, keyed by
-  `(game_id, seq)`. `seq` is the move number: the number of actions already
-  applied. Row `seq = n` is the action that moved the game from `n` to `n+1`.
+## Envelope
 
-Core is deterministic, so `opening + log[0..n]` replayed through
-`GameRecord::replay` *is* the position at move `n`. Nothing else is stored:
-no board snapshots, no derived state. Snapshots can be added later as a cache
-keyed by `(game_id, seq)`, never as the source of truth.
-
-Seat bearer tokens are never stored; only their SHA3 hashes
-(`apa_kan_tx::SeatSecret`). The log records *how* a move was authorized
-(`auth_kind`) and, for future signed transactions, the public proof.
-
-## Ordering by move number
-
-`seq` gives a total order per game. A transaction for `seq = n` is valid only
-against the position after exactly `n` actions; it carries that number, so a
-receiver never has to guess what it applies to.
-
-`GameStore::append` is a compare-and-swap:
-
-```sql
-BEGIN;
-UPDATE hosted_games SET next_seq = next_seq + 1
- WHERE game_id = $1 AND next_seq = $2;   -- 0 rows => Conflict / NotFound
-INSERT INTO hosted_game_txs (game_id, seq, …) VALUES ($1, $2, …);
-COMMIT;
+```jsonc
+{
+  "body": {
+    "domain": "apa-kan/tx/v1",        // domain separation + version
+    "chain": "apa-kan-local",          // deployment / network id (APAKAN_CHAIN_ID)
+    "stream": "game/3f9c0a…",          // which chain of state
+    "seq": 7,                          // position in the stream (0 = first)
+    "prev": "<64 hex>",                // id of entry seq-1; all zeros for seq 0
+    "signer": "<64 hex AccountId>",    // the account acting
+    "signer_vk": "<hex ML-DSA-65 vk>", // the account key that signed
+    "payload": { "type": "game.move", "action": { "kind": "move", "from": 3, "to": 9 } }
+  },
+  "sig": "<hex ML-DSA-65 signature>"
+}
 ```
 
-The cursor bump and the log row commit together; `PRIMARY KEY (game_id, seq)`
-is a second guard. In Postgres the `UPDATE` takes the game's row lock, so a
-racing append for the same `seq` blocks, re-evaluates `next_seq = $2`, and
-matches zero rows. In SQLite the write transaction serializes writers. Either
-way, of N concurrent submits for one move number exactly one commits and the
-rest get `Conflict` → HTTP 409 `stale_seq` with the current number. The
-conformance suite (`conformance::race`) runs 16 concurrent appends against
-each backend and asserts exactly one lands.
+Payload types (tagged by `type`, namespaced by stream kind):
 
-## Commit before acknowledge
+| `type` | Fields | Allowed when |
+|---|---|---|
+| `game.create` | `seat` (1/2), `label` | `seq = 0` on a new `game/<id>` |
+| `game.join` | `label` | phase `open`, signer not seated |
+| `game.move` | `action` (`ActionWire`) | phase `playing`, signer holds the seat to move, engine accepts |
+| `game.resign` | — | phase `playing`, signer seated |
+| `game.cancel` | — | phase `open`, signer is the creator |
 
-`GameHost::submit` (server):
+Future `account.*` (link key, revoke key, set email…) and `admin.*` payloads
+use the same envelope on `account/<id>` / `admin/<scope>` streams; adding one
+is a new enum variant plus a transition function for that stream kind.
 
-1. lock the game's cache slot; refresh from the store if its head moved;
-2. `authorize` the seat;
-3. `apply_transaction` on **clones** of the record and engine (rejects stale
-   seq, wrong turn, illegal action, game over);
-4. `store.append(…)` and await the commit;
-5. only then swap the new position into the cache and return 200 + receipt.
+### Signing and ids — mirrors `apa-kan-account`
 
-A storage error at step 4 returns 503 and leaves the cached position
-untouched; the client retries the same transaction (same `seq`) and either it
-lands or it gets `stale_seq` if it actually landed. Appends are idempotent in
-effect: the same `(game_id, seq)` can never be applied twice.
+Exactly the account crate's scheme, not a new one:
 
-## Validating against the deterministic engine
+1. `canonical = to_canonical_json(body)` (sorted keys).
+2. `id = SHA3-256(canonical ‖ signer_vk)` (`apa_kan_account::crypto::message_id`).
+3. `sig = ML-DSA-65.sign(id)` (`sign_bytes`), verified with `verify_bytes`.
 
-The store is dumb on purpose: it enforces ordering and atomicity, not rules.
-Every writer validates a transaction by applying it to the engine at
-`seq = n` before committing it. Every reader can re-validate the whole log by
-replaying it (`LoadedGame::record().replay()`); a log that does not replay is
-`Corrupt`, not silently accepted. Because the engine is deterministic, any two
-parties holding the same opening and the same log prefix compute the same
-position, legal moves, and result, with no trust in each other's state.
+`id` is also the ledger entry hash, so the next transaction's `prev` commits
+to the whole previous body *and* its signer key. Field order on the wire does
+not matter.
 
-## Transport-agnostic transactions
+### Account indirection
 
-`apa_kan_tx::Transaction { game_id, seq, seat, action, auth }` is plain serde
-(JSON today; any self-describing encoding works) and is self-contained: it
-names the game, the move number, the seat, the action, and its authorization.
-Nothing in it depends on HTTP.
+Seats belong to **accounts**, not keys. A transaction names its account
+(`signer`) and the key that signed (`signer_vk`). Admission asks the account
+directory (`authorized_keys` in `apa-kan-store`) about that pair:
 
-`Transaction::signing_payload()` is the canonical bytes that a signature
-covers: domain `apa-kan/tx/v1`, game id, seq, seat, action, and *not* `auth`.
-Today `auth` is a seat bearer token (fine over TLS to a host, wrong for
-peers, since forwarding it hands out the seat). For p2p the planned variant is
-`TxAuth::Signature { key, sig }` over `signing_payload()`, with each seat's
-public key fixed in the opening record. A signed transaction can be relayed by
-anyone, verified by everyone, and stored as-is (`auth_kind = 'signature'`,
-`auth_json` holding key and sig).
+| Directory says | Result |
+|---|---|
+| account registered, key `active` | accepted |
+| account registered, key revoked / pending recovery | `key_not_authorized` |
+| account registered, key never linked | `key_not_authorized` |
+| account not registered | accepted **only if** `signer == AccountId::from_genesis_vk(signer_vk)` |
 
-## How p2p reconciles with the store
+So a fresh device key works immediately as a self-certifying guest account,
+can be registered later with `POST /v1/accounts` (same id), and additional
+devices join through the existing link-request flow and then sign for the
+same account. Revoking a key stops it from acting on any stream.
 
-Not built here; this is the intended shape.
+## Ordering, replay and fork protection
 
-- Peers exchange transactions directly (UDP datagrams fit: a transaction is a
-  few hundred bytes). Each peer validates by applying to its local engine at
-  `seq`, then shows the move immediately.
-- The store stays the **reconciliation point**. Either peer (or both) relays
-  each transaction to the host. The host validates exactly as above and
-  appends; first commit at a given `seq` wins via the CAS. Duplicate relays of
-  the same transaction get `stale_seq` and are harmless.
+- **Total order per stream:** `seq` counts from 0; a transaction is valid only
+  at exactly `seq = stream length`.
+- **Hash link:** `prev` must equal the current head id. A transaction signed
+  against a stale or alternative history can't be applied, even at the right
+  `seq`.
+- **Domain + chain:** a signature for another protocol version, another
+  deployment, or another stream can't be replayed here (all are in the signed
+  body).
+- **Ledger CAS:** `append` lands only if `(seq, prev)` match the stored head
+  (`UPDATE ledger_streams … WHERE next_seq = $seq AND head_hash = $prev`, or
+  inserting the stream row for `seq = 0`), and inserts the entry in the same DB
+  transaction. `tx_hash` is unique across the ledger. Of N concurrent submits
+  at one `seq`, exactly one commits; the rest get `409 stale_seq`.
+- **Commit before acknowledge:** the host applies the transaction to a clone of
+  the state, awaits the ledger commit, and only then swaps state and returns
+  `200`. A storage error returns `503` and nothing is acknowledged; a retry of
+  the same signed bytes either lands or gets `stale_seq`.
+
+No separate per-key nonce is used for game streams: `(chain, stream, seq,
+prev)` already makes every signed body single-use.
+
+## State machine
+
+```
+game.create (seq 0) ──► open ──game.join──► playing ──game.move*──► finished
+                         │                    └──game.resign──────► finished
+                         └──game.cancel (creator)─────────────────► cancelled
+```
+
+`GameState::apply(state, tx, id)` is pure: same state and transaction give the
+same next state on every host or peer. It checks seq, prev, payload vs. phase,
+the signer's seat, and the engine (`apa-kan-core`, deterministic). It does
+**not** verify signatures — callers do that first:
+
+- **Admission** (`admit`): domain, chain, shape, signature, key authority
+  (directory lookup). Run once, when a transaction first arrives.
+- **Replay** (`game::replay`): domain, chain, shape, and signature for every
+  stored entry, then `apply`. Key authority is not re-checked on replay (it
+  was valid when committed; revoking a key later must not rewrite history).
+
+The deal is fixed at join: `seed = SHA3("apa-kan/deal-seed/v1" ‖ create_id ‖
+join_id)[..8]`, so the creator alone can't choose it.
+
+Loading a game = read the stream from the ledger, replay. The server keeps an
+in-memory cache of folded streams, one lock per stream, refreshed whenever the
+ledger head differs (another server instance or a relay committed first).
+
+## Views
+
+| Route | View |
+|---|---|
+| `GET /v1/ledger` | `{ domain, chain, backend }` — what a client needs to sign |
+| `GET /v1/games/{id}` | `HostedGameView`: phase, `ledger` head (`chain`, `stream`, `seq`, `head`), seat claims (account + label), and the `GameView` (status, board, legal actions, replayable record) once both seats are in |
+| `GET /v1/games/{id}/txs?from=n` | committed signed transactions from `n` (audit, resync, peers) |
+
+The only game write route is `POST /v1/tx`.
+
+## Peer-to-peer (not built)
+
+- Peers exchange `SignedTx` directly. Each verifies (`verify_self_contained`),
+  applies to its local fold, and shows the move at once.
+- The ledger host stays the **reconciliation point**: either peer relays each
+  transaction to `POST /v1/tx`; first commit at a `seq` wins via the CAS;
+  duplicate relays get `stale_seq` and are harmless.
 - In a two-seat turn game only the seat to move can produce a valid
-  transaction at `seq`, so honest peers never fork. A fork means one side
-  signed two different actions for the same `seq` (equivocation): the host
-  keeps whichever committed first, and the conflicting signed pair is proof
-  of cheating.
-- A peer that diverges (missed datagrams, crash, equivocation) resyncs by
-  fetching `GET /v1/games/{id}` (or the log from `seq` k onward) and replaying.
-  UDP loss is handled by the same rule: a peer that sees `seq = n+2` while at
-  `n` asks a peer or the store for `n` and `n+1`.
-- Results (ratings, ladders) are computed only from the store's log, never
-  from a peer's claim.
+  transaction at `seq`, so honest peers never fork. Two different signed
+  transactions by one account for the same `(stream, seq, prev)` are
+  equivocation, and the pair is self-contained proof of it.
+- A peer that diverges (missed datagrams, crash) fetches
+  `/v1/games/{id}/txs?from=k` and replays.
+- Size: an ML-DSA-65 envelope is ~10 KB as hex JSON (vk 1952 B, sig 3309 B).
+  For UDP, a compact binary encoding plus referencing the signer key by hash
+  (keys learned once per session) would bring it near one datagram; that is a
+  transport encoding change, not an envelope change.
 
 ## Backends
 
-| Backend | Use | Durability |
+| URL (`APAKAN_LEDGER_URL`) | Use | Durability |
 |---|---|---|
-| `memory` | tests, throwaway dev | none |
-| `sqlite:<path>` | single node (default) | WAL + `synchronous=FULL` |
-| `postgres://…` | multi-instance / platform DB (#97) | Postgres commit |
+| `memory` | tests | none |
+| `sqlite:<path>` | single node (default; falls back to `APA_KAN_DATABASE_URL`, then `$TMP/apa-kan-ledger.db`) | WAL + `synchronous=FULL` |
+| `postgres://…` | multi-instance, platform DB (#97); build with `--features postgres` | Postgres commit |
 
-The server picks one from `APAKAN_GAME_STORE_URL`, falling back to
-`APA_KAN_DATABASE_URL`, then a SQLite file in the temp dir. Migrations are
-plain SQL under `migrations/{sqlite,postgres}` and run idempotently at
-connect, matching `apa-kan-store`.
+Migrations: `migrations/{sqlite,postgres}/001_ledger.sql`, idempotent, run at
+connect.
