@@ -506,6 +506,10 @@ pub struct RulesLog {
 	pub capture_cascade: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub unlimited_spawn: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub graveyard: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub capture_to_capturer: bool,
 }
 
 fn default_control_objective() -> String {
@@ -632,6 +636,8 @@ impl RulesLog {
 			majority_spawn_set: r.majority_spawn_set.name().into(),
 			capture_cascade: r.capture_cascade,
 			unlimited_spawn: r.unlimited_spawn,
+			graveyard: r.graveyard,
+			capture_to_capturer: r.capture_to_capturer,
 		}
 	}
 
@@ -706,6 +712,8 @@ impl RulesLog {
 				.unwrap_or(MajoritySpawnSet::ControlSet),
 			capture_cascade: self.capture_cascade,
 			unlimited_spawn: self.unlimited_spawn,
+			graveyard: self.graveyard,
+			capture_to_capturer: self.capture_to_capturer,
 		})
 	}
 }
@@ -908,6 +916,11 @@ pub struct ActionLog {
 	pub p2_score: u8,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub majority_spawn: bool,
+	/// Graveyard sizes after the action (`--graveyard`). Omitted when both are empty.
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub p1_graveyard: u8,
+	#[serde(default, skip_serializing_if = "skip_zero_u8")]
+	pub p2_graveyard: u8,
 }
 
 /// One captured tile: original owner and where it went.
@@ -943,6 +956,7 @@ impl ActionLog {
 			Action::Claim { node } => ("CLAIM".to_string(), None, Some(node), None),
 			Action::Swap { from, to } => ("SWAP".to_string(), Some(from), Some(to), None),
 			Action::Convert { node } => ("CONVERT".to_string(), None, Some(node), None),
+			Action::Recover => ("RECOVER".to_string(), None, None, None),
 			Action::Pass => ("PASS".to_string(), None, None, None),
 		};
 		let capture = outcome.removals.iter().filter(|r| r.tile.owner != player).count() as u8;
@@ -1011,6 +1025,8 @@ impl ActionLog {
 			p1_score: game_after.capture_score(Player::One),
 			p2_score: game_after.capture_score(Player::Two),
 			majority_spawn: game_after.last_majority_spawn(),
+			p1_graveyard: game_after.graveyard(Player::One).len().min(255) as u8,
+			p2_graveyard: game_after.graveyard(Player::Two).len().min(255) as u8,
 		}
 	}
 
@@ -1064,6 +1080,7 @@ impl ActionLog {
 				let node = self.to.ok_or("CONVERT missing to")?;
 				Ok(Action::Convert { node })
 			}
+			"RECOVER" => Ok(Action::Recover),
 			"PASS" => Ok(Action::Pass),
 			other => Err(format!("unknown action kind '{other}'")),
 		}
@@ -1077,6 +1094,7 @@ impl ActionLog {
 			"CLAIM" => tags.push("CLAIM"),
 			"SWAP" => tags.push("SWAP"),
 			"CONVERT" => tags.push("CONVERT"),
+			"RECOVER" => tags.push("RECOVER"),
 			"PASS" => tags.push("PASS"),
 			_ => {}
 		}
@@ -1806,6 +1824,7 @@ pub fn piece_for_action(game: &Game, action: Action) -> Option<Tile> {
 		Action::Claim { node } => game.tile_at(node),
 		Action::Swap { from, .. } => game.tile_at(from),
 		Action::Convert { node } => game.tile_at(node),
+		Action::Recover => game.graveyard(game.current_player()).first().copied(),
 		Action::Pass => None,
 	}
 }
@@ -2720,6 +2739,35 @@ mod tests {
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 10);
 		}
+	}
+
+	#[test]
+	fn committed_capture_score_graveyard_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/capture_score/smoke_unl_combo.jsonl.gz",
+			4,
+		);
+		for rel in [
+			"benchmark_results/capture_score/h2h_unl_combo_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_graveyard_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_capturer_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_t5_mm.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 150);
+		}
+	}
+
+	#[test]
+	fn graveyard_rules_round_trip_through_the_log() {
+		let mut r = RuleSet::default();
+		let json = serde_json::to_string(&RulesLog::from_rules(r)).unwrap();
+		assert!(!json.contains("graveyard"), "{json}");
+		assert!(!json.contains("capture_to_capturer"), "{json}");
+		r.graveyard = true;
+		r.capture_to_capturer = true;
+		let log = RulesLog::from_rules(r);
+		let back = log.to_rules().unwrap();
+		assert!(back.graveyard && back.capture_to_capturer);
 	}
 
 	#[test]

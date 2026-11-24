@@ -359,6 +359,12 @@ where
 		"--unlimited-spawn" => {
 			rules.unlimited_spawn = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--graveyard" => {
+			rules.graveyard = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--capture-to-capturer" => {
+			rules.capture_to_capturer = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--starting-bench" | "--starting-tokens" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n == 0 || n > BAG_SIZE as u64 {
@@ -543,6 +549,8 @@ pub fn usage() -> &'static str {
 	   --majority-spawn-set <control-set|inner|center>  Cells the majority bonus counts (default: control-set)\n\
 	   --capture-cascade <on|off>                 Sparse-board capture awards a ratchet extra action (default: off)\n\
 	   --unlimited-spawn <on|off>                 Captures return to the owner; ADD does not spend tokens (default: off)\n\
+	   --graveyard <on|off>                       Captures go to a graveyard; RECOVER (one action) returns the oldest to the bench (default: off)\n\
+	   --capture-to-capturer <on|off>             Captured tiles change owner to the capturer's bench/graveyard (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
 	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
 	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
