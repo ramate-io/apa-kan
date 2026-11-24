@@ -303,6 +303,45 @@ async fn e2e_email_recovery_with_operator_challenge_and_cooldown() {
 }
 
 #[tokio::test]
+async fn e2e_passkey_backup_restores_the_seed() {
+	let clock = Arc::new(FakeClock::new(NOW));
+	let (addr, handle) =
+		spawn_test_server(clock, Arc::new(FakeMailer::default())).await.expect("spawn");
+	let api = Api::new(base_url(addr)).await;
+	let seed = key(50);
+	let genesis = TxSigner::from_seed(&seed);
+	let account = genesis.account();
+	let acct = account.to_hex();
+	api.ok(&genesis, &acct, TxPayload::AccountRegister { label: String::new() })
+		.await;
+	let prf = [7u8; 32];
+	let wrapped = apa_kan_account::wrap_seed(&seed, &prf, &account, b"cred", [1; 32], [2; 12]);
+	let v = api.ok(&genesis, &acct, TxPayload::AccountSetPasskeyBackup { wrapped }).await;
+	assert_eq!(v.passkeys.len(), 1);
+	// A new device: the passkey names the account and credential; fetch and unwrap.
+	let url = format!("{}/v1/accounts/{acct}/passkeys/{}", api.root, hex::encode(b"cred"));
+	let fetch = |url: String, key: [u8; 32]| {
+		let req = api
+			.client
+			.post(url)
+			.json(&serde_json::json!({ "access_key": hex::encode(key) }));
+		async move { req.send().await.unwrap() }
+	};
+	let access = apa_kan_account::access_key(&prf, &account, b"cred");
+	// Only a caller holding the passkey (its PRF-derived access key) gets it.
+	assert_eq!(api.client.get(&url).send().await.unwrap().status(), 405);
+	assert_eq!(fetch(url.clone(), [0; 32]).await.status(), 403);
+	let got: apa_kan_account::PasskeyWrappedSeed =
+		fetch(url.clone(), access).await.json().await.unwrap();
+	assert_eq!(got.unwrap_seed(&prf, &account).unwrap().0, seed.0);
+	let missing = fetch(format!("{url}00"), access).await;
+	assert_eq!(missing.status(), 404);
+	// The account view lists the credential but not the record.
+	assert!(!serde_json::to_string(&v).unwrap().contains(&got.ciphertext));
+	handle.abort();
+}
+
+#[tokio::test]
 async fn e2e_admin_roles_by_operator_only() {
 	let clock = Arc::new(FakeClock::new(NOW));
 	let (addr, handle) =

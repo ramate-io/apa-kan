@@ -29,89 +29,8 @@ pub const POLL_SECS: f32 = 1.5;
 pub const HTTP_AVAILABLE: bool =
 	cfg!(any(target_arch = "wasm32", not(any(target_os = "android", target_os = "ios"))));
 
-/// This device's account key.
-///
-/// A 32-byte ML-DSA seed, generated on first use and kept in `localStorage`
-/// (`apakan.key.v1`) on web, or in `APAKAN_KEY_FILE` on desktop (memory only
-/// when unset). The account is the one this key is genesis for, so it works
-/// unregistered and becomes a full account once it signs `account.register`;
-/// more devices join with `account.link_key` (see `apa-kan/ledger/DESIGN.md`).
-pub mod identity {
-	use std::sync::OnceLock;
-
-	use apa_kan_account::Seed;
-	use apa_kan_tx::TxSigner;
-
-	const STORAGE_KEY: &str = "apakan.key.v1";
-
-	fn parse(hex_seed: &str) -> Option<Seed> {
-		let bytes: [u8; 32] = hex::decode(hex_seed.trim()).ok()?.try_into().ok()?;
-		Some(Seed::from_bytes(bytes))
-	}
-
-	fn load_or_create() -> Seed {
-		#[cfg(target_arch = "wasm32")]
-		{
-			let storage = web_sys::window().and_then(|w| w.local_storage().ok().flatten());
-			if let Some(seed) = storage
-				.as_ref()
-				.and_then(|s| s.get_item(STORAGE_KEY).ok().flatten())
-				.and_then(|v| parse(&v))
-			{
-				return seed;
-			}
-			let seed = Seed::random();
-			if let Some(s) = storage {
-				let _ = s.set_item(STORAGE_KEY, &hex::encode(seed.0));
-			}
-			seed
-		}
-		#[cfg(not(target_arch = "wasm32"))]
-		{
-			let _ = STORAGE_KEY;
-			let path = std::env::var_os("APAKAN_KEY_FILE").map(std::path::PathBuf::from);
-			if let Some(seed) = path
-				.as_ref()
-				.and_then(|p| std::fs::read_to_string(p).ok())
-				.and_then(|v| parse(&v))
-			{
-				return seed;
-			}
-			let seed = Seed::random();
-			if let Some(p) = path {
-				let _ = std::fs::write(p, hex::encode(seed.0));
-			}
-			seed
-		}
-	}
-
-	fn seed() -> &'static [u8; 32] {
-		static SEED: OnceLock<[u8; 32]> = OnceLock::new();
-		SEED.get_or_init(|| load_or_create().0)
-	}
-
-	/// The signer for this device (loaded once).
-	pub fn signer() -> &'static TxSigner {
-		static SIGNER: OnceLock<TxSigner> = OnceLock::new();
-		SIGNER.get_or_init(|| TxSigner::from_seed(&Seed::from_bytes(*seed())))
-	}
-
-	/// This device's deal salt for `stream` (see `apa_kan_tx::deal_salt`).
-	pub fn deal_salt(stream: &str) -> [u8; 32] {
-		apa_kan_tx::deal_salt(seed(), stream)
-	}
-
-	/// This device's ephemeral X25519 preview key for `stream` (hex; see
-	/// `apa_kan_tx::preview`).
-	pub fn preview_pk(stream: &str) -> String {
-		apa_kan_tx::preview::preview_public(&apa_kan_tx::preview::preview_secret(seed(), stream))
-	}
-
-	/// Hex account id of [`signer`].
-	pub fn account_hex() -> String {
-		signer().account().to_hex()
-	}
-}
+/// This device's account key (see [`crate::identity`]).
+pub use crate::identity;
 
 /// One hosted game this client is attached to.
 #[derive(Clone, Debug, PartialEq)]
@@ -174,6 +93,9 @@ impl RemoteSession {
 		if self.inflight {
 			return Err("Sending move…");
 		}
+		if self.seat.is_some() && identity::is_locked() {
+			return Err("Account locked: Settings → Unlock with passkey.");
+		}
 		match self.phase {
 			GamePhase::Open => return Err("Waiting for the other seat to join…"),
 			GamePhase::Revealing => return Err("Dealing…"),
@@ -193,7 +115,7 @@ impl RemoteSession {
 	/// Sign `payload` against the current stream head.
 	pub fn sign(&self, payload: TxPayload) -> Option<SignedTx> {
 		let head = self.ledger.as_ref()?;
-		identity::signer()
+		identity::signer()?
 			.sign(&head.chain, &head.stream, head.seq, &head.head, payload)
 			.ok()
 	}
@@ -223,7 +145,8 @@ impl RemoteSession {
 			&& !self.seed_commit.is_empty()
 			&& self.account == identity::account_hex()
 			&& self.ledger.as_ref().is_some_and(|h| {
-				seed_commitment(&h.stream, &identity::deal_salt(&h.stream)) == self.seed_commit
+				identity::deal_salt(&h.stream)
+					.is_some_and(|salt| seed_commitment(&h.stream, &salt) == self.seed_commit)
 			})
 	}
 
@@ -239,8 +162,8 @@ impl RemoteSession {
 	}
 
 	pub fn reveal_tx(&self) -> Option<SignedTx> {
-		let stream = &self.ledger.as_ref()?.stream;
-		self.sign(TxPayload::GameReveal { salt: hex::encode(identity::deal_salt(stream)) })
+		let salt = identity::deal_salt(&self.ledger.as_ref()?.stream)?;
+		self.sign(TxPayload::GameReveal { salt: hex::encode(salt) })
 	}
 
 	/// Should we poll for the other seat?
@@ -346,8 +269,8 @@ fn error_message(status: u16, body: &str) -> String {
 /// to this device's deal salt for the game.
 pub fn create_tx(chain: &str, id: &str) -> Option<SignedTx> {
 	let stream = game_stream(id);
-	let seed_commit = seed_commitment(&stream, &identity::deal_salt(&stream));
-	identity::signer()
+	let seed_commit = seed_commitment(&stream, &identity::deal_salt(&stream)?);
+	identity::signer()?
 		.sign(
 			chain,
 			&stream,
@@ -357,7 +280,7 @@ pub fn create_tx(chain: &str, id: &str) -> Option<SignedTx> {
 				seat: 1,
 				label: String::new(),
 				seed_commit,
-				preview_pk: Some(identity::preview_pk(&stream)),
+				preview_pk: identity::preview_pk(&stream),
 			},
 		)
 		.ok()
@@ -450,7 +373,9 @@ mod http {
 							fail("no API configured".into());
 						}
 					}
-					None => fail("could not sign the create transaction".into()),
+					None => fail(
+						"could not sign: account locked (Settings → Unlock with passkey)".into(),
+					),
 				},
 				Err(e) => fail(format!("bad ledger info: {e}")),
 			},
@@ -539,7 +464,7 @@ mod tests {
 				== Some(apa_kan_view::seat_of(g.current_player()));
 			let payload = TxPayload::GameMove { action: action.into() };
 			let tx = if me_to_move {
-				identity::signer().sign("c", "game/g13", s.next_seq, &s.head, payload)
+				identity::signer().unwrap().sign("c", "game/g13", s.next_seq, &s.head, payload)
 			} else {
 				other.sign("c", "game/g13", s.next_seq, &s.head, payload)
 			}
@@ -577,7 +502,7 @@ mod tests {
 		// The creator's preview key rides its create.
 		assert_eq!(
 			view.seats[0].as_ref().unwrap().preview_pk.as_deref(),
-			Some(identity::preview_pk("game/g13").as_str())
+			identity::preview_pk("game/g13").as_deref()
 		);
 
 		// Another account spectates.

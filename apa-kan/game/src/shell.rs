@@ -144,6 +144,17 @@ enum ShellBtn {
 	OpenMarket,
 	OpenLegal,
 	OpenPay,
+	Account(AccountAction),
+}
+
+/// Settings → account buttons ([`crate::keyguard`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccountAction {
+	Protect,
+	Unlock,
+	RestorePasskey,
+	ShowPhrase,
+	RestorePhrase,
 }
 
 pub fn plugin(app: &mut App) {
@@ -157,7 +168,8 @@ pub fn plugin(app: &mut App) {
 		.add_systems(
 			Update,
 			(rebuild_if_needed, handle_clicks, apply_deep_links).run_if(in_state(AppScreen::Shell)),
-		);
+		)
+		.add_systems(Update, apply_keyguard_notices);
 }
 
 fn spawn_root(
@@ -207,6 +219,7 @@ fn shell_fingerprint(shell: &ShellState) -> u64 {
 	shell.notice.hash(&mut h);
 	shell.ladder.elo.hash(&mut h);
 	shell.ladder.games().hash(&mut h);
+	crate::keyguard::revision().hash(&mut h);
 	h.finish()
 }
 
@@ -227,7 +240,7 @@ fn root_node() -> Node {
 fn build_page(commands: &mut Commands, shell: &ShellState, host: &HostConfig, font: &UiFont) {
 	let root = commands.spawn((ShellRoot, root_node(), BackgroundColor(BG))).id();
 	match shell.page {
-		ShellPage::Home => fill_home(commands, root, font),
+		ShellPage::Home => fill_home(commands, root, shell, font),
 		ShellPage::HeadToHead => fill_h2h(commands, root, shell, font),
 		ShellPage::Puzzles => fill_stub(
 			commands,
@@ -248,22 +261,57 @@ fn build_page(commands: &mut Commands, shell: &ShellState, host: &HostConfig, fo
 				(ShellBtn::OpenPay, "Open payment in a new tab"),
 			],
 		),
-		ShellPage::Settings => fill_stub(
-			commands,
-			root,
-			font,
-			"Settings",
-			&format!(
-				"Keys, email opt-in, and legal copy land with accounts. The source-available license opens in a new tab.\n\n{}\nDivisions: {}",
-				host.summary(),
-				shell.ladder.summary()
-			),
-			&[(ShellBtn::OpenLegal, "Open license in a new tab")],
-		),
+		ShellPage::Settings => {
+			let mut extra = account_buttons();
+			extra.push((ShellBtn::OpenLegal, "Open license in a new tab"));
+			fill_stub(
+				commands,
+				root,
+				font,
+				"Settings",
+				&format!(
+					"{}\n\n{}\nDivisions: {}\nThe source-available license opens in a new tab.",
+					crate::keyguard::status_line(),
+					host.summary(),
+					shell.ladder.summary()
+				),
+				&extra,
+			);
+			let notice = spawn_notice(commands, font, &shell.notice);
+			commands.entity(root).insert_children(1, &[notice]);
+		}
 	}
 }
 
-fn fill_home(commands: &mut Commands, root: Entity, font: &UiFont) {
+/// Account buttons for the current identity state.
+fn account_buttons() -> Vec<(ShellBtn, &'static str)> {
+	use crate::identity::{self, Protection};
+	let passkeys = crate::keyguard::passkey_supported();
+	let mut out = Vec::new();
+	if identity::is_locked() {
+		out.push((ShellBtn::Account(AccountAction::Unlock), "Unlock with passkey"));
+	} else {
+		if passkeys && identity::protection() == Protection::Plain {
+			out.push((ShellBtn::Account(AccountAction::Protect), "Protect with passkey"));
+		}
+		out.push((ShellBtn::Account(AccountAction::ShowPhrase), "Show recovery phrase"));
+	}
+	if passkeys {
+		out.push((ShellBtn::Account(AccountAction::RestorePasskey), "Restore with passkey"));
+	}
+	if cfg!(target_arch = "wasm32") {
+		out.push((ShellBtn::Account(AccountAction::RestorePhrase), "Restore from recovery phrase"));
+	}
+	out
+}
+
+fn apply_keyguard_notices(mut shell: ResMut<ShellState>) {
+	if let Some(msg) = crate::keyguard::drain_notices().pop() {
+		shell.notice = msg;
+	}
+}
+
+fn fill_home(commands: &mut Commands, root: Entity, shell: &ShellState, font: &UiFont) {
 	let mut children = Vec::new();
 	children.push(spawn_title(
 		commands,
@@ -271,6 +319,9 @@ fn fill_home(commands: &mut Commands, root: Entity, font: &UiFont) {
 		"Apa Kan",
 		"A turn-based game of colors and adjacency.",
 	));
+	if !shell.notice.is_empty() {
+		children.push(spawn_notice(commands, font, &shell.notice));
+	}
 	children.push(spawn_full_btn(
 		commands,
 		font,
@@ -659,6 +710,25 @@ fn handle_clicks(
 			ShellBtn::Clock(kind) => {
 				shell.clock = kind;
 				shell.notice.clear();
+			}
+			ShellBtn::Account(action) => {
+				let msg = match action {
+					AccountAction::Protect => crate::keyguard::protect(&host.0),
+					AccountAction::Unlock => crate::keyguard::unlock(&host.0),
+					AccountAction::RestorePasskey => crate::keyguard::restore_with_passkey(&host.0),
+					AccountAction::ShowPhrase => crate::keyguard::show_phrase(),
+					AccountAction::RestorePhrase => crate::keyguard::restore_from_phrase(&host.0),
+				};
+				if !msg.is_empty() {
+					shell.notice = msg;
+				}
+			}
+			ShellBtn::Play
+				if shell.opponent == OpponentKind::Online
+					&& shell.reward == RewardKind::Casual
+					&& crate::identity::is_locked() =>
+			{
+				shell.notice = "Account locked: Settings → Unlock with passkey.".into();
 			}
 			ShellBtn::Play
 				if shell.opponent == OpponentKind::Online && shell.reward == RewardKind::Casual =>

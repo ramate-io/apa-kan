@@ -146,6 +146,63 @@ transactions are not served (no `/txs` view for accounts); views show only
 decentralization** (peers replicating account streams) the address must be
 encrypted or replaced by a commitment.
 
+## Protecting the account key: passkey and recovery phrase
+
+A browser key in plaintext `localStorage` is lost when the browser is
+cleared. Two complementary protections (`apa-kan-account::passkey`,
+`::phrase`; client glue in `apa-kan/game/src/keyguard.rs`):
+
+- **Passkey (WebAuthn PRF).** Settings → *Protect with passkey* creates a
+  discoverable passkey (`user.id` = account bytes, user verification
+  required) and evaluates its PRF extension on the constant input
+  `SHA-256("apa-kan/passkey-prf/v1")` (constant so a new device can evaluate
+  it before it knows the account). The 32-byte output keys
+  HKDF-SHA256 (random 32-byte salt, info = `"apa-kan/passkey-wrap/v1" ‖
+  account ‖ credential_id`) → AES-256-GCM (random 12-byte nonce, same bytes as
+  AAD), encrypting the 32-byte ML-DSA seed. The wrapped record
+  (`PasskeyWrappedSeed {v, credential_id, salt, nonce, ciphertext}`, hex) goes
+  to IndexedDB (`apakan`/`keys`, keyed by account hex); the plaintext key is
+  removed and `apakan.passkey.v1` records `{account, credential_id}`. With a
+  server configured the client registers the account if needed and commits
+  `account.set_passkey_backup {wrapped}` (max 8 per account;
+  `account.remove_passkey_backup {credential_id}` drops one). The host only
+  checks the record's shape; it never sees the PRF output. A finished full
+  recovery drops all backups (they wrap the old, now revoked seeds).
+- **Fetching the backup is gated.** The record carries `access_hash =
+  SHA-256("apa-kan/passkey-access/v1" ‖ access_key)` with `access_key =
+  HKDF-SHA256(PRF output, info = "apa-kan/passkey-access/v1" ‖ account ‖
+  credential_id)`. `POST /v1/accounts/{id}/passkeys/{credential_id}
+  {access_key}` serves the record only when the hash matches (403 otherwise,
+  404 if there is none); it is still a view (no ledger change). A signed
+  request isn't possible here: a restoring device has no account key yet,
+  only the passkey, so proving the passkey is the credential.
+- **Locked / unlock.** After a reload a passkey-protected key is locked:
+  online play asks for *Unlock with passkey* (PRF via `get()` with the stored
+  credential, then unwrap). Local bot games still work.
+- **New device / cleared browser.** The passkey syncs through the platform
+  password manager. *Restore with passkey* calls `get()` with no
+  `allowCredentials`; the chosen passkey returns `userHandle` (the account)
+  and its credential id, the client loads the wrapped seed from IndexedDB or
+  the gated fetch above, and unwraps it.
+- **No PRF.** If the authenticator reports `prf.enabled == false` (or the
+  browser has no WebAuthn), nothing changes: the key stays in plaintext
+  storage and the recovery phrase is shown instead.
+- **Recovery phrase.** 24 BIP39 English words that are exactly the seed's
+  256 bits (*Show recovery phrase*, *Restore from recovery phrase*; on
+  desktop the phrase prints to the terminal and `APAKAN_RECOVERY_PHRASE`
+  restores it). Works offline and with no server. After a phrase restore the
+  web client offers passkey protection right away.
+- **Prompt.** After a guest's first finished game on the web the lobby
+  suggests protecting the key, once (`apakan.passkey.prompted`).
+- **Linking.** A restored key is the same account key, so nothing new is
+  linked. Adding a different device key still goes through
+  `account.link_key`; the passkey backup itself is an account transaction.
+
+Defaults and caveats: Safari may require the WebAuthn call to
+come straight from a user gesture, and Bevy handles clicks a frame later, so
+Safari may refuse the prompt; some authenticators only return PRF output on
+`get()`, so `create()` is followed by one `get()` when needed.
+
 ## Ordering, replay and fork protection
 
 - **Total order per stream:** `seq` counts from 0; a transaction is valid only

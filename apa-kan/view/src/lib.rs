@@ -405,6 +405,15 @@ pub struct RecoveryView {
 	pub usable_at_unix: Option<i64>,
 }
 
+/// A passkey that can restore the account seed (the wrapped seed itself is
+/// served by `GET /v1/accounts/{id}/passkeys/{credential_id}`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasskeyBackupView {
+	/// Hex WebAuthn credential id.
+	pub credential_id: String,
+	pub added_seq: u64,
+}
+
 /// `GET /v1/accounts/{id}`: the fold of `account/<id>`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountView {
@@ -418,6 +427,9 @@ pub struct AccountView {
 	pub email_set: bool,
 	pub recovery_opt_in: bool,
 	pub approve_via_email: bool,
+	/// Passkeys holding a wrapped copy of the seed.
+	#[serde(default)]
+	pub passkeys: Vec<PasskeyBackupView>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub recovery: Option<RecoveryView>,
 }

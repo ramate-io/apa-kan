@@ -10,11 +10,15 @@ publish = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
+aes-gcm.workspace = true
+bip39.workspace = true
 hex = { workspace = true }
+hkdf.workspace = true
 ml-dsa.workspace = true
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 sha3.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true

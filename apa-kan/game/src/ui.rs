@@ -121,6 +121,7 @@ pub fn run_app(cfg: GameConfig) {
 			update_hud,
 			screenshot_capture,
 			record_division_result,
+			prompt_passkey_after_game,
 		)
 			.run_if(in_state(AppScreen::Match)),
 	)
@@ -1366,7 +1367,7 @@ fn remote_sync(
 		r.join_sent = true;
 		if let Some(tx) = r.sign(apa_kan_tx::TxPayload::GameJoin {
 			label: String::new(),
-			preview_pk: Some(remote::identity::preview_pk(&apa_kan_tx::game_stream(&r.id))),
+			preview_pk: remote::identity::preview_pk(&apa_kan_tx::game_stream(&r.id)),
 		}) {
 			r.inflight = true;
 			play.outbox = Some(tx);
@@ -1502,6 +1503,28 @@ fn record_division_result(
 	division.pending = None;
 	let msg = shell::record_division(&mut lobby, outcome);
 	play.log = format!("{} {msg}", play.log).trim().to_string();
+	play.fingerprint = 0;
+}
+
+/// After a guest's first finished game, suggest protecting the key (once).
+fn prompt_passkey_after_game(
+	mut play: ResMut<PlayState>,
+	mut lobby: ResMut<shell::ShellState>,
+	mut was_over: Local<bool>,
+) {
+	let over = play.setup.is_none() && shell::division_outcome(play.game.status()).is_some();
+	if over == *was_over {
+		return;
+	}
+	*was_over = over;
+	if !over || !crate::keyguard::should_prompt() {
+		return;
+	}
+	crate::keyguard::mark_prompted();
+	lobby.set_notice(crate::keyguard::FIRST_GAME_PROMPT);
+	play.log = format!("{} {}", play.log, crate::keyguard::FIRST_GAME_PROMPT)
+		.trim()
+		.to_string();
 	play.fingerprint = 0;
 }
 

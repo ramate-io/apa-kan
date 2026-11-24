@@ -5,7 +5,7 @@ use apa_kan_account::crypto::{
 	generate_keypair, message_id, sign_bytes, verify_bytes, Param, Seed, SignatureBytes,
 	VerifyingKeyBytes,
 };
-use apa_kan_account::{AccountId, RecoveryKind};
+use apa_kan_account::{AccountId, PasskeyWrappedSeed, RecoveryKind};
 use apa_kan_view::{ActionWire, Seat};
 use ml_dsa::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -95,6 +95,14 @@ pub enum TxPayload {
 	#[serde(rename = "account.recovery_cancel")]
 	AccountRecoveryCancel { at_unix: i64 },
 
+	/// Store (or replace, by credential id) a passkey-wrapped copy of an
+	/// account seed, so the passkey can restore it on another device.
+	#[serde(rename = "account.set_passkey_backup")]
+	AccountSetPasskeyBackup { wrapped: PasskeyWrappedSeed },
+	/// Drop a stored passkey backup.
+	#[serde(rename = "account.remove_passkey_backup")]
+	AccountRemovePasskeyBackup { credential_id: String },
+
 	/// Give `account` a role (`admin/roles`; operator or an `admin`).
 	#[serde(rename = "admin.grant_role")]
 	AdminGrantRole { account: AccountId, role: String },
@@ -147,6 +155,8 @@ impl TxPayload {
 			TxPayload::AccountRecoveryConfirm { .. } => "account.recovery_confirm",
 			TxPayload::AccountRecoveryFinish => "account.recovery_finish",
 			TxPayload::AccountRecoveryCancel { .. } => "account.recovery_cancel",
+			TxPayload::AccountSetPasskeyBackup { .. } => "account.set_passkey_backup",
+			TxPayload::AccountRemovePasskeyBackup { .. } => "account.remove_passkey_backup",
 			TxPayload::AdminGrantRole { .. } => "admin.grant_role",
 			TxPayload::AdminRevokeRole { .. } => "admin.revoke_role",
 		}
