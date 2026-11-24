@@ -22,7 +22,25 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y binaryen pkg-config
+          sudo apt-get install -y pkg-config
+
+      # Ubuntu's binaryen (105) mangles wasm-bindgen's externref table; use a
+      # current release. build-web.sh also refuses wasm-opt older than 116.
+      - name: Cache binaryen
+        id: binaryen
+        uses: actions/cache@v4
+        with:
+          path: .tools/binaryen-version_133
+          key: binaryen-${{ runner.os }}-133
+
+      - name: Install binaryen 133
+        if: steps.binaryen.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .tools
+          curl -fsSL https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz | tar xz -C .tools
+
+      - name: Put binaryen on PATH
+        run: echo "$PWD/.tools/binaryen-version_133/bin" >> "$GITHUB_PATH"
 
       - name: Read versions
         id: ver
