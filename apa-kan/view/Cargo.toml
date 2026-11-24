@@ -1,0 +1,23 @@
+[package]
+name = "apa-kan-view"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+publish = { workspace = true }
+rust-version = { workspace = true }
+description = "Apa Kan game views: wire actions, replayable game records, and state snapshots. No Bevy, no HTTP."
+
+[lib]
+name = "apa_kan_view"
+path = "src/lib.rs"
+
+[dependencies]
+apa-kan-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

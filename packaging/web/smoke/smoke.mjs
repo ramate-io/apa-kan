@@ -250,7 +250,8 @@ async function hostedJoin(browser) {
 	watch(pb, "guest");
 	let invite = null;
 	pa.on("console", (m) => {
-		const hit = m.text().match(/https?:\/\/\S*#?\/game\/[A-Za-z0-9_-]+/);
+		// e.g. "Apa Kan invite (seat 2): http://host/#/game/<id>?seat=2&token=…"
+		const hit = /invite/i.test(m.text()) && m.text().match(/https?:\/\/\S*\/game\/\S+/);
 		if (hit && !invite) invite = hit[0];
 	});
 	await load(pa, "/", "host");
@@ -260,12 +261,9 @@ async function hostedJoin(browser) {
 	await clickButton(pa, "Play");
 	const end = Date.now() + 30_000;
 	while (!invite && Date.now() < end) {
-		const href = pa.url();
-		if (/\/game\/[A-Za-z0-9_-]+/.test(href)) invite = href;
-		else await pa.waitForTimeout(200);
+		await pa.waitForTimeout(200);
 	}
 	if (!invite) throw new Error("host never produced a /game/<id> invite link");
-	invite = invite.replace(/[?&]smoke=1/, "");
 	log(`invite ${invite}`);
 	await waitSnap(pa, (s) => s.screen === "match", "host match screen");
 	await shot(pa, "11-host-waiting");

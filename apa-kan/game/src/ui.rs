@@ -23,6 +23,7 @@ use crate::deck::{
 use crate::game::{Action, BudgetToken, CaptureDest, CaptureMark, DeckSlot, Game, Player, Tile};
 use crate::platform::{replace_browser_route, IncomingUrl, PlatformPlugin};
 use crate::play_log;
+use crate::remote;
 use crate::route::{DeepLink, Route};
 use crate::shell::{self, AppScreen, LeaveMatch, StartMatch};
 use crate::visual::{self, ArcBody, BraidLane, ViewLayout};
@@ -128,8 +129,9 @@ pub fn run_app(cfg: GameConfig) {
 		(
 			handle_start_match,
 			handle_leave_match,
-			handle_game_deep_link,
+			(handle_game_deep_link, attach_remote_session).chain(),
 			clear_division_on_game_link,
+			remote_sync,
 		),
 	);
 	insert_ui_font(&mut app);
@@ -189,6 +191,8 @@ fn play_state_from_config(cfg: &GameConfig) -> PlayState {
 		from_shell: cfg.show_shell,
 		log_meta: play_log_meta(cfg, screenshot.is_some()),
 		game_log: None,
+		remote: None,
+		outbox: None,
 	};
 	if play.setup.is_none() {
 		begin_play_log(&mut play);
@@ -252,6 +256,10 @@ struct PlayState {
 	from_shell: bool,
 	log_meta: Option<PlayLogMeta>,
 	game_log: Option<GameLog>,
+	/// Server-hosted `/game/<id>` this match mirrors, if any.
+	remote: Option<remote::RemoteSession>,
+	/// Transaction for the move just played locally, waiting to be sent.
+	outbox: Option<apa_kan_tx::Transaction>,
 }
 
 struct PlayLogMeta {
@@ -751,6 +759,12 @@ fn handle_click(
 	if play.game.status().is_over() {
 		return;
 	}
+	if let Some(r) = play.remote.as_ref() {
+		if let Err(msg) = r.can_act(&play.game) {
+			play.warning = msg.to_string();
+			return;
+		}
+	}
 	let allow_setup = match play.setup.as_ref().map(|s| s.stage) {
 		Some(SetupStage::Reveal | SetupStage::Done) => true,
 		Some(SetupStage::Opening(p) | SetupStage::Extend(p)) => cfg.actor(p).is_human(),
@@ -924,8 +938,15 @@ fn apply_action(play: &mut PlayState, action: Action) {
 fn apply_action_with_stats(play: &mut PlayState, action: Action, stats: Option<SearchStats>) {
 	let piece = bench_log::piece_for_action(&play.game, action);
 	let partner = bench_log::partner_for_action(&play.game, action);
+	let pending_tx = play.remote.as_ref().and_then(|r| r.transaction(action));
 	match play.game.apply(action) {
 		Ok(outcome) => {
+			if let Some(tx) = pending_tx {
+				play.outbox = Some(tx);
+				if let Some(r) = play.remote.as_mut() {
+					r.inflight = true;
+				}
+			}
 			play.flash = visual::CaptureFlash::from_outcome(&outcome);
 			play.log = outcome.log_line.clone();
 			if outcome.removals.is_empty() {
@@ -1141,8 +1162,7 @@ fn bot_turn(
 		complete_setup_if_ready(&mut play, cfg.time_control);
 		let human_waiting = match play.setup.as_ref().map(|s| s.stage) {
 			Some(SetupStage::Opening(p) | SetupStage::Extend(p)) => cfg.actor(p).is_human(),
-			Some(SetupStage::Reveal | SetupStage::Done) => false,
-			None => false,
+			Some(SetupStage::Reveal | SetupStage::Done) | None => false,
 		};
 		if human_waiting {
 			clock.wait = cfg.delay.as_secs_f32();
@@ -1250,6 +1270,183 @@ fn handle_start_match(
 		play.game.rules().bag_size as usize,
 	);
 	screen.set(AppScreen::Match);
+}
+
+/// After [`handle_game_deep_link`] builds the match, attach it to the
+/// server-hosted game when an API is configured. Without one the seeded local
+/// stub stays (offline).
+fn attach_remote_session(
+	mut links: MessageReader<IncomingUrl>,
+	mut play: ResMut<PlayState>,
+	mut cfg: ResMut<ConfigRes>,
+	host: Res<shell::HostRes>,
+) {
+	let mut last = None;
+	for IncomingUrl { uri } in links.read() {
+		let link = DeepLink::parse(uri);
+		if let Route::Game { id } = &link.route {
+			last = Some((id.clone(), link.query.clone()));
+		}
+	}
+	let Some((id, query)) = last else {
+		return;
+	};
+	if host.0.api_url.is_none() || !remote::HTTP_AVAILABLE {
+		play.log = format!("Offline game {id}: seeded locally (no API configured).");
+		return;
+	}
+	let (mut seat, mut token) = remote::seat_from_query(&query);
+	if token.is_none() {
+		if let Some((s, t)) = remote::recall_seat(&id) {
+			seat = Some(s);
+			token = Some(t);
+		}
+	} else if let (Some(s), Some(t)) = (seat, token.as_deref()) {
+		remote::remember_seat(&id, s, t);
+	}
+	let mut session = remote::RemoteSession::new(id.clone(), seat, token);
+	session.inflight = remote::request_view(&host.0, &id);
+	cfg.0.bot1 = crate::ai::Actor::Human;
+	cfg.0.bot2 = crate::ai::Actor::Human;
+	play.setup = None;
+	play.game_log = None;
+	play.log_meta = None;
+	play.log = format!("Loading game {id} from the server…");
+	play.remote = Some(session);
+	play.outbox = None;
+	play.fingerprint = 0;
+}
+
+/// Seat-2 link from a just-created hosted game, carried into the session.
+#[derive(Default)]
+struct PendingInvite(Option<(String, String)>);
+
+/// Send queued transactions, poll while the other seat moves, and apply
+/// server replies.
+fn remote_sync(
+	time: Res<Time>,
+	host: Res<shell::HostRes>,
+	mut play: ResMut<PlayState>,
+	mut lobby: ResMut<shell::ShellState>,
+	mut invite: Local<PendingInvite>,
+) {
+	for ev in remote::drain_events() {
+		match ev {
+			remote::RemoteEvent::Created { created } => {
+				let p1 = &created.seats[0];
+				let p2 = &created.seats[1];
+				let link = remote::seat_link(&host.0, &created.game_id, p2.seat, &p2.token);
+				share_invite(&link);
+				invite.0 = Some((created.game_id.clone(), link));
+				crate::platform::push_incoming_url(format!(
+					"/game/{}?seat={}&token={}",
+					created.game_id, p1.seat, p1.token
+				));
+			}
+			remote::RemoteEvent::View { id, view }
+			| remote::RemoteEvent::TxAccepted { id, view } => {
+				adopt_remote_view(&mut play, &id, &view);
+			}
+			remote::RemoteEvent::TxRejected { id, message } => {
+				if play.remote.as_ref().is_some_and(|r| r.id == id) {
+					play.warning = format!("Server rejected the move: {message}. Reloading.");
+					if let Some(r) = play.remote.as_mut() {
+						// Force a full reload of the authoritative record.
+						r.loaded = false;
+						r.inflight = remote::request_view(&host.0, &id);
+					}
+				}
+			}
+			remote::RemoteEvent::Failed { id, message } => {
+				if id.is_empty() {
+					lobby.set_notice(format!("Could not create a hosted game: {message}"));
+				} else if let Some(r) = play.remote.as_mut().filter(|r| r.id == id) {
+					r.inflight = false;
+					play.warning = format!("Server: {message}");
+				}
+			}
+		}
+	}
+	if let Some((id, link)) = invite.0.as_ref() {
+		if let Some(r) = play.remote.as_mut().filter(|r| &r.id == id) {
+			r.invite = Some(link.clone());
+			invite.0 = None;
+		}
+	}
+	if let Some(tx) = play.outbox.take() {
+		if !remote::submit(&host.0, &tx) {
+			if let Some(r) = play.remote.as_mut() {
+				r.inflight = false;
+			}
+			play.warning = "No API configured; move kept locally only.".into();
+		}
+	}
+	let Some(r) = play.remote.as_ref() else {
+		return;
+	};
+	if r.wants_poll(&play.game) {
+		let id = r.id.clone();
+		let wait = r.poll_wait - time.delta_secs();
+		let waiting = r.invite.as_ref().map(|l| format!("Waiting for the other seat. Invite: {l}"));
+		if let Some(r) = play.remote.as_mut() {
+			if wait <= 0.0 {
+				r.poll_wait = remote::POLL_SECS;
+				r.inflight = remote::request_view(&host.0, &id);
+			} else {
+				r.poll_wait = wait;
+			}
+		}
+		if let Some(msg) = waiting {
+			if play.warning.is_empty() || play.warning.starts_with("Waiting") {
+				play.warning = msg;
+			}
+		}
+	}
+}
+
+fn adopt_remote_view(play: &mut PlayState, id: &str, view: &apa_kan_view::GameView) {
+	let Some(r) = play.remote.as_mut().filter(|r| r.id == id) else {
+		return;
+	};
+	r.inflight = false;
+	match r.adopt(view) {
+		Ok(Some(game)) => {
+			let seat = match r.seat {
+				Some(s) => format!("you are seat {s}"),
+				None => "spectating".into(),
+			};
+			let labels = format!("{} vs {}", r.labels[0], r.labels[1]);
+			play.game = game;
+			play.setup = None;
+			play.selection = Selection::None;
+			play.bot_thinking = false;
+			play.search1.advance(&play.game);
+			play.search2.advance(&play.game);
+			play.log = format!("Game {id} · {labels} · seq {} · {seat}", view.seq);
+			if play.warning.starts_with("Waiting") || play.warning.starts_with("Server") {
+				play.warning.clear();
+			}
+			play.fingerprint = 0;
+		}
+		Ok(None) => {}
+		Err(err) => play.warning = format!("Could not replay game {id}: {err}"),
+	}
+}
+
+/// Put the seat-2 link where the host can copy it: clipboard + console on
+/// web, stdout on desktop. Bevy text is not selectable.
+fn share_invite(link: &str) {
+	#[cfg(target_arch = "wasm32")]
+	{
+		web_sys::console::log_1(&format!("Apa Kan invite (seat 2): {link}").into());
+		if let Some(w) = web_sys::window() {
+			let _ = w.navigator().clipboard().write_text(link);
+		}
+	}
+	#[cfg(not(target_arch = "wasm32"))]
+	{
+		println!("Apa Kan invite (seat 2): {link}");
+	}
 }
 
 /// A `/game/<id>` link replaces any Divisions match in flight without rating it.

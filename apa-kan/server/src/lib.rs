@@ -1,4 +1,5 @@
 pub mod api;
+pub mod games;
 pub mod mailer;
 pub mod service;
 pub mod starter;

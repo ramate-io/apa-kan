@@ -15,6 +15,8 @@ pub mod host;
 #[cfg(feature = "desktop")]
 pub mod platform;
 pub mod play_log;
+#[cfg(feature = "desktop")]
+pub mod remote;
 pub mod render;
 pub mod route;
 #[cfg(feature = "desktop")]

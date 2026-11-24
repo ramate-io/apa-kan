@@ -85,7 +85,30 @@ The same [`Route`](../../apa-kan/game/src/route.rs) parser handles:
 | `/game/<id>` or `#/game/<id>` | `apakan://game/<id>` |
 | `/market`, `/settings`, `/puzzles` | `apakan://market` … |
 
-Hash routes work on any static file server. Path routes need a SPA fallback (see `nginx.conf`). Query pairs such as `#/h2h?opponent=bot&bot=minimax&time=2+1` are applied to the lobby. `/game/<id>` starts a local seeded match until a server hosts real ids.
+Hash routes work on any static file server. Path routes need a SPA fallback (see `nginx.conf`). Query pairs such as `#/h2h?opponent=bot&bot=minimax&time=2+1` are applied to the lobby.
+
+## Server-hosted games (`/game/<id>`)
+
+With an API URL configured, `/game/<id>` loads a real game from `apa-kan-server`; without one it stays a local seeded match.
+
+The wire contract is two small crates:
+
+- **`apa-kan-view`**: `ActionWire` (tagged JSON action), `GameRecord` (rules + seed + the completed 7+4 deal + the ordered action list), and `GameView` (status, side to move, seats, board, legal actions, plus the record). Core is deterministic, so any client rebuilds the exact position with `GameRecord::replay`.
+- **`apa-kan-tx`**: `Transaction { game_id, seq, seat, action, auth }`, `TxReceipt`, `TxError`, and `apply_transaction`. `seq` must equal the record's action count, so two clients can't both play move *n*; a stale client gets `409 stale_seq` and refetches.
+
+Server routes (`apa-kan-server`, in-memory for now):
+
+| Route | Does |
+|---|---|
+| `POST /v1/games` `{ "seed"?, "labels"? }` | Deal a human-vs-human, unclocked, default-rules game. Returns `game_id`, one bearer token + `/game/<id>?seat=N&token=…` path per seat, and the view |
+| `GET /v1/games/<id>` | `GameView` |
+| `POST /v1/games/<id>/transactions` | Apply one `Transaction`. `200 { receipt, view }`, or a typed error: `401 unauthorized`, `409 stale_seq / not_your_turn / game_over`, `422 illegal`, `404` |
+
+CORS allows any origin (auth is in the body, never cookies); set `APAKAN_CORS_ORIGINS=https://play.example` to restrict it.
+
+Client flow: Head-to-Head → Opponent **Online (invite link)** → Play creates a game, joins seat 1, and copies the seat-2 link to the clipboard (also logged to the console). Opening `#/game/<id>?seat=2&token=…` joins seat 2; the token is remembered in `localStorage` so a reload keeps the seat, and the address bar drops it. Without a token you spectate. Each local move is sent as a transaction; while the other seat moves the client polls the view every 1.5 s and replays new actions. A rejected move reloads the authoritative record.
+
+Web and desktop use `ehttp` (browser `fetch` / a background thread). Android and iOS keep the offline stub until their wrappers pick an HTTP client.
 
 ## Bot search (no tab freeze)
 

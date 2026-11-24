@@ -9,6 +9,8 @@ members = [
   "apa-kan/server",
   "apa-kan/smoke",
   "apa-kan/store",
+  "apa-kan/tx",
+  "apa-kan/view",
 ]
 
 [workspace.package]
@@ -25,6 +27,8 @@ rust-version = "1.95.0"
 apa-kan-account = { path = "apa-kan/account" }
 apa-kan-core = { path = "apa-kan/core" }
 apa-kan-store = { path = "apa-kan/store" }
+apa-kan-tx = { path = "apa-kan/tx" }
+apa-kan-view = { path = "apa-kan/view" }
 async-trait = "0.1"
 axum = "0.8"
 bevy = { version = "0.19.1" }
