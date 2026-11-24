@@ -68,7 +68,7 @@ Question: why does P1 go 69-28-53 under B + no-return, against 65-23-62 for B an
 - **The trap and first-capture splits by seat are the same in all three cells.**
   - Strict trap capture means the captured tile was the one its owner moved on their last action, taken on its new node. P1 / P2: B 21.7% / 17.6%, B + no-return 20.2% / 16.5%, B + rep 21.7% / 17.8%.
   - The first opponent capture comes at a median of action 6 in all three cells. P2 makes it more often: 86, 88 and 86 of 150.
-  - The first capturer's win rate is low in every cell. In B + no-return: P1 32/62, P2 38/88. In B: P1 27/64, P2 34/86.
+  - The first capturer wins about half the time or less in every cell. In B + no-return: P1 32/62, P2 38/88. In B: P1 27/64, P2 34/86.
 - **Repetition-ends did not change P1's choices.**
   - All 5 repetition endings (seeds 325, 338, 343, 357, 10305) are move for move identical to plain B up to the ending, and they end with the same outcome B reached at the 200-turn cap.
   - Only 11 games diverge from B at all, at a median of action 95: 7 at P2, 4 at P1. 3 of them changed result: 309 (P1 win to draw), 10303 (P2 win to P1 win), 10321 (P1 win to P2 win). That nets to zero.
