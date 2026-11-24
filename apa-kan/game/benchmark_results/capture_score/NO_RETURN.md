@@ -39,6 +39,23 @@ Examples:
 - Seeds 10301, 10308 and 10311: 2–3 lead changes each, decided 5-4 in 60–103 turns.
 - Seed 300: a 1-1 draw at the cap, with a 142-turn capture drought.
 
+## B + no-immediate-return (`MARK_MODE=b unl_mark_noreturn_mm`)
+
+Base: unlimited spawn, no 2-2-1-1, target 5, graveyard on, mark routing B, plus `--capture-to-capturer on` (routing overrides it).
+
+| Cell | n | P1 W-D-L | P2 W-D-L | P1 WR | mean / med turns | opp / self caps per game | mean score P1 / P2 (margin) | end reasons | repetition | comebacks | dest C/I/S/O % | capture C/I/S/O % | lead tail med / ≥10 / loser counterplay | RECOVER/game |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| mark B | 150 | 65-23-62 | 62-23-65 | 0.433 | 98.1 / 74.5 | 8.08 / 13.93 | 4.03 / 4.05 (abs 1.47) | score 116, draw turn_limit 23, turn_limit 7, locked_out 4 | 8 rep≥3 (avg max 1.85) | 88/127 (69.3%) | 3.1/21.5/52.0/23.4 | 2.6/12.7/68.8/15.8 | 0 / 48 / 34/125 | 14.5 |
+| B + no-return | 150 | 69-28-53 | 53-28-69 | 0.460 | 101.7 / 76.0 | 7.98 / 14.81 | 4.09 / 3.89 (abs 1.53) | score 110, draw turn_limit 28, locked_out 7, turn_limit 5 | 7 rep≥3 (avg max 1.60) | 79/122 (64.8%) | 2.7/21.1/52.8/23.4 | 2.3/12.7/70.3/14.7 | 0.0 / 50 / 35/120 | 15.6 |
+
+- **On the best routing base the rule is close to neutral.**
+  - Seats are a bit fairer (0.460 against 0.433). Pace is 1.5 turns slower (median 76 against 74.5). Comebacks drop slightly (64.8% against 69.3%).
+  - Loops stay low: 7 games with rep≥3, against 8.
+- **Standoff unchanged:** 91 games reach a tied 4-4, waiting a median of 36 turns (28 hit the cap), against 91 / 35 for B alone.
+- **Trapping is about the same as B alone.** 54.3% of opponent captures hit a tile that moved on its owner's last turn, against 55.0%. Under B, captured triangle-steals already turn over fast, so the extra commitment barely registers.
+- **The capturer-owns snowball seen above doesn't appear here** (first +2 holder won 72/136, lead-tail median 0). That confirms capturer-owns, not this rule, caused the snowball.
+- The mark split is unchanged: triangle/dot self-captures 5.9 / 8.9 per game; triangle share of opponent captures 0.57 (winners 0.54, losers 0.59).
+
 ## Take
 
-No-immediate-return does what it says and creates some trap captures, but too few undo moves are banned to fix pace or loops on its own. On the capturer-owns base the game snowballs. The B + no-immediate-return cell (`MARK_MODE=b unl_mark_noreturn_mm`, running) tests it on the best routing base. Repetition-ends (#105) is the direct comparison.
+No-immediate-return does what it says and creates some trap captures, but too few undo moves are banned to fix pace or loops on its own. On the capturer-owns base the game snowballs. On the best routing base (B) it is close to neutral: slightly fairer, slightly slower, and the standoff is unchanged. Repetition-ends (#105) is the direct comparison.
