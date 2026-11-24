@@ -23,6 +23,8 @@
 #   run_h2h.sh majority_t8_150_mm | majority_w40_150_mm | majority_w80_150_mm  # 150-game seed-300 reruns
 #   run_h2h.sh weight40_mm | weight80_mm | weight160_mm  # base + eval weight (n=40)
 #   run_h2h.sh unl_combo_mm | unl_graveyard_mm | unl_capturer_mm | unl_t5_mm | unl_no_opening_mm  # graveyard variant on unlimited spawn
+#   run_h2h.sh unl_mark_a_mm | unl_mark_adiscard_mm | unl_mark_b_mm | unl_capturer_rep_mm  # mark routing
+#   MARK_MODE=a run_h2h.sh unl_mark_rep_mm   # best routing + repetition-ends
 #   run_h2h.sh weight400_mm     # base + eval_capture_score=400
 #   run_h2h.sh all_light        # control + base + 4/5/6 mm-mm (150 each)
 #   run_h2h.sh followup_maj     # combos + trigger/target/weight sweeps
@@ -203,6 +205,38 @@ case "$cfg" in
     run_one h2h_unl_t5_mm "${mm_pair[@]}" --games 75 --seed 300 \
       --objective capture-score --unlimited-spawn on --score-target 5
     ;;
+  unl_mark_smoke)
+    run_one smoke_unl_mark "${mm_pair[@]}" --games 2 --seed 1 \
+      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
+      --graveyard on --mark-capture-routing a --repetition-ends on
+    ;;
+  unl_mark_a_mm)
+    run_one h2h_unl_mark_a_mm "${mm_pair[@]}" --games 75 --seed 300 \
+      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
+      --graveyard on --mark-capture-routing a
+    ;;
+  unl_mark_adiscard_mm)
+    run_one h2h_unl_mark_adiscard_mm "${mm_pair[@]}" --games 75 --seed 300 \
+      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
+      --graveyard on --mark-capture-routing a-discard
+    ;;
+  unl_mark_b_mm)
+    run_one h2h_unl_mark_b_mm "${mm_pair[@]}" --games 75 --seed 300 \
+      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
+      --graveyard on --mark-capture-routing b
+    ;;
+  unl_mark_rep_mm)
+    # MARK_MODE=a|a-discard|b: the best routing cell plus repetition-ends.
+    mode="${MARK_MODE:?set MARK_MODE=a|a-discard|b}"
+    run_one "h2h_unl_mark_${mode//-/}_rep_mm" "${mm_pair[@]}" --games 75 --seed 300 \
+      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
+      --graveyard on --mark-capture-routing "$mode" --repetition-ends on
+    ;;
+  unl_capturer_rep_mm)
+    run_one h2h_unl_capturer_rep_mm "${mm_pair[@]}" --games 75 --seed 300 \
+      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
+      --capture-to-capturer on --repetition-ends on
+    ;;
   unl_no_opening_mm)
     run_one h2h_unl_no_opening_mm "${mm_pair[@]}" --games 75 --seed 300 \
       --objective capture-score --unlimited-spawn on --opening-double off
@@ -250,7 +284,7 @@ case "$cfg" in
       --objective capture-score --unlimited-spawn on
     ;;
   *)
-    echo "usage: $0 [smoke|control_mm|control_mcts|base_mm|base_mcts|majority_mm|majority_mcts|cascade_mm|cascade_mcts|unlimited_mm|unlimited_mcts|combo_maj_cas_mm|combo_maj_unlim_mm|combo_maj_cas_unlim_mm|majority_inner_mm|majority_center_mm|majority_t4_mm|majority_t8_mm|majority_w40_mm|majority_w80_mm|majority_w160_mm|majority_t8_150_mm|majority_w40_150_mm|majority_w80_150_mm|unl_combo_smoke|unl_combo_mm|unl_graveyard_mm|unl_capturer_mm|unl_t5_mm|unl_no_opening_mm|weight40_mm|weight80_mm|weight160_mm|weight400_mm|followup_maj|all_light]" >&2
+    echo "usage: $0 [smoke|control_mm|control_mcts|base_mm|base_mcts|majority_mm|majority_mcts|cascade_mm|cascade_mcts|unlimited_mm|unlimited_mcts|combo_maj_cas_mm|combo_maj_unlim_mm|combo_maj_cas_unlim_mm|majority_inner_mm|majority_center_mm|majority_t4_mm|majority_t8_mm|majority_w40_mm|majority_w80_mm|majority_w160_mm|majority_t8_150_mm|majority_w40_150_mm|majority_w80_150_mm|unl_combo_smoke|unl_combo_mm|unl_graveyard_mm|unl_capturer_mm|unl_t5_mm|unl_no_opening_mm|unl_mark_smoke|unl_mark_a_mm|unl_mark_adiscard_mm|unl_mark_b_mm|unl_mark_rep_mm|unl_capturer_rep_mm|weight40_mm|weight80_mm|weight160_mm|weight400_mm|followup_maj|all_light]" >&2
     exit 2
     ;;
 esac
