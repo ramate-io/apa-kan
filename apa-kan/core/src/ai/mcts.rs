@@ -14,7 +14,7 @@
 //! joins, so the chosen move does not depend on completion order.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use web_time::Instant;
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -285,20 +285,36 @@ pub fn search(
 	limit: SearchLimit,
 	config: SearchConfig,
 ) -> (Action, SearchStats) {
+	search_with_yield(tree, game, played, last_move, rng, limit, config, None)
+}
+
+pub fn search_with_yield(
+	tree: &mut Option<MctsTree>,
+	game: &Game,
+	played: &[u64],
+	last_move: Option<SearchMove>,
+	rng: &mut impl Rng,
+	limit: SearchLimit,
+	config: SearchConfig,
+	yield_at: Option<Instant>,
+) -> (Action, SearchStats) {
 	let legal = legal_search_moves(game);
 	let fallback = legal.first().and_then(|m| m.to_action(game)).unwrap_or(Action::Pass);
 	if legal.is_empty() {
 		return (Action::Pass, SearchStats::default());
 	}
 
-	let threads = config.mcts_root_threads.max(1);
+	// wasm32-unknown-unknown has no threads; keep the sequential path so
+	// `std::thread::scope` is never reached in the browser.
+	let threads = if cfg!(target_arch = "wasm32") { 1 } else { config.mcts_root_threads.max(1) };
 	if threads > 1 {
 		return search_root_parallel(game, played, last_move, rng, limit, config, &legal, fallback);
 	}
 
 	let t = tree.get_or_insert_with(|| MctsTree::new_with(game, last_move, config));
 	t.sync(game, last_move, config);
-	let (iters, snaps) = run_iterations(t, game, played, last_move, rng, limit, config, &legal);
+	let (iters, snaps) =
+		run_iterations(t, game, played, last_move, rng, limit, config, &legal, yield_at);
 	let best = pick_best(t, last_move, &legal);
 	let (mcts_max_depth, mcts_avg_depth) = tree_depth_stats(t);
 	let spread = root_spread(t, last_move, legal.len(), &snaps, best, config);
@@ -330,6 +346,7 @@ fn run_iterations(
 	limit: SearchLimit,
 	config: SearchConfig,
 	legal: &[SearchMove],
+	yield_at: Option<Instant>,
 ) -> (u32, Vec<SearchMove>) {
 	tree.root_eta.clear();
 	let mut iterations = 0u32;
@@ -339,10 +356,14 @@ fn run_iterations(
 		SearchLimit::Work { iters, .. } => (iters / 8).max(1),
 		SearchLimit::Time(_) => 8,
 	};
+	let yielded = |now: Instant| yield_at.is_some_and(|t| now >= t);
 	match limit {
 		SearchLimit::Time(think) => {
 			let deadline = Instant::now() + think;
 			while Instant::now() < deadline && iterations < MAX_ITERS {
+				if yielded(Instant::now()) {
+					break;
+				}
 				iterations += 1;
 				iterate(tree, game, played, last_move, rng, config);
 				if iterations % sample_every == 0 {
@@ -351,13 +372,16 @@ fn run_iterations(
 				if config.mcts_solver && tree.nodes[tree.root].proven.is_some() {
 					break;
 				}
-				if iterations % 8 == 0 && Instant::now() >= deadline {
+				if iterations % 8 == 0 && (Instant::now() >= deadline || yielded(Instant::now())) {
 					break;
 				}
 			}
 		}
 		SearchLimit::Work { iters, .. } => {
 			while iterations < iters {
+				if yielded(Instant::now()) {
+					break;
+				}
 				iterations += 1;
 				iterate(tree, game, played, last_move, rng, config);
 				if iterations % sample_every == 0 {
@@ -471,6 +495,7 @@ fn search_root_parallel(
 					worker_limit,
 					config,
 					&legal,
+					None,
 				);
 				let (max_d, avg_d) = tree_depth_stats(&tree);
 				let best = if legal.is_empty() {

@@ -17,7 +17,9 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:bevy"]
+desktop = ["dep:bevy", "dep:webbrowser"]
+# Trivial WebGPU override of the default WebGL2 wasm renderer.
+webgpu = ["desktop", "bevy/webgpu"]
 
 [[bin]]
 name = "apa-kan"
@@ -34,13 +36,29 @@ path = "src/bin/analyze.rs"
 
 [dependencies]
 apa-kan-core = { path = "../core" }
-bevy = { workspace = true, optional = true, features = ["android-native-activity"] }
+bevy = { workspace = true, optional = true }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+webbrowser = { version = "1", optional = true }
+
+# Native-activity is Android-only. Keeping it off wasm/desktop avoids pulling
+# android-activity into the browser bundle.
+[target.'cfg(target_os = "android")'.dependencies]
+bevy = { workspace = true, optional = true, features = ["android-native-activity"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { workspace = true, optional = true, features = ["webgl2"] }
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Location", "History", "Document", "Element", "Storage"] }
+console_error_panic_hook = "0.1"
 
 [dev-dependencies]
 apa-kan-core = { path = "../core", features = ["test-helpers"] }

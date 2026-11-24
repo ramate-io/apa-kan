@@ -9,6 +9,8 @@ mod zobrist;
 
 use std::time::Duration;
 
+use web_time::Instant;
+
 use rand::Rng;
 
 use crate::game::{Action, Game, Player, RuleSet};
@@ -259,6 +261,15 @@ impl HistoryTable {
 	}
 }
 
+struct SliceJob {
+	hash: u64,
+	actor: Actor,
+	started: Instant,
+	nodes: u64,
+	iters: u32,
+	last: Option<Action>,
+}
+
 /// Persistent searcher: TT, killers, MCTS tree reuse, repetition list.
 pub struct Searcher {
 	minimax: minimax::MinimaxState,
@@ -268,6 +279,7 @@ pub struct Searcher {
 	trace: SearchTrace,
 	pv: Vec<Action>,
 	config: SearchConfig,
+	slice: Option<SliceJob>,
 }
 
 impl Default for Searcher {
@@ -290,6 +302,7 @@ impl Searcher {
 			trace: SearchTrace::default(),
 			pv: Vec::new(),
 			config,
+			slice: None,
 		}
 	}
 
@@ -320,6 +333,8 @@ impl Searcher {
 	/// Walk trees to `game` (after an action was applied).
 	pub fn advance(&mut self, game: &Game) {
 		self.observe(game);
+		self.slice = None;
+		self.minimax.clear_ponder();
 		mcts::advance(&mut self.mcts, game, self.config);
 	}
 
@@ -340,6 +355,105 @@ impl Searcher {
 		rng: &mut impl Rng,
 		limit: SearchLimit,
 	) -> Action {
+		self.slice = None;
+		self.minimax.clear_ponder();
+		self.choose_inner(game, actor, rng, limit, None)
+	}
+
+	/// Run up to `slice` of wall time, then return to the caller.
+	///
+	/// Live clients (especially wasm) call this once per frame so bot search
+	/// does not freeze the UI. `None` means keep pumping; `Some` is the move.
+	/// Blocking [`Self::choose_with`] is unchanged: benches and tests still
+	/// run one complete search.
+	///
+	/// **Why not a web worker?** `wasm32-unknown-unknown` has no threads
+	/// without `atomics` + `SharedArrayBuffer` (COOP/COEP). The minimax TT is
+	/// too large to clone into a worker each ply. Time-sliced search reuses
+	/// the same [`Searcher`] (TT + MCTS tree) on the animation frame.
+	pub fn think_slice(
+		&mut self,
+		game: &Game,
+		actor: Actor,
+		rng: &mut impl Rng,
+		limit: SearchLimit,
+		slice: Duration,
+	) -> Option<Action> {
+		if !actor.thinks() {
+			return Some(self.choose_with(game, actor, rng, limit));
+		}
+		self.observe(game);
+		let hash = occupancy_hash(game);
+		let fresh = self.slice.as_ref().is_none_or(|j| j.hash != hash || j.actor != actor);
+		if fresh {
+			self.minimax.clear_ponder();
+			self.slice = Some(SliceJob {
+				hash,
+				actor,
+				started: Instant::now(),
+				nodes: 0,
+				iters: 0,
+				last: None,
+			});
+		}
+		let (started, nodes_done, iters_done, last) = {
+			let job = self.slice.as_ref()?;
+			(job.started, job.nodes, job.iters, job.last)
+		};
+		let inner_limit = match limit {
+			SearchLimit::Time(total) => {
+				let remaining = total.saturating_sub(started.elapsed());
+				if remaining.is_zero() {
+					self.slice = None;
+					return last;
+				}
+				SearchLimit::Time(remaining.min(slice))
+			}
+			SearchLimit::Work { nodes, iters } => {
+				let rem_n = nodes.saturating_sub(nodes_done);
+				let rem_i = iters.saturating_sub(iters_done);
+				let mcts_done = matches!(actor, Actor::Mcts) && rem_i == 0;
+				let mm_done = !matches!(actor, Actor::Mcts) && rem_n == 0;
+				if mcts_done || mm_done {
+					self.slice = None;
+					return last;
+				}
+				SearchLimit::Work { nodes: rem_n.max(1), iters: rem_i.max(1) }
+			}
+		};
+		let yield_at = Some(Instant::now() + slice);
+		let action = self.choose_inner(game, actor, rng, inner_limit, yield_at);
+		let stats = self.stats;
+		if let Some(job) = self.slice.as_mut() {
+			job.nodes = job.nodes.saturating_add(stats.nodes);
+			job.iters = job.iters.saturating_add(stats.iterations);
+			job.last = Some(action);
+		}
+		let done = match limit {
+			SearchLimit::Time(total) => {
+				self.slice.as_ref().is_some_and(|j| j.started.elapsed() >= total)
+			}
+			SearchLimit::Work { nodes, iters } => self.slice.as_ref().is_some_and(|j| {
+				(actor.thinks() && matches!(actor, Actor::Mcts) && j.iters >= iters)
+					|| (!matches!(actor, Actor::Mcts) && j.nodes >= nodes)
+			}),
+		};
+		if done {
+			self.slice = None;
+			Some(action)
+		} else {
+			None
+		}
+	}
+
+	fn choose_inner(
+		&mut self,
+		game: &Game,
+		actor: Actor,
+		rng: &mut impl Rng,
+		limit: SearchLimit,
+		yield_at: Option<Instant>,
+	) -> Action {
 		self.observe(game);
 		self.stats = SearchStats::default();
 		self.trace = SearchTrace::default();
@@ -355,23 +469,46 @@ impl Searcher {
 			Actor::Minimax | Actor::MinimaxLegacy => {
 				self.minimax.legacy = actor == Actor::MinimaxLegacy;
 				self.minimax.config = self.config;
-				let (action, stats, trace, pv) =
-					minimax::search(&mut self.minimax, game, &self.played_hashes, rng, limit);
+				let (action, stats, trace, pv) = match yield_at {
+					None => {
+						minimax::search(&mut self.minimax, game, &self.played_hashes, rng, limit)
+					}
+					Some(_) => minimax::search_with_yield(
+						&mut self.minimax,
+						game,
+						&self.played_hashes,
+						rng,
+						limit,
+						yield_at,
+					),
+				};
 				self.stats = stats;
 				self.trace = trace;
 				self.pv = pv;
 				action
 			}
 			Actor::Mcts => {
-				let (action, stats) = mcts::search(
-					&mut self.mcts,
-					game,
-					&self.played_hashes,
-					self.minimax.last_move,
-					rng,
-					limit,
-					self.config,
-				);
+				let (action, stats) = match yield_at {
+					None => mcts::search(
+						&mut self.mcts,
+						game,
+						&self.played_hashes,
+						self.minimax.last_move,
+						rng,
+						limit,
+						self.config,
+					),
+					Some(_) => mcts::search_with_yield(
+						&mut self.mcts,
+						game,
+						&self.played_hashes,
+						self.minimax.last_move,
+						rng,
+						limit,
+						self.config,
+						yield_at,
+					),
+				};
 				self.stats = stats;
 				action
 			}
@@ -1094,5 +1231,44 @@ mod tests {
 		assert!(report.add_n > 0);
 		assert!(report.add_max >= 8);
 		assert!(report.all_avg() > 0.0);
+	}
+
+	#[test]
+	fn think_slice_work_budget_finishes_and_stays_legal() {
+		let game = Game::new(RuleSet::default(), 11);
+		let limit = SearchLimit::work(240, 8);
+		let mut searcher = Searcher::new();
+		let mut rng = StdRng::seed_from_u64(11);
+		let mut action = None;
+		for _ in 0..8 {
+			if let Some(a) = searcher.think_slice(
+				&game,
+				Actor::Minimax,
+				&mut rng,
+				limit,
+				Duration::from_secs(30),
+			) {
+				action = Some(a);
+				break;
+			}
+		}
+		let action = action.expect("work budget should finish in one long slice");
+		assert!(game.legal_actions().contains(&action));
+	}
+
+	#[test]
+	fn think_slice_greedy_is_immediate() {
+		let game = Game::new(RuleSet::default(), 4);
+		let mut searcher = Searcher::new();
+		let mut rng = StdRng::seed_from_u64(4);
+		let action = searcher.think_slice(
+			&game,
+			Actor::Greedy,
+			&mut rng,
+			SearchLimit::time_ms(80),
+			Duration::from_millis(1),
+		);
+		assert!(action.is_some());
+		assert!(game.legal_actions().contains(&action.unwrap()));
 	}
 }

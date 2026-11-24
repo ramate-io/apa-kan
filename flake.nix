@@ -42,6 +42,7 @@
           coreutils
           gcc
           rust
+          binaryen
         ] ++ lib.optionals stdenv.isDarwin [
           libelf
         ] ++ lib.optionals stdenv.isLinux [
