@@ -1,0 +1,12 @@
+{
+	"name": "apa-kan-web-smoke",
+	"private": true,
+	"type": "module",
+	"description": "Headless-browser smoke test for the Apa Kan web bundle. Run through the Kestrel orchestration: cargo run -p apa-kan-smoke.",
+	"scripts": {
+		"smoke": "node smoke.mjs"
+	},
+	"dependencies": {
+		"playwright": "1.65.1"
+	}
+}

@@ -1,0 +1,24 @@
+[package]
+name = "apa-kan-smoke"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+publish = { workspace = true }
+rust-version = { workspace = true }
+description = "Kestrel orchestration for the web smoke test: spawns the API server and the bundle server, waits for readiness, runs the headless-browser smoke, tears down."
+
+[[bin]]
+name = "apa-kan-smoke"
+path = "src/main.rs"
+
+[dependencies]
+# ramate-io/kestrel has no release yet. This rev is the head of
+# l-monninger/command-env (kestrel PR #1): child env + fulfill-on-listen-line.
+kestrel = { git = "https://github.com/ramate-io/kestrel", rev = "7ff0e1c8347578911ad3c399663c2d41d52bdc4e" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+
+[lints]
+workspace = true
