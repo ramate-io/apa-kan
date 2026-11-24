@@ -79,17 +79,30 @@ mkdir -p "$OUT"
 [ -f "$OUT/apa-kan_bg.wasm" ] && [ -f "$OUT/apa-kan.js" ] ||
 	die "wasm-bindgen did not write $OUT/apa-kan.js and $OUT/apa-kan_bg.wasm"
 
-if command -v wasm-opt >/dev/null 2>&1; then
-	echo "Running wasm-opt -Oz"
-	tmp="$OUT/apa-kan_bg.opt.wasm"
-	if wasm-opt -Oz --enable-bulk-memory -o "$tmp" "$OUT/apa-kan_bg.wasm"; then
-		mv "$tmp" "$OUT/apa-kan_bg.wasm"
+# wasm-opt must understand the reference types wasm-bindgen emits (externref
+# table). Old binaryen (e.g. Ubuntu 22.04's 105) "optimizes" the bundle into
+# one that dies at init with "WebAssembly.Table.grow(): failed to grow table",
+# so older versions are skipped instead of trusted.
+WASM_OPT_MIN=116
+WASM_OPT_FEATURES=(--enable-bulk-memory --enable-reference-types --enable-multivalue
+	--enable-mutable-globals --enable-nontrapping-float-to-int --enable-sign-ext)
+WASM_OPT="${WASM_OPT:-$(command -v wasm-opt || true)}"
+if [ -n "$WASM_OPT" ]; then
+	opt_version="$("$WASM_OPT" --version 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }')"
+	if [ -z "$opt_version" ] || [ "$opt_version" -lt "$WASM_OPT_MIN" ]; then
+		echo "wasm-opt ${opt_version:-?} at $WASM_OPT is older than $WASM_OPT_MIN (breaks externref tables); skipping. Install a current binaryen for smaller bundles."
 	else
-		echo "wasm-opt failed; keeping wasm-bindgen output"
-		rm -f "$tmp"
+		echo "Running wasm-opt $opt_version -Oz"
+		tmp="$OUT/apa-kan_bg.opt.wasm"
+		if "$WASM_OPT" -Oz "${WASM_OPT_FEATURES[@]}" -o "$tmp" "$OUT/apa-kan_bg.wasm"; then
+			mv "$tmp" "$OUT/apa-kan_bg.wasm"
+		else
+			echo "wasm-opt failed; keeping wasm-bindgen output"
+			rm -f "$tmp"
+		fi
 	fi
 else
-	echo "wasm-opt not found; skipping (install binaryen for smaller bundles)"
+	echo "wasm-opt not found; skipping (install binaryen >= $WASM_OPT_MIN for smaller bundles)"
 fi
 
 packaging/scripts/configure-web-host.sh apa-kan/game/web/index.html "$OUT/index.html"
