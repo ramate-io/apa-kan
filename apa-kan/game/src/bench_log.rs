@@ -2807,6 +2807,7 @@ mod tests {
 			"benchmark_results/capture_score/h2h_unl_mark_a_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_mark_adiscard_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_mark_b_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_mark_b_rep_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_capturer_rep_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_noreturn_mm.jsonl.gz",
 		] {
