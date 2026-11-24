@@ -203,6 +203,10 @@ case "$cfg" in
     run_one h2h_majority_t4_150_mm "${mm_pair[@]}" --games 75 --seed 300 \
       --objective capture-score --majority-spawn-bonus on --score-target 4
     ;;
+  majority_w40_150_s700_mm)
+    run_one h2h_majority_w40_150_s700_mm "${mm_pair[@]}" --games 75 --seed 700 \
+      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=40
+    ;;
   followup_more)
     run_one h2h_cas_unlim_150_mm "${mm_pair[@]}" --games 75 --seed 300 \
       --objective capture-score --capture-cascade on --unlimited-spawn on
@@ -260,7 +264,7 @@ case "$cfg" in
       --objective capture-score --unlimited-spawn on
     ;;
   *)
-    echo "usage: $0 [smoke|control_mm|control_mcts|base_mm|base_mcts|majority_mm|majority_mcts|cascade_mm|cascade_mcts|unlimited_mm|unlimited_mcts|combo_maj_cas_mm|combo_maj_unlim_mm|combo_maj_cas_unlim_mm|majority_inner_mm|majority_center_mm|majority_t4_mm|majority_t8_mm|majority_w40_mm|majority_w80_mm|majority_w160_mm|majority_t8_150_mm|majority_w40_150_mm|majority_w80_150_mm|majority_w40_mcts|majority_inner_150_mm|majority_center_150_mm|combo_maj_cas_unlim_150_mm|combo_cas_unlim_150_mm|majority_t4_150_mm|followup_150|followup_more|weight40_mm|weight80_mm|weight160_mm|weight400_mm|followup_maj|all_light]" >&2
+    echo "usage: $0 [smoke|control_mm|control_mcts|base_mm|base_mcts|majority_mm|majority_mcts|cascade_mm|cascade_mcts|unlimited_mm|unlimited_mcts|combo_maj_cas_mm|combo_maj_unlim_mm|combo_maj_cas_unlim_mm|majority_inner_mm|majority_center_mm|majority_t4_mm|majority_t8_mm|majority_w40_mm|majority_w80_mm|majority_w160_mm|majority_t8_150_mm|majority_w40_150_mm|majority_w80_150_mm|majority_w40_mcts|majority_inner_150_mm|majority_center_150_mm|combo_maj_cas_unlim_150_mm|combo_cas_unlim_150_mm|majority_t4_150_mm|majority_w40_150_s700_mm|followup_150|followup_more|weight40_mm|weight80_mm|weight160_mm|weight400_mm|followup_maj|all_light]" >&2
     exit 2
     ;;
 esac
