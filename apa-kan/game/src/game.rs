@@ -3165,6 +3165,16 @@ pub struct RuleSet {
 	/// score: leader wins, tie draws. Default off. `--repetition-ends`.
 	/// Missing JSONL replays as off.
 	pub repetition_ends: bool,
+	/// A tile may not MOVE (or SWAP-initiate) back onto the node it left on
+	/// its own most recent move, i.e. it cannot undo that move on its
+	/// owner's next turn (or later in the same turn, under extra actions).
+	/// No capture exception. Only the moving/initiating tile is tracked: a
+	/// SWAP partner displaced onto the initiator's old node did not move
+	/// itself, so it is not blocked and records nothing. A captured tile's
+	/// record is dropped when it leaves the board, so a recycled tile starts
+	/// clean. ADD, CLAIM, RECOVER and Pass never record. Default off.
+	/// `--no-immediate-return`. Missing JSONL replays as off.
+	pub no_immediate_return: bool,
 }
 
 impl Default for RuleSet {
@@ -3231,6 +3241,7 @@ impl Default for RuleSet {
 			capture_to_capturer: false,
 			mark_capture_routing: MarkCaptureRouting::Off,
 			repetition_ends: false,
+			no_immediate_return: false,
 		}
 	}
 }
@@ -3457,6 +3468,11 @@ pub struct Game {
 	graveyards: [Vec<Tile>; 2],
 	/// [`RuleSet::repetition_ends`] position history (turn boundaries only).
 	position_history: Vec<u64>,
+	/// [`RuleSet::no_immediate_return`]: `(tile id, node it left)` for each
+	/// tile moved on each player's most recent completed turn.
+	return_block: [Vec<(u32, NodeId)>; 2],
+	/// Same, for tiles moved so far this turn (latest move per tile).
+	moved_from_this_turn: Vec<(u32, NodeId)>,
 	/// Last action awarded a majority-spawn token.
 	last_majority_spawn: bool,
 	/// Last action captured an opponent piece on a sparse board (capture-cascade).
@@ -3597,6 +3613,8 @@ impl Game {
 			capture_score: [0, 0],
 			graveyards: [Vec::new(), Vec::new()],
 			position_history: Vec::new(),
+			return_block: [Vec::new(), Vec::new()],
+			moved_from_this_turn: Vec::new(),
 			last_majority_spawn: false,
 			score_cascade_hit: false,
 		};
@@ -3684,6 +3702,8 @@ impl Game {
 			capture_score: [0, 0],
 			graveyards: [Vec::new(), Vec::new()],
 			position_history: Vec::new(),
+			return_block: [Vec::new(), Vec::new()],
+			moved_from_this_turn: Vec::new(),
 			last_majority_spawn: false,
 			score_cascade_hit: false,
 		};
@@ -3773,6 +3793,8 @@ impl Game {
 			capture_score: [0, 0],
 			graveyards: [Vec::new(), Vec::new()],
 			position_history: Vec::new(),
+			return_block: [Vec::new(), Vec::new()],
+			moved_from_this_turn: Vec::new(),
 			last_majority_spawn: false,
 			score_cascade_hit: false,
 		}
@@ -5263,8 +5285,12 @@ impl Game {
 				continue;
 			}
 			let restricted = self.same_piece_is_restricted(tile.id);
+			let back = self.return_blocked_node(tile.id);
 			for dest in self.destinations(node) {
 				if restricted && !self.move_removes_opponent(node, dest) {
+					continue;
+				}
+				if back == Some(dest) {
 					continue;
 				}
 				acts.push(Action::Move { from: node, to: dest });
@@ -5316,9 +5342,10 @@ impl Game {
 			return Vec::new();
 		}
 		let restricted = self.same_piece_is_restricted(init.id);
+		let back = self.return_blocked_node(init.id);
 		let mut out = Vec::new();
 		for (to, partner) in self.tiles() {
-			if to == from {
+			if to == from || back == Some(to) {
 				continue;
 			}
 			if !self.swap_partner_allowed(from, to, init, partner) {
@@ -5377,6 +5404,45 @@ impl Game {
 			.collect_captures_for(Action::Swap { from, to })
 			.iter()
 			.any(|r| r.tile.owner == opponent)
+	}
+
+	/// [`RuleSet::no_immediate_return`]: the node `tile_id` may not move back
+	/// to (where it stood before its own latest move), if any. This turn's
+	/// move supersedes the previous turn's record for the same tile.
+	pub fn return_blocked_node(&self, tile_id: u32) -> Option<NodeId> {
+		if !self.rules.no_immediate_return {
+			return None;
+		}
+		self.moved_from_this_turn
+			.iter()
+			.chain(self.return_block[self.current.index()].iter())
+			.find(|(id, _)| *id == tile_id)
+			.map(|&(_, n)| n)
+	}
+
+	/// `(tile id, node it left)` records for `player`'s last completed turn.
+	pub fn return_block(&self, player: Player) -> &[(u32, NodeId)] {
+		&self.return_block[player.index()]
+	}
+
+	/// `(tile id, node it left)` records for tiles moved so far this turn.
+	pub fn moved_from_this_turn(&self) -> &[(u32, NodeId)] {
+		&self.moved_from_this_turn
+	}
+
+	fn record_return_block(&mut self, tile_id: u32, from: NodeId) {
+		if !self.rules.no_immediate_return {
+			return;
+		}
+		self.moved_from_this_turn.retain(|(id, _)| *id != tile_id);
+		self.moved_from_this_turn.push((tile_id, from));
+	}
+
+	fn forget_return_block(&mut self, tile_id: u32) {
+		self.moved_from_this_turn.retain(|(id, _)| *id != tile_id);
+		for b in &mut self.return_block {
+			b.retain(|(id, _)| *id != tile_id);
+		}
 	}
 
 	fn same_piece_is_restricted(&self, tile_id: u32) -> bool {
@@ -5465,9 +5531,11 @@ impl Game {
 			return Vec::new();
 		}
 		let restricted = self.same_piece_is_restricted(tile.id);
+		let back = self.return_blocked_node(tile.id);
 		self.destinations(from)
 			.into_iter()
 			.filter(|&to| !restricted || self.move_removes_opponent(from, to))
+			.filter(|&to| back != Some(to))
 			.collect()
 	}
 
@@ -5763,6 +5831,9 @@ impl Game {
 		let is_move = matches!(action, Action::Move { .. });
 		for rem in &removals {
 			self.tiles[rem.node as usize] = None;
+			if self.rules.no_immediate_return {
+				self.forget_return_block(rem.tile.id);
+			}
 			match rem.dest {
 				CaptureDest::Bench => {
 					let mut tile = rem.tile;
@@ -5867,6 +5938,7 @@ impl Game {
 
 	fn finish_turn(&mut self, who: Player) {
 		self.last_moved[who.index()] = self.moved_this_turn.take();
+		self.return_block[who.index()] = std::mem::take(&mut self.moved_from_this_turn);
 		self.last_swap[who.index()] = self.swapped_this_turn.take();
 		self.update_center_hold(who);
 		if !self.status.is_over() {
@@ -6453,9 +6525,13 @@ impl Game {
 					.into(),
 			);
 		}
+		if self.return_blocked_node(tile.id) == Some(to) {
+			return Err("cannot move a tile straight back to the node it just left".into());
+		}
 		self.tiles[from as usize] = None;
 		self.tiles[to as usize] = Some(tile);
 		self.moved_this_turn = Some(tile.id);
+		self.record_return_block(tile.id, from);
 		Ok(())
 	}
 
@@ -6486,6 +6562,8 @@ impl Game {
 		self.tiles[from as usize] = Some(partner);
 		self.tiles[to as usize] = Some(init);
 		self.moved_this_turn = Some(init.id);
+		// Only the initiator moved of its own accord; see no_immediate_return.
+		self.record_return_block(init.id, from);
 		self.swapped_this_turn = Some(swap_pair_key(init.id, partner.id));
 		Ok(())
 	}
@@ -8704,6 +8782,83 @@ mod tests {
 		let spawn = game.board().spawns()[0];
 		game.apply(Action::Add { bench_index: 0, node: spawn }).unwrap();
 		assert_eq!(game.status(), GameStatus::Draw { reason: EndReason::InsufficientTiles });
+	}
+
+	fn no_return_game() -> (Game, NodeId, NodeId, NodeId) {
+		let mut rules = RuleSet::default();
+		rules.opening_double = false;
+		rules.no_immediate_return = true;
+		let mut game = Game::empty(rules);
+		let inner = inner_ring(&game);
+		let (a, other) = (inner[0], inner[4]);
+		let center = game.board().center();
+		for node in [a, other] {
+			put_rings(
+				&mut game,
+				node,
+				Player::One,
+				&[TileColor::Blue, TileColor::Teal, TileColor::Maroon],
+				1,
+			);
+		}
+		let bench = (0..3)
+			.map(|_| {
+				take_rings(
+					&mut game,
+					Player::Two,
+					&[TileColor::Orange, TileColor::LavenderPink, TileColor::Green],
+					1,
+				)
+			})
+			.collect();
+		game.set_bench(Player::Two, bench);
+		game.pad_above_low_value();
+		game.set_current(Player::One);
+		(game, a, other, center)
+	}
+
+	#[test]
+	fn no_immediate_return_defaults_to_off() {
+		assert!(!RuleSet::default().no_immediate_return);
+	}
+
+	#[test]
+	fn no_immediate_return_blocks_undoing_the_last_move() {
+		let (mut game, a, _, center) = no_return_game();
+		let id = game.tile_at(a).unwrap().id;
+		game.apply(Action::Move { from: a, to: center }).unwrap();
+		assert_eq!(game.return_block(Player::One), &[(id, a)]);
+		let s0 = game.board().spawns()[0];
+		game.apply(Action::Add { bench_index: 0, node: s0 }).unwrap();
+		assert_eq!(game.return_blocked_node(id), Some(a));
+		assert!(game.destinations(center).contains(&a), "path back exists");
+		assert!(!game.legal_destinations(center).contains(&a));
+		assert!(!game.legal_moves().contains(&Action::Move { from: center, to: a }));
+		assert!(game.apply(Action::Move { from: center, to: a }).is_err());
+		assert!(!game.legal_destinations(center).is_empty(), "other moves stay legal");
+	}
+
+	#[test]
+	fn no_immediate_return_expires_after_one_turn() {
+		let (mut game, a, other, center) = no_return_game();
+		game.apply(Action::Move { from: a, to: center }).unwrap();
+		let s = game.board().spawns().to_vec();
+		game.apply(Action::Add { bench_index: 0, node: s[0] }).unwrap();
+		let to = *game.legal_destinations(other).first().expect("other tile can move");
+		game.apply(Action::Move { from: other, to }).unwrap();
+		game.apply(Action::Add { bench_index: 0, node: s[4] }).unwrap();
+		assert!(game.legal_destinations(center).contains(&a), "a later turn may return");
+	}
+
+	#[test]
+	fn no_immediate_return_off_allows_the_undo() {
+		let (mut game, a, _, center) = no_return_game();
+		game.rules.no_immediate_return = false;
+		game.apply(Action::Move { from: a, to: center }).unwrap();
+		assert!(game.return_block(Player::One).is_empty());
+		let s0 = game.board().spawns()[0];
+		game.apply(Action::Add { bench_index: 0, node: s0 }).unwrap();
+		assert!(game.legal_destinations(center).contains(&a));
 	}
 
 	#[test]

@@ -517,6 +517,8 @@ pub struct RulesLog {
 	pub mark_capture_routing: String,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub repetition_ends: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub no_immediate_return: bool,
 }
 
 fn default_control_objective() -> String {
@@ -651,6 +653,7 @@ impl RulesLog {
 				String::new()
 			},
 			repetition_ends: r.repetition_ends,
+			no_immediate_return: r.no_immediate_return,
 		}
 	}
 
@@ -733,6 +736,7 @@ impl RulesLog {
 				crate::game::MarkCaptureRouting::parse(&self.mark_capture_routing)?
 			},
 			repetition_ends: self.repetition_ends,
+			no_immediate_return: self.no_immediate_return,
 		})
 	}
 }
@@ -2795,12 +2799,18 @@ mod tests {
 			"benchmark_results/capture_score/smoke_unl_mark.jsonl.gz",
 			4,
 		);
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/capture_score/smoke_unl_noreturn.jsonl.gz",
+			4,
+		);
 		for rel in [
 			"benchmark_results/capture_score/h2h_unl_mark_a_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_mark_adiscard_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_mark_b_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_mark_b_rep_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_capturer_rep_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_noreturn_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_mark_b_noreturn_mm.jsonl.gz",
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 150);
 		}
@@ -2823,6 +2833,15 @@ mod tests {
 			assert_eq!(back.mark_capture_routing, mode);
 			assert!(back.repetition_ends);
 		}
+	}
+
+	#[test]
+	fn no_immediate_return_round_trips_through_the_log() {
+		let mut r = RuleSet::default();
+		let json = serde_json::to_string(&RulesLog::from_rules(r)).unwrap();
+		assert!(!json.contains("no_immediate_return"), "{json}");
+		r.no_immediate_return = true;
+		assert!(RulesLog::from_rules(r).to_rules().unwrap().no_immediate_return);
 	}
 
 	#[test]

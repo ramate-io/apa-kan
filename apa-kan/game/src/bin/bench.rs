@@ -735,7 +735,7 @@ fn run(cfg: BenchConfig) {
 		));
 	}
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} ratchet_cascade={} opening_double={} objective={} score_target={} majority_spawn_bonus={} majority_spawn_set={} capture_cascade={} unlimited_spawn={} graveyard={} capture_to_capturer={} mark_capture_routing={} repetition_ends={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} ratchet_cascade={} opening_double={} objective={} score_target={} majority_spawn_bonus={} majority_spawn_set={} capture_cascade={} unlimited_spawn={} graveyard={} capture_to_capturer={} mark_capture_routing={} repetition_ends={} no_immediate_return={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -764,6 +764,7 @@ fn run(cfg: BenchConfig) {
 		on_off(rules.capture_to_capturer),
 		rules.mark_capture_routing.name(),
 		on_off(rules.repetition_ends),
+		on_off(rules.no_immediate_return),
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
 		rules.bag_size,

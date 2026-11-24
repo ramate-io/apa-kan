@@ -372,6 +372,9 @@ where
 		"--repetition-ends" => {
 			rules.repetition_ends = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--no-immediate-return" => {
+			rules.no_immediate_return = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--starting-bench" | "--starting-tokens" => {
 			let n = parse_u64(arg, &require_value(arg, it.next())?)?;
 			if n == 0 || n > BAG_SIZE as u64 {
@@ -560,6 +563,7 @@ pub fn usage() -> &'static str {
 	   --capture-to-capturer <on|off>             Captured tiles change owner to the capturer's bench/graveyard (default: off)\n\
 	   --mark-capture-routing <off|a|a-discard|b> Acting tile's mark routes captures: dots soak to your graveyard; A triangle self->hand, opp->their graveyard; a-discard opp->gone; B self->their graveyard, opp->your hand (default: off)\n\
 	   --repetition-ends <on|off>                 3-fold repetition of the visible position ends the game on capture score (default: off)\n\
+	   --no-immediate-return <on|off>             a tile may not move straight back to the node it left on its own last move (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
 	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
 	   --self-capture-budget <on|off>             Own-tile capture earns budget (default: on)\n\
