@@ -29,6 +29,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const logLines = [];
 const failures = [];
+const stalls = [];
 const IGNORED = [/favicon\.ico/, /fonts\.(googleapis|gstatic)\.com/];
 
 function log(msg) {
@@ -71,10 +72,26 @@ async function snap(page) {
 async function waitSnap(page, pred, what, timeout = 60_000) {
 	const end = Date.now() + timeout;
 	let last = null;
+	let seenFrame = -1;
+	let seenAt = Date.now();
 	while (Date.now() < end) {
 		if (failures.length) throw new Error(`aborting on errors while waiting for ${what}`);
 		last = await snap(page);
 		if (last && pred(last)) return last;
+		if (last && last.frame !== seenFrame) {
+			seenFrame = last.frame;
+			seenAt = Date.now();
+		} else if (Date.now() - seenAt > 5_000) {
+			// The page sometimes stops ticking Bevy (frame counter frozen, main thread
+			// idle) until the next input event. Record it, then wake it with a pointer
+			// move, which a real player would always produce.
+			const env = await page.evaluate(() => `visibility=${document.visibilityState} focus=${document.hasFocus()}`).catch(() => "?");
+			log(`WARN stall: no new frame for 5s at frame ${seenFrame} (${env}) while waiting for ${what}; nudging pointer`);
+			stalls.push({ what, frame: seenFrame, env });
+			await page.mouse.move(2, 2);
+			await page.mouse.move(4, 4);
+			seenAt = Date.now();
+		}
 		await page.waitForTimeout(150);
 	}
 	const stack = await mainThreadStack(page);
@@ -289,6 +306,7 @@ try {
 		console.error("SMOKE FAILED:\n" + failures.map((f) => `  - ${f}`).join("\n"));
 		code = 1;
 	} else {
+		if (stalls.length) log(`note: ${stalls.length} frame stall(s) recovered by a pointer move`);
 		log(`SMOKE PASSED (${HOSTED ? "offline + hosted" : "offline"}); artifacts in ${OUT}`);
 	}
 }
