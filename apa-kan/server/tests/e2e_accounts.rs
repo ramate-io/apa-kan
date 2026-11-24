@@ -137,7 +137,9 @@ async fn e2e_register_link_revoke_and_old_routes_gone() {
 	assert_eq!(keys[1]["status"], "active");
 
 	// A tampered body fails the signature check.
-	let mut tampered = api.sign(&genesis, &acct, TxPayload::AccountRecoveryCancel).await;
+	let mut tampered = api
+		.sign(&genesis, &acct, TxPayload::AccountRecoveryCancel { at_unix: NOW })
+		.await;
 	tampered.body.payload = TxPayload::AccountRevokeKey { vk: phone.verifying_key().clone() };
 	assert_eq!(api.post(&tampered).await.0, 401);
 
@@ -152,6 +154,7 @@ async fn e2e_register_link_revoke_and_old_routes_gone() {
 				seat: 1,
 				label: "p".into(),
 				seed_commit: seed_commitment(&game_stream(id), &[1; 32]),
+				preview_pk: None,
 			},
 		)
 		.unwrap()
@@ -221,6 +224,7 @@ async fn e2e_email_recovery_with_operator_challenge_and_cooldown() {
 	let request = |email: &str| TxPayload::AccountRecoveryRequest {
 		kind: RecoveryKind::FullRecovery,
 		email_proof: email_proof(&account, fresh.verifying_key(), email),
+		requested_at_unix: NOW,
 	};
 	let tx = api.sign(&fresh, &acct, request("eve@example.com")).await;
 	assert_eq!(api.post(&tx).await.0, 403);
@@ -253,6 +257,8 @@ async fn e2e_email_recovery_with_operator_challenge_and_cooldown() {
 	clock.advance_secs(COOLDOWN_RECOVERY_SECS);
 	let v = api.ok(&fresh, &acct, TxPayload::AccountRecoveryFinish).await;
 	assert_eq!(v.keys.last().unwrap().status, KeyState::Active);
+	// Full recovery revoked the old (genesis) key.
+	assert_eq!(v.keys[0].status, KeyState::Revoked);
 	assert!(v.recovery.is_none());
 	assert_eq!(api.view(&acct).await, v);
 
@@ -265,12 +271,33 @@ async fn e2e_email_recovery_with_operator_challenge_and_cooldown() {
 			TxPayload::AccountRecoveryRequest {
 				kind: RecoveryKind::FullRecovery,
 				email_proof: email_proof(&account, other.verifying_key(), "ana@example.com"),
+				requested_at_unix: NOW + COOLDOWN_RECOVERY_SECS,
 			},
 		)
 		.await;
 	assert!(v.recovery.is_some());
-	let v = api.ok(&fresh, &acct, TxPayload::AccountRecoveryCancel).await;
+	let v = api
+		.ok(
+			&fresh,
+			&acct,
+			TxPayload::AccountRecoveryCancel { at_unix: NOW + COOLDOWN_RECOVERY_SECS },
+		)
+		.await;
 	assert!(v.recovery.is_none());
+	// …and then new requests wait out the retry cooldown.
+	let again = api
+		.sign(
+			&other,
+			&acct,
+			TxPayload::AccountRecoveryRequest {
+				kind: RecoveryKind::FullRecovery,
+				email_proof: email_proof(&account, other.verifying_key(), "ana@example.com"),
+				requested_at_unix: NOW + COOLDOWN_RECOVERY_SECS,
+			},
+		)
+		.await;
+	let (status, err) = api.post(&again).await;
+	assert_eq!((status, err["error"].as_str()), (409, Some("too_early")));
 	assert_eq!(account_stream(&account), v.ledger.stream);
 	handle.abort();
 }
@@ -319,6 +346,20 @@ async fn e2e_admin_roles_by_operator_only() {
 		.unwrap();
 	let (status, err) = api.post(&grant).await;
 	assert_eq!(status, 403, "{err}");
+	// Admin txs go to POST /v1/tx and are routed by topic: a roles payload
+	// on another topic's stream, or an unknown topic, is refused.
+	for stream in ["admin/catalog", "admin/Bad"] {
+		let tx = alice
+			.sign(
+				&api.chain,
+				stream,
+				0,
+				GENESIS_PREV,
+				TxPayload::AdminGrantRole { account: alice.account(), role: "admin".into() },
+			)
+			.unwrap();
+		assert_eq!(api.post(&tx).await.0, 400, "{stream}");
+	}
 	let roles: serde_json::Value = api
 		.client
 		.get(format!("{}/v1/admin/roles", api.root))

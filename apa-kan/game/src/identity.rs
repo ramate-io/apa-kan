@@ -198,6 +198,13 @@ pub fn deal_salt(stream: &str) -> Option<[u8; 32]> {
 	read(|i| i.seed.map(|s| apa_kan_tx::deal_salt(&s, stream)))
 }
 
+/// This device's ephemeral X25519 preview key for `stream` (hex; see
+/// `apa_kan_tx::preview`), while unlocked.
+pub fn preview_pk(stream: &str) -> Option<String> {
+	use apa_kan_tx::preview::{preview_public, preview_secret};
+	read(|i| i.seed.map(|s| preview_public(&preview_secret(&s, stream))))
+}
+
 /// Replace the identity with `seed` (for `account`, default: the account the
 /// seed is genesis for) and persist how it is protected: `Plain` writes the
 /// seed to local storage / the key file; `Passkey` removes any plaintext and

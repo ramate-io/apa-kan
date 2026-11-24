@@ -44,6 +44,13 @@ pub const MAX_PASSKEY_BACKUPS: usize = 8;
 pub const EMAIL_PROOF_DOMAIN: &[u8] = b"apa-kan/recovery-email/v1";
 /// Domain of the recovery token hash.
 pub const RECOVERY_TOKEN_DOMAIN: &[u8] = b"apa-kan/recovery-token/v1";
+/// How far a signed `requested_at_unix` / `at_unix` may be from the host
+/// clock at admission.
+pub const MAX_CLOCK_SKEW_SECS: i64 = 600;
+/// Default [`AccountRules::recovery_retry_cooldown_secs`]: 24 h.
+pub const DEFAULT_RECOVERY_RETRY_COOLDOWN_SECS: i64 = 24 * 3600;
+/// Default [`AccountRules::recovery_challenge_timeout_secs`]: 15 min.
+pub const DEFAULT_RECOVERY_CHALLENGE_TIMEOUT_SECS: i64 = 15 * 60;
 
 /// `account/<hex id>`.
 pub fn account_stream(id: &AccountId) -> String {
@@ -85,11 +92,34 @@ fn normalize_email(email: &str) -> String {
 }
 
 /// Chain-wide rules every host and peer folds account streams with.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountRules {
 	/// Operator account (self-certifying genesis key) allowed to sign
 	/// `account.recovery_challenge`. `None`: email recovery is off.
 	pub operator: Option<AccountId>,
+	/// After a cancelled or failed (expired) recovery, other keys wait this
+	/// long before requesting again.
+	pub recovery_retry_cooldown_secs: i64,
+	/// A request the operator never challenged expires after this long; the
+	/// same key may then retry at once, others after the cooldown.
+	pub recovery_challenge_timeout_secs: i64,
+}
+
+impl Default for AccountRules {
+	fn default() -> Self {
+		Self {
+			operator: None,
+			recovery_retry_cooldown_secs: DEFAULT_RECOVERY_RETRY_COOLDOWN_SECS,
+			recovery_challenge_timeout_secs: DEFAULT_RECOVERY_CHALLENGE_TIMEOUT_SECS,
+		}
+	}
+}
+
+impl AccountRules {
+	/// Rules with `operator` and default timings.
+	pub fn with_operator(operator: Option<AccountId>) -> Self {
+		Self { operator, ..Self::default() }
+	}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +142,32 @@ pub struct Recovery {
 	pub pending_vk: VerifyingKeyBytes,
 	pub kind: RecoveryKind,
 	pub stage: Stage,
+	/// Signed `requested_at_unix` of the request.
+	pub requested_at_unix: i64,
+}
+
+impl Recovery {
+	/// When this recovery counts as failed: an unchallenged request after
+	/// the challenge timeout, a challenged one whose token was not confirmed
+	/// by the end of its waiting period. Confirmed recoveries don't expire.
+	pub fn expires_at(&self, rules: &AccountRules) -> Option<i64> {
+		match self.stage {
+			Stage::Requested => {
+				Some(self.requested_at_unix.saturating_add(rules.recovery_challenge_timeout_secs))
+			}
+			Stage::Challenged { usable_at_unix, .. } => Some(usable_at_unix),
+			Stage::Confirmed { .. } => None,
+		}
+	}
+}
+
+fn check_skew(now: Option<i64>, at: i64) -> Result<(), TxError> {
+	match now {
+		Some(now) if (now - at).abs() > MAX_CLOCK_SKEW_SECS => Err(reject(format!(
+			"signed time {at} is more than {MAX_CLOCK_SKEW_SECS}s from the host clock"
+		))),
+		_ => Ok(()),
+	}
 }
 
 /// Fold of one `account/<id>` stream.
@@ -129,6 +185,8 @@ pub struct AccountState {
 	pub recovery: Option<Recovery>,
 	/// Passkey-wrapped seed copies, by credential id: `(wrapped, added_seq)`.
 	pub passkey_backups: Vec<(PasskeyWrappedSeed, u64)>,
+	/// New recovery requests are refused before this (signed) time.
+	pub recovery_cooldown_until: i64,
 	pub next_seq: u64,
 	pub head: String,
 }
@@ -228,6 +286,7 @@ impl AccountState {
 					approve_via_email: false,
 					recovery: None,
 					passkey_backups: Vec::new(),
+					recovery_cooldown_until: 0,
 					next_seq: 0,
 					head: GENESIS_PREV.into(),
 				}
@@ -315,12 +374,33 @@ impl AccountState {
 						n.recovery_opt_in = *recovery_opt_in;
 						n.approve_via_email = *approve_via_email;
 					}
-					TxPayload::AccountRecoveryRequest { kind, email_proof: proof } => {
+					TxPayload::AccountRecoveryRequest {
+						kind,
+						email_proof: proof,
+						requested_at_unix: at,
+					} => {
 						if rules.operator.is_none() {
 							return Err(reject("email recovery is not enabled on this chain"));
 						}
-						if s.recovery.is_some() {
-							return Err(reject("a recovery is already in progress"));
+						check_skew(now, *at)?;
+						// One open recovery per account. A failed one (expired)
+						// may be replaced: by the same key at once (retry), by
+						// another key after the cooldown.
+						if let Some(r) = &s.recovery {
+							match r.expires_at(rules) {
+								Some(exp) if *at >= exp => {
+									let until =
+										exp.saturating_add(rules.recovery_retry_cooldown_secs);
+									if &r.pending_vk != vk && *at < until {
+										return Err(TxError::TooEarly { usable_at_unix: until });
+									}
+								}
+								_ => return Err(reject("a recovery is already in progress")),
+							}
+						} else if *at < s.recovery_cooldown_until {
+							return Err(TxError::TooEarly {
+								usable_at_unix: s.recovery_cooldown_until,
+							});
 						}
 						if s.key_status(vk).is_some() {
 							return Err(reject("key was already added to this account"));
@@ -340,6 +420,7 @@ impl AccountState {
 							pending_vk: vk.clone(),
 							kind: *kind,
 							stage: Stage::Requested,
+							requested_at_unix: *at,
 						});
 					}
 					TxPayload::AccountRecoveryChallenge { token_hash, usable_at_unix } => {
@@ -392,13 +473,28 @@ impl AccountState {
 						if now.is_some_and(|t| t < usable_at_unix) {
 							return Err(TxError::TooEarly { usable_at_unix });
 						}
-						if let Some(k) = n.keys.iter_mut().find(|k| &k.vk == vk) {
-							k.status = AuthorizedKeyStatus::Active;
+						let full = r.kind == RecoveryKind::FullRecovery;
+						for k in &mut n.keys {
+							if &k.vk == vk {
+								k.status = AuthorizedKeyStatus::Active;
+							} else if full && k.status == AuthorizedKeyStatus::Active {
+								// Full recovery means the old devices are lost or
+								// compromised: only the recovered key stays.
+								k.status = AuthorizedKeyStatus::Revoked;
+							}
+						}
+						if full {
+							// Backups wrap the old seeds, now revoked.
+							n.passkey_backups.clear();
 						}
 						n.recovery = None;
 					}
-					TxPayload::AccountRecoveryCancel => {
+					TxPayload::AccountRecoveryCancel { at_unix } => {
 						s.require_active(vk)?;
+						check_skew(now, *at_unix)?;
+						n.recovery_cooldown_until = n
+							.recovery_cooldown_until
+							.max(at_unix.saturating_add(rules.recovery_retry_cooldown_secs));
 						let r =
 							s.recovery.as_ref().ok_or_else(|| reject("no recovery in progress"))?;
 						let pending = r.pending_vk.clone();
@@ -552,7 +648,7 @@ mod tests {
 		fn new() -> Self {
 			let op = TxSigner::from_seed(&key(200));
 			Self {
-				rules: AccountRules { operator: Some(op.account()) },
+				rules: AccountRules::with_operator(Some(op.account())),
 				owner: TxSigner::from_seed(&key(1)),
 				state: None,
 				log: Vec::new(),
@@ -650,7 +746,16 @@ mod tests {
 		let req = |a: &Acct, email: &str| TxPayload::AccountRecoveryRequest {
 			kind: RecoveryKind::FullRecovery,
 			email_proof: email_proof(&a.owner.account(), lost.verifying_key(), email),
+			requested_at_unix: a.now,
 		};
+		// Another device that full recovery will revoke.
+		let phone = a.linked(2);
+		let link = TxPayload::AccountLinkKey {
+			vk: phone.verifying_key().clone(),
+			label: "phone".into(),
+			proof: phone.link_proof(CHAIN, &owner.account()),
+		};
+		a.send(&owner, link).unwrap();
 		// No email on file yet.
 		assert!(matches!(a.send(&lost, req(&a, "a@b.c")), Err(TxError::Rejected { .. })));
 		assert!(a
@@ -675,6 +780,12 @@ mod tests {
 		assert!(a.s().view().email_set);
 		// Wrong email: refused. Case and whitespace don't matter.
 		assert_eq!(a.send(&lost, req(&a, "eve@example.com")), Err(TxError::Unauthorized));
+		// The signed request time must be near the host clock.
+		let mut skewed = req(&a, "ana@example.com");
+		if let TxPayload::AccountRecoveryRequest { requested_at_unix, .. } = &mut skewed {
+			*requested_at_unix += MAX_CLOCK_SKEW_SECS + 1;
+		}
+		assert!(matches!(a.send(&lost, skewed), Err(TxError::Rejected { .. })));
 		a.send(&lost, req(&a, "ana@example.com")).unwrap();
 		assert_eq!(a.s().view().recovery.unwrap().stage, RecoveryStage::Requested);
 		// Only the operator challenges; the pending key can't skip ahead.
@@ -702,9 +813,23 @@ mod tests {
 			a.send(&lost, TxPayload::AccountRecoveryFinish),
 			Err(TxError::TooEarly { usable_at_unix: 1_000 + 72 * 3600 })
 		);
+		let backup = apa_kan_account::wrap_seed(
+			&key(1),
+			&[2; 32],
+			&owner.account(),
+			b"old",
+			[3; 32],
+			[4; 12],
+		);
+		a.send(&owner, TxPayload::AccountSetPasskeyBackup { wrapped: backup }).unwrap();
 		a.now += 72 * 3600;
 		a.send(&lost, TxPayload::AccountRecoveryFinish).unwrap();
+		// Backups of the old seeds go with the old keys.
+		assert!(a.s().view().passkeys.is_empty());
 		assert_eq!(a.s().key_status(lost.verifying_key()), Some(AuthorizedKeyStatus::Active));
+		// A finished full recovery revokes every other key.
+		assert_eq!(a.s().key_status(owner.verifying_key()), Some(AuthorizedKeyStatus::Revoked));
+		assert_eq!(a.s().key_status(phone.verifying_key()), Some(AuthorizedKeyStatus::Revoked));
 		assert!(a.s().recovery.is_none());
 		// Replay ignores the clock and reproduces the fold.
 		assert_eq!(&replay(&a.rules, CHAIN, &a.log).unwrap().unwrap(), a.s());
@@ -737,7 +862,8 @@ mod tests {
 				&thief,
 				TxPayload::AccountRecoveryRequest {
 					kind: RecoveryKind::FullRecovery,
-					email_proof: proof.clone()
+					email_proof: proof.clone(),
+					requested_at_unix: a.now,
 				}
 			)
 			.is_err());
@@ -745,21 +871,54 @@ mod tests {
 			&thief,
 			TxPayload::AccountRecoveryRequest {
 				kind: RecoveryKind::EmailLinkApproval,
-				email_proof: proof,
+				email_proof: proof.clone(),
+				requested_at_unix: a.now,
 			},
 		)
 		.unwrap();
-		assert_eq!(
-			a.send(&thief, TxPayload::AccountRecoveryCancel),
-			Err(TxError::KeyNotAuthorized)
-		);
-		a.send(&owner, TxPayload::AccountRecoveryCancel).unwrap();
+		let cancel = |a: &Acct| TxPayload::AccountRecoveryCancel { at_unix: a.now };
+		assert_eq!(a.send(&thief, cancel(&a)), Err(TxError::KeyNotAuthorized));
+		a.send(&owner, cancel(&a)).unwrap();
 		assert!(a.s().view().recovery.is_none());
+
+		// After a cancel, requests wait out the retry cooldown.
+		let request = |a: &Acct, who: &TxSigner| TxPayload::AccountRecoveryRequest {
+			kind: RecoveryKind::EmailLinkApproval,
+			email_proof: email_proof(&owner.account(), who.verifying_key(), "a@b.co"),
+			requested_at_unix: a.now,
+		};
+		let cooled = a.now + DEFAULT_RECOVERY_RETRY_COOLDOWN_SECS;
+		assert_eq!(
+			a.send(&thief, request(&a, &thief)),
+			Err(TxError::TooEarly { usable_at_unix: cooled })
+		);
+		a.now = cooled;
+		a.send(&thief, request(&a, &thief)).unwrap();
+		// One open request per account, even unchallenged…
+		let other_key = a.linked(8);
+		a.now += 60;
+		assert_eq!(
+			a.send(&other_key, request(&a, &other_key)).unwrap_err(),
+			reject("a recovery is already in progress")
+		);
+		// …until it expires unchallenged (a failure): the same key may retry at
+		// once, another key only after the cooldown.
+		let expired = cooled + DEFAULT_RECOVERY_CHALLENGE_TIMEOUT_SECS;
+		a.now = expired;
+		assert_eq!(
+			a.send(&other_key, request(&a, &other_key)),
+			Err(TxError::TooEarly {
+				usable_at_unix: expired + DEFAULT_RECOVERY_RETRY_COOLDOWN_SECS
+			})
+		);
+		a.send(&thief, request(&a, &thief)).unwrap();
+		assert_eq!(a.s().recovery.as_ref().unwrap().requested_at_unix, expired);
+		assert_eq!(&replay(&a.rules, CHAIN, &a.log).unwrap().unwrap(), a.s());
 		// Account txs must name this account (a key signing for another
 		// account id is refused).
 		let other = TxSigner::from_seed(&key(7));
 		assert_eq!(
-			a.send(&other, TxPayload::AccountRecoveryCancel),
+			a.send(&other, TxPayload::AccountRecoveryCancel { at_unix: a.now }),
 			Err(TxError::KeyNotAuthorized)
 		);
 	}

@@ -151,6 +151,16 @@ impl RemoteSession {
 	}
 
 	/// Signed `game.reveal` of this device's salt.
+	/// `game.resign` for leaving a started, unfinished game (starting a game
+	/// and not finishing it is a loss). `None` for spectators and games that
+	/// are not in play.
+	pub fn leave_tx(&self, game: &Game) -> Option<SignedTx> {
+		if self.seat.is_none() || self.phase != GamePhase::Playing || game.status().is_over() {
+			return None;
+		}
+		self.sign(TxPayload::GameResign)
+	}
+
 	pub fn reveal_tx(&self) -> Option<SignedTx> {
 		let salt = identity::deal_salt(&self.ledger.as_ref()?.stream)?;
 		self.sign(TxPayload::GameReveal { salt: hex::encode(salt) })
@@ -266,7 +276,12 @@ pub fn create_tx(chain: &str, id: &str) -> Option<SignedTx> {
 			&stream,
 			0,
 			GENESIS_PREV,
-			TxPayload::GameCreate { seat: 1, label: String::new(), seed_commit },
+			TxPayload::GameCreate {
+				seat: 1,
+				label: String::new(),
+				seed_commit,
+				preview_pk: identity::preview_pk(&stream),
+			},
 		)
 		.ok()
 }
@@ -420,7 +435,13 @@ mod tests {
 		let id = admit(&tx, "c", KeyStatus::UnknownAccount).unwrap();
 		let (mut s, _) = GameState::apply(None, &tx, &id).unwrap();
 		let join = other
-			.sign("c", "game/g13", s.next_seq, &s.head, TxPayload::GameJoin { label: "opp".into() })
+			.sign(
+				"c",
+				"game/g13",
+				s.next_seq,
+				&s.head,
+				TxPayload::GameJoin { label: "opp".into(), preview_pk: None },
+			)
 			.unwrap();
 		let id = admit(&join, "c", KeyStatus::UnknownAccount).unwrap();
 		s = GameState::apply(Some(&s), &join, &id).unwrap().0;
@@ -473,11 +494,22 @@ mod tests {
 		assert_eq!(tx.body.prev, view.ledger.head);
 		assert!(admit(&tx, "c", KeyStatus::UnknownAccount).is_ok());
 		assert!(GameState::apply(Some(&state), &tx, &tx.id().unwrap()).is_ok());
+		// Leaving a started game resigns it, which the view records as a loss.
+		let leave = s.leave_tx(&got).unwrap();
+		let (after, _) = GameState::apply(Some(&state), &leave, &leave.id().unwrap()).unwrap();
+		let result = after.view().result.unwrap();
+		assert_eq!((result.loser, result.reason.as_str()), (Some(1), "resign"));
+		// The creator's preview key rides its create.
+		assert_eq!(
+			view.seats[0].as_ref().unwrap().preview_pk.as_deref(),
+			identity::preview_pk("game/g13").as_deref()
+		);
 
 		// Another account spectates.
 		let mut spec = RemoteSession::new("g13", "ff".repeat(32));
 		let got = spec.adopt(&view).unwrap().unwrap();
 		assert!(spec.can_act(&got).is_err());
+		assert!(spec.leave_tx(&got).is_none());
 		assert!(spec.transaction(Action::Pass).is_none());
 		let mut other = RemoteSession::new("zzz", "aa");
 		assert!(other.adopt(&view).is_err());

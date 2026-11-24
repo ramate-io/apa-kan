@@ -25,12 +25,24 @@ pub const GENESIS_PREV: &str = "000000000000000000000000000000000000000000000000
 pub enum TxPayload {
 	/// Open `game/<id>` and take `seat`. Must be `seq = 0`. `seed_commit` is
 	/// `game::seed_commitment(stream, salt)` for a secret 32-byte salt the
-	/// creator reveals after the join.
+	/// creator reveals after the join. `preview_pk` (optional, 64 hex) is an
+	/// ephemeral X25519 key for encrypted UDP previews ([`crate::preview`]).
 	#[serde(rename = "game.create")]
-	GameCreate { seat: Seat, label: String, seed_commit: String },
+	GameCreate {
+		seat: Seat,
+		label: String,
+		seed_commit: String,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		preview_pk: Option<String>,
+	},
 	/// Take the open seat. The game then waits for the creator's reveal.
+	/// `preview_pk` as in `game.create`.
 	#[serde(rename = "game.join")]
-	GameJoin { label: String },
+	GameJoin {
+		label: String,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		preview_pk: Option<String>,
+	},
 	/// Creator reveals the committed salt (hex); the deal seed mixes it with
 	/// the join transaction's id.
 	#[serde(rename = "game.reveal")]
@@ -62,7 +74,11 @@ pub enum TxPayload {
 	/// Signed by the key to be recovered (not on the account yet).
 	/// `email_proof` = [`crate::account::email_proof`] for the email on file.
 	#[serde(rename = "account.recovery_request")]
-	AccountRecoveryRequest { kind: RecoveryKind, email_proof: String },
+	/// `requested_at_unix` is the requester's clock; hosts admit it only
+	/// within [`crate::account::MAX_CLOCK_SKEW_SECS`] of their own, and the
+	/// expiry and cooldown rules compare signed times only, so replay is
+	/// deterministic.
+	AccountRecoveryRequest { kind: RecoveryKind, email_proof: String, requested_at_unix: i64 },
 	/// Operator-signed: the host mailed a token whose hash this records, and
 	/// the cooldown ends at `usable_at_unix`.
 	#[serde(rename = "account.recovery_challenge")]
@@ -73,9 +89,11 @@ pub enum TxPayload {
 	/// Pending key becomes active once the cooldown passed.
 	#[serde(rename = "account.recovery_finish")]
 	AccountRecoveryFinish,
-	/// An active key stops a recovery in progress.
+	/// An active key stops a recovery in progress. New requests then wait
+	/// out the chain's retry cooldown from `at_unix` (checked against the
+	/// host clock like `requested_at_unix`).
 	#[serde(rename = "account.recovery_cancel")]
-	AccountRecoveryCancel,
+	AccountRecoveryCancel { at_unix: i64 },
 
 	/// Store (or replace, by credential id) a passkey-wrapped copy of an
 	/// account seed, so the passkey can restore it on another device.
@@ -109,6 +127,17 @@ pub fn link_proof_id(chain: &str, account: &AccountId, vk: &VerifyingKeyBytes) -
 }
 
 impl TxPayload {
+	/// Admin topic (`admin/<topic>` stream) this payload belongs to, if it
+	/// is an admin payload.
+	pub fn admin_topic(&self) -> Option<&'static str> {
+		match self {
+			TxPayload::AdminGrantRole { .. } | TxPayload::AdminRevokeRole { .. } => {
+				Some(crate::admin::ROLES_TOPIC)
+			}
+			_ => None,
+		}
+	}
+
 	pub fn kind(&self) -> &'static str {
 		match self {
 			TxPayload::GameCreate { .. } => "game.create",
@@ -125,7 +154,7 @@ impl TxPayload {
 			TxPayload::AccountRecoveryChallenge { .. } => "account.recovery_challenge",
 			TxPayload::AccountRecoveryConfirm { .. } => "account.recovery_confirm",
 			TxPayload::AccountRecoveryFinish => "account.recovery_finish",
-			TxPayload::AccountRecoveryCancel => "account.recovery_cancel",
+			TxPayload::AccountRecoveryCancel { .. } => "account.recovery_cancel",
 			TxPayload::AccountSetPasskeyBackup { .. } => "account.set_passkey_backup",
 			TxPayload::AccountRemovePasskeyBackup { .. } => "account.remove_passkey_backup",
 			TxPayload::AdminGrantRole { .. } => "admin.grant_role",
@@ -314,7 +343,12 @@ mod tests {
 				"game/g",
 				0,
 				GENESIS_PREV,
-				TxPayload::GameCreate { seat: 1, label: "a".into(), seed_commit: "00".repeat(32) },
+				TxPayload::GameCreate {
+					seat: 1,
+					label: "a".into(),
+					seed_commit: "00".repeat(32),
+					preview_pk: None,
+				},
 			)
 			.unwrap();
 		let id = verify_self_contained(&tx, "c").unwrap();
@@ -326,8 +360,12 @@ mod tests {
 		assert!(matches!(verify_self_contained(&tx, "other"), Err(TxError::WrongChain { .. })));
 
 		let mut t = tx.clone();
-		t.body.payload =
-			TxPayload::GameCreate { seat: 2, label: "a".into(), seed_commit: "00".repeat(32) };
+		t.body.payload = TxPayload::GameCreate {
+			seat: 2,
+			label: "a".into(),
+			seed_commit: "00".repeat(32),
+			preview_pk: None,
+		};
 		assert_eq!(verify_self_contained(&t, "c"), Err(TxError::BadSignature));
 		let mut t = tx.clone();
 		t.body.domain = "apa-kan/action/v1".into();

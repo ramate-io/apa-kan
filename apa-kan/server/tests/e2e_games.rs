@@ -80,13 +80,19 @@ async fn open_game(
 				seat: 1,
 				label: "ana".into(),
 				seed_commit: seed_commitment(&game_stream(id), &SALT),
+				preview_pk: None,
 			},
 		)
 		.expect("sign");
 	let v = accept(client, root, &create).await;
 	assert_eq!(v.phase, GamePhase::Open);
 	assert!(v.game.is_none());
-	let v = accept(client, root, &next(b, &v, TxPayload::GameJoin { label: "bo".into() })).await;
+	let v = accept(
+		client,
+		root,
+		&next(b, &v, TxPayload::GameJoin { label: "bo".into(), preview_pk: None }),
+	)
+	.await;
 	assert_eq!(v.phase, GamePhase::Revealing);
 	accept(client, root, &next(a, &v, TxPayload::GameReveal { salt: hex::encode(SALT) })).await
 }
@@ -205,6 +211,7 @@ async fn e2e_registered_account_key_indirection() {
 				seat: 1,
 				label: "x".into(),
 				seed_commit: seed_commitment(&game_stream(id), &SALT),
+				preview_pk: None,
 			},
 		)
 		.expect("sign")

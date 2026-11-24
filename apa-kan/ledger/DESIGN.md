@@ -93,11 +93,29 @@ store's tiles and rating), `GET /v1/accounts/{id}/keys`, and
 | `account.link_key { vk, label, proof }` | active key | `proof` = the **new** key's ML-DSA signature over `SHA3(canonical {domain: "apa-kan/link-key/v1", chain, account} ‖ vk)`; nobody links a key they don't hold. |
 | `account.revoke_key { vk }` | active key | never the last active key |
 | `account.set_email { email?, recovery_opt_in, approve_via_email }` | active key | email trimmed, lowercased, checked for shape; switches need an email |
-| `account.recovery_request { kind, email_proof }` | the key to recover (not on the account) | account opted in for `kind`; `email_proof = SHA3("apa-kan/recovery-email/v1" ‖ account ‖ pending_vk ‖ email)` matches the email on file; one recovery at a time |
+| `account.recovery_request { kind, email_proof, requested_at_unix }` | the key to recover (not on the account) | account opted in for `kind`; `email_proof = SHA3("apa-kan/recovery-email/v1" ‖ account ‖ pending_vk ‖ email)` matches the email on file; `requested_at_unix` within 10 min of the host clock; **one open recovery per account**; refused (`too_early`) before the retry cooldown ends (see below) |
 | `account.recovery_challenge { token_hash, usable_at_unix }` | **operator** | emitted by the host right after a request commits; records `SHA3("apa-kan/recovery-token/v1" ‖ token)` and the cooldown end (72 h full recovery, 24 h email link approval); the token is mailed |
 | `account.recovery_confirm { token }` | pending key | token hashes to `token_hash`; key added as `pending_recovery` |
-| `account.recovery_finish` | pending key | host clock ≥ `usable_at_unix` (else `too_early`); key becomes `active` |
-| `account.recovery_cancel` | any active key | drops the recovery; the pending key is revoked |
+| `account.recovery_finish` | pending key | host clock ≥ `usable_at_unix` (else `too_early`); key becomes `active`. A **full recovery revokes every other active key** (the old devices are presumed lost or compromised); email-link approval only adds the key. |
+| `account.recovery_cancel { at_unix }` | any active key | drops the recovery; the pending key is revoked; `at_unix` within 10 min of the host clock starts the retry cooldown |
+
+**Recovery spam and stuck requests.** At most one recovery is open per
+account. Times that matter for these rules are signed (`requested_at_unix`,
+`at_unix`, the operator's `usable_at_unix`), so replay is deterministic; hosts
+only check them against their clock (±`MAX_CLOCK_SKEW_SECS` = 600 s) at
+admission.
+- After a cancel, new requests wait `recovery_retry_cooldown_secs` (default
+  24 h) from `at_unix`.
+- A request the operator never challenged (mail or commit failed) **expires**
+  after `recovery_challenge_timeout_secs` (default 15 min); a challenged one
+  whose token was not confirmed expires at its `usable_at_unix`. An expired
+  recovery is a failure: the same pending key may re-request at once (the
+  host challenges and mails again), any other key only after the retry
+  cooldown counted from the expiry. Confirmed recoveries don't expire; an
+  active key cancels them.
+- Both timings are chain configuration in `AccountRules`
+  (`APAKAN_RECOVERY_COOLDOWN_SECS`, `APAKAN_RECOVERY_CHALLENGE_TIMEOUT_SECS`
+  on the server) and must be the same for every host replaying the chain.
 
 The **operator** is a self-certifying account whose key the host holds
 (`APAKAN_OPERATOR_SEED`, else a seed file at `APAKAN_OPERATOR_SEED_FILE`,
@@ -111,15 +129,21 @@ passes no clock and trusts what was committed. The token itself never touches
 the ledger until the pending key reveals it in `recovery_confirm`, after which
 it is spent.
 
-**Admin:** `admin/roles` holds `admin.grant_role { account, role }` and
-`admin.revoke_role`, signed by the operator or an account holding `admin`
-(key checked against that account's fold). Further admin actions (catalog,
-character-pass publishing from the admin panel work) become more `admin.*`
-payloads on `admin/<topic>` streams under the same rule.
+**Admin:** admin state lives on per-topic streams `admin/<topic>` (topic
+`[a-z][a-z0-9_-]{0,31}`), all submitted through the normal `POST /v1/tx`.
+Every `admin.*` payload names its topic (`TxPayload::admin_topic`) and is
+refused on any other stream; the host routes by topic and refuses topics it
+has no fold for. Authorization is shared (`require_admin`): the operator, or
+an account holding `admin` in `admin/roles` (key checked against that
+account's fold). Today's topic is `admin/roles` (`admin.grant_role { account,
+role }`, `admin.revoke_role`); further admin actions (catalog, character-pass
+publishing from #97) add payloads mapped to their topic plus a fold, without
+new routes.
 
 **Privacy:** `account.set_email` carries the address, so raw account
 transactions are not served (no `/txs` view for accounts); views show only
-`email_set`. Peer replication of account streams would need the address
+`email_set`. This is fine while the server is the only host. **Before any
+decentralization** (peers replicating account streams) the address must be
 encrypted or replaced by a commitment.
 
 ## Protecting the account key: passkey and recovery phrase
@@ -229,13 +253,22 @@ committed:
    the game is `playing`. The creator fixed `salt` before seeing the join id.
 
 **Non-reveal (default):** while `revealing`, the joiner may `game.cancel` at
-any time → `cancelled` with `cancel_reason: "no_reveal"`. The creator may
-**not** cancel after a join (it can already compute the deal, so cancelling
-would let it re-roll). There is no clock-based forfeit: `apply` has no trusted
-time and must replay identically everywhere; a timeout belongs in a
-host-side policy or in the client offering "cancel" after a wait. Open
-question: once rated games exist, count a `no_reveal` cancel as a creator
-forfeit.
+any time → `cancelled` with `cancel_reason: "no_reveal"`, and the result view
+records it as the **creator's forfeit** (`result.reason =
+"no_reveal_forfeit"`, joiner wins). The creator may **not** cancel after a
+join (it can already compute the deal, so cancelling would let it re-roll).
+There is no clock-based forfeit: `apply` has no trusted time and must replay
+identically everywhere; a timeout belongs in a host-side policy or in the
+client offering "cancel" after a wait.
+
+**Results (ready for ratings):** starting a game and not finishing it is a
+loss. `HostedGameView.result = { winner, loser, reason }` once decided:
+`board` (engine win), `draw`, `resign`, or `no_reveal_forfeit`. Leaving a
+started hosted game in the client signs `game.resign`, so abandoning through
+the UI is a recorded loss. A creator withdrawing an unjoined game has no
+result. Silent abandonment (a seat that just stops) needs trusted time; the
+plan is a host policy that commits an operator-signed forfeit after a
+timeout, not built.
 
 **Client:** the web/desktop client derives `salt = SHA3("apa-kan/deal-salt/v1"
 ‖ device seed ‖ stream)`, so it can reveal after a reload with nothing extra
@@ -252,7 +285,7 @@ ledger head differs (another server instance or a relay committed first).
 | Route | View |
 |---|---|
 | `GET /v1/ledger` | `{ domain, chain, backend, operator }` — what a client needs to sign |
-| `GET /v1/games/{id}` | `HostedGameView`: phase (`open`, `revealing`, `playing`, `finished`, `cancelled`), `ledger` head (`chain`, `stream`, `seq`, `head`), seat claims (account + label), `seed_commit`, `cancel_reason`, and the `GameView` (status, board, legal actions, replayable record) once the deal is revealed |
+| `GET /v1/games/{id}` | `HostedGameView`: phase (`open`, `revealing`, `playing`, `finished`, `cancelled`), `ledger` head (`chain`, `stream`, `seq`, `head`), seat claims (account, label, optional `preview_pk`), `seed_commit`, `cancel_reason`, `result` (winner, loser, reason) once decided, and the `GameView` (status, board, legal actions, replayable record) once the deal is revealed |
 | `GET /v1/games/{id}/txs?from=n` | committed signed transactions from `n` (audit, resync, peers) |
 
 | `GET /v1/accounts/{id}` | `AccountView` (keys with status, label, `email_set`, recovery switches and stage) + `tiles`, `elo_milli` from the store projection |
@@ -285,18 +318,26 @@ The only write route is `POST /v1/tx`; it routes by stream prefix (`game/`,
 An ML-DSA envelope doesn't fit a datagram, and the point of UDP is an early
 read, not authority. So:
 
-- **Preview datagram** (unsigned, compact binary): `game id`, `seq`, `prev`
+- **Preview datagram** (unsigned but encrypted, compact binary): `game id`, `seq`, `prev`
   (first bytes), the encoded action, and `tx_hash` — the id of the full
   signed transaction the sender is about to submit (or has submitted) over
   HTTP. Tens of bytes.
-- **Per-game preview code:** each datagram carries a short MAC under a key
-  derived from the seats' admission transactions
-  (`HKDF("apa-kan/preview/v1", create_id ‖ join_id ‖ seat)`). That stops
-  stray or cross-game traffic and cheap spoofing by anyone who doesn't follow
-  the game. Caveat: create and join ids are public via `/txs`, so this is not
-  a secret against an observer of the ledger; if that matters, add an
-  ephemeral X25519 key to `game.create` / `game.join` and derive the MAC key
-  from the DH instead (still "from the join transactions", now secret).
+- **Encryption (X25519 + ChaCha20-Poly1305; helpers in
+  `apa_kan_tx::preview`, transport not built):** each seat puts an ephemeral
+  X25519 public key in its signed payload (`game.create.preview_pk`,
+  `game.join.preview_pk`, optional, 64 hex), so the key exchange is
+  authenticated by ML-DSA and costs no extra round trip. Session keys are
+  `HKDF-SHA256(ikm = X25519 shared secret, salt = SHA-256("apa-kan/preview/v1"
+  ‖ create_tx_id ‖ join_tx_id))`, one per sending seat (`info = domain ‖
+  "/seat" ‖ seat`) so directions never share a nonce. A packet is a 96-bit
+  big-endian counter (the nonce) ‖ ChaCha20-Poly1305 ciphertext ‖ 16-byte tag
+  (28 bytes overhead), with the stream id as AAD. Receivers keep the highest
+  counter accepted and drop anything at or below it (stale, replayed or
+  reordered previews are simply lost; they are disposable). Clients derive the
+  per-game secret from the device seed (`preview_secret`), like the deal salt.
+  This replaces the earlier idea of a code derived from the public tx ids.
+  **Future:** hybrid X25519 + ML-KEM-768 if previews need post-quantum
+  confidentiality (the payload field grows; the rest is unchanged).
 - **Authority:** the receiver applies the preview tentatively (animate the
   move, start thinking) and marks it provisional. The signed transaction —
   via `POST /v1/tx` and the view/`/txs` poll, or relayed peer-to-peer — is

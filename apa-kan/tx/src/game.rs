@@ -14,11 +14,11 @@
 //! [`crate::admit`] (hosts) or [`crate::verify_self_contained`] (replay) first
 //! and pass the resulting id.
 
-use apa_kan_core::game::Action;
+use apa_kan_core::game::{Action, GameStatus};
 use apa_kan_core::{Game, RuleSet};
 use apa_kan_view::{
-	player_of, seat_of, GamePhase, GameRecord, GameView, HostedGameView, LedgerHead, Seat,
-	SeatClaim, StatusView, VIEW_SCHEMA,
+	player_of, seat_of, GamePhase, GameRecord, GameResultView, GameView, HostedGameView,
+	LedgerHead, Seat, SeatClaim, StatusView, VIEW_SCHEMA,
 };
 use sha3::{Digest, Sha3_256};
 
@@ -125,6 +125,15 @@ pub struct GameState {
 	join_id: Option<[u8; 32]>,
 }
 
+fn check_preview_pk(pk: Option<&str>) -> Result<(), TxError> {
+	match pk {
+		Some(pk) if crate::preview::parse_preview_pk(pk).is_err() => {
+			Err(TxError::BadEnvelope { reason: "preview_pk must be 64 lowercase hex".into() })
+		}
+		_ => Ok(()),
+	}
+}
+
 fn seat_index(seat: Seat) -> Result<usize, TxError> {
 	player_of(seat)
 		.map(|p| p.index())
@@ -153,7 +162,8 @@ impl GameState {
 				if b.prev != GENESIS_PREV {
 					return Err(TxError::PrevMismatch { expected: GENESIS_PREV.into() });
 				}
-				let TxPayload::GameCreate { seat, label, seed_commit } = &b.payload else {
+				let TxPayload::GameCreate { seat, label, seed_commit, preview_pk } = &b.payload
+				else {
 					return Err(TxError::NotFound);
 				};
 				if parse_hash(seed_commit).is_none() {
@@ -161,11 +171,13 @@ impl GameState {
 						reason: "seed_commit must be 64 lowercase hex".into(),
 					});
 				}
+				check_preview_pk(preview_pk.as_deref())?;
 				let mut seats: [Option<SeatClaim>; 2] = [None, None];
 				seats[seat_index(*seat)?] = Some(SeatClaim {
 					seat: *seat,
 					account: signer.clone(),
 					label: clean_label(label, *seat),
+					preview_pk: preview_pk.clone(),
 				});
 				GameState {
 					id: id.to_string(),
@@ -198,10 +210,11 @@ impl GameState {
 					TxPayload::GameCreate { .. } => {
 						return Err(TxError::StaleSeq { current: s.next_seq, got: 0 });
 					}
-					TxPayload::GameJoin { label } => {
+					TxPayload::GameJoin { label, preview_pk } => {
 						if s.phase != GamePhase::Open {
 							return Err(TxError::WrongPhase { phase: s.phase });
 						}
+						check_preview_pk(preview_pk.as_deref())?;
 						if s.seats.iter().flatten().any(|c| c.account == signer) {
 							return Err(TxError::AlreadySeated);
 						}
@@ -215,6 +228,7 @@ impl GameState {
 							seat,
 							account: signer.clone(),
 							label: clean_label(label, seat),
+							preview_pk: preview_pk.clone(),
 						});
 						n.join_id = Some(*tx_id);
 						n.phase = GamePhase::Revealing;
@@ -355,7 +369,40 @@ impl GameState {
 			seats: self.seats.clone(),
 			seed_commit: self.seed_commit.clone(),
 			cancel_reason: self.cancel_reason.clone(),
+			result: self.result(),
 			game,
+		}
+	}
+
+	/// Rating-ready result. Starting a game and not finishing it is a loss:
+	/// resigning (the client signs `game.resign` when a seat leaves a started
+	/// game) loses, and a creator who never reveals forfeits
+	/// (`no_reveal_forfeit`). A creator withdrawing an unjoined game has no
+	/// result.
+	pub fn result(&self) -> Option<GameResultView> {
+		let decided = |winner: Seat, reason: &str| GameResultView {
+			winner: Some(winner),
+			loser: Some(3 - winner),
+			reason: reason.into(),
+		};
+		match self.phase {
+			GamePhase::Finished => {
+				if let Some(loser) = self.resigned {
+					return Some(decided(3 - loser, "resign"));
+				}
+				match self.game.as_ref()?.status() {
+					GameStatus::Won { winner, .. } => Some(decided(seat_of(winner), "board")),
+					GameStatus::Draw { .. } => {
+						Some(GameResultView { winner: None, loser: None, reason: "draw".into() })
+					}
+					GameStatus::InProgress => None,
+				}
+			}
+			GamePhase::Cancelled if self.cancel_reason.as_deref() == Some("no_reveal") => {
+				let creator = self.seats.iter().flatten().find(|c| c.account == self.creator)?.seat;
+				Some(decided(3 - creator, "no_reveal_forfeit"))
+			}
+			_ => None,
 		}
 	}
 }
@@ -425,7 +472,10 @@ mod tests {
 
 		fn create(&mut self, who: u8, seat: Seat, label: &str) -> Result<TxReceipt, TxError> {
 			let seed_commit = seed_commitment("game/t1", &SALT);
-			self.send(who, TxPayload::GameCreate { seat, label: label.into(), seed_commit })
+			self.send(
+				who,
+				TxPayload::GameCreate { seat, label: label.into(), seed_commit, preview_pk: None },
+			)
 		}
 
 		fn reveal(&mut self) -> Result<TxReceipt, TxError> {
@@ -450,10 +500,10 @@ mod tests {
 		assert_eq!(t.s().view().open_seat(), Some(1));
 		// Creator can't also take the other seat.
 		assert_eq!(
-			t.send(1, TxPayload::GameJoin { label: "x".into() }),
+			t.send(1, TxPayload::GameJoin { label: "x".into(), preview_pk: None }),
 			Err(TxError::AlreadySeated)
 		);
-		t.send(2, TxPayload::GameJoin { label: "bo".into() }).unwrap();
+		t.send(2, TxPayload::GameJoin { label: "bo".into(), preview_pk: None }).unwrap();
 		assert_eq!(t.s().phase, GamePhase::Revealing);
 		assert!(t.s().view().game.is_none());
 		// Only the creator reveals.
@@ -467,7 +517,8 @@ mod tests {
 		assert_eq!(v.seat_of_account(&t.b.account().to_hex()), Some(1));
 		assert_eq!(v.seats[1].as_ref().unwrap().label, "ana");
 		assert_eq!(
-			t.send(2, TxPayload::GameJoin { label: "y".into() }).unwrap_err(),
+			t.send(2, TxPayload::GameJoin { label: "y".into(), preview_pk: None })
+				.unwrap_err(),
 			TxError::WrongPhase { phase: GamePhase::Playing }
 		);
 
@@ -496,7 +547,7 @@ mod tests {
 	fn replay_and_fork_protection() {
 		let mut t = Table::new();
 		t.create(1, 1, "a").unwrap();
-		let join = t.build(&t.b, TxPayload::GameJoin { label: "b".into() });
+		let join = t.build(&t.b, TxPayload::GameJoin { label: "b".into(), preview_pk: None });
 		t.try_send(join.clone()).unwrap();
 		// Resubmitting the same signed tx is stale.
 		assert_eq!(t.try_send(join), Err(TxError::StaleSeq { current: 2, got: 1 }));
@@ -524,7 +575,7 @@ mod tests {
 		assert!(matches!(t.try_send(wrong_chain), Err(TxError::WrongChain { .. })));
 		// A tampered log does not replay.
 		let mut log = t.log.clone();
-		log[1].body.payload = TxPayload::GameJoin { label: "evil".into() };
+		log[1].body.payload = TxPayload::GameJoin { label: "evil".into(), preview_pk: None };
 		assert_eq!(replay(CHAIN, &log).unwrap_err(), TxError::BadSignature);
 	}
 
@@ -539,11 +590,13 @@ mod tests {
 		);
 		t.send(1, TxPayload::GameCancel).unwrap();
 		assert_eq!(t.s().phase, GamePhase::Cancelled);
-		assert!(t.send(2, TxPayload::GameJoin { label: "b".into() }).is_err());
+		// Withdrawing an unjoined game decides nothing.
+		assert_eq!(t.s().view().result, None);
+		assert!(t.send(2, TxPayload::GameJoin { label: "b".into(), preview_pk: None }).is_err());
 
 		let mut t = Table::new();
 		t.create(1, 1, "a").unwrap();
-		t.send(2, TxPayload::GameJoin { label: "b".into() }).unwrap();
+		t.send(2, TxPayload::GameJoin { label: "b".into(), preview_pk: None }).unwrap();
 		t.reveal().unwrap();
 		let outsider = TxSigner::from_seed(&Seed::from_bytes([9; 32]));
 		let tx = t.build(&outsider, TxPayload::GameResign);
@@ -559,6 +612,10 @@ mod tests {
 			Err(TxError::GameOver)
 		);
 		assert_eq!(replay(CHAIN, &t.log).unwrap().unwrap().resigned, Some(2));
+		assert_eq!(
+			v.result,
+			Some(GameResultView { winner: Some(1), loser: Some(2), reason: "resign".into() })
+		);
 	}
 
 	#[test]
@@ -568,13 +625,18 @@ mod tests {
 		assert!(matches!(
 			t.send(
 				1,
-				TxPayload::GameCreate { seat: 1, label: "a".into(), seed_commit: "x".into() }
+				TxPayload::GameCreate {
+					seat: 1,
+					label: "a".into(),
+					seed_commit: "x".into(),
+					preview_pk: None
+				}
 			),
 			Err(TxError::BadEnvelope { .. })
 		));
 		t.create(1, 1, "a").unwrap();
 		assert_eq!(t.reveal(), Err(TxError::WrongPhase { phase: GamePhase::Open }));
-		t.send(2, TxPayload::GameJoin { label: "b".into() }).unwrap();
+		t.send(2, TxPayload::GameJoin { label: "b".into(), preview_pk: None }).unwrap();
 		// Wrong salt, garbage salt.
 		assert_eq!(
 			t.send(1, TxPayload::GameReveal { salt: "66".repeat(32) }),
@@ -587,6 +649,15 @@ mod tests {
 		t.send(2, TxPayload::GameCancel).unwrap();
 		assert_eq!(t.s().phase, GamePhase::Cancelled);
 		assert_eq!(t.s().view().cancel_reason.as_deref(), Some("no_reveal"));
+		// Recorded as the creator's forfeit.
+		assert_eq!(
+			t.s().view().result,
+			Some(GameResultView {
+				winner: Some(2),
+				loser: Some(1),
+				reason: "no_reveal_forfeit".into()
+			})
+		);
 		assert_eq!(t.reveal(), Err(TxError::WrongPhase { phase: GamePhase::Cancelled }));
 
 		// The deal depends on the join: same salt, different joiner, other deal.
@@ -594,7 +665,7 @@ mod tests {
 			let mut t = Table::new();
 			t.b = TxSigner::from_seed(&Seed::from_bytes([joiner; 32]));
 			t.create(1, 1, "a").unwrap();
-			t.send(2, TxPayload::GameJoin { label: "b".into() }).unwrap();
+			t.send(2, TxPayload::GameJoin { label: "b".into(), preview_pk: None }).unwrap();
 			t.reveal().unwrap();
 			t.s().record.as_ref().unwrap().seed
 		};
@@ -602,6 +673,44 @@ mod tests {
 		assert_eq!(deal(2), deal(2));
 		// A commitment is bound to its stream.
 		assert_ne!(seed_commitment("game/a", &SALT), seed_commitment("game/b", &SALT));
+	}
+
+	#[test]
+	fn preview_keys_ride_create_and_join() {
+		use crate::preview::{parse_preview_pk, preview_public, PreviewSession};
+		let mut t = Table::new();
+		let bad = TxPayload::GameCreate {
+			seat: 1,
+			label: "a".into(),
+			seed_commit: seed_commitment("game/t1", &SALT),
+			preview_pk: Some("AB".into()),
+		};
+		assert!(matches!(t.send(1, bad), Err(TxError::BadEnvelope { .. })));
+		let (sa, sb) = ([3u8; 32], [4u8; 32]);
+		t.send(
+			1,
+			TxPayload::GameCreate {
+				seat: 1,
+				label: "a".into(),
+				seed_commit: seed_commitment("game/t1", &SALT),
+				preview_pk: Some(preview_public(&sa)),
+			},
+		)
+		.unwrap();
+		let create_id: [u8; 32] = hex::decode(&t.s().head).unwrap().try_into().unwrap();
+		t.send(2, TxPayload::GameJoin { label: "b".into(), preview_pk: Some(preview_public(&sb)) })
+			.unwrap();
+		let join_id: [u8; 32] = hex::decode(&t.s().head).unwrap().try_into().unwrap();
+		let v = t.s().view();
+		let pk = |i: usize| {
+			parse_preview_pk(v.seats[i].as_ref().unwrap().preview_pk.as_ref().unwrap()).unwrap()
+		};
+		let mut one = PreviewSession::new("game/t1", 1, &sa, &pk(1), &create_id, &join_id);
+		let mut two = PreviewSession::new("game/t1", 2, &sb, &pk(0), &create_id, &join_id);
+		let p = one.seal(b"pass").unwrap();
+		assert_eq!(two.open(&p).unwrap(), b"pass");
+		// Replay still verifies with the optional fields present.
+		assert!(replay(CHAIN, &t.log).unwrap().is_some());
 	}
 
 	#[test]

@@ -3,8 +3,13 @@
 //! account that holds the `admin` role; the host checks that the signing key
 //! is active on that account (via the account fold) before [`RolesState::apply`].
 //!
-//! Further admin actions (catalog, pass publishing, …) join as more
-//! `admin.*` payloads on `admin/<topic>` streams under the same rule.
+//! Admin streams are `admin/<topic>` ([`admin_stream`], [`admin_topic_of`]).
+//! Every `admin.*` payload names its topic ([`TxPayload::admin_topic`]) and is
+//! only valid on that topic's stream; all of them go through the normal
+//! `POST /v1/tx`. Authorization is shared: [`require_admin`] (the operator or
+//! an account with the `admin` role in `admin/roles`). A new topic (catalog,
+//! pass publishing, …) adds its payloads, maps them to the topic, and adds a
+//! fold for its stream; hosts route `admin/<topic>` to that fold.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,8 +20,37 @@ use crate::account::AccountRules;
 use crate::envelope::{verify_self_contained, SignedTx, TxPayload, GENESIS_PREV};
 use crate::{TxError, TxReceipt};
 
-/// The one admin stream so far.
+/// Prefix of every admin stream.
+pub const ADMIN_PREFIX: &str = "admin/";
+/// Topic holding role grants.
+pub const ROLES_TOPIC: &str = "roles";
+/// `admin/roles`.
 pub const ROLES_STREAM: &str = "admin/roles";
+
+/// `admin/<topic>`.
+pub fn admin_stream(topic: &str) -> String {
+	format!("{ADMIN_PREFIX}{topic}")
+}
+
+/// Topic of an `admin/<topic>` stream. Topics follow the role-name rule
+/// (`[a-z][a-z0-9_-]{0,31}`).
+pub fn admin_topic_of(stream: &str) -> Option<&str> {
+	stream.strip_prefix(ADMIN_PREFIX).filter(|t| valid_role(t))
+}
+
+/// Shared admin authorization for every topic: the chain operator, or an
+/// account holding `admin` in `admin/roles` (`roles`).
+pub fn require_admin(
+	rules: &AccountRules,
+	roles: Option<&RolesState>,
+	signer: &AccountId,
+) -> Result<(), TxError> {
+	if RolesState::is_admin(rules, roles, signer) {
+		Ok(())
+	} else {
+		Err(TxError::Unauthorized)
+	}
+}
 /// Role that may grant and revoke roles.
 pub const ADMIN_ROLE: &str = "admin";
 /// Role name cap.
@@ -92,9 +126,12 @@ impl RolesState {
 				s.clone()
 			}
 		};
-		if !Self::is_admin(rules, state, &b.signer) {
-			return Err(TxError::Unauthorized);
+		if b.payload.admin_topic() != Some(ROLES_TOPIC) {
+			return Err(TxError::BadEnvelope {
+				reason: format!("{} is not an admin/roles transaction", b.payload.kind()),
+			});
 		}
+		require_admin(rules, state, &b.signer)?;
 		match &b.payload {
 			TxPayload::AdminGrantRole { account, role } => {
 				if !valid_role(role) {
@@ -176,11 +213,34 @@ mod tests {
 	use apa_kan_account::Seed;
 
 	#[test]
+	fn admin_topics() {
+		assert_eq!(admin_stream("catalog"), "admin/catalog");
+		assert_eq!(admin_topic_of("admin/catalog"), Some("catalog"));
+		assert_eq!(admin_topic_of(ROLES_STREAM), Some(ROLES_TOPIC));
+		assert_eq!(admin_topic_of("admin/Bad"), None);
+		assert_eq!(admin_topic_of("admin/"), None);
+		assert_eq!(admin_topic_of("account/x"), None);
+		let op = TxSigner::from_seed(&Seed::from_bytes([200; 32]));
+		let rules = AccountRules::with_operator(Some(op.account()));
+		assert!(require_admin(&rules, None, &op.account()).is_ok());
+		let grant = TxPayload::AdminGrantRole { account: op.account(), role: "x".into() };
+		assert_eq!(grant.admin_topic(), Some(ROLES_TOPIC));
+		assert_eq!(TxPayload::GameResign.admin_topic(), None);
+		// A roles payload on another topic's stream is refused.
+		let tx = op.sign("c", &admin_stream("catalog"), 0, GENESIS_PREV, grant).unwrap();
+		let id = verify_self_contained(&tx, "c").unwrap();
+		assert!(matches!(
+			RolesState::apply(&rules, None, &tx, &id),
+			Err(TxError::UnsupportedStream { .. })
+		));
+	}
+
+	#[test]
 	fn operator_and_admins_manage_roles() {
 		let op = TxSigner::from_seed(&Seed::from_bytes([200; 32]));
 		let alice = TxSigner::from_seed(&Seed::from_bytes([1; 32]));
 		let bob = TxSigner::from_seed(&Seed::from_bytes([2; 32]));
-		let rules = AccountRules { operator: Some(op.account()) };
+		let rules = AccountRules::with_operator(Some(op.account()));
 		let mut state: Option<RolesState> = None;
 		let mut log = Vec::new();
 		let mut send = |who: &TxSigner, payload: TxPayload| {

@@ -24,6 +24,11 @@ sha3.workspace = true
 thiserror.workspace = true
 hex.workspace = true
 ml-dsa.workspace = true
+# UDP preview sealing (see `preview`).
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+hkdf = "0.12"
+sha2 = "0.10"
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
 
 [lints]
 workspace = true
