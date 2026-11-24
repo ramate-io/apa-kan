@@ -23,19 +23,26 @@ pub const GENESIS_PREV: &str = "000000000000000000000000000000000000000000000000
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum TxPayload {
-	/// Open `game/<id>` and take `seat`. Must be `seq = 0`.
+	/// Open `game/<id>` and take `seat`. Must be `seq = 0`. `seed_commit` is
+	/// `game::seed_commitment(stream, salt)` for a secret 32-byte salt the
+	/// creator reveals after the join.
 	#[serde(rename = "game.create")]
-	GameCreate { seat: Seat, label: String },
-	/// Take the open seat. Fixes the deal (seed from create + join ids).
+	GameCreate { seat: Seat, label: String, seed_commit: String },
+	/// Take the open seat. The game then waits for the creator's reveal.
 	#[serde(rename = "game.join")]
 	GameJoin { label: String },
+	/// Creator reveals the committed salt (hex); the deal seed mixes it with
+	/// the join transaction's id.
+	#[serde(rename = "game.reveal")]
+	GameReveal { salt: String },
 	/// One engine action by the seat to move.
 	#[serde(rename = "game.move")]
 	GameMove { action: ActionWire },
 	/// Concede; the other seat wins.
 	#[serde(rename = "game.resign")]
 	GameResign,
-	/// Creator withdraws an open game nobody joined.
+	/// Creator withdraws an open game nobody joined, or the joiner abandons a
+	/// game whose creator has not revealed.
 	#[serde(rename = "game.cancel")]
 	GameCancel,
 }
@@ -45,6 +52,7 @@ impl TxPayload {
 		match self {
 			TxPayload::GameCreate { .. } => "game.create",
 			TxPayload::GameJoin { .. } => "game.join",
+			TxPayload::GameReveal { .. } => "game.reveal",
 			TxPayload::GameMove { .. } => "game.move",
 			TxPayload::GameResign => "game.resign",
 			TxPayload::GameCancel => "game.cancel",
@@ -227,7 +235,7 @@ mod tests {
 				"game/g",
 				0,
 				GENESIS_PREV,
-				TxPayload::GameCreate { seat: 1, label: "a".into() },
+				TxPayload::GameCreate { seat: 1, label: "a".into(), seed_commit: "00".repeat(32) },
 			)
 			.unwrap();
 		let id = verify_self_contained(&tx, "c").unwrap();
@@ -239,7 +247,8 @@ mod tests {
 		assert!(matches!(verify_self_contained(&tx, "other"), Err(TxError::WrongChain { .. })));
 
 		let mut t = tx.clone();
-		t.body.payload = TxPayload::GameCreate { seat: 2, label: "a".into() };
+		t.body.payload =
+			TxPayload::GameCreate { seat: 2, label: "a".into(), seed_commit: "00".repeat(32) };
 		assert_eq!(verify_self_contained(&t, "c"), Err(TxError::BadSignature));
 		let mut t = tx.clone();
 		t.body.domain = "apa-kan/action/v1".into();

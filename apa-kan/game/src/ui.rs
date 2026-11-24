@@ -1348,6 +1348,13 @@ fn remote_sync(
 			play.outbox = Some(tx);
 		}
 	}
+	if let Some(r) = play.remote.as_mut().filter(|r| r.wants_reveal()) {
+		r.reveal_sent = true;
+		if let Some(tx) = r.reveal_tx() {
+			r.inflight = true;
+			play.outbox = Some(tx);
+		}
+	}
 	if let Some(tx) = play.outbox.take() {
 		if !remote::submit(&host.0, &tx) {
 			if let Some(r) = play.remote.as_mut() {
@@ -1407,6 +1414,9 @@ fn adopt_remote_view(play: &mut PlayState, id: &str, view: &apa_kan_view::Hosted
 			let note = match view.phase {
 				apa_kan_view::GamePhase::Open => {
 					Some("Waiting for the other seat to join…".to_string())
+				}
+				apa_kan_view::GamePhase::Revealing => {
+					Some("Waiting for the creator to deal…".to_string())
 				}
 				apa_kan_view::GamePhase::Cancelled => Some("This game was cancelled.".to_string()),
 				apa_kan_view::GamePhase::Finished => {

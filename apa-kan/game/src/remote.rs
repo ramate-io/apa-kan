@@ -16,7 +16,7 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use apa_kan_tx::{game_stream, SignedTx, TxPayload, GENESIS_PREV};
+use apa_kan_tx::{game_stream, seed_commitment, SignedTx, TxPayload, GENESIS_PREV};
 use apa_kan_view::{GamePhase, HostedGameView, LedgerHead, Seat};
 
 use crate::game::{Action, Game};
@@ -85,10 +85,20 @@ pub mod identity {
 		}
 	}
 
+	fn seed() -> &'static [u8; 32] {
+		static SEED: OnceLock<[u8; 32]> = OnceLock::new();
+		SEED.get_or_init(|| load_or_create().0)
+	}
+
 	/// The signer for this device (loaded once).
 	pub fn signer() -> &'static TxSigner {
 		static SIGNER: OnceLock<TxSigner> = OnceLock::new();
-		SIGNER.get_or_init(|| TxSigner::from_seed(&load_or_create()))
+		SIGNER.get_or_init(|| TxSigner::from_seed(&Seed::from_bytes(*seed())))
+	}
+
+	/// This device's deal salt for `stream` (see `apa_kan_tx::deal_salt`).
+	pub fn deal_salt(stream: &str) -> [u8; 32] {
+		apa_kan_tx::deal_salt(seed(), stream)
 	}
 
 	/// Hex account id of [`signer`].
@@ -116,6 +126,10 @@ pub struct RemoteSession {
 	pub inflight: bool,
 	/// A join was already sent for this game.
 	pub join_sent: bool,
+	/// A reveal was already sent for this game.
+	pub reveal_sent: bool,
+	/// Creator's salt commitment from the last view.
+	pub seed_commit: String,
 	pub poll_wait: f32,
 	pub labels: [String; 2],
 	/// Invite link to show the creator while the seat is open.
@@ -134,6 +148,8 @@ impl RemoteSession {
 			loaded: false,
 			inflight: false,
 			join_sent: false,
+			reveal_sent: false,
+			seed_commit: String::new(),
 			poll_wait: 0.0,
 			labels: ["P1".into(), "P2".into()],
 			invite: None,
@@ -154,6 +170,7 @@ impl RemoteSession {
 		}
 		match self.phase {
 			GamePhase::Open => return Err("Waiting for the other seat to join…"),
+			GamePhase::Revealing => return Err("Dealing…"),
 			GamePhase::Cancelled => return Err("This game was cancelled."),
 			GamePhase::Finished => return Err("Game over."),
 			GamePhase::Playing => {}
@@ -190,13 +207,33 @@ impl RemoteSession {
 			&& self.seat.is_none()
 	}
 
+	/// Did this device make the game's seed commitment, and is the reveal due?
+	pub fn wants_reveal(&self) -> bool {
+		self.loaded
+			&& !self.inflight
+			&& !self.reveal_sent
+			&& self.phase == GamePhase::Revealing
+			&& self.seat.is_some()
+			&& !self.seed_commit.is_empty()
+			&& self.account == identity::account_hex()
+			&& self.ledger.as_ref().is_some_and(|h| {
+				seed_commitment(&h.stream, &identity::deal_salt(&h.stream)) == self.seed_commit
+			})
+	}
+
+	/// Signed `game.reveal` of this device's salt.
+	pub fn reveal_tx(&self) -> Option<SignedTx> {
+		let stream = &self.ledger.as_ref()?.stream;
+		self.sign(TxPayload::GameReveal { salt: hex::encode(identity::deal_salt(stream)) })
+	}
+
 	/// Should we poll for the other seat?
 	pub fn wants_poll(&self, game: &Game) -> bool {
 		if !self.loaded || self.inflight {
 			return false;
 		}
 		match self.phase {
-			GamePhase::Open => self.seat.is_some(),
+			GamePhase::Open | GamePhase::Revealing => self.seat.is_some(),
 			GamePhase::Playing => {
 				!game.status().is_over() && self.player() != Some(game.current_player())
 			}
@@ -212,6 +249,7 @@ impl RemoteSession {
 		}
 		self.seat = view.seat_of_account(&self.account);
 		self.phase = view.phase;
+		self.seed_commit = view.seed_commit.clone();
 		self.labels = [0, 1].map(|i| {
 			view.seats[i]
 				.as_ref()
@@ -288,15 +326,18 @@ fn error_message(status: u16, body: &str) -> String {
 	}
 }
 
-/// Signed `game.create` taking seat 1 of a fresh game on `chain`.
+/// Signed `game.create` taking seat 1 of a fresh game on `chain`, committing
+/// to this device's deal salt for the game.
 pub fn create_tx(chain: &str, id: &str) -> Option<SignedTx> {
+	let stream = game_stream(id);
+	let seed_commit = seed_commitment(&stream, &identity::deal_salt(&stream));
 	identity::signer()
 		.sign(
 			chain,
-			&game_stream(id),
+			&stream,
 			0,
 			GENESIS_PREV,
-			TxPayload::GameCreate { seat: 1, label: String::new() },
+			TxPayload::GameCreate { seat: 1, label: String::new(), seed_commit },
 		)
 		.ok()
 }
@@ -452,6 +493,18 @@ mod tests {
 			.unwrap();
 		let id = admit(&join, "c", KeyStatus::UnknownAccount).unwrap();
 		s = GameState::apply(Some(&s), &join, &id).unwrap().0;
+		// This device made the commitment, so it reveals; the joiner doesn't.
+		let mut me = RemoteSession::new("g13", identity::account_hex());
+		me.adopt(&s.view()).unwrap();
+		assert_eq!(me.phase, GamePhase::Revealing);
+		assert!(me.wants_reveal());
+		let mut opp = RemoteSession::new("g13", other.account().to_hex());
+		opp.adopt(&s.view()).unwrap();
+		assert!(!opp.wants_reveal());
+		assert!(opp.wants_poll(&Game::new(Default::default(), 0)));
+		let reveal = me.reveal_tx().unwrap();
+		let id = admit(&reveal, "c", KeyStatus::UnknownAccount).unwrap();
+		s = GameState::apply(Some(&s), &reveal, &id).unwrap().0;
 		for _ in 0..moves {
 			let g = s.game.as_ref().unwrap();
 			let action = g.legal_actions()[0];

@@ -297,6 +297,9 @@ pub struct SeatClaim {
 pub enum GamePhase {
 	/// Created; waiting for the other seat to join.
 	Open,
+	/// Both seats in; waiting for the creator to reveal the committed salt
+	/// that fixes the deal. The joiner may cancel (`no_reveal`).
+	Revealing,
 	Playing,
 	Finished,
 	/// Creator cancelled before anyone joined.
@@ -311,7 +314,13 @@ pub struct HostedGameView {
 	pub phase: GamePhase,
 	pub ledger: LedgerHead,
 	pub seats: [Option<SeatClaim>; 2],
-	/// Position, once both seats are in (the deal is fixed by the join).
+	/// Creator's hex salt commitment (`game.create`).
+	#[serde(default)]
+	pub seed_commit: String,
+	/// Why the game was cancelled, if it was.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cancel_reason: Option<String>,
+	/// Position, once the creator has revealed (the deal is fixed then).
 	pub game: Option<GameView>,
 }
 

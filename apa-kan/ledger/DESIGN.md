@@ -104,9 +104,10 @@ prev)` already makes every signed body single-use.
 ## State machine
 
 ```
-game.create (seq 0) ──► open ──game.join──► playing ──game.move*──► finished
-                         │                    └──game.resign──────► finished
-                         └──game.cancel (creator)─────────────────► cancelled
+game.create (seq 0) ──► open ──game.join──► revealing ──game.reveal──► playing ──game.move*──► finished
+                         │                    │                           └──game.resign──────► finished
+                         │                    └──game.cancel (joiner) ──► cancelled (no_reveal)
+                         └──game.cancel (creator) ──────────────────────► cancelled (creator_withdrew)
 ```
 
 `GameState::apply(state, tx, id)` is pure: same state and transaction give the
@@ -120,8 +121,35 @@ the signer's seat, and the engine (`apa-kan-core`, deterministic). It does
   stored entry, then `apply`. Key authority is not re-checked on replay (it
   was valid when committed; revoking a key later must not rewrite history).
 
-The deal is fixed at join: `seed = SHA3("apa-kan/deal-seed/v1" ‖ create_id ‖
-join_id)[..8]`, so the creator alone can't choose it.
+### Deal seed: commit-reveal
+
+Neither seat may pick the deal, and neither may see it before the other is
+committed:
+
+1. `game.create` carries `seed_commit = hex SHA3("apa-kan/deal-commit/v1" ‖
+   len(stream) u64 LE ‖ stream ‖ salt)` for a 32-byte secret `salt`. The
+   stream is bound in, so a commitment can't be replayed into another game.
+2. `game.join` moves the game to `revealing`. The joiner signed the join
+   without knowing `salt`.
+3. `game.reveal { salt }` — creator only, `revealing` only, must hash to the
+   commitment (else `bad_reveal`, HTTP 422). The deal is then
+   `seed = SHA3("apa-kan/deal-seed/v2" ‖ salt ‖ join_tx_id)[..8]` (u64 LE) and
+   the game is `playing`. The creator fixed `salt` before seeing the join id.
+
+**Non-reveal (default):** while `revealing`, the joiner may `game.cancel` at
+any time → `cancelled` with `cancel_reason: "no_reveal"`. The creator may
+**not** cancel after a join (it can already compute the deal, so cancelling
+would let it re-roll). There is no clock-based forfeit: `apply` has no trusted
+time and must replay identically everywhere; a timeout belongs in a
+host-side policy or in the client offering "cancel" after a wait. Open
+question: once rated games exist, count a `no_reveal` cancel as a creator
+forfeit.
+
+**Client:** the web/desktop client derives `salt = SHA3("apa-kan/deal-salt/v1"
+‖ device seed ‖ stream)`, so it can reveal after a reload with nothing extra
+stored, and reveals automatically when it sees `revealing` and the commitment
+matches its own salt. Any 32 random bytes are valid; the derivation is a
+client convenience, not a protocol rule.
 
 Loading a game = read the stream from the ledger, replay. The server keeps an
 in-memory cache of folded streams, one lock per stream, refreshed whenever the
@@ -132,7 +160,7 @@ ledger head differs (another server instance or a relay committed first).
 | Route | View |
 |---|---|
 | `GET /v1/ledger` | `{ domain, chain, backend }` — what a client needs to sign |
-| `GET /v1/games/{id}` | `HostedGameView`: phase, `ledger` head (`chain`, `stream`, `seq`, `head`), seat claims (account + label), and the `GameView` (status, board, legal actions, replayable record) once both seats are in |
+| `GET /v1/games/{id}` | `HostedGameView`: phase (`open`, `revealing`, `playing`, `finished`, `cancelled`), `ledger` head (`chain`, `stream`, `seq`, `head`), seat claims (account + label), `seed_commit`, `cancel_reason`, and the `GameView` (status, board, legal actions, replayable record) once the deal is revealed |
 | `GET /v1/games/{id}/txs?from=n` | committed signed transactions from `n` (audit, resync, peers) |
 
 The only game write route is `POST /v1/tx`.
@@ -154,6 +182,32 @@ The only game write route is `POST /v1/tx`.
   For UDP, a compact binary encoding plus referencing the signer key by hash
   (keys learned once per session) would bring it near one datagram; that is a
   transport encoding change, not an envelope change.
+
+### UDP previews (plan, not built)
+
+An ML-DSA envelope doesn't fit a datagram, and the point of UDP is an early
+read, not authority. So:
+
+- **Preview datagram** (unsigned, compact binary): `game id`, `seq`, `prev`
+  (first bytes), the encoded action, and `tx_hash` — the id of the full
+  signed transaction the sender is about to submit (or has submitted) over
+  HTTP. Tens of bytes.
+- **Per-game preview code:** each datagram carries a short MAC under a key
+  derived from the seats' admission transactions
+  (`HKDF("apa-kan/preview/v1", create_id ‖ join_id ‖ seat)`). That stops
+  stray or cross-game traffic and cheap spoofing by anyone who doesn't follow
+  the game. Caveat: create and join ids are public via `/txs`, so this is not
+  a secret against an observer of the ledger; if that matters, add an
+  ephemeral X25519 key to `game.create` / `game.join` and derive the MAC key
+  from the DH instead (still "from the join transactions", now secret).
+- **Authority:** the receiver applies the preview tentatively (animate the
+  move, start thinking) and marks it provisional. The signed transaction —
+  via `POST /v1/tx` and the view/`/txs` poll, or relayed peer-to-peer — is
+  authoritative. When it arrives, its id must equal the preview's `tx_hash`;
+  on mismatch, or if no matching signed tx shows up within a short window,
+  the client rolls back to the last committed state and replays.
+- Previews never touch the ledger, never move `seq`, and are never relayed.
+  A bad preview costs one rollback, nothing more.
 
 ## Backends
 

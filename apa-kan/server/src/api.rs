@@ -172,7 +172,7 @@ pub fn tx_error(e: TxError) -> GameApiError {
 		| TxError::WrongPhase { .. }
 		| TxError::NotYourTurn { .. }
 		| TxError::GameOver => StatusCode::CONFLICT,
-		TxError::Illegal { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+		TxError::Illegal { .. } | TxError::BadReveal => StatusCode::UNPROCESSABLE_ENTITY,
 		TxError::Host { .. } => StatusCode::SERVICE_UNAVAILABLE,
 	};
 	(status, Json(e))

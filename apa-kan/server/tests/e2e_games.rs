@@ -11,7 +11,7 @@ use apa_kan_server::games::GameHost;
 use apa_kan_server::mailer::NoopMailer;
 use apa_kan_server::testutil::{base_url, spawn_test_server, spawn_test_server_with_games};
 use apa_kan_store::SystemClock;
-use apa_kan_tx::{game_stream, SignedTx, TxPayload, TxSigner, GENESIS_PREV};
+use apa_kan_tx::{game_stream, seed_commitment, SignedTx, TxPayload, TxSigner, GENESIS_PREV};
 use apa_kan_view::{GamePhase, HostedGameView};
 
 fn signer(n: u8) -> TxSigner {
@@ -75,14 +75,22 @@ async fn open_game(
 			&game_stream(id),
 			0,
 			GENESIS_PREV,
-			TxPayload::GameCreate { seat: 1, label: "ana".into() },
+			TxPayload::GameCreate {
+				seat: 1,
+				label: "ana".into(),
+				seed_commit: seed_commitment(&game_stream(id), &SALT),
+			},
 		)
 		.expect("sign");
 	let v = accept(client, root, &create).await;
 	assert_eq!(v.phase, GamePhase::Open);
 	assert!(v.game.is_none());
-	accept(client, root, &next(b, &v, TxPayload::GameJoin { label: "bo".into() })).await
+	let v = accept(client, root, &next(b, &v, TxPayload::GameJoin { label: "bo".into() })).await;
+	assert_eq!(v.phase, GamePhase::Revealing);
+	accept(client, root, &next(a, &v, TxPayload::GameReveal { salt: hex::encode(SALT) })).await
 }
+
+const SALT: [u8; 32] = [3; 32];
 
 #[tokio::test]
 async fn e2e_signed_create_join_move_resign() {
@@ -115,7 +123,7 @@ async fn e2e_signed_create_join_move_resign() {
 	// Replaying an accepted transaction: 409 stale_seq.
 	let stale = {
 		let log: Vec<serde_json::Value> = client
-			.get(format!("{root}/v1/games/e2e1/txs?from=2"))
+			.get(format!("{root}/v1/games/e2e1/txs?from=3"))
 			.send()
 			.await
 			.expect("txs")
@@ -129,7 +137,7 @@ async fn e2e_signed_create_join_move_resign() {
 	assert_eq!(res.status(), 409);
 	let err: serde_json::Value = res.json().await.expect("json");
 	assert_eq!(err["error"], "stale_seq");
-	assert_eq!(err["current"], 6);
+	assert_eq!(err["current"], 7);
 
 	// Tampered body: 401 bad_signature.
 	let mut forged = play_first(&v, &a, &b);
@@ -189,7 +197,11 @@ async fn e2e_registered_account_key_indirection() {
 			&game_stream(id),
 			0,
 			GENESIS_PREV,
-			TxPayload::GameCreate { seat: 1, label: "x".into() },
+			TxPayload::GameCreate {
+				seat: 1,
+				label: "x".into(),
+				seed_commit: seed_commitment(&game_stream(id), &SALT),
+			},
 		)
 		.expect("sign")
 	};

@@ -365,15 +365,27 @@ mod tests {
 				&game_stream(id),
 				0,
 				GENESIS_PREV,
-				TxPayload::GameCreate { seat: 1, label: "ana".into() },
+				TxPayload::GameCreate { seat: 1, label: "ana".into(), seed_commit: commit(id) },
 			)
 			.unwrap();
 		let v = host.submit(create).await.unwrap().view;
 		assert_eq!(v.phase, GamePhase::Open);
-		host.submit(next_tx(b, &v, TxPayload::GameJoin { label: "bo".into() }))
+		let v = host
+			.submit(next_tx(b, &v, TxPayload::GameJoin { label: "bo".into() }))
+			.await
+			.unwrap()
+			.view;
+		assert_eq!(v.phase, GamePhase::Revealing);
+		host.submit(next_tx(a, &v, TxPayload::GameReveal { salt: hex::encode(SALT) }))
 			.await
 			.unwrap()
 			.view
+	}
+
+	const SALT: [u8; 32] = [9; 32];
+
+	fn commit(id: &str) -> String {
+		apa_kan_tx::seed_commitment(&game_stream(id), &SALT)
 	}
 
 	fn first_move(view: &HostedGameView) -> ActionWire {
@@ -403,12 +415,12 @@ mod tests {
 				.unwrap()
 				.view;
 		}
-		assert_eq!(v.ledger.seq, 6);
+		assert_eq!(v.ledger.seq, 7);
 		assert_eq!(v.game.as_ref().unwrap().seq, 4);
 		assert_eq!(host.view("g1").await.unwrap(), v);
-		let log = host.log("g1", 2).await.unwrap();
+		let log = host.log("g1", 3).await.unwrap();
 		assert_eq!(log.len(), 4);
-		assert_eq!(log[0].seq, 2);
+		assert_eq!(log[0].seq, 3);
 		assert_eq!(host.view("missing").await.unwrap_err(), TxError::NotFound);
 		assert_eq!(host.view("BAD ID").await.unwrap_err(), TxError::NotFound);
 	}
@@ -453,7 +465,7 @@ mod tests {
 				"game/r",
 				0,
 				GENESIS_PREV,
-				TxPayload::GameCreate { seat: 1, label: "a".into() },
+				TxPayload::GameCreate { seat: 1, label: "a".into(), seed_commit: commit("r") },
 			)
 			.unwrap();
 		assert_eq!(host.submit(tx).await.unwrap_err(), TxError::KeyNotAuthorized);
@@ -482,7 +494,7 @@ mod tests {
 		let tx = next_tx(who, &v, TxPayload::GameMove { action: first_move(&v) });
 		let next = h2.submit(tx.clone()).await.unwrap().view;
 		assert_eq!(h1.view("g3").await.unwrap(), next);
-		assert_eq!(h1.submit(tx).await.unwrap_err(), TxError::StaleSeq { current: 6, got: 5 });
+		assert_eq!(h1.submit(tx).await.unwrap_err(), TxError::StaleSeq { current: 7, got: 6 });
 	}
 
 	/// Concurrent submits at one seq across hosts: exactly one is acknowledged.
@@ -506,12 +518,12 @@ mod tests {
 		for j in joins {
 			match j.await.unwrap() {
 				Ok(_) => ok += 1,
-				Err(TxError::StaleSeq { current: 3, got: 2 }) => {}
+				Err(TxError::StaleSeq { current: 4, got: 3 }) => {}
 				Err(e) => panic!("unexpected: {e:?}"),
 			}
 		}
 		assert_eq!(ok, 1);
-		assert_eq!(ledger.head("game/g4").await.unwrap().next_seq, 3);
+		assert_eq!(ledger.head("game/g4").await.unwrap().next_seq, 4);
 	}
 
 	#[tokio::test]
@@ -524,7 +536,7 @@ mod tests {
 				&game_stream(id),
 				0,
 				GENESIS_PREV,
-				TxPayload::GameCreate { seat: 1, label: "a".into() },
+				TxPayload::GameCreate { seat: 1, label: "a".into(), seed_commit: commit(id) },
 			)
 			.unwrap()
 		};

@@ -28,7 +28,7 @@ pub use envelope::{
 	admit, verify_self_contained, KeyStatus, SignedTx, TxBody, TxPayload, TxSigner, GENESIS_PREV,
 	TX_DOMAIN,
 };
-pub use game::{game_id_of, game_stream, GameState};
+pub use game::{deal_salt, game_id_of, game_stream, seed_commitment, GameState};
 
 use apa_kan_view::{GamePhase, HostedGameView, Seat};
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,8 @@ pub enum TxError {
 	GameOver,
 	#[error("not your turn: seat {to_move} is to move")]
 	NotYourTurn { to_move: Seat },
+	#[error("revealed salt does not match the creator's commitment")]
+	BadReveal,
 	#[error("illegal action: {reason}")]
 	Illegal { reason: String },
 	#[error("host error: {reason}")]
