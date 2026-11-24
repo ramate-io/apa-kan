@@ -83,6 +83,7 @@ The server is a small ledger: **views for reads, transactions for writes.** Ever
 | `GET /v1/games/<id>/txs?from=n` | Committed signed transactions from `n` |
 | `GET /v1/accounts/<id>` | `AccountView` + tiles and rating |
 | `GET /v1/accounts/<id>/keys` | The account's keys and their status |
+| `POST /v1/accounts/<id>/passkeys/<credential>` | Read the passkey-wrapped seed; body `{ access_key }` (PRF-derived), 403 on a wrong key |
 | `GET /v1/admin/roles` | `RolesView` |
 
 Set `APAKAN_CHAIN_ID` per deployment so transactions can't be replayed across hosts, and `APAKAN_OPERATOR_SEED` (64 hex) to a stable secret: the operator signs email-recovery challenges and must not change for a chain. `APAKAN_RECOVERY_COOLDOWN_SECS` (default 86400) and `APAKAN_RECOVERY_CHALLENGE_TIMEOUT_SECS` (default 900) set the recovery retry cooldown and how long an unchallenged request lives; like the operator, keep them fixed for a chain. CORS allows any origin (auth is in the signed body, never cookies); set `APAKAN_CORS_ORIGINS=https://play.example` to restrict it.

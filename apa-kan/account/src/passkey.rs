@@ -11,6 +11,12 @@
 //! Because passkeys sync through the platform password manager, a new device
 //! (or a cleared browser) evaluates the same PRF, fetches the wrapped seed,
 //! and unwraps the same account key.
+//!
+//! Fetching is gated too: the wrapped record carries
+//! `access_hash = SHA-256(ACCESS_DOMAIN ‖ access_key)` where [`access_key`] is
+//! another HKDF output of the same PRF. A device that has no account key yet
+//! (that's why it is restoring) proves it holds the passkey by presenting
+//! `access_key`; the host compares hashes and only then serves the record.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -27,6 +33,8 @@ pub const PASSKEY_WRAP_VERSION: u32 = 1;
 pub const PRF_INPUT_DOMAIN: &[u8] = b"apa-kan/passkey-prf/v1";
 /// HKDF info / AEAD associated-data domain.
 pub const WRAP_DOMAIN: &[u8] = b"apa-kan/passkey-wrap/v1";
+/// HKDF info domain for the fetch access key, and its hash domain.
+pub const ACCESS_DOMAIN: &[u8] = b"apa-kan/passkey-access/v1";
 /// Longest credential id accepted (WebAuthn allows up to 1023 bytes).
 pub const MAX_CREDENTIAL_ID_LEN: usize = 1023;
 
@@ -56,6 +64,29 @@ pub struct PasskeyWrappedSeed {
 	pub nonce: String,
 	/// AES-256-GCM ciphertext + tag of the 32-byte seed.
 	pub ciphertext: String,
+	/// Hex `SHA-256(ACCESS_DOMAIN ‖ access_key)`: hosts serve the record only
+	/// to a caller presenting the matching [`access_key`].
+	pub access_hash: String,
+}
+
+/// Key a device presents to fetch its wrapped seed; derived from the PRF
+/// output, so only the passkey holder has it.
+pub fn access_key(prf: &[u8; 32], account: &AccountId, credential_id: &[u8]) -> [u8; 32] {
+	let mut info = ACCESS_DOMAIN.to_vec();
+	info.extend_from_slice(account.as_bytes());
+	info.extend_from_slice(credential_id);
+	let mut key = [0u8; 32];
+	// 32 bytes is far below HKDF-SHA256's output limit.
+	let _ = Hkdf::<Sha256>::new(None, prf).expand(&info, &mut key);
+	key
+}
+
+/// Hex hash stored for an access key.
+pub fn access_hash(access_key: &[u8; 32]) -> String {
+	let mut h = Sha256::new();
+	h.update(ACCESS_DOMAIN);
+	h.update(access_key);
+	hex::encode(h.finalize())
 }
 
 fn info(account: &AccountId, credential_id: &[u8]) -> Vec<u8> {
@@ -94,6 +125,7 @@ pub fn wrap_seed(
 		salt: hex::encode(salt),
 		nonce: hex::encode(nonce),
 		ciphertext: hex::encode(ct),
+		access_hash: access_hash(&access_key(prf, account, credential_id)),
 	}
 }
 
@@ -129,7 +161,17 @@ impl PasskeyWrappedSeed {
 		if ct.len() != 32 + 16 {
 			return Err(PasskeyError::Malformed("ciphertext length"));
 		}
+		let hash_ok = self.access_hash.len() == 64
+			&& self.access_hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+		if !hash_ok {
+			return Err(PasskeyError::Malformed("access_hash"));
+		}
 		Ok((cred, salt, nonce, ct))
+	}
+
+	/// Does `access_key` open this record for fetching?
+	pub fn grants(&self, access_key: &[u8; 32]) -> bool {
+		access_hash(access_key) == self.access_hash
 	}
 
 	/// Decrypt with the passkey's PRF output.
@@ -173,5 +215,10 @@ mod tests {
 		// Ciphertext doesn't contain the seed.
 		assert!(!w.ciphertext.contains(&hex::encode(seed.0)));
 		assert_eq!(prf_input(), prf_input());
+		// Only the PRF holder can fetch it.
+		assert!(w.grants(&access_key(&prf, &account, b"cred-1")));
+		assert!(!w.grants(&access_key(&[0; 32], &account, b"cred-1")));
+		assert!(!w.grants(&access_key(&prf, &account, b"cred-2")));
+		assert_ne!(access_key(&prf, &account, b"cred-1").as_slice(), &prf);
 	}
 }

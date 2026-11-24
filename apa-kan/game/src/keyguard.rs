@@ -10,7 +10,8 @@
 //! the platform password manager, so on a new device (or after clearing the
 //! browser) `restore_with_passkey` lets the passkey name the account
 //! (`userHandle`) and credential, fetches the wrapped seed from IndexedDB or
-//! `GET /v1/accounts/{id}/passkeys/{credential}`, and unwraps it.
+//! `POST /v1/accounts/{id}/passkeys/{credential}` (which serves it only for
+//! the PRF-derived [`apa_kan_account::access_key`]), and unwraps it.
 //!
 //! **No PRF** (older browsers / authenticators): the key stays in plaintext
 //! local storage and the user is shown the recovery phrase instead.
@@ -123,7 +124,9 @@ pub fn show_phrase() -> String {
 }
 
 /// Ask for a phrase and switch this device to that key (web).
-pub fn restore_from_phrase() -> String {
+/// After a successful restore the user is offered passkey protection right
+/// away (when the browser has passkeys).
+pub fn restore_from_phrase(host: &HostConfig) -> String {
 	#[cfg(target_arch = "wasm32")]
 	{
 		let Some(w) = web_sys::window() else {
@@ -143,13 +146,23 @@ pub fn restore_from_phrase() -> String {
 			Ok(seed) => {
 				identity::install(seed, None, Protection::Plain);
 				REVISION.fetch_add(1, Ordering::Relaxed);
-				"Account restored from the recovery phrase. Protect it with a passkey.".into()
+				let offer = web::supported()
+					&& w.confirm_with_message(
+						"Account restored. Protect it with a passkey now, so clearing the browser can't lose it?",
+					)
+					.unwrap_or(false);
+				if offer {
+					protect(host)
+				} else {
+					"Account restored from the recovery phrase. Protect it with a passkey (Settings).".into()
+				}
 			}
 			Err(e) => format!("{e}"),
 		}
 	}
 	#[cfg(not(target_arch = "wasm32"))]
 	{
+		let _ = host;
 		"Set APAKAN_RECOVERY_PHRASE and restart to restore on desktop.".into()
 	}
 }
@@ -564,10 +577,13 @@ mod web {
 		Ok(format!("Account protected by your passkey{server}."))
 	}
 
+	/// The wrapped seed for this passkey: IndexedDB first, else the server,
+	/// which serves it only for the PRF-derived access key.
 	async fn wrapped_for(
 		host: &HostConfig,
 		account: &AccountId,
 		cred_hex: &str,
+		prf: &[u8; 32],
 	) -> Result<PasskeyWrappedSeed, String> {
 		if let Some(json) = idb_get(&account.to_hex()).await.ok().flatten() {
 			if let Ok(w) = serde_json::from_str::<PasskeyWrappedSeed>(&json) {
@@ -576,9 +592,16 @@ mod web {
 				}
 			}
 		}
-		let (status, body) =
-			fetch(host, &format!("/v1/accounts/{}/passkeys/{cred_hex}", account.to_hex()), None)
-				.await?;
+		let cred = hex::decode(cred_hex).map_err(|e| e.to_string())?;
+		let access = apa_kan_account::access_key(prf, account, &cred);
+		let body = serde_json::to_vec(&serde_json::json!({ "access_key": hex::encode(access) }))
+			.map_err(|e| e.to_string())?;
+		let (status, body) = fetch(
+			host,
+			&format!("/v1/accounts/{}/passkeys/{cred_hex}", account.to_hex()),
+			Some(body),
+		)
+		.await?;
 		if status != 200 {
 			return Err("no backup for this passkey here or on the server".into());
 		}
@@ -596,7 +619,7 @@ mod web {
 		let account = identity::account();
 		let cred = hex::decode(&credential_id).map_err(|e| e.to_string())?;
 		let a = assert(Some(&cred)).await?;
-		let wrapped = wrapped_for(host, &account, &credential_id).await?;
+		let wrapped = wrapped_for(host, &account, &credential_id, &a.prf).await?;
 		let seed = wrapped.unwrap_seed(&a.prf, &account).map_err(|e| e.to_string())?;
 		identity::unlock(seed)?;
 		REVISION.fetch_add(1, Ordering::Relaxed);
@@ -608,7 +631,7 @@ mod web {
 		let user = a.user.ok_or("the passkey did not name an account")?;
 		let account = AccountId::from_bytes(user.try_into().map_err(|_| "not an Apa Kan passkey")?);
 		let cred_hex = hex::encode(&a.id);
-		let wrapped = wrapped_for(host, &account, &cred_hex).await?;
+		let wrapped = wrapped_for(host, &account, &cred_hex, &a.prf).await?;
 		let seed = wrapped.unwrap_seed(&a.prf, &account).map_err(|e| e.to_string())?;
 		identity::install(seed, Some(account), Protection::Passkey { credential_id: cred_hex });
 		REVISION.fetch_add(1, Ordering::Relaxed);

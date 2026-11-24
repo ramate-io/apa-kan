@@ -49,7 +49,7 @@ pub fn router(state: AppState) -> Router {
 		.route("/v1/games/{game_id}/txs", get(get_game_txs))
 		.route("/v1/accounts/{account_id}", get(get_account))
 		.route("/v1/accounts/{account_id}/keys", get(get_account_keys))
-		.route("/v1/accounts/{account_id}/passkeys/{credential_id}", get(get_passkey_backup))
+		.route("/v1/accounts/{account_id}/passkeys/{credential_id}", post(get_passkey_backup))
 		.route("/v1/admin/roles", get(get_roles))
 		.layer(cors_layer())
 		.with_state(state)
@@ -192,21 +192,34 @@ async fn get_account_keys(
 	state.accounts.view(&id).await.map(|v| Json(v.keys)).map_err(tx_error)
 }
 
+/// Body of the passkey-backup fetch: the PRF-derived access key (hex).
+#[derive(Debug, serde::Deserialize)]
+struct PasskeyFetch {
+	access_key: String,
+}
+
 /// The passkey-wrapped seed for one credential: what a new device fetches
 /// after its passkey (synced by the platform) names the account and
-/// credential. Useless without that passkey's PRF output.
+/// credential. A read (no ledger change), but POST because the caller proves
+/// it holds the passkey with `apa_kan_account::access_key` (it has no account
+/// key to sign with yet). 403 on a wrong key, 404 if there is no backup.
 async fn get_passkey_backup(
 	State(state): State<AppState>,
 	Path((id, credential_id)): Path<(String, String)>,
+	Json(req): Json<PasskeyFetch>,
 ) -> Result<Json<PasskeyWrappedSeed>, GameApiError> {
 	let id = account_id(&id)?;
 	let account = state.accounts.state(&id).await.map_err(tx_error)?.ok_or(TxError::NotFound);
 	let account = account.map_err(tx_error)?;
-	account
+	let wrapped = account
 		.passkey_backup(&credential_id.to_lowercase())
-		.cloned()
-		.map(Json)
-		.ok_or_else(|| tx_error(TxError::NotFound))
+		.ok_or_else(|| tx_error(TxError::NotFound))?;
+	let key: Option<[u8; 32]> =
+		hex::decode(req.access_key.trim()).ok().and_then(|b| b.try_into().ok());
+	match key {
+		Some(k) if wrapped.grants(&k) => Ok(Json(wrapped.clone())),
+		_ => Err(tx_error(TxError::Unauthorized)),
+	}
 }
 
 async fn get_roles(State(state): State<AppState>) -> Result<Json<RolesView>, GameApiError> {

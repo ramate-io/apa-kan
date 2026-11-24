@@ -717,7 +717,7 @@ fn handle_clicks(
 					AccountAction::Unlock => crate::keyguard::unlock(&host.0),
 					AccountAction::RestorePasskey => crate::keyguard::restore_with_passkey(&host.0),
 					AccountAction::ShowPhrase => crate::keyguard::show_phrase(),
-					AccountAction::RestorePhrase => crate::keyguard::restore_from_phrase(),
+					AccountAction::RestorePhrase => crate::keyguard::restore_from_phrase(&host.0),
 				};
 				if !msg.is_empty() {
 					shell.notice = msg;
