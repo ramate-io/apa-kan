@@ -43,6 +43,15 @@ This is already how the score rule works: an opponent capture takes the capturer
   - `minimax_takes_the_tied_match_point_capture_under_capture_b`.
 - In every committed 150-game log, the first opponent capture after a tied 4-4 was the game's last action.
 
+## Self-capture penalty (`--self-capture-penalty off|always|match-point`)
+
+Default off, and `capture-b` leaves it off. A self-captured tile scores 1 point for the opponent, per tile, so a multi-tile self-capture gives several points. Routing B is unchanged: a triangle self-capture still goes to the opponent's graveyard and a dot self-capture to your graveyard.
+
+- `always`: every self-captured tile scores for the opponent.
+- `match-point`: only while the self-capturer is at `score_target - 1` before the action. At 4-4 both players are covered, but a player at 3 can still self-capture freely while their opponent sits at 4. I chose this over "while either player is at target - 1" because the penalty then belongs to the player whose own score made the self-capture a safe stalling move, and it never hands a win to someone just for the other player being close. Both readings are the same at a tied 4-4, where the standoff happens.
+
+Both scores from one action are added together, and the match-point check uses the score from before the action. Both sides can therefore reach the target on the same action. A win still needs the target and a strict lead, so 5-5 plays on. A penalty point that reaches the target with a strict lead is a normal `EndReason::Score` win for the opponent. The score check runs inside `apply`, so search sees it as terminal; a test checks that the evaluator scores it as a loss.
+
 ## What was removed
 
 These rules are gone from `RuleSet`, the CLI and `run_h2h.sh`:
