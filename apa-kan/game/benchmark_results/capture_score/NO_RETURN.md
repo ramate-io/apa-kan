@@ -11,8 +11,15 @@ The no-return cell's base is the one Liam specified: `--unlimited-spawn on --ope
 | t5 (2-2-1-1 on, no capturer) | 150 | 75-21-54 | 54-21-75 | 0.500 | 82.3 / 54.5 | 8.15 / 22.91 | 4.21 / 3.95 (abs 1.39) | score 117, draw turn_limit 21, locked_out 7, turn_limit 5 | 16 rep≥3 (avg max 5.08) | 79/129 (61.2%) | 3.0/17.6/59.4/20.1 | 6.7/9.9/72.4/11.0 | 0 / 36 / 37/125 | 0.0 |
 | capturer (2-2-1-1 on, target 6) | 150 | 34-20-96 | 96-20-34 | 0.227 | 129.7 / 114.0 | 8.04 / 39.11 | 3.38 / 4.66 (abs 2.21) | score 85, turn_limit 35, draw turn_limit 20, locked_out 10 | 21 rep≥3 (avg max 7.54) | 43/130 (33.1%) | 2.5/19.6/55.2/22.7 | 3.6/15.9/59.4/21.1 | 53 / 96 / 62/127 | 0.0 |
 | no-return | 150 | 79-18-53 | 53-18-79 | 0.527 | 113.0 / 92.5 | 6.99 / 37.01 | 3.73 / 3.26 (abs 1.85) | score 96, turn_limit 28, draw turn_limit 18, locked_out 8 | 19 rep≥3 (avg max 7.45) | 61/132 (46.2%) | 2.2/17.3/59.3/21.1 | 2.7/15.7/62.6/19.0 | 24.0 / 86 / 40/130 | 0.0 |
+| capturer + rep-ends (#105, same base) | 150 | 72-26-52 | 52-26-72 | 0.480 | 110.7 / 89.0 | 7.11 / 25.07 | 3.69 / 3.43 (abs 1.62) | score 93, draw turn_limit 21, turn_limit 16, locked_out 10, repetition 5, draw repetition 5 | 10 rep≥3 (avg max 1.45) | 63/124 (50.8%) | 2.6/21.6/51.9/23.8 | 1.7/17.8/61.2/19.3 | 19 / 73 / 36/123 | 0.0 |
 
-**Caveat.** There is no exact no-return-off twin. Capturer-owns + no 2-2-1-1 + target 5 has not been run without the rule. The `unl_capturer_rep_mm` cell (#105) uses that base with repetition-ends instead, so it is the comparison Liam asked for. It is queued.
+**Caveat.** There is no exact no-return-off twin: capturer-owns + no 2-2-1-1 + target 5 has not been run with neither rule. `unl_capturer_rep_mm` (#105) uses the same base with repetition-ends instead of no-return.
+
+Against it, no-return:
+- has a similar pace (median 92.5 against 89);
+- has a slightly bigger P1 edge (0.527 against 0.480), which is within noise;
+- leaves deep loops (avg max repetition 7.45 against 1.45);
+- has more self-capture tempo passes (37.0 against 25.1 per game).
 
 ## What the rule changes
 
@@ -31,7 +38,7 @@ The no-return cell's base is the one Liam specified: `--unlimited-spawn on --ope
 
 - **Seats are fair** (P1 0.527), unlike capturer-owns with 2-2-1-1 (0.227).
 - **It snowballs, though.** The first +2 holder won 93/99, the lead-tail median is 24 turns (86 games ≥10), comebacks drop to 46% from 61% under t5, and the winner held the center to the end in 43/132.
-  - Capturer-owns is the likely cause, not the no-return rule: every capture adds a tile to the capturer's hand. The `capturer_rep` comparison will confirm it.
+  - Capturer-owns is the cause, not the no-return rule: every capture adds a tile to the capturer's hand. `capturer_rep` confirms it. With repetition-ends instead of no-return, the first +2 holder still won 87/96, with a lead-tail median of 19 and comebacks at 50.8%.
 - **The match-point standoff mostly disappears.** Only 41 games reach a tied (target−1)-all, waiting a median of 11 turns, against 91–102 games and 25–45 turns elsewhere. Games get decided before the standoff because the leader pulls away.
 - **Pace is slower:** median 92.5 turns, against 54.5 for t5. The cap is hit in 46 games.
 
@@ -88,4 +95,4 @@ Verdict: noise. The rule reseeds most games early and does not give P1 anything 
 
 ## Take
 
-No-immediate-return does what it says and creates some trap captures, but too few undo moves are banned to fix pace or loops on its own. On the capturer-owns base the game snowballs. On the best routing base (B) it is close to neutral: slightly fairer, slightly slower, and the standoff is unchanged. Repetition-ends (#105) is the direct comparison.
+No-immediate-return does what it says and creates some trap captures, but too few undo moves are banned to fix pace or loops on its own. On the capturer-owns base the game snowballs. On the best routing base (B) it is close to neutral: slightly fairer, slightly slower, and the standoff is unchanged. On the same capturer-owns base, repetition-ends (#105) is the better loop breaker: average max repetition 1.45 against 7.45, and fewer self-capture passes. It is no faster, and both rules snowball there. The B + no-return seat edge (69-53) is noise.
