@@ -5023,6 +5023,10 @@ impl Game {
 	/// Unique occupied neighbors of `node` (inner↔center is one neighbor
 	/// even though per-arc scoring walks two petals). Used by Crescent Moon.
 	pub fn occupied_adjacency_count(&self, node: NodeId) -> u8 {
+		self.occupied_adjacency_count_with(node, None)
+	}
+
+	fn occupied_adjacency_count_with(&self, node: NodeId, extra: Option<NodeId>) -> u8 {
 		let mut seen = [false; 32];
 		let mut n = 0u8;
 		for nb in self.board.incident_others(node) {
@@ -5030,7 +5034,7 @@ impl Game {
 			if i >= seen.len() || seen[i] {
 				continue;
 			}
-			if self.tile_at(nb).is_some() {
+			if self.tile_at(nb).is_some() || extra == Some(nb) {
 				seen[i] = true;
 				n = n.saturating_add(1);
 			}
@@ -5052,10 +5056,24 @@ impl Game {
 	}
 
 	fn effective_for_tile(&self, node: NodeId, tile: Tile) -> i32 {
+		self.effective_for_tile_with(node, tile, None)
+	}
+
+	/// [`Self::effective_for_tile`] as if `extra` (node, tile) were placed.
+	fn effective_for_tile_with(
+		&self,
+		node: NodeId,
+		tile: Tile,
+		extra: Option<(NodeId, Tile)>,
+	) -> i32 {
+		let at = |nb: NodeId| match extra {
+			Some((n, t)) if n == nb => Some(t),
+			_ => self.tile_at(nb),
+		};
 		if self.rules.match_gain != MatchGain::Flat {
 			let (mut m, mut x) = (0i32, 0i32);
 			for nb in self.scoring_neighbors(node) {
-				if let Some(other) = self.tile_at(nb) {
+				if let Some(other) = at(nb) {
 					let (em, ex) = self.edge_channels(tile, other).gain_score(&self.rules);
 					m += em;
 					x += ex;
@@ -5065,7 +5083,7 @@ impl Game {
 		}
 		let mut effective = 0i32;
 		for nb in self.scoring_neighbors(node) {
-			if let Some(other) = self.tile_at(nb) {
+			if let Some(other) = at(nb) {
 				effective += self.edge_channels(tile, other).effective_for_rules(&self.rules);
 			}
 		}
@@ -5523,12 +5541,23 @@ impl Game {
 		if self.tile_at(node).is_some() {
 			return false;
 		}
-		// Fast path: under local claims the added tile is removed only if it is
-		// overwhelmed on the post-placement board.
-		if self.rules.capture_mode == CaptureMode::LocalClaim
-			&& !self.would_overwhelm_add(tile, node)
-		{
-			return false;
+		// Local claims (the `collect_local_removals` path) without cloning: the
+		// added tile must be overwhelmed on the post-placement board, and no
+		// tile on a neighbor of `node` may be.
+		if self.rules.capture_mode == CaptureMode::LocalClaim {
+			if !self.would_overwhelm_add(tile, node) {
+				return false;
+			}
+			let extra = Some((node, tile));
+			return !self.board.neighbors(node).iter().any(|&nb| {
+				self.tile_at(nb).is_some_and(|t| {
+					Self::overwhelms(
+						t,
+						self.occupied_adjacency_count_with(nb, Some(node)),
+						self.effective_for_tile_with(nb, t, extra),
+					)
+				})
+			});
 		}
 		// Removals are collected from the post-placement snapshot (the same
 		// call `apply` makes); flips and scoring don't remove tiles.
