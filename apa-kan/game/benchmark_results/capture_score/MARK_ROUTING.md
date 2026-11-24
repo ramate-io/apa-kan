@@ -74,6 +74,32 @@ Example (A-discard): seed 300, P2 leads from the first capture and wins 1-5 with
 - **Everything else matches B:** P1 0.427, comebacks 69.8%, the same mark split (self-captures 5.9 triangle / 6.4 dot per game; triangle share of opponent captures 0.58, with winners at 0.55 and losers at 0.64).
 - **Verdict:** keep it as cheap insurance against exact loops, but it isn't a pace lever under B. The standoff needs a rule that changes incentives near match point, not one that detects repeats.
 
+- **Seat check.** Repetition-ends didn't change P1's choices.
+  - Only 11 of 150 games diverge from plain B at all, at a median of action 95: 7 at a P2 decision, 4 at a P1 decision.
+  - All 5 repetition endings are move for move identical to B up to the ending, and their result is the one B reached at the cap.
+  - 3 results changed (309, 10303, 10321), and they net to zero. See NO_RETURN.md, "Seat split".
+
+## Capturer-owns + repetition-ends (`unl_capturer_rep_mm`)
+
+Base: unlimited spawn, no 2-2-1-1, target 5, `--capture-to-capturer on`, no routing. This is the base of the #106 no-return cell, with repetition-ends instead.
+
+| Cell | n | P1 W-D-L | P2 W-D-L | P1 WR | mean / med turns | opp / self caps per game | mean score P1 / P2 (margin) | end reasons | repetition | comebacks | dest C/I/S/O % | capture C/I/S/O % | lead tail med / ≥10 / loser counterplay | RECOVER/game |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| capturer + rep-ends | 150 | 72-26-52 | 52-26-72 | 0.480 | 110.7 / 89.0 | 7.11 / 25.07 | 3.69 / 3.43 (abs 1.62) | score 93, draw turn_limit 21, turn_limit 16, locked_out 10, repetition 5, draw repetition 5 | 10 rep≥3 (avg max 1.45) | 63/124 (50.8%) | 2.6/21.6/51.9/23.8 | 1.7/17.8/61.2/19.3 | 19 / 73 / 36/123 | 0.0 |
+| capturer + no-return (#106) | 150 | 79-18-53 | 53-18-79 | 0.527 | 113.0 / 92.5 | 6.99 / 37.01 | 3.73 / 3.26 (abs 1.85) | score 96, turn_limit 28, draw turn_limit 18, locked_out 8 | 19 rep≥3 (avg max 7.45) | 61/132 (46.2%) | 2.2/17.3/59.3/21.1 | 2.7/15.7/62.6/19.0 | 24.0 / 86 / 40/130 | 0.0 |
+
+- **Repetition-ends works on this base, unlike under B.**
+  - 10 games end on repetition: 3 P1 wins, 2 P2 wins and 5 draws, with a median of 88 turns.
+  - Loop depth collapses: average max repetition is 1.45, against 7.45 under no-return.
+  - The free tempo pass goes away. Self-captures drop to 25.1 per game from 37.0 under no-return, and triangle ADDs drop to 22.9 per game from 28.5. Under capturer-owns that pass is how the bots loop.
+- **Pace is about the same as no-return:** median 89 against 92.5. It is still far slower than control (t5, median 54.5) and B (74.5).
+- **Seats are fine:** P1 0.480, against 0.527 for no-return.
+- **It still snowballs, which confirms that capturer-owns is the cause.**
+  - The first player to lead by 2 won 87/96, against 93/99 under no-return and 72/136 under B + no-return.
+  - Lead-tail median is 19 (no-return 24, B 0). Comebacks are 50.8% (no-return 46.2%, B 69.3%).
+  - Tied match point is reached in 52 games, with a median wait of 13; 11 of those hit the cap.
+- The mark split is flat, as expected without routing: triangle share of opponent captures is 0.51.
+
 ## Take
 
-B is the best routing mode: the same pace as A, the most comebacks, the least self-capture spam and the fewest loops. It is the base for the repetition-ends and no-immediate-return combination cells (`MARK_MODE=b`). Neither combination changes pace or the standoff; see above and NO_RETURN.md (#106). A gives the clearest triangle/dot role split, but most of that split is self-capture churn. A-discard snowballs. None of them beats control on pace yet. All of them beat it on the center-lock snowball.
+B is the best routing mode: the same pace as A, the most comebacks, the least self-capture spam and the fewest loops. It is the base for the repetition-ends and no-immediate-return combination cells (`MARK_MODE=b`). Neither combination changes pace or the standoff; see above and NO_RETURN.md (#106). On the capturer-owns base, repetition-ends does cut loops and self-capture churn, but that base snowballs whichever of the two rules is on. A gives the clearest triangle/dot role split, but most of that split is self-capture churn. A-discard snowballs. None of them beats control on pace yet. All of them beat it on the center-lock snowball.
