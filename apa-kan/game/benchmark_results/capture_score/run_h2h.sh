@@ -179,6 +179,10 @@ case "$cfg" in
     run_one h2h_majority_w80_150_mm "${mm_pair[@]}" --games 75 --seed 300 \
       --objective capture-score --majority-spawn-bonus on --search eval-capture-score=80
     ;;
+  majority_w40_mcts)
+    run_one h2h_majority_w40_mcts "${mcts_pair[@]}" --games 50 --seed 10300 \
+      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=40
+    ;;
   weight400_mm)
     run_one h2h_weight400_mm "${mm_pair[@]}" --games 75 --seed 300 \
       --objective capture-score --search eval-capture-score=400
@@ -222,7 +226,7 @@ case "$cfg" in
       --objective capture-score --unlimited-spawn on
     ;;
   *)
-    echo "usage: $0 [smoke|control_mm|control_mcts|base_mm|base_mcts|majority_mm|majority_mcts|cascade_mm|cascade_mcts|unlimited_mm|unlimited_mcts|combo_maj_cas_mm|combo_maj_unlim_mm|combo_maj_cas_unlim_mm|majority_inner_mm|majority_center_mm|majority_t4_mm|majority_t8_mm|majority_w40_mm|majority_w80_mm|majority_w160_mm|majority_t8_150_mm|majority_w40_150_mm|majority_w80_150_mm|weight40_mm|weight80_mm|weight160_mm|weight400_mm|followup_maj|all_light]" >&2
+    echo "usage: $0 [smoke|control_mm|control_mcts|base_mm|base_mcts|majority_mm|majority_mcts|cascade_mm|cascade_mcts|unlimited_mm|unlimited_mcts|combo_maj_cas_mm|combo_maj_unlim_mm|combo_maj_cas_unlim_mm|majority_inner_mm|majority_center_mm|majority_t4_mm|majority_t8_mm|majority_w40_mm|majority_w80_mm|majority_w160_mm|majority_t8_150_mm|majority_w40_150_mm|majority_w80_150_mm|majority_w40_mcts|weight40_mm|weight80_mm|weight160_mm|weight400_mm|followup_maj|all_light]" >&2
     exit 2
     ;;
 esac
