@@ -171,6 +171,7 @@ fn end_reason_name(reason: EndReason) -> &'static str {
 		EndReason::InsufficientTiles => "insufficient_tiles",
 		EndReason::LowValue => "low_value",
 		EndReason::Score => "score",
+		EndReason::Repetition => "repetition",
 	}
 }
 
@@ -186,6 +187,7 @@ fn end_reason_parse(s: &str) -> Result<EndReason, String> {
 		"insufficient_tiles" => Ok(EndReason::InsufficientTiles),
 		"low_value" => Ok(EndReason::LowValue),
 		"score" => Ok(EndReason::Score),
+		"repetition" => Ok(EndReason::Repetition),
 		other => Err(format!("unknown end reason '{other}'")),
 	}
 }
@@ -510,6 +512,11 @@ pub struct RulesLog {
 	pub graveyard: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub capture_to_capturer: bool,
+	/// `off` is omitted. Absent: off.
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub mark_capture_routing: String,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub repetition_ends: bool,
 }
 
 fn default_control_objective() -> String {
@@ -638,6 +645,12 @@ impl RulesLog {
 			unlimited_spawn: r.unlimited_spawn,
 			graveyard: r.graveyard,
 			capture_to_capturer: r.capture_to_capturer,
+			mark_capture_routing: if r.mark_capture_routing.is_on() {
+				r.mark_capture_routing.name().into()
+			} else {
+				String::new()
+			},
+			repetition_ends: r.repetition_ends,
 		}
 	}
 
@@ -714,6 +727,12 @@ impl RulesLog {
 			unlimited_spawn: self.unlimited_spawn,
 			graveyard: self.graveyard,
 			capture_to_capturer: self.capture_to_capturer,
+			mark_capture_routing: if self.mark_capture_routing.is_empty() {
+				crate::game::MarkCaptureRouting::Off
+			} else {
+				crate::game::MarkCaptureRouting::parse(&self.mark_capture_routing)?
+			},
+			repetition_ends: self.repetition_ends,
 		})
 	}
 }
@@ -2768,6 +2787,41 @@ mod tests {
 		let log = RulesLog::from_rules(r);
 		let back = log.to_rules().unwrap();
 		assert!(back.graveyard && back.capture_to_capturer);
+	}
+
+	#[test]
+	fn committed_capture_score_mark_routing_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/capture_score/smoke_unl_mark.jsonl.gz",
+			4,
+		);
+		for rel in [
+			"benchmark_results/capture_score/h2h_unl_mark_a_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_mark_adiscard_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_mark_b_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_capturer_rep_mm.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 150);
+		}
+	}
+
+	#[test]
+	fn mark_routing_rules_round_trip_through_the_log() {
+		let mut r = RuleSet::default();
+		let json = serde_json::to_string(&RulesLog::from_rules(r)).unwrap();
+		assert!(!json.contains("mark_capture_routing"), "{json}");
+		assert!(!json.contains("repetition_ends"), "{json}");
+		for mode in [
+			crate::game::MarkCaptureRouting::A,
+			crate::game::MarkCaptureRouting::ADiscard,
+			crate::game::MarkCaptureRouting::B,
+		] {
+			r.mark_capture_routing = mode;
+			r.repetition_ends = true;
+			let back = RulesLog::from_rules(r).to_rules().unwrap();
+			assert_eq!(back.mark_capture_routing, mode);
+			assert!(back.repetition_ends);
+		}
 	}
 
 	#[test]

@@ -797,6 +797,14 @@ pub enum CaptureDest {
 	Bench,
 	/// [`RuleSet::unlimited_spawn`]: the captured tile returns to its owner's bench.
 	Owner,
+	/// [`RuleSet::mark_capture_routing`]: straight to the mover's bench (owner = mover).
+	Hand,
+	/// [`RuleSet::mark_capture_routing`]: the mover's graveyard (owner = mover).
+	Graveyard,
+	/// [`RuleSet::mark_capture_routing`]: the opponent's graveyard (owner = opponent).
+	OppGraveyard,
+	/// [`RuleSet::mark_capture_routing`]: removed from the game.
+	Discard,
 }
 
 impl CaptureDest {
@@ -805,6 +813,10 @@ impl CaptureDest {
 			Self::Tokens => "tokens",
 			Self::Bench => "bench",
 			Self::Owner => "owner",
+			Self::Hand => "hand",
+			Self::Graveyard => "graveyard",
+			Self::OppGraveyard => "opp_graveyard",
+			Self::Discard => "discard",
 		}
 	}
 
@@ -813,6 +825,10 @@ impl CaptureDest {
 			"tokens" | "token" | "triangle" => Ok(Self::Tokens),
 			"bench" | "dot" => Ok(Self::Bench),
 			"owner" | "owner_bench" | "return" => Ok(Self::Owner),
+			"hand" => Ok(Self::Hand),
+			"graveyard" => Ok(Self::Graveyard),
+			"opp_graveyard" => Ok(Self::OppGraveyard),
+			"discard" => Ok(Self::Discard),
 			other => Err(format!("unknown capture dest '{other}' (expected bench|tokens|owner)")),
 		}
 	}
@@ -1770,6 +1786,9 @@ pub enum EndReason {
 	/// Reached [`RuleSet::score_target`] opponent captures under
 	/// [`Objective::CaptureScore`].
 	Score,
+	/// [`RuleSet::repetition_ends`]: third occurrence of the visible position;
+	/// the capture-score leader wins, a tie is a draw.
+	Repetition,
 }
 
 /// Restriction on moving the same tile on two consecutive own turns.
@@ -2678,6 +2697,68 @@ impl Objective {
 	}
 }
 
+/// Liam's mark-based capture routing (`--mark-capture-routing`). The mark of
+/// the tile that made the capturing move (the MOVEd / ADDed / SWAP-initiator /
+/// CONVERTed tile; CLAIM has no acting tile and counts as triangle) decides
+/// where every removed tile goes. Overrides the dot/triangle bench/tokens
+/// split, [`RuleSet::unlimited_spawn`]'s return-to-owner, and
+/// [`RuleSet::capture_to_capturer`]. Dots always soak: self and opponent
+/// captures go to the mover's graveyard (needs [`RuleSet::graveyard`] to be
+/// recoverable).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum MarkCaptureRouting {
+	#[default]
+	Off,
+	/// Tempo vs soak: triangle self-captures go straight to the mover's
+	/// bench; triangle opponent captures go to the opponent's graveyard.
+	A,
+	/// As [`Self::A`], but triangle opponent captures leave the game.
+	ADiscard,
+	/// Aggressive swap: triangle self-captures go to the opponent's
+	/// graveyard; triangle opponent captures go to the mover's bench.
+	B,
+}
+
+impl MarkCaptureRouting {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s.to_ascii_lowercase().as_str() {
+			"off" | "none" => Ok(Self::Off),
+			"a" | "tempo" => Ok(Self::A),
+			"a-discard" | "a_discard" | "discard" => Ok(Self::ADiscard),
+			"b" | "swap" => Ok(Self::B),
+			other => Err(format!(
+				"unknown --mark-capture-routing '{other}' (expected off|a|a-discard|b)"
+			)),
+		}
+	}
+
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Off => "off",
+			Self::A => "a",
+			Self::ADiscard => "a-discard",
+			Self::B => "b",
+		}
+	}
+
+	pub fn is_on(self) -> bool {
+		!matches!(self, Self::Off)
+	}
+
+	/// Destination for one removed tile.
+	pub fn route(self, mark: CaptureMark, self_capture: bool) -> Option<CaptureDest> {
+		Some(match (self, mark, self_capture) {
+			(Self::Off, _, _) => return None,
+			(_, CaptureMark::Dot, _) => CaptureDest::Graveyard,
+			(Self::A | Self::ADiscard, CaptureMark::Triangle, true) => CaptureDest::Hand,
+			(Self::A, CaptureMark::Triangle, false) => CaptureDest::OppGraveyard,
+			(Self::ADiscard, CaptureMark::Triangle, false) => CaptureDest::Discard,
+			(Self::B, CaptureMark::Triangle, true) => CaptureDest::OppGraveyard,
+			(Self::B, CaptureMark::Triangle, false) => CaptureDest::Hand,
+		})
+	}
+}
+
 /// Which cells [`RuleSet::majority_spawn_bonus`] counts. Default is the
 /// former 9-node control set. Sweep variants for the capture-score cell;
 /// ignored when the bonus is off. Missing JSONL replays as control-set.
@@ -3076,6 +3157,14 @@ pub struct RuleSet {
 	/// return-to-owner. Default off. `--capture-to-capturer`. Missing JSONL
 	/// replays as off.
 	pub capture_to_capturer: bool,
+	/// [`MarkCaptureRouting`]. Default off. `--mark-capture-routing`.
+	/// Missing JSONL replays as off.
+	pub mark_capture_routing: MarkCaptureRouting,
+	/// Third occurrence of the same visible position (Zobrist of board,
+	/// benches, graveyards, scores, side to move) ends the game on capture
+	/// score: leader wins, tie draws. Default off. `--repetition-ends`.
+	/// Missing JSONL replays as off.
+	pub repetition_ends: bool,
 }
 
 impl Default for RuleSet {
@@ -3140,6 +3229,8 @@ impl Default for RuleSet {
 			unlimited_spawn: false,
 			graveyard: false,
 			capture_to_capturer: false,
+			mark_capture_routing: MarkCaptureRouting::Off,
+			repetition_ends: false,
 		}
 	}
 }
@@ -3364,6 +3455,8 @@ pub struct Game {
 	capture_score: [u8; 2],
 	/// [`RuleSet::graveyard`] piles, oldest first (`[p1, p2]`).
 	graveyards: [Vec<Tile>; 2],
+	/// [`RuleSet::repetition_ends`] position history (turn boundaries only).
+	position_history: Vec<u64>,
 	/// Last action awarded a majority-spawn token.
 	last_majority_spawn: bool,
 	/// Last action captured an opponent piece on a sparse board (capture-cascade).
@@ -3503,6 +3596,7 @@ impl Game {
 			setup: Some(record),
 			capture_score: [0, 0],
 			graveyards: [Vec::new(), Vec::new()],
+			position_history: Vec::new(),
 			last_majority_spawn: false,
 			score_cascade_hit: false,
 		};
@@ -3589,6 +3683,7 @@ impl Game {
 			setup: Some(record),
 			capture_score: [0, 0],
 			graveyards: [Vec::new(), Vec::new()],
+			position_history: Vec::new(),
 			last_majority_spawn: false,
 			score_cascade_hit: false,
 		};
@@ -3677,6 +3772,7 @@ impl Game {
 			setup: None,
 			capture_score: [0, 0],
 			graveyards: [Vec::new(), Vec::new()],
+			position_history: Vec::new(),
 			last_majority_spawn: false,
 			score_cascade_hit: false,
 		}
@@ -3791,10 +3887,16 @@ impl Game {
 		&self.graveyards[player.index()]
 	}
 
+	/// Graveyard piles are live: [`RuleSet::graveyard`], or
+	/// [`RuleSet::mark_capture_routing`] (which routes into graveyards).
+	fn graveyard_rules_on(&self) -> bool {
+		self.rules.graveyard || self.rules.mark_capture_routing.is_on()
+	}
+
 	/// [`Action::Recover`] when the graveyard rule is on and the pile is non-empty.
 	pub fn legal_recovers(&self) -> Vec<Action> {
 		if self.status.is_over()
-			|| !self.rules.graveyard
+			|| !self.graveyard_rules_on()
 			|| self.graveyards[self.current.index()].is_empty()
 		{
 			return Vec::new();
@@ -3803,8 +3905,8 @@ impl Game {
 	}
 
 	fn apply_recover(&mut self) -> Result<(), String> {
-		if !self.rules.graveyard {
-			return Err("recover needs --graveyard on".into());
+		if !self.graveyard_rules_on() {
+			return Err("recover needs --graveyard on or --mark-capture-routing".into());
 		}
 		let i = self.current.index();
 		if self.graveyards[i].is_empty() {
@@ -5641,6 +5743,16 @@ impl Game {
 				rem.dest = CaptureDest::Bench;
 			}
 		}
+		if self.rules.mark_capture_routing.is_on() && !removals.is_empty() {
+			let mark = self.acting_capture(action);
+			for rem in &mut removals {
+				if let Some(d) =
+					self.rules.mark_capture_routing.route(mark, rem.tile.owner == player)
+				{
+					rem.dest = d;
+				}
+			}
+		}
 		if self.rules.is_capture_score() {
 			let opp_caps = removals.iter().filter(|r| r.tile.owner == opponent).count() as u8;
 			self.capture_score[player.index()] =
@@ -5677,6 +5789,22 @@ impl Game {
 						self.benches[rem.tile.owner.index()].push(rem.tile);
 					}
 				}
+				CaptureDest::Hand => {
+					let mut tile = rem.tile;
+					tile.owner = player;
+					self.benches[player.index()].push(tile);
+				}
+				CaptureDest::Graveyard => {
+					let mut tile = rem.tile;
+					tile.owner = player;
+					self.graveyards[player.index()].push(tile);
+				}
+				CaptureDest::OppGraveyard => {
+					let mut tile = rem.tile;
+					tile.owner = opponent;
+					self.graveyards[opponent.index()].push(tile);
+				}
+				CaptureDest::Discard => {}
 			}
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
 				if self.draw_from_bag(player).is_some() {
@@ -5728,6 +5856,7 @@ impl Game {
 				self.forfeit_opening_stay(player);
 			}
 			self.finish_turn(player);
+			self.check_repetition();
 		}
 		if self.status.is_over() {
 			self.mark_end_timing();
@@ -6040,6 +6169,20 @@ impl Game {
 		self.ratchet_count = self.ratchet_count.saturating_add(1);
 		let tier = if self.ratchet_count == 1 { RatchetTier::First } else { RatchetTier::Later };
 		self.pending_ratchet = Some((leader, tier));
+	}
+
+	/// [`RuleSet::repetition_ends`]: record the visible position at each
+	/// turn boundary; the third occurrence ends the game on capture score.
+	fn check_repetition(&mut self) {
+		if !self.rules.repetition_ends || self.status.is_over() {
+			return;
+		}
+		let h = crate::ai::visible_hash(self);
+		let seen = self.position_history.iter().filter(|&&x| x == h).count();
+		self.position_history.push(h);
+		if seen >= 2 {
+			self.resolve_by_score(EndReason::Repetition);
+		}
 	}
 
 	fn check_score_win(&mut self) {
@@ -14586,6 +14729,184 @@ mod tests {
 		let (mut game, _) = claimable_opponent(capture_score_rules());
 		assert!(game.legal_recovers().is_empty());
 		assert!(game.apply(Action::Recover).is_err());
+	}
+
+	#[test]
+	fn mark_capture_routing_table() {
+		use CaptureDest as D;
+		use CaptureMark::{Dot, Triangle};
+		use MarkCaptureRouting as M;
+		assert_eq!(M::Off.route(Triangle, true), None);
+		for m in [M::A, M::ADiscard, M::B] {
+			assert_eq!(m.route(Dot, true), Some(D::Graveyard));
+			assert_eq!(m.route(Dot, false), Some(D::Graveyard));
+		}
+		assert_eq!(M::A.route(Triangle, true), Some(D::Hand));
+		assert_eq!(M::A.route(Triangle, false), Some(D::OppGraveyard));
+		assert_eq!(M::ADiscard.route(Triangle, true), Some(D::Hand));
+		assert_eq!(M::ADiscard.route(Triangle, false), Some(D::Discard));
+		assert_eq!(M::B.route(Triangle, true), Some(D::OppGraveyard));
+		assert_eq!(M::B.route(Triangle, false), Some(D::Hand));
+		for m in [M::Off, M::A, M::ADiscard, M::B] {
+			assert_eq!(MarkCaptureRouting::parse(m.name()), Ok(m));
+		}
+	}
+
+	fn routing_rules(mode: MarkCaptureRouting) -> RuleSet {
+		let mut rules = capture_score_rules();
+		rules.unlimited_spawn = true;
+		rules.graveyard = true;
+		rules.mark_capture_routing = mode;
+		rules
+	}
+
+	#[test]
+	fn mark_routing_a_sends_triangle_opponent_captures_to_their_graveyard() {
+		let (mut game, node) = claimable_opponent(routing_rules(MarkCaptureRouting::A));
+		let id = game.tile_at(node).unwrap().id;
+		let p2_bench = game.bench(Player::Two).len();
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.capture_score(Player::One), 1);
+		assert_eq!(game.bench(Player::Two).len(), p2_bench);
+		assert_eq!(game.graveyard(Player::Two).len(), 1);
+		assert_eq!(game.graveyard(Player::Two)[0].id, id);
+		assert_eq!(game.graveyard(Player::Two)[0].owner, Player::Two);
+		assert!(game.graveyard(Player::One).is_empty());
+		assert_eq!(game.legal_recovers(), vec![Action::Recover]);
+	}
+
+	#[test]
+	fn mark_routing_a_discard_removes_triangle_opponent_captures() {
+		let (mut game, node) = claimable_opponent(routing_rules(MarkCaptureRouting::ADiscard));
+		let id = game.tile_at(node).unwrap().id;
+		let p1_bench = game.bench(Player::One).len();
+		let p2_bench = game.bench(Player::Two).len();
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.capture_score(Player::One), 1);
+		assert_eq!(game.bench(Player::One).len(), p1_bench);
+		assert_eq!(game.bench(Player::Two).len(), p2_bench);
+		assert!(game.graveyard(Player::One).is_empty());
+		assert!(game.graveyard(Player::Two).is_empty());
+		assert!(game.bench(Player::Two).iter().all(|t| t.id != id));
+	}
+
+	#[test]
+	fn mark_routing_b_hands_triangle_opponent_captures_to_the_capturer() {
+		let (mut game, node) = claimable_opponent(routing_rules(MarkCaptureRouting::B));
+		let id = game.tile_at(node).unwrap().id;
+		let p1_bench = game.bench(Player::One).len();
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.bench(Player::One).len(), p1_bench + 1, "skips the graveyard");
+		let t = game.bench(Player::One).iter().find(|t| t.id == id).unwrap();
+		assert_eq!(t.owner, Player::One);
+		assert!(game.graveyard(Player::One).is_empty());
+		assert!(game.graveyard(Player::Two).is_empty());
+	}
+
+	/// P1 self-captures its own overwhelmed tile at `spawns[0]` by moving a
+	/// tile with `mark` from `spawns[4]`. Returns the game after the move,
+	/// the captured tile id, and P1's bench length before.
+	fn routed_self_capture(mode: MarkCaptureRouting, mark: CaptureMark) -> (Game, u32, usize) {
+		let mut rules = routing_rules(mode);
+		rules.capture_mode = CaptureMode::Cascade;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
+		let id = game.tile_at(spawn).unwrap().id;
+		assert!(game.is_overwhelmed(spawn));
+		let from = game.board().spawns()[4];
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, mark);
+		game.set_current(Player::One);
+		let bench_n = game.bench(Player::One).len();
+		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		assert!(outcome.removals.iter().any(|r| r.tile.id == id && r.tile.owner == Player::One));
+		assert!(
+			outcome.removals.iter().all(|r| r.tile.owner == Player::One),
+			"only the self-capture"
+		);
+		assert_eq!(game.capture_score(Player::One), 0, "self-captures do not score");
+		(game, id, bench_n)
+	}
+
+	#[test]
+	fn mark_routing_a_returns_triangle_self_captures_to_hand() {
+		let (game, id, bench_n) = routed_self_capture(MarkCaptureRouting::A, CaptureMark::Triangle);
+		assert_eq!(game.bench(Player::One).len(), bench_n + 1);
+		assert!(game.bench(Player::One).iter().any(|t| t.id == id && t.owner == Player::One));
+		assert!(game.graveyard(Player::One).is_empty());
+	}
+
+	#[test]
+	fn mark_routing_b_sends_triangle_self_captures_to_the_opponents_graveyard() {
+		let (game, id, bench_n) = routed_self_capture(MarkCaptureRouting::B, CaptureMark::Triangle);
+		assert_eq!(game.bench(Player::One).len(), bench_n);
+		assert!(game.graveyard(Player::One).is_empty());
+		assert_eq!(game.graveyard(Player::Two).len(), 1);
+		assert_eq!(game.graveyard(Player::Two)[0].id, id);
+		assert_eq!(game.graveyard(Player::Two)[0].owner, Player::Two, "tile changes owner");
+	}
+
+	#[test]
+	fn mark_routing_dot_self_captures_soak_into_the_movers_graveyard() {
+		for mode in [MarkCaptureRouting::A, MarkCaptureRouting::ADiscard, MarkCaptureRouting::B] {
+			let (game, id, bench_n) = routed_self_capture(mode, CaptureMark::Dot);
+			assert_eq!(game.bench(Player::One).len(), bench_n, "{mode:?}");
+			assert_eq!(game.graveyard(Player::One).len(), 1, "{mode:?}");
+			assert_eq!(game.graveyard(Player::One)[0].id, id);
+			assert!(game.graveyard(Player::Two).is_empty());
+		}
+	}
+
+	#[test]
+	fn mark_routing_without_graveyard_flag_still_allows_recover() {
+		let mut rules = routing_rules(MarkCaptureRouting::A);
+		rules.graveyard = false;
+		let (mut game, node) = claimable_opponent(rules);
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.graveyard(Player::Two).len(), 1);
+		assert_eq!(game.legal_recovers(), vec![Action::Recover]);
+		game.apply(Action::Recover).unwrap();
+		assert!(game.graveyard(Player::Two).is_empty());
+	}
+
+	#[test]
+	fn repetition_ends_awards_the_leader_on_the_third_occurrence() {
+		let mut rules = capture_score_rules();
+		rules.repetition_ends = true;
+		let mut game = Game::empty(rules);
+		game.capture_score = [1, 3];
+		game.check_repetition();
+		game.check_repetition();
+		assert_eq!(game.status(), GameStatus::InProgress);
+		game.check_repetition();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::Repetition }
+		);
+	}
+
+	#[test]
+	fn repetition_ends_is_a_draw_when_scores_are_tied() {
+		let mut rules = capture_score_rules();
+		rules.repetition_ends = true;
+		let mut game = Game::empty(rules);
+		game.capture_score = [2, 2];
+		for _ in 0..3 {
+			game.check_repetition();
+		}
+		assert_eq!(game.status(), GameStatus::Draw { reason: EndReason::Repetition });
+	}
+
+	#[test]
+	fn repetition_is_ignored_when_the_toggle_is_off() {
+		let mut game = Game::empty(capture_score_rules());
+		for _ in 0..5 {
+			game.check_repetition();
+		}
+		assert_eq!(game.status(), GameStatus::InProgress);
+		assert!(game.position_history.is_empty());
 	}
 
 	#[test]
