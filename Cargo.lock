@@ -220,6 +220,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.105"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cb931c189b85683d69a5cfad41d4d418671e1ac413dd209f3f2fc31e3cfd902"
+
+[[package]]
 name = "apa-kan"
 version = "0.1.0"
 dependencies = [
@@ -313,6 +319,14 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "apa-kan-smoke"
+version = "0.1.0"
+dependencies = [
+ "kestrel",
+ "tokio",
 ]
 
 [[package]]
@@ -2363,6 +2377,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "commander"
+version = "0.1.0"
+source = "git+https://github.com/ramate-io/kestrel?rev=7ff0e1c8347578911ad3c399663c2d41d52bdc4e#7ff0e1c8347578911ad3c399663c2d41d52bdc4e"
+dependencies = [
+ "anyhow",
+ "futures",
+ "itertools",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2416,6 +2442,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1aaf9b65849a68662ac6c0810c8893a765c960b907dd7cfab9c4a50bf764fbc"
 dependencies = [
  "const_soft_float",
+]
+
+[[package]]
+name = "convert_case"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baaaa0ecca5b51987b9423ccdc971514dd8b0bb7b4060b983d3664dad3f1f89f"
+dependencies = [
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -2697,7 +2732,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -3072,6 +3107,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3157,6 +3207,7 @@ version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
+ "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",
@@ -4011,6 +4062,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonlvar"
+version = "0.1.0"
+source = "git+https://github.com/ramate-io/kestrel?rev=7ff0e1c8347578911ad3c399663c2d41d52bdc4e#7ff0e1c8347578911ad3c399663c2d41d52bdc4e"
+dependencies = [
+ "jsonlvar-core",
+ "jsonlvar-macro",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
+name = "jsonlvar-core"
+version = "0.1.0"
+source = "git+https://github.com/ramate-io/kestrel?rev=7ff0e1c8347578911ad3c399663c2d41d52bdc4e#7ff0e1c8347578911ad3c399663c2d41d52bdc4e"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "jsonlvar-macro"
+version = "0.1.0"
+source = "git+https://github.com/ramate-io/kestrel?rev=7ff0e1c8347578911ad3c399663c2d41d52bdc4e#7ff0e1c8347578911ad3c399663c2d41d52bdc4e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.119",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "jsonlvar-tokio"
+version = "0.1.0"
+source = "git+https://github.com/ramate-io/kestrel?rev=7ff0e1c8347578911ad3c399663c2d41d52bdc4e#7ff0e1c8347578911ad3c399663c2d41d52bdc4e"
+dependencies = [
+ "anyhow",
+ "jsonlvar",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "keccak"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4027,6 +4126,55 @@ checksum = "d8f198d1db720e4940b5a493201d199d9f24f568f8f746bd13706243a2f71598"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
+]
+
+[[package]]
+name = "kestrel"
+version = "0.1.0"
+source = "git+https://github.com/ramate-io/kestrel?rev=7ff0e1c8347578911ad3c399663c2d41d52bdc4e#7ff0e1c8347578911ad3c399663c2d41d52bdc4e"
+dependencies = [
+ "futures",
+ "kestrel-macro",
+ "kestrel-process",
+ "kestrel-state",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "kestrel-macro"
+version = "0.1.0"
+source = "git+https://github.com/ramate-io/kestrel?rev=7ff0e1c8347578911ad3c399663c2d41d52bdc4e#7ff0e1c8347578911ad3c399663c2d41d52bdc4e"
+dependencies = [
+ "convert_case 0.8.0",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.119",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "kestrel-process"
+version = "0.1.0"
+source = "git+https://github.com/ramate-io/kestrel?rev=7ff0e1c8347578911ad3c399663c2d41d52bdc4e#7ff0e1c8347578911ad3c399663c2d41d52bdc4e"
+dependencies = [
+ "commander",
+ "jsonlvar",
+ "jsonlvar-tokio",
+ "kestrel-state",
+ "paste",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "kestrel-state"
+version = "0.1.0"
+source = "git+https://github.com/ramate-io/kestrel?rev=7ff0e1c8347578911ad3c399663c2d41d52bdc4e#7ff0e1c8347578911ad3c399663c2d41d52bdc4e"
+dependencies = [
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
@@ -4976,6 +5124,12 @@ checksum = "19ab9ace3fad1b9ed603ddac5b595e69931fc50263d7e04e4055015b77b02da5"
 dependencies = [
  "icu_properties",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "percent-encoding"
@@ -6346,10 +6500,12 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 

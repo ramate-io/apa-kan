@@ -7,8 +7,11 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Capturing, Screenshot};
 use bevy::window::WindowResolution;
+use bevy::winit::{UpdateMode, WinitSettings};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+
+mod smoke;
 
 use crate::ai::{self, SearchLimit, SearchStats};
 use crate::bench_log::{self, GameLog};
@@ -43,8 +46,15 @@ pub(crate) fn ui_title_font(font: &UiFont, size: f32) -> TextFont {
 		.with_font_weight(FontWeight::SEMIBOLD)
 }
 
-fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
-	commands.insert_resource(UiFont(fonts.add(Font::from_bytes(EXPLETUS_SANS.to_vec()))));
+/// Insert [`UiFont`] while building the app. It must exist before the first
+/// `OnEnter(AppScreen::…)`, which Bevy runs ahead of `PreStartup`; loading it in
+/// a `Startup` system made the shell panic on a missing resource.
+fn insert_ui_font(app: &mut App) {
+	let handle = app
+		.world_mut()
+		.resource_mut::<Assets<Font>>()
+		.add(Font::from_bytes(EXPLETUS_SANS.to_vec()));
+	app.insert_resource(UiFont(handle));
 }
 
 pub fn run_app(cfg: GameConfig) {
@@ -73,6 +83,15 @@ pub fn run_app(cfg: GameConfig) {
 		visual::BG_RGB[1],
 		visual::BG_RGB[2],
 	)))
+	// Keep ticking when the window/canvas is unfocused. Bevy's default drops to
+	// reactive low-power then; on the web the canvas usually is not focused
+	// (pointer events are prevent-defaulted), and the low-power wakeup could be
+	// lost, freezing bot turns, the clock and hosted-game polling until the
+	// next input event.
+	.insert_resource(WinitSettings {
+		focused_mode: UpdateMode::Continuous,
+		unfocused_mode: UpdateMode::Continuous,
+	})
 	.insert_resource(ConfigRes(cfg))
 	.insert_resource(play)
 	.insert_resource(RngRes(rng))
@@ -87,7 +106,8 @@ pub fn run_app(cfg: GameConfig) {
 	.insert_resource(host)
 	.add_plugins(PlatformPlugin)
 	.add_plugins(shell::plugin)
-	.add_systems(Startup, (load_ui_font, setup_camera))
+	.add_plugins(smoke::plugin)
+	.add_systems(Startup, setup_camera)
 	.add_systems(OnEnter(AppScreen::Match), spawn_match_hud)
 	.add_systems(OnExit(AppScreen::Match), despawn_match_hud)
 	.add_systems(
@@ -115,6 +135,7 @@ pub fn run_app(cfg: GameConfig) {
 			remote_sync,
 		),
 	);
+	insert_ui_font(&mut app);
 	app.run();
 }
 
