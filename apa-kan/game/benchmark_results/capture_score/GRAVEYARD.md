@@ -10,6 +10,8 @@ Everything is 150 games, minimax vs minimax, seed 300, release, `--no-default-fe
 
 Control reference (live control-cascade, same harness): P1 75-3-72 (0.500), median 40.5 turns.
 
+| Cell | n | P1 W-D-L | P2 W-D-L | P1 WR | mean / med turns | opp / self caps per game | mean score P1 / P2 (margin) | end reasons | repetition | comebacks | dest C/I/S/O % | capture C/I/S/O % | lead tail med / ≥10 / loser counterplay | RECOVER/game |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | unlimited | 150 | 72-25-53 | 53-25-72 | 0.480 | 95.0 / 65.5 | 9.93 / 25.82 | 5.03 / 4.90 (abs 1.60) | score 113, draw turn_limit 25, turn_limit 8, locked_out 4 | 17 rep≥3 (avg max 5.44) | 74/125 (59.2%) | 2.7/19.0/57.1/21.3 | 6.5/8.6/73.1/11.8 | 0.0 / 44 / 41/122 | 0.0 |
 | combo | 150 | 65-26-59 | 59-26-65 | 0.433 | 107.4 / 84.0 | 8.20 / 17.25 | 4.11 / 4.09 (abs 1.24) | score 106, draw turn_limit 26, turn_limit 11, locked_out 7 | 18 rep≥3 (avg max 3.02) | 83/124 (66.9%) | 3.0/20.3/54.3/22.5 | 4.6/13.8/68.9/12.6 | 0 / 37 / 27/119 | 22.3 |
 | graveyard | 150 | 52-33-65 | 65-33-52 | 0.347 | 109.8 / 86.5 | 10.03 / 14.47 | 4.91 / 5.12 (abs 1.37) | score 106, draw turn_limit 33, locked_out 8, turn_limit 3 | 9 rep≥3 (avg max 1.48) | 80/117 (68.4%) | 3.2/22.1/52.1/22.6 | 5.9/11.3/65.7/17.1 | 0 / 38 / 34/111 | 21.4 |
