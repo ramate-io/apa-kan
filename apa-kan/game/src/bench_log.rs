@@ -2887,6 +2887,17 @@ mod tests {
 	}
 
 	#[test]
+	fn committed_team_spawn_replays() {
+		assert_committed_jsonl_gz_replays_n("benchmark_results/team_spawn/smoke_ts.jsonl.gz", 4);
+		for cell in ["ts_base", "ts_l1", "ts_l3", "ts_l1_l3_cap17"] {
+			assert_committed_jsonl_gz_replays_n(
+				&format!("benchmark_results/team_spawn/h2h_{cell}_mm.jsonl.gz"),
+				150,
+			);
+		}
+	}
+
+	#[test]
 	fn team_spawn_rule_toggles_round_trip_through_the_log() {
 		let mut r = RuleSet::capture_b();
 		let json = serde_json::to_string(&RulesLog::from_rules(r)).unwrap();
