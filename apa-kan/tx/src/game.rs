@@ -1,9 +1,10 @@
 //! State machine for `game/<id>` streams.
 //!
 //! ```text
-//!   game.create (seq 0) ──► Open ──game.join──► Playing ──game.move*──► Finished
-//!                             │                    └──game.resign──────► Finished
-//!                             └──game.cancel (creator)─────────────────► Cancelled
+//!   game.create (seq 0) ──► Open ──game.join──► Revealing ──game.reveal──► Playing ──game.move*──► Finished
+//!                             │                    │                         └──game.resign──────► Finished
+//!                             │                    └──game.cancel (joiner)──► Cancelled (no_reveal)
+//!                             └──game.cancel (creator)──────────────────────► Cancelled
 //! ```
 //!
 //! [`GameState::apply`] is pure and deterministic: same state + same
@@ -284,6 +285,11 @@ impl GameState {
 						n.phase = GamePhase::Cancelled;
 						n.cancel_reason = Some(reason.into());
 					}
+					other => {
+						return Err(TxError::BadEnvelope {
+							reason: format!("{} is not a game transaction", other.kind()),
+						})
+					}
 				}
 				n
 			}
@@ -296,7 +302,7 @@ impl GameState {
 			stream: b.stream.clone(),
 			seq,
 			kind: b.payload.kind().into(),
-			phase: next.phase,
+			phase: Some(next.phase),
 			log_line,
 		};
 		Ok((next, receipt))

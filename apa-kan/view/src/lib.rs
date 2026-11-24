@@ -339,6 +339,79 @@ impl HostedGameView {
 	}
 }
 
+/// Status of one key on an account (mirrors the account crate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyState {
+	/// Added by an email recovery that has not finished its cooldown.
+	PendingRecovery,
+	Active,
+	Revoked,
+}
+
+/// One key on an account.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountKeyView {
+	/// Hex ML-DSA-65 verifying key.
+	pub vk: String,
+	pub label: String,
+	pub status: KeyState,
+	/// `seq` of the account transaction that added the key.
+	pub added_seq: u64,
+}
+
+/// Where an email recovery stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryStage {
+	/// The pending key asked; the host has not issued the emailed token yet.
+	Requested,
+	/// The operator recorded the token hash and cooldown; the token was mailed.
+	Challenged,
+	/// The pending key proved the token; it finishes once the cooldown passes.
+	Confirmed,
+}
+
+/// An email recovery in progress.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryView {
+	/// Hex key being recovered onto the account.
+	pub pending_vk: String,
+	/// `full_recovery` or `email_link_approval`.
+	pub kind: String,
+	pub stage: RecoveryStage,
+	/// When `account.recovery_finish` becomes acceptable (set by the operator).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub usable_at_unix: Option<i64>,
+}
+
+/// `GET /v1/accounts/{id}`: the fold of `account/<id>`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountView {
+	pub v: u32,
+	/// Hex account id.
+	pub id: String,
+	pub ledger: LedgerHead,
+	pub label: String,
+	pub keys: Vec<AccountKeyView>,
+	/// An email is on file (the address itself is not in the view).
+	pub email_set: bool,
+	pub recovery_opt_in: bool,
+	pub approve_via_email: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub recovery: Option<RecoveryView>,
+}
+
+/// `GET /v1/admin/roles`: the fold of `admin/roles`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RolesView {
+	pub v: u32,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ledger: Option<LedgerHead>,
+	/// Hex account id → sorted role names.
+	pub roles: std::collections::BTreeMap<String, Vec<String>>,
+}
+
 #[cfg(test)]
 mod tests {
 	#![allow(clippy::unwrap_used, clippy::expect_used)]
