@@ -9,8 +9,8 @@ use crate::ai::{Actor, SearchConfig};
 use crate::deck::{DeckArchetype, PickStrategy, SetupConfig, DECK_SIZE_DEFAULT, DECK_SIZE_MAX};
 use crate::game::{
 	color_drift_diagonal, BlockerBlocks, CaptureMode, EmblemWeights, EndgameRule, HopWeightCmp,
-	MajoritySpawnSet, Objective, PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet,
-	SamePieceTwice, SwapMode, ZagMismatchCount, BAG_SIZE,
+	Objective, PassThroughRingCmp, PathConstraint, RingCountWeights, RuleSet, SamePieceTwice,
+	SwapMode, ZagMismatchCount, BAG_SIZE,
 };
 use crate::scenario::Scenario;
 
@@ -347,23 +347,22 @@ where
 			}
 			rules.score_target = n as u8;
 		}
-		"--majority-spawn-bonus" => {
-			rules.majority_spawn_bonus = parse_bool(arg, &require_value(arg, it.next())?)?;
+		"--ruleset" => {
+			rules.apply_preset(crate::game::RulesetPreset::parse(&require_value(arg, it.next())?)?);
 		}
-		"--majority-spawn-set" => {
-			rules.majority_spawn_set = MajoritySpawnSet::parse(&require_value(arg, it.next())?)?;
-		}
-		"--capture-cascade" => {
-			rules.capture_cascade = parse_bool(arg, &require_value(arg, it.next())?)?;
+		"--majority-spawn-bonus"
+		| "--majority-spawn-set"
+		| "--capture-cascade"
+		| "--capture-to-capturer" => {
+			return Err(format!(
+				"{arg} was removed with the capture-score simplification; use --ruleset capture-b"
+			));
 		}
 		"--unlimited-spawn" => {
 			rules.unlimited_spawn = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
 		"--graveyard" => {
 			rules.graveyard = parse_bool(arg, &require_value(arg, it.next())?)?;
-		}
-		"--capture-to-capturer" => {
-			rules.capture_to_capturer = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
 		"--mark-capture-routing" => {
 			rules.mark_capture_routing =
@@ -554,14 +553,11 @@ pub fn usage() -> &'static str {
 	   --opening-double <on|off>                  2-2-1-1 opening: P1 two actions, P2 two, then singles (default: on)\n\
 	   --opening <2-2-1-1|1-1-1-1>                Alias for --opening-double on|off\n\
 	   --objective <control|capture-score>        Win condition (default: control). capture-score: 1 point per opponent capture, no control wins\n\
-	   --score-target <1..64>                     First-to-N captures under capture-score (default: 6)\n\
-	   --majority-spawn-bonus <on|off>            Majority of former control cells earns a spawn token once per turn (default: off)\n\
-	   --majority-spawn-set <control-set|inner|center>  Cells the majority bonus counts (default: control-set)\n\
-	   --capture-cascade <on|off>                 Sparse-board capture awards a ratchet extra action (default: off)\n\
+	   --ruleset <control|capture-b>              One-switch preset. capture-b = capture-score, target 5, unlimited spawn, 1-1-1-1 opening, graveyard, mark routing B, no-immediate-return, repetition-ends. Later flags override (default: control)\n\
+	   --score-target <1..64>                     First-to-N captures under capture-score (default: 6; capture-b: 5)\n\
 	   --unlimited-spawn <on|off>                 Captures return to the owner; ADD does not spend tokens (default: off)\n\
 	   --graveyard <on|off>                       Captures go to a graveyard; RECOVER (one action) returns the oldest to the bench (default: off)\n\
-	   --capture-to-capturer <on|off>             Captured tiles change owner to the capturer's bench/graveyard (default: off)\n\
-	   --mark-capture-routing <off|a|a-discard|b> Acting tile's mark routes captures: dots soak to your graveyard; A triangle self->hand, opp->their graveyard; a-discard opp->gone; B self->their graveyard, opp->your hand (default: off)\n\
+	   --mark-capture-routing <off|b>             Acting tile's mark routes captures: dots soak to your graveyard; triangle self-capture -> their graveyard, opponent capture -> your hand (default: off)\n\
 	   --repetition-ends <on|off>                 3-fold repetition of the visible position ends the game on capture score (default: off)\n\
 	   --no-immediate-return <on|off>             a tile may not move straight back to the node it left on its own last move (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
@@ -833,9 +829,6 @@ mod tests {
 		assert!(cfg.rules.opening_double);
 		assert_eq!(cfg.rules.objective, crate::game::Objective::Control);
 		assert_eq!(cfg.rules.score_target, SCORE_TARGET_DEFAULT);
-		assert!(!cfg.rules.majority_spawn_bonus);
-		assert_eq!(cfg.rules.majority_spawn_set, crate::game::MajoritySpawnSet::ControlSet);
-		assert!(!cfg.rules.capture_cascade);
 		assert!(!cfg.rules.unlimited_spawn);
 	}
 
@@ -848,23 +841,24 @@ mod tests {
 			"capture-score",
 			"--score-target",
 			"8",
-			"--majority-spawn-bonus",
-			"on",
-			"--capture-cascade",
-			"on",
 			"--unlimited-spawn",
 			"on",
 		])
 		.unwrap();
 		assert_eq!(score.rules.objective, crate::game::Objective::CaptureScore);
 		assert_eq!(score.rules.score_target, 8);
-		assert!(score.rules.majority_spawn_bonus);
-		assert_eq!(score.rules.majority_spawn_set, crate::game::MajoritySpawnSet::ControlSet);
-		let inner_set = GameConfig::parse(["--majority-spawn-set", "inner"]).unwrap();
-		assert_eq!(inner_set.rules.majority_spawn_set, crate::game::MajoritySpawnSet::Inner);
-		assert!(GameConfig::parse(["--majority-spawn-set", "petals"]).is_ok());
-		assert!(GameConfig::parse(["--majority-spawn-set", "board"]).is_err());
-		assert!(score.rules.capture_cascade);
+		for gone in [
+			"--majority-spawn-bonus",
+			"--majority-spawn-set",
+			"--capture-cascade",
+			"--capture-to-capturer",
+		] {
+			let err = GameConfig::parse([gone, "on"]).unwrap_err();
+			assert!(err.contains("removed"), "{err}");
+		}
+		assert!(GameConfig::parse(["--mark-capture-routing", "a"])
+			.unwrap_err()
+			.contains("removed"));
 		assert!(score.rules.unlimited_spawn);
 		assert!(score.rules.control_win, "control_win flag is unchanged; logic ignores it");
 		assert!(!score.rules.control_wins_active());
@@ -872,6 +866,24 @@ mod tests {
 		assert_eq!(alias.rules.objective, crate::game::Objective::CaptureScore);
 		assert!(GameConfig::parse(["--objective", "points"]).is_err());
 		assert!(GameConfig::parse(["--score-target", "0"]).is_err());
+	}
+
+	#[test]
+	fn ruleset_capture_b_is_one_switch() {
+		let b = GameConfig::parse(["--ruleset", "capture-b"]).unwrap();
+		assert_eq!(b.rules, RuleSet::capture_b());
+		assert_eq!(b.rules.objective, crate::game::Objective::CaptureScore);
+		assert_eq!(b.rules.score_target, 5);
+		assert!(b.rules.unlimited_spawn && b.rules.graveyard);
+		assert!(!b.rules.opening_double);
+		assert_eq!(b.rules.mark_capture_routing, crate::game::MarkCaptureRouting::B);
+		assert!(b.rules.no_immediate_return && b.rules.repetition_ends);
+		let tweak =
+			GameConfig::parse(["--ruleset", "capture-b", "--repetition-ends", "off"]).unwrap();
+		assert!(!tweak.rules.repetition_ends, "later flags override the preset");
+		let back = GameConfig::parse(["--ruleset", "capture-b", "--ruleset", "control"]).unwrap();
+		assert_eq!(back.rules, RuleSet::default());
+		assert!(GameConfig::parse(["--ruleset", "mode-a"]).is_err());
 	}
 
 	#[test]

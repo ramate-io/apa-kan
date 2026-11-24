@@ -639,6 +639,36 @@ mod tests {
 	}
 
 	#[test]
+	fn minimax_takes_the_tied_match_point_capture_under_capture_b() {
+		use crate::game::{EndReason, GameStatus, Player, TileColor};
+
+		let mut game = Game::empty(RuleSet::capture_b());
+		let spawn = game.board().spawns()[0];
+		let nbs = game.board().neighbors(spawn).to_vec();
+		for (node, color) in [(nbs[0], TileColor::Green), (nbs[1], TileColor::Orange)] {
+			let t = game.alloc_tile(Player::One, color, 3, 1);
+			game.place_tile(node, t);
+		}
+		let weak = game.alloc_tile(Player::Two, TileColor::Blue, 1, 1);
+		game.place_tile(spawn, weak);
+		let far = game.board().spawns()[4];
+		let t = game.alloc_tile(Player::Two, TileColor::Green, 3, 1);
+		game.place_tile(far, t);
+		assert!(game.is_overwhelmed(spawn));
+		game.set_capture_score_for_test(Player::One, 4);
+		game.set_capture_score_for_test(Player::Two, 4);
+		game.set_current(Player::One);
+		let mut rng = StdRng::seed_from_u64(1);
+		let action = choose(&game, Actor::Minimax, &mut rng, Duration::from_millis(80));
+		game.apply(action).unwrap();
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::One, reason: EndReason::Score },
+			"minimax must see the 4-4 capture as a win, chose {action:?}"
+		);
+	}
+
+	#[test]
 	fn minimax_takes_immediate_control_win() {
 		use crate::game::{EndReason, GameStatus, Player, TileColor};
 

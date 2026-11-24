@@ -3163,10 +3163,9 @@ pub fn demo_midgame_capture_flash(dest: CaptureDest) -> (Game, CaptureFlash) {
 			.collect(),
 		CaptureDest::Bench => game.bench(Player::One).iter().copied().take(2).collect(),
 		CaptureDest::Owner => game.bench(Player::Two).iter().copied().take(2).collect(),
-		CaptureDest::Hand
-		| CaptureDest::Graveyard
-		| CaptureDest::OppGraveyard
-		| CaptureDest::Discard => game.bench(Player::One).iter().copied().take(2).collect(),
+		CaptureDest::Hand | CaptureDest::Graveyard | CaptureDest::OppGraveyard => {
+			game.bench(Player::One).iter().copied().take(2).collect()
+		}
 	};
 	(game, CaptureFlash { mover: Player::One, dest: Some(dest), tiles })
 }

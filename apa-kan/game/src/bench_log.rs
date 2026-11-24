@@ -7,10 +7,10 @@ use crate::game::{
 	color_drift_diagonal, color_drift_diagonal_value, color_drift_zero, Action, ActionOutcome,
 	BeadScoring, BlockerBlocks, BraidFailMismatch, BraidScoring, BudgetToken, CaptureMark,
 	CaptureMode, ChannelMode, ColorDrift, Emblem, EmblemWeights, EndReason, EndgameRule, Game,
-	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, MajoritySpawnSet,
-	Objective, PassThroughRingCmp, PathConstraint, Player, RatchetKind, RatchetTier,
-	RingCountWeights, RingType, RuleSet, SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind,
-	ZagMismatchCount, DOT_PERCENT_DEFAULT, SCORE_TARGET_DEFAULT,
+	GameStatus, HopWeightCmp, InsufficientTilesLoss, LowValueResolution, Objective,
+	PassThroughRingCmp, PathConstraint, Player, RatchetKind, RatchetTier, RingCountWeights,
+	RingType, RuleSet, SamePieceTwice, SwapMode, Tile, TileColor, TurnGainKind, ZagMismatchCount,
+	DOT_PERCENT_DEFAULT, SCORE_TARGET_DEFAULT,
 };
 
 /// XOR mixed into the game seed for the searcher's `StdRng` in `apa-kan-bench`.
@@ -497,20 +497,23 @@ pub struct RulesLog {
 	/// First-to-N under capture-score. Absent: [`SCORE_TARGET_DEFAULT`].
 	#[serde(default = "default_score_target", skip_serializing_if = "skip_score_target")]
 	pub score_target: u8,
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	/// Removed rule (majority-spawn bonus, #94 sweep). Read only so a log
+	/// that used it fails [`Self::to_rules`] instead of replaying wrong.
+	#[serde(default, skip_serializing)]
 	pub majority_spawn_bonus: bool,
-	#[serde(
-		default = "default_majority_spawn_set",
-		skip_serializing_if = "skip_majority_spawn_set"
-	)]
+	/// Removed with [`Self::majority_spawn_bonus`]; ignored.
+	#[serde(default, skip_serializing)]
 	pub majority_spawn_set: String,
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	/// Removed rule (sparse-board capture cascade, #94 sweep). Read only.
+	#[serde(default, skip_serializing)]
 	pub capture_cascade: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub unlimited_spawn: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub graveyard: bool,
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	/// Removed rule (capture-to-capturer, #103). Read only. Mark routing
+	/// always overrode it, so a routed log that also set it still replays.
+	#[serde(default, skip_serializing)]
 	pub capture_to_capturer: bool,
 	/// `off` is omitted. Absent: off.
 	#[serde(default, skip_serializing_if = "String::is_empty")]
@@ -535,14 +538,6 @@ fn default_score_target() -> u8 {
 
 fn skip_score_target(v: &u8) -> bool {
 	*v == SCORE_TARGET_DEFAULT
-}
-
-fn default_majority_spawn_set() -> String {
-	MajoritySpawnSet::ControlSet.name().to_string()
-}
-
-fn skip_majority_spawn_set(v: &String) -> bool {
-	v == MajoritySpawnSet::ControlSet.name()
 }
 
 fn default_low_value_endgame() -> String {
@@ -641,12 +636,12 @@ impl RulesLog {
 			swap_no_just_moved: false,
 			objective: r.objective.name().into(),
 			score_target: r.score_target,
-			majority_spawn_bonus: r.majority_spawn_bonus,
-			majority_spawn_set: r.majority_spawn_set.name().into(),
-			capture_cascade: r.capture_cascade,
+			majority_spawn_bonus: false,
+			majority_spawn_set: String::new(),
+			capture_cascade: false,
 			unlimited_spawn: r.unlimited_spawn,
 			graveyard: r.graveyard,
-			capture_to_capturer: r.capture_to_capturer,
+			capture_to_capturer: false,
 			mark_capture_routing: if r.mark_capture_routing.is_on() {
 				r.mark_capture_routing.name().into()
 			} else {
@@ -658,6 +653,16 @@ impl RulesLog {
 	}
 
 	pub fn to_rules(&self) -> Result<RuleSet, String> {
+		let routed = !self.mark_capture_routing.is_empty() && self.mark_capture_routing != "off";
+		for (on, name) in [
+			(self.majority_spawn_bonus, "majority_spawn_bonus"),
+			(self.capture_cascade, "capture_cascade"),
+			(self.capture_to_capturer && !routed, "capture_to_capturer"),
+		] {
+			if on {
+				return Err(format!("log uses removed rule {name}; replay it on an older commit"));
+			}
+		}
 		Ok(RuleSet {
 			starting_bench_size: self.starting_bench,
 			bag_size: self.bag_size,
@@ -723,13 +728,8 @@ impl RulesLog {
 			} else {
 				self.score_target
 			},
-			majority_spawn_bonus: self.majority_spawn_bonus,
-			majority_spawn_set: MajoritySpawnSet::parse(&self.majority_spawn_set)
-				.unwrap_or(MajoritySpawnSet::ControlSet),
-			capture_cascade: self.capture_cascade,
 			unlimited_spawn: self.unlimited_spawn,
 			graveyard: self.graveyard,
-			capture_to_capturer: self.capture_to_capturer,
 			mark_capture_routing: if self.mark_capture_routing.is_empty() {
 				crate::game::MarkCaptureRouting::Off
 			} else {
@@ -937,8 +937,6 @@ pub struct ActionLog {
 	pub p1_score: u8,
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub p2_score: u8,
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
-	pub majority_spawn: bool,
 	/// Graveyard sizes after the action (`--graveyard`). Omitted when both are empty.
 	#[serde(default, skip_serializing_if = "skip_zero_u8")]
 	pub p1_graveyard: u8,
@@ -1047,7 +1045,6 @@ impl ActionLog {
 			played_as_opening: game_after.last_played_as_opening(),
 			p1_score: game_after.capture_score(Player::One),
 			p2_score: game_after.capture_score(Player::Two),
-			majority_spawn: game_after.last_majority_spawn(),
 			p1_graveyard: game_after.graveyard(Player::One).len().min(255) as u8,
 			p2_graveyard: game_after.graveyard(Player::Two).len().min(255) as u8,
 		}
@@ -2210,17 +2207,14 @@ mod tests {
 		assert!(!json.contains("unlimited_spawn"), "{json}");
 		let parsed: RulesLog = serde_json::from_str(&json).unwrap();
 		assert_eq!(parsed.to_rules().unwrap().objective, Objective::Control);
-		assert!(!parsed.to_rules().unwrap().majority_spawn_bonus);
 		let mut r = RuleSet::default();
 		r.objective = Objective::CaptureScore;
-		r.majority_spawn_bonus = true;
-		r.capture_cascade = true;
 		r.unlimited_spawn = true;
 		r.score_target = 8;
 		let on = RulesLog::from_rules(r);
 		let json = serde_json::to_string(&on).unwrap();
 		assert!(json.contains("capture-score"), "{json}");
-		assert!(json.contains("majority_spawn_bonus"), "{json}");
+		assert!(!json.contains("majority_spawn_bonus"), "{json}");
 		assert!(json.contains("unlimited_spawn"), "{json}");
 		assert_eq!(on.to_rules().unwrap().score_target, 8);
 	}
@@ -2766,14 +2760,10 @@ mod tests {
 
 	#[test]
 	fn committed_capture_score_graveyard_replays() {
-		assert_committed_jsonl_gz_replays_n(
-			"benchmark_results/capture_score/smoke_unl_combo.jsonl.gz",
-			4,
-		);
+		// Combo and capturer cells used the removed capture-to-capturer rule;
+		// they stay committed as history (see `removed_rule_logs_refuse_to_replay`).
 		for rel in [
-			"benchmark_results/capture_score/h2h_unl_combo_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_graveyard_mm.jsonl.gz",
-			"benchmark_results/capture_score/h2h_unl_capturer_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_t5_mm.jsonl.gz",
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 150);
@@ -2785,35 +2775,65 @@ mod tests {
 		let mut r = RuleSet::default();
 		let json = serde_json::to_string(&RulesLog::from_rules(r)).unwrap();
 		assert!(!json.contains("graveyard"), "{json}");
-		assert!(!json.contains("capture_to_capturer"), "{json}");
 		r.graveyard = true;
-		r.capture_to_capturer = true;
 		let log = RulesLog::from_rules(r);
-		let back = log.to_rules().unwrap();
-		assert!(back.graveyard && back.capture_to_capturer);
+		let json = serde_json::to_string(&log).unwrap();
+		assert!(!json.contains("capture_to_capturer"), "{json}");
+		assert!(log.to_rules().unwrap().graveyard);
 	}
 
 	#[test]
 	fn committed_capture_score_mark_routing_replays() {
-		assert_committed_jsonl_gz_replays_n(
-			"benchmark_results/capture_score/smoke_unl_mark.jsonl.gz",
-			4,
-		);
-		assert_committed_jsonl_gz_replays_n(
-			"benchmark_results/capture_score/smoke_unl_noreturn.jsonl.gz",
-			4,
-		);
+		// Mode A / A-discard and capture-to-capturer cells are history only.
+		// B + no-return set capture_to_capturer, which routing overrode.
 		for rel in [
-			"benchmark_results/capture_score/h2h_unl_mark_a_mm.jsonl.gz",
-			"benchmark_results/capture_score/h2h_unl_mark_adiscard_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_mark_b_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_mark_b_rep_mm.jsonl.gz",
-			"benchmark_results/capture_score/h2h_unl_capturer_rep_mm.jsonl.gz",
-			"benchmark_results/capture_score/h2h_unl_noreturn_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_mark_b_noreturn_mm.jsonl.gz",
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 150);
 		}
+	}
+
+	#[test]
+	fn committed_capture_b_replays() {
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/capture_score/smoke_capture_b.jsonl.gz",
+			4,
+		);
+		assert_committed_jsonl_gz_replays_n(
+			"benchmark_results/capture_score/h2h_capture_b_mm.jsonl.gz",
+			150,
+		);
+	}
+
+	#[test]
+	fn removed_rule_logs_refuse_to_replay() {
+		for (rel, needle) in [
+			("benchmark_results/capture_score/h2h_majority_mm.jsonl.gz", "majority_spawn_bonus"),
+			("benchmark_results/capture_score/h2h_cascade_mm.jsonl.gz", "capture_cascade"),
+			(
+				"benchmark_results/capture_score/h2h_unl_capturer_rep_mm.jsonl.gz",
+				"capture_to_capturer",
+			),
+			("benchmark_results/capture_score/h2h_unl_mark_a_mm.jsonl.gz", "removed"),
+			("benchmark_results/capture_score/h2h_unl_mark_adiscard_mm.jsonl.gz", "removed"),
+		] {
+			let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+			if !path.exists() {
+				continue;
+			}
+			let logs = decode_jsonl_gz(&std::fs::read(&path).unwrap()).expect("decode gzip jsonl");
+			let err = logs[0].rules.to_rules().unwrap_err();
+			assert!(err.contains(needle), "{rel}: {err}");
+		}
+	}
+
+	#[test]
+	fn capture_b_preset_round_trips_through_the_log() {
+		let r = RuleSet::capture_b();
+		let back = RulesLog::from_rules(r).to_rules().unwrap();
+		assert_eq!(back, r);
 	}
 
 	#[test]
@@ -2822,17 +2842,11 @@ mod tests {
 		let json = serde_json::to_string(&RulesLog::from_rules(r)).unwrap();
 		assert!(!json.contains("mark_capture_routing"), "{json}");
 		assert!(!json.contains("repetition_ends"), "{json}");
-		for mode in [
-			crate::game::MarkCaptureRouting::A,
-			crate::game::MarkCaptureRouting::ADiscard,
-			crate::game::MarkCaptureRouting::B,
-		] {
-			r.mark_capture_routing = mode;
-			r.repetition_ends = true;
-			let back = RulesLog::from_rules(r).to_rules().unwrap();
-			assert_eq!(back.mark_capture_routing, mode);
-			assert!(back.repetition_ends);
-		}
+		r.mark_capture_routing = crate::game::MarkCaptureRouting::B;
+		r.repetition_ends = true;
+		let back = RulesLog::from_rules(r).to_rules().unwrap();
+		assert_eq!(back.mark_capture_routing, crate::game::MarkCaptureRouting::B);
+		assert!(back.repetition_ends);
 	}
 
 	#[test]
