@@ -1,11 +1,13 @@
 //! Client side of `/game/<id>` for server-hosted games.
 //!
-//! The server (`apa-kan-server`) holds the authoritative [`GameRecord`]. The
-//! client fetches a [`GameView`], replays its record with core to get a real
-//! [`Game`], and submits each local action as an `apa-kan-tx`
-//! [`Transaction`]. While it is not this seat's turn the client polls the view
-//! and replays any new actions. A rejected transaction (stale seq, illegal)
-//! drops the optimistic move and reloads the authoritative view.
+//! The server (`apa-kan-server`) is a ledger host: every change to a game is
+//! a signed `apa-kan-tx` transaction posted to `POST /v1/tx`, and every read
+//! is a view (`GET /v1/games/<id>` returns a [`HostedGameView`]). The client
+//! holds an ML-DSA account key ([`identity`]), signs create / join / move
+//! transactions against the stream head from the last view, replays the
+//! view's record with core to get a real [`Game`], and polls while the other
+//! seat moves. A rejected transaction (stale seq, illegal) drops the
+//! optimistic move and reloads the authoritative view.
 //!
 //! HTTP goes through `ehttp` (browser `fetch` on web, a background thread on
 //! desktop). Android and iOS have no HTTP client wired yet, so there
@@ -14,10 +16,10 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use apa_kan_tx::{Transaction, TxAuth};
-use apa_kan_view::{player_of, ActionWire, GameView, Seat};
+use apa_kan_tx::{game_stream, SignedTx, TxPayload, GENESIS_PREV};
+use apa_kan_view::{GamePhase, HostedGameView, LedgerHead, Seat};
 
-use crate::game::{Action, Game, Player};
+use crate::game::{Action, Game};
 use crate::host::HostConfig;
 
 /// Seconds between view polls while waiting on the other seat.
@@ -27,43 +29,119 @@ pub const POLL_SECS: f32 = 1.5;
 pub const HTTP_AVAILABLE: bool =
 	cfg!(any(target_arch = "wasm32", not(any(target_os = "android", target_os = "ios"))));
 
+/// This device's account key.
+///
+/// A 32-byte ML-DSA seed, generated on first use and kept in `localStorage`
+/// (`apakan.key.v1`) on web, or in `APAKAN_KEY_FILE` on desktop (memory only
+/// when unset). The account is the one this key is genesis for, so it works
+/// unregistered and becomes a full account if registered with
+/// `POST /v1/accounts`; linking more devices uses the account crate's link flow.
+pub mod identity {
+	use std::sync::OnceLock;
+
+	use apa_kan_account::Seed;
+	use apa_kan_tx::TxSigner;
+
+	const STORAGE_KEY: &str = "apakan.key.v1";
+
+	fn parse(hex_seed: &str) -> Option<Seed> {
+		let bytes: [u8; 32] = hex::decode(hex_seed.trim()).ok()?.try_into().ok()?;
+		Some(Seed::from_bytes(bytes))
+	}
+
+	fn load_or_create() -> Seed {
+		#[cfg(target_arch = "wasm32")]
+		{
+			let storage = web_sys::window().and_then(|w| w.local_storage().ok().flatten());
+			if let Some(seed) = storage
+				.as_ref()
+				.and_then(|s| s.get_item(STORAGE_KEY).ok().flatten())
+				.and_then(|v| parse(&v))
+			{
+				return seed;
+			}
+			let seed = Seed::random();
+			if let Some(s) = storage {
+				let _ = s.set_item(STORAGE_KEY, &hex::encode(seed.0));
+			}
+			seed
+		}
+		#[cfg(not(target_arch = "wasm32"))]
+		{
+			let _ = STORAGE_KEY;
+			let path = std::env::var_os("APAKAN_KEY_FILE").map(std::path::PathBuf::from);
+			if let Some(seed) = path
+				.as_ref()
+				.and_then(|p| std::fs::read_to_string(p).ok())
+				.and_then(|v| parse(&v))
+			{
+				return seed;
+			}
+			let seed = Seed::random();
+			if let Some(p) = path {
+				let _ = std::fs::write(p, hex::encode(seed.0));
+			}
+			seed
+		}
+	}
+
+	/// The signer for this device (loaded once).
+	pub fn signer() -> &'static TxSigner {
+		static SIGNER: OnceLock<TxSigner> = OnceLock::new();
+		SIGNER.get_or_init(|| TxSigner::from_seed(&load_or_create()))
+	}
+
+	/// Hex account id of [`signer`].
+	pub fn account_hex() -> String {
+		signer().account().to_hex()
+	}
+}
+
 /// One hosted game this client is attached to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RemoteSession {
 	pub id: String,
-	/// The seat this client plays, or `None` to spectate.
+	/// Hex account this client signs as.
+	pub account: String,
+	/// The seat this account holds, from the last view (`None` = spectating
+	/// or not joined yet).
 	pub seat: Option<Seat>,
-	pub token: Option<String>,
-	/// Server record seq the local game matches (after the last load/accept).
-	pub seq: u64,
+	pub phase: GamePhase,
+	/// Stream head from the last view or accepted transaction.
+	pub ledger: Option<LedgerHead>,
+	/// Engine record length of the position the client holds.
+	pub game_seq: Option<u64>,
 	pub loaded: bool,
 	/// A transaction or view request is in flight.
 	pub inflight: bool,
+	/// A join was already sent for this game.
+	pub join_sent: bool,
 	pub poll_wait: f32,
 	pub labels: [String; 2],
-	/// Seat-2 invite link to show the host after creating a game.
+	/// Invite link to show the creator while the seat is open.
 	pub invite: Option<String>,
 }
 
 impl RemoteSession {
-	pub fn new(id: impl Into<String>, seat: Option<Seat>, token: Option<String>) -> Self {
-		let seat = seat.filter(|s| player_of(*s).is_some());
-		let token = token.filter(|t| !t.is_empty());
+	pub fn new(id: impl Into<String>, account: impl Into<String>) -> Self {
 		Self {
 			id: id.into(),
-			seat: if token.is_some() { seat } else { None },
-			token,
-			seq: 0,
+			account: account.into(),
+			seat: None,
+			phase: GamePhase::Open,
+			ledger: None,
+			game_seq: None,
 			loaded: false,
 			inflight: false,
+			join_sent: false,
 			poll_wait: 0.0,
 			labels: ["P1".into(), "P2".into()],
 			invite: None,
 		}
 	}
 
-	pub fn player(&self) -> Option<Player> {
-		self.seat.and_then(player_of)
+	pub fn player(&self) -> Option<crate::game::Player> {
+		self.seat.and_then(apa_kan_view::player_of)
 	}
 
 	/// May the local user act on `game` right now?
@@ -74,8 +152,14 @@ impl RemoteSession {
 		if self.inflight {
 			return Err("Sending move…");
 		}
+		match self.phase {
+			GamePhase::Open => return Err("Waiting for the other seat to join…"),
+			GamePhase::Cancelled => return Err("This game was cancelled."),
+			GamePhase::Finished => return Err("Game over."),
+			GamePhase::Playing => {}
+		}
 		let Some(me) = self.player() else {
-			return Err("Spectating: open your seat link to play.");
+			return Err("Spectating: both seats are taken.");
 		};
 		if game.current_player() != me {
 			return Err("Waiting for the other seat…");
@@ -83,86 +167,102 @@ impl RemoteSession {
 		Ok(())
 	}
 
-	/// Build the transaction for an action just chosen locally.
-	pub fn transaction(&self, action: Action) -> Option<Transaction> {
-		Some(Transaction {
-			game_id: self.id.clone(),
-			seq: self.seq,
-			seat: self.seat?,
-			action: ActionWire::from(action),
-			auth: TxAuth::SeatToken { token: self.token.clone()? },
-		})
+	/// Sign `payload` against the current stream head.
+	pub fn sign(&self, payload: TxPayload) -> Option<SignedTx> {
+		let head = self.ledger.as_ref()?;
+		identity::signer()
+			.sign(&head.chain, &head.stream, head.seq, &head.head, payload)
+			.ok()
 	}
 
-	/// Should we poll for the other seat's move?
-	pub fn wants_poll(&self, game: &Game) -> bool {
+	/// Signed move for an action just chosen locally.
+	pub fn transaction(&self, action: Action) -> Option<SignedTx> {
+		self.seat?;
+		self.sign(TxPayload::GameMove { action: action.into() })
+	}
+
+	/// Should this client take the open seat? (Opening an invite link joins.)
+	pub fn wants_join(&self) -> bool {
 		self.loaded
 			&& !self.inflight
-			&& !game.status().is_over()
-			&& self.player() != Some(game.current_player())
+			&& !self.join_sent
+			&& self.phase == GamePhase::Open
+			&& self.seat.is_none()
 	}
 
-	/// Adopt an authoritative view. Returns the replayed game when it differs
-	/// from what the client has (new seq or first load).
-	pub fn adopt(&mut self, view: &GameView) -> Result<Option<Game>, String> {
+	/// Should we poll for the other seat?
+	pub fn wants_poll(&self, game: &Game) -> bool {
+		if !self.loaded || self.inflight {
+			return false;
+		}
+		match self.phase {
+			GamePhase::Open => self.seat.is_some(),
+			GamePhase::Playing => {
+				!game.status().is_over() && self.player() != Some(game.current_player())
+			}
+			GamePhase::Finished | GamePhase::Cancelled => false,
+		}
+	}
+
+	/// Adopt an authoritative view. Returns the replayed game when the
+	/// position changed (new engine seq or first load with a position).
+	pub fn adopt(&mut self, view: &HostedGameView) -> Result<Option<Game>, String> {
 		if view.id != self.id {
 			return Err(format!("view is for game {}, not {}", view.id, self.id));
 		}
-		let fresh = !self.loaded || view.seq != self.seq;
-		self.labels = [view.seats[0].label.clone(), view.seats[1].label.clone()];
-		if !fresh {
+		self.seat = view.seat_of_account(&self.account);
+		self.phase = view.phase;
+		self.labels = [0, 1].map(|i| {
+			view.seats[i]
+				.as_ref()
+				.map(|c| c.label.clone())
+				.unwrap_or_else(|| format!("P{}", i + 1))
+		});
+		self.ledger = Some(view.ledger.clone());
+		self.loaded = true;
+		let Some(g) = view.game.as_ref() else {
+			return Ok(None);
+		};
+		if self.game_seq == Some(g.seq) {
 			return Ok(None);
 		}
-		let game = view.replay()?;
-		self.seq = view.seq;
-		self.loaded = true;
+		let game = g.replay()?;
+		self.game_seq = Some(g.seq);
 		Ok(Some(game))
 	}
 }
 
-/// `?seat=N&token=…` from a deep link's query pairs.
-pub fn seat_from_query(
-	query: &std::collections::BTreeMap<String, String>,
-) -> (Option<Seat>, Option<String>) {
-	let seat = query.get("seat").and_then(|s| s.parse::<Seat>().ok());
-	let token = query.get("token").cloned();
-	(seat, token)
+/// Shareable link to a game: opening it joins the open seat or spectates.
+pub fn game_link(host: &HostConfig, id: &str) -> String {
+	host.share_url(&crate::route::Route::Game { id: id.to_string() })
 }
 
-/// Shareable link that claims `seat` of `id`.
-pub fn seat_link(host: &HostConfig, id: &str, seat: Seat, token: &str) -> String {
-	let route = crate::route::Route::Game { id: id.to_string() };
-	format!("{}?seat={seat}&token={token}", host.share_url(&route))
+/// Fresh random game id (24 lowercase hex).
+pub fn new_game_id() -> String {
+	use rand::RngCore;
+	let mut b = [0u8; 12];
+	rand::thread_rng().fill_bytes(&mut b);
+	hex::encode(b)
 }
 
 /// Result of one HTTP call, drained by the Bevy client each frame.
 #[derive(Clone, Debug)]
 pub enum RemoteEvent {
-	View { id: String, view: Box<GameView> },
-	Created { created: Box<CreatedGameWire> },
-	TxAccepted { id: String, view: Box<GameView> },
+	View { id: String, view: Box<HostedGameView> },
+	Created { view: Box<HostedGameView> },
+	TxAccepted { id: String, view: Box<HostedGameView> },
 	TxRejected { id: String, message: String },
 	Failed { id: String, message: String },
 }
 
-/// `POST /v1/games` response, mirrored so the client need not depend on the
-/// server crate.
-#[derive(Clone, Debug, serde::Deserialize)]
-pub struct CreatedGameWire {
-	pub game_id: String,
-	pub seats: [SeatInviteWire; 2],
-	pub view: GameView,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-pub struct SeatInviteWire {
-	pub seat: Seat,
-	pub token: String,
+#[derive(serde::Deserialize)]
+struct TxResponseWire {
+	view: HostedGameView,
 }
 
 #[derive(serde::Deserialize)]
-struct TxResponseWire {
-	view: GameView,
+struct LedgerInfoWire {
+	chain: String,
 }
 
 fn events() -> &'static Mutex<VecDeque<RemoteEvent>> {
@@ -186,6 +286,19 @@ fn error_message(status: u16, body: &str) -> String {
 		Ok(e) => e.to_string(),
 		Err(_) => format!("HTTP {status}"),
 	}
+}
+
+/// Signed `game.create` taking seat 1 of a fresh game on `chain`.
+pub fn create_tx(chain: &str, id: &str) -> Option<SignedTx> {
+	identity::signer()
+		.sign(
+			chain,
+			&game_stream(id),
+			0,
+			GENESIS_PREV,
+			TxPayload::GameCreate { seat: 1, label: String::new() },
+		)
+		.ok()
 }
 
 #[cfg(any(target_arch = "wasm32", not(any(target_os = "android", target_os = "ios"))))]
@@ -216,7 +329,7 @@ mod http {
 		};
 		let id = id.to_string();
 		ehttp::fetch(json_request(url, None), move |res| match res {
-			Ok(r) if r.ok => match serde_json::from_slice::<GameView>(&r.bytes) {
+			Ok(r) if r.ok => match serde_json::from_slice::<HostedGameView>(&r.bytes) {
 				Ok(view) => push(RemoteEvent::View { id, view: Box::new(view) }),
 				Err(e) => push(RemoteEvent::Failed { id, message: format!("bad view: {e}") }),
 			},
@@ -229,45 +342,58 @@ mod http {
 		true
 	}
 
-	pub fn post_tx(host: &HostConfig, tx: &Transaction) -> bool {
-		let Some(url) = host.api(&format!("/v1/games/{}/transactions", tx.game_id)) else {
+	/// `POST /v1/tx`. `created` reports success as [`RemoteEvent::Created`].
+	pub fn post_tx(host: &HostConfig, tx: &SignedTx, created: bool) -> bool {
+		let Some(url) = host.api("/v1/tx") else {
 			return false;
 		};
 		let Ok(body) = serde_json::to_vec(tx) else {
 			return false;
 		};
-		let id = tx.game_id.clone();
+		let id = apa_kan_tx::game_id_of(&tx.body.stream).unwrap_or_default().to_string();
 		ehttp::fetch(json_request(url, Some(body)), move |res| match res {
 			Ok(r) if r.ok => match serde_json::from_slice::<TxResponseWire>(&r.bytes) {
+				Ok(t) if created => push(RemoteEvent::Created { view: Box::new(t.view) }),
 				Ok(t) => push(RemoteEvent::TxAccepted { id, view: Box::new(t.view) }),
 				Err(e) => push(RemoteEvent::TxRejected { id, message: format!("bad reply: {e}") }),
 			},
-			Ok(r) => push(RemoteEvent::TxRejected {
-				id,
-				message: error_message(r.status, r.text().unwrap_or_default()),
+			Ok(r) => {
+				let message = error_message(r.status, r.text().unwrap_or_default());
+				if created {
+					push(RemoteEvent::Failed { id: String::new(), message });
+				} else {
+					push(RemoteEvent::TxRejected { id, message });
+				}
+			}
+			Err(e) => push(RemoteEvent::Failed {
+				id: if created { String::new() } else { id },
+				message: e,
 			}),
-			Err(e) => push(RemoteEvent::Failed { id, message: e }),
 		});
 		true
 	}
 
+	/// Read the chain id (`GET /v1/ledger`), then sign and post `game.create`.
 	pub fn create_game(host: &HostConfig) -> bool {
-		let Some(url) = host.api("/v1/games") else {
+		let Some(url) = host.api("/v1/ledger") else {
 			return false;
 		};
-		ehttp::fetch(json_request(url, Some(b"{}".to_vec())), move |res| match res {
-			Ok(r) if r.ok => match serde_json::from_slice::<CreatedGameWire>(&r.bytes) {
-				Ok(created) => push(RemoteEvent::Created { created: Box::new(created) }),
-				Err(e) => push(RemoteEvent::Failed {
-					id: String::new(),
-					message: format!("bad create reply: {e}"),
-				}),
+		let host = host.clone();
+		let fail = |message: String| push(RemoteEvent::Failed { id: String::new(), message });
+		ehttp::fetch(json_request(url, None), move |res| match res {
+			Ok(r) if r.ok => match serde_json::from_slice::<LedgerInfoWire>(&r.bytes) {
+				Ok(info) => match create_tx(&info.chain, &new_game_id()) {
+					Some(tx) => {
+						if !post_tx(&host, &tx, true) {
+							fail("no API configured".into());
+						}
+					}
+					None => fail("could not sign the create transaction".into()),
+				},
+				Err(e) => fail(format!("bad ledger info: {e}")),
 			},
-			Ok(r) => push(RemoteEvent::Failed {
-				id: String::new(),
-				message: error_message(r.status, r.text().unwrap_or_default()),
-			}),
-			Err(e) => push(RemoteEvent::Failed { id: String::new(), message: e }),
+			Ok(r) => fail(error_message(r.status, r.text().unwrap_or_default())),
+			Err(e) => fail(e),
 		});
 		true
 	}
@@ -281,7 +407,7 @@ mod http {
 		false
 	}
 
-	pub fn post_tx(_host: &HostConfig, _tx: &Transaction) -> bool {
+	pub fn post_tx(_host: &HostConfig, _tx: &SignedTx, _created: bool) -> bool {
 		false
 	}
 
@@ -295,44 +421,15 @@ pub fn request_view(host: &HostConfig, id: &str) -> bool {
 	http::get_view(host, id)
 }
 
-/// Start a `POST /v1/games/<id>/transactions`. `false` when offline.
-pub fn submit(host: &HostConfig, tx: &Transaction) -> bool {
-	http::post_tx(host, tx)
+/// Start a `POST /v1/tx`. `false` when offline.
+pub fn submit(host: &HostConfig, tx: &SignedTx) -> bool {
+	http::post_tx(host, tx, false)
 }
 
-/// Start a `POST /v1/games`. `false` when offline.
+/// Create a hosted game (`GET /v1/ledger`, then a signed `game.create`).
+/// `false` when offline.
 pub fn request_create(host: &HostConfig) -> bool {
 	http::create_game(host)
-}
-
-/// Remember a seat token for `id` so a reload keeps the seat (web only).
-pub fn remember_seat(id: &str, seat: Seat, token: &str) {
-	#[cfg(target_arch = "wasm32")]
-	{
-		if let Some(s) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-			let _ = s.set_item(&format!("apakan.seat.{id}"), &format!("{seat}:{token}"));
-		}
-	}
-	#[cfg(not(target_arch = "wasm32"))]
-	{
-		let _ = (id, seat, token);
-	}
-}
-
-/// Seat token saved by [`remember_seat`].
-pub fn recall_seat(id: &str) -> Option<(Seat, String)> {
-	#[cfg(target_arch = "wasm32")]
-	{
-		let s = web_sys::window()?.local_storage().ok()??;
-		let v = s.get_item(&format!("apakan.seat.{id}")).ok()??;
-		let (seat, token) = v.split_once(':')?;
-		Some((seat.parse().ok()?, token.to_string()))
-	}
-	#[cfg(not(target_arch = "wasm32"))]
-	{
-		let _ = id;
-		None
-	}
 }
 
 #[cfg(test)]
@@ -340,80 +437,102 @@ mod tests {
 	#![allow(clippy::unwrap_used)]
 
 	use super::*;
-	use crate::game::RuleSet;
 	use crate::host::HostOverrides;
-	use apa_kan_view::GameRecord;
+	use apa_kan_account::Seed;
+	use apa_kan_tx::{admit, GameState, KeyStatus, TxSigner};
 
-	fn hosted(n: usize) -> (GameRecord, Game) {
-		let mut game = Game::new(RuleSet::default(), 13);
-		let mut rec = GameRecord::begin("g13", &game).unwrap();
-		for _ in 0..n {
-			let a = game.legal_actions()[0];
-			game.apply(a).unwrap();
-			rec.actions.push(a.into());
+	/// Drive the real state machine with this device's key plus an opponent.
+	fn hosted(moves: usize) -> (GameState, TxSigner) {
+		let other = TxSigner::from_seed(&Seed::from_bytes([77; 32]));
+		let tx = create_tx("c", "g13").unwrap();
+		let id = admit(&tx, "c", KeyStatus::UnknownAccount).unwrap();
+		let (mut s, _) = GameState::apply(None, &tx, &id).unwrap();
+		let join = other
+			.sign("c", "game/g13", s.next_seq, &s.head, TxPayload::GameJoin { label: "opp".into() })
+			.unwrap();
+		let id = admit(&join, "c", KeyStatus::UnknownAccount).unwrap();
+		s = GameState::apply(Some(&s), &join, &id).unwrap().0;
+		for _ in 0..moves {
+			let g = s.game.as_ref().unwrap();
+			let action = g.legal_actions()[0];
+			let me_to_move = s.view().seat_of_account(&identity::account_hex())
+				== Some(apa_kan_view::seat_of(g.current_player()));
+			let payload = TxPayload::GameMove { action: action.into() };
+			let tx = if me_to_move {
+				identity::signer().sign("c", "game/g13", s.next_seq, &s.head, payload)
+			} else {
+				other.sign("c", "game/g13", s.next_seq, &s.head, payload)
+			}
+			.unwrap();
+			let id = admit(&tx, "c", KeyStatus::UnknownAccount).unwrap();
+			s = GameState::apply(Some(&s), &tx, &id).unwrap().0;
 		}
-		(rec, game)
+		(s, other)
 	}
 
 	#[test]
-	fn seat_requires_a_token_and_valid_number() {
-		assert_eq!(RemoteSession::new("g", Some(1), None).seat, None);
-		assert_eq!(RemoteSession::new("g", Some(3), Some("t".into())).seat, None);
-		assert_eq!(RemoteSession::new("g", Some(2), Some("t".into())).seat, Some(2));
-		assert_eq!(RemoteSession::new("g", Some(2), Some(String::new())).seat, None);
-	}
-
-	#[test]
-	fn adopt_replays_and_gates_turns() {
-		let (rec, game) = hosted(0);
-		let view = GameView::new(&rec, &game, ["a", "b"]);
-		let mut s = RemoteSession::new("g13", Some(1), Some("t".into()));
-		assert!(s.can_act(&game).is_err());
+	fn adopt_derives_seat_and_gates_turns() {
+		let (state, _) = hosted(0);
+		let view = state.view();
+		let mut s = RemoteSession::new("g13", identity::account_hex());
 		let got = s.adopt(&view).unwrap().unwrap();
-		assert_eq!(got.legal_actions(), game.legal_actions());
-		assert!(s.loaded);
-		assert_eq!(s.labels[0], "a");
+		assert_eq!(s.seat, Some(1));
+		assert_eq!(s.phase, GamePhase::Playing);
+		assert_eq!(s.labels[1], "opp");
 		assert_eq!(s.can_act(&got), Ok(()));
 		assert!(!s.wants_poll(&got));
-		// Same seq again is a no-op.
+		assert!(!s.wants_join());
+		// Same view again is a no-op.
 		assert!(s.adopt(&view).unwrap().is_none());
 		let tx = s.transaction(got.legal_actions()[0]).unwrap();
-		assert_eq!(tx.seq, 0);
-		assert_eq!(tx.seat, 1);
-		// Spectators never act and always poll.
-		let mut spec = RemoteSession::new("g13", None, None);
-		spec.adopt(&view).unwrap();
+		assert_eq!(tx.body.seq, view.ledger.seq);
+		assert_eq!(tx.body.prev, view.ledger.head);
+		assert!(admit(&tx, "c", KeyStatus::UnknownAccount).is_ok());
+		assert!(GameState::apply(Some(&state), &tx, &tx.id().unwrap()).is_ok());
+
+		// Another account spectates.
+		let mut spec = RemoteSession::new("g13", "ff".repeat(32));
+		let got = spec.adopt(&view).unwrap().unwrap();
 		assert!(spec.can_act(&got).is_err());
-		assert!(spec.wants_poll(&got));
 		assert!(spec.transaction(Action::Pass).is_none());
-		// Wrong game id is refused.
-		let mut other = RemoteSession::new("zzz", None, None);
+		let mut other = RemoteSession::new("zzz", "aa");
 		assert!(other.adopt(&view).is_err());
 	}
 
 	#[test]
-	fn newer_view_replaces_local_game() {
-		let (rec0, g0) = hosted(0);
-		let mut s = RemoteSession::new("g13", Some(2), Some("t".into()));
-		s.adopt(&GameView::new(&rec0, &g0, ["a", "b"])).unwrap();
-		assert!(s.wants_poll(&g0));
-		let (rec2, g2) = hosted(2);
-		let next = s.adopt(&GameView::new(&rec2, &g2, ["a", "b"])).unwrap().unwrap();
-		assert_eq!(s.seq, 2);
-		assert_eq!(next.turn_count(), g2.turn_count());
+	fn open_game_invites_a_join_and_newer_views_replace_the_game() {
+		let tx = create_tx("c", "g13").unwrap();
+		let id = admit(&tx, "c", KeyStatus::UnknownAccount).unwrap();
+		let (open, _) = GameState::apply(None, &tx, &id).unwrap();
+		let mut guest = RemoteSession::new("g13", "ee".repeat(32));
+		assert!(guest.adopt(&open.view()).unwrap().is_none());
+		assert!(guest.wants_join());
+		let mut creator = RemoteSession::new("g13", identity::account_hex());
+		creator.adopt(&open.view()).unwrap();
+		assert!(!creator.wants_join());
+		assert!(creator.wants_poll(&Game::new(crate::game::RuleSet::default(), 1)));
+
+		let (s0, _) = hosted(0);
+		let (s2, _) = hosted(2);
+		let mut s = RemoteSession::new("g13", identity::account_hex());
+		s.adopt(&s0.view()).unwrap();
+		let next = s.adopt(&s2.view()).unwrap().unwrap();
+		assert_eq!(next.turn_count(), s2.game.as_ref().unwrap().turn_count());
 	}
 
 	#[test]
-	fn links_and_query() {
+	fn links() {
 		let host = HostConfig::from_overrides(HostOverrides {
 			public_url: Some("https://play.example".into()),
 			..Default::default()
 		});
-		let link = seat_link(&host, "g1", 2, "abc");
-		assert_eq!(link, "https://play.example/#/game/g1?seat=2&token=abc");
+		let link = game_link(&host, "g1");
+		assert_eq!(link, "https://play.example/#/game/g1");
 		let parsed = crate::route::DeepLink::parse(&link);
 		assert_eq!(parsed.route, crate::route::Route::Game { id: "g1".into() });
-		assert_eq!(seat_from_query(&parsed.query), (Some(2), Some("abc".into())));
+		let id = new_game_id();
+		assert_eq!(id.len(), 24);
+		assert!(apa_kan_tx::game_id_of(&game_stream(&id)).is_some());
 	}
 
 	#[test]
