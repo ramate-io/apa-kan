@@ -1,11 +1,11 @@
-name: Game Store
+name: Ledger
 
 on:
   push:
     branches:
 
 jobs:
-  game-store:
+  ledger:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -36,14 +36,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: game-store-${{ steps.rust_toolchain.outputs.channel }}
+          shared-key: ledger-${{ steps.rust_toolchain.outputs.channel }}
           cache-on-failure: true
 
       - name: Clippy (all backends)
-        run: cargo clippy -p apa-kan-game-store --all-features --all-targets --no-deps -- -D warnings
+        run: cargo clippy -p apa-kan-ledger -p apa-kan-tx --all-features --all-targets --no-deps -- -D warnings
 
       - name: Conformance (memory, SQLite, Postgres)
-        run: cargo test -p apa-kan-game-store --all-features
+        run: cargo test -p apa-kan-ledger --all-features
+
+      - name: Envelope and state machine
+        run: cargo test -p apa-kan-tx
 
       - name: Server over Postgres feature compiles
         run: cargo check -p apa-kan-server --features postgres

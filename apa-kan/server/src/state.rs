@@ -16,13 +16,22 @@ pub struct AppState {
 
 impl AppState {
 	pub fn new(store: SqliteStore, clock: Arc<dyn Clock>, mailer: Arc<dyn Mailer>) -> Self {
-		Self { store: Arc::new(store), clock, mailer, games: Arc::new(GameHost::default()) }
+		let store = Arc::new(store);
+		let games =
+			GameHost::default().with_keys(Arc::new(crate::games::AccountStoreKeys(store.clone())));
+		Self { store, clock, mailer, games: Arc::new(games) }
 	}
 
-	/// Swap in a game host (e.g. one backed by a durable store).
+	/// Swap in a game host (e.g. one over a durable ledger). Pair it with
+	/// [`AppState::account_keys`] so admission sees registered accounts.
 	pub fn with_games(mut self, games: GameHost) -> Self {
 		self.games = Arc::new(games);
 		self
+	}
+
+	/// Key directory over this state's account store.
+	pub fn account_keys(&self) -> Arc<dyn crate::games::KeyDirectory> {
+		Arc::new(crate::games::AccountStoreKeys(self.store.clone()))
 	}
 
 	pub fn service(&self) -> crate::service::AccountService<SqliteStore> {

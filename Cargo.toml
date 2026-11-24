@@ -6,7 +6,7 @@ members = [
   "apa-kan/account",
   "apa-kan/core",
   "apa-kan/game",
-  "apa-kan/game-store",
+  "apa-kan/ledger",
   "apa-kan/server",
   "apa-kan/smoke",
   "apa-kan/store",
@@ -27,7 +27,7 @@ rust-version = "1.95.0"
 [workspace.dependencies]
 apa-kan-account = { path = "apa-kan/account" }
 apa-kan-core = { path = "apa-kan/core" }
-apa-kan-game-store = { path = "apa-kan/game-store" }
+apa-kan-ledger = { path = "apa-kan/ledger" }
 apa-kan-store = { path = "apa-kan/store" }
 apa-kan-tx = { path = "apa-kan/tx" }
 apa-kan-view = { path = "apa-kan/view" }

@@ -259,7 +259,7 @@ struct PlayState {
 	/// Server-hosted `/game/<id>` this match mirrors, if any.
 	remote: Option<remote::RemoteSession>,
 	/// Transaction for the move just played locally, waiting to be sent.
-	outbox: Option<apa_kan_tx::Transaction>,
+	outbox: Option<apa_kan_tx::SignedTx>,
 }
 
 struct PlayLogMeta {
@@ -1295,16 +1295,8 @@ fn attach_remote_session(
 		play.log = format!("Offline game {id}: seeded locally (no API configured).");
 		return;
 	}
-	let (mut seat, mut token) = remote::seat_from_query(&query);
-	if token.is_none() {
-		if let Some((s, t)) = remote::recall_seat(&id) {
-			seat = Some(s);
-			token = Some(t);
-		}
-	} else if let (Some(s), Some(t)) = (seat, token.as_deref()) {
-		remote::remember_seat(&id, s, t);
-	}
-	let mut session = remote::RemoteSession::new(id.clone(), seat, token);
+	let _ = query;
+	let mut session = remote::RemoteSession::new(id.clone(), remote::identity::account_hex());
 	session.inflight = remote::request_view(&host.0, &id);
 	cfg.0.bot1 = crate::ai::Actor::Human;
 	cfg.0.bot2 = crate::ai::Actor::Human;
@@ -1317,12 +1309,12 @@ fn attach_remote_session(
 	play.fingerprint = 0;
 }
 
-/// Seat-2 link from a just-created hosted game, carried into the session.
+/// Invite link from a just-created hosted game, carried into the session.
 #[derive(Default)]
 struct PendingInvite(Option<(String, String)>);
 
-/// Send queued transactions, poll while the other seat moves, and apply
-/// server replies.
+/// Send queued transactions, join an open seat from an invite link, poll
+/// while the other seat moves, and apply server replies.
 fn remote_sync(
 	time: Res<Time>,
 	host: Res<shell::HostRes>,
@@ -1332,16 +1324,11 @@ fn remote_sync(
 ) {
 	for ev in remote::drain_events() {
 		match ev {
-			remote::RemoteEvent::Created { created } => {
-				let p1 = &created.seats[0];
-				let p2 = &created.seats[1];
-				let link = remote::seat_link(&host.0, &created.game_id, p2.seat, &p2.token);
+			remote::RemoteEvent::Created { view } => {
+				let link = remote::game_link(&host.0, &view.id);
 				share_invite(&link);
-				invite.0 = Some((created.game_id.clone(), link));
-				crate::platform::push_incoming_url(format!(
-					"/game/{}?seat={}&token={}",
-					created.game_id, p1.seat, p1.token
-				));
+				invite.0 = Some((view.id.clone(), link));
+				crate::platform::push_incoming_url(format!("/game/{}", view.id));
 			}
 			remote::RemoteEvent::View { id, view }
 			| remote::RemoteEvent::TxAccepted { id, view } => {
@@ -1349,10 +1336,12 @@ fn remote_sync(
 			}
 			remote::RemoteEvent::TxRejected { id, message } => {
 				if play.remote.as_ref().is_some_and(|r| r.id == id) {
-					play.warning = format!("Server rejected the move: {message}. Reloading.");
+					play.warning =
+						format!("Server rejected the transaction: {message}. Reloading.");
 					if let Some(r) = play.remote.as_mut() {
 						// Force a full reload of the authoritative record.
 						r.loaded = false;
+						r.game_seq = None;
 						r.inflight = remote::request_view(&host.0, &id);
 					}
 				}
@@ -1371,6 +1360,13 @@ fn remote_sync(
 		if let Some(r) = play.remote.as_mut().filter(|r| &r.id == id) {
 			r.invite = Some(link.clone());
 			invite.0 = None;
+		}
+	}
+	if let Some(r) = play.remote.as_mut().filter(|r| r.wants_join()) {
+		r.join_sent = true;
+		if let Some(tx) = r.sign(apa_kan_tx::TxPayload::GameJoin { label: String::new() }) {
+			r.inflight = true;
+			play.outbox = Some(tx);
 		}
 	}
 	if let Some(tx) = play.outbox.take() {
@@ -1404,7 +1400,7 @@ fn remote_sync(
 	}
 }
 
-fn adopt_remote_view(play: &mut PlayState, id: &str, view: &apa_kan_view::GameView) {
+fn adopt_remote_view(play: &mut PlayState, id: &str, view: &apa_kan_view::HostedGameView) {
 	let Some(r) = play.remote.as_mut().filter(|r| r.id == id) else {
 		return;
 	};
@@ -1422,30 +1418,46 @@ fn adopt_remote_view(play: &mut PlayState, id: &str, view: &apa_kan_view::GameVi
 			play.bot_thinking = false;
 			play.search1.advance(&play.game);
 			play.search2.advance(&play.game);
-			play.log = format!("Game {id} · {labels} · seq {} · {seat}", view.seq);
+			play.log = format!("Game {id} · {labels} · tx {} · {seat}", view.ledger.seq);
 			if play.warning.starts_with("Waiting") || play.warning.starts_with("Server") {
 				play.warning.clear();
 			}
 			play.fingerprint = 0;
 		}
-		Ok(None) => {}
+		Ok(None) => {
+			let note = match view.phase {
+				apa_kan_view::GamePhase::Open => {
+					Some("Waiting for the other seat to join…".to_string())
+				}
+				apa_kan_view::GamePhase::Cancelled => Some("This game was cancelled.".to_string()),
+				apa_kan_view::GamePhase::Finished => {
+					view.game.as_ref().map(|g| format!("Game over: {:?}", g.status))
+				}
+				apa_kan_view::GamePhase::Playing => None,
+			};
+			if let Some(n) = note {
+				if play.warning.is_empty() || play.warning.starts_with("Waiting") {
+					play.warning = n;
+				}
+			}
+		}
 		Err(err) => play.warning = format!("Could not replay game {id}: {err}"),
 	}
 }
 
-/// Put the seat-2 link where the host can copy it: clipboard + console on
+/// Put the invite link where the creator can copy it: clipboard + console on
 /// web, stdout on desktop. Bevy text is not selectable.
 fn share_invite(link: &str) {
 	#[cfg(target_arch = "wasm32")]
 	{
-		web_sys::console::log_1(&format!("Apa Kan invite (seat 2): {link}").into());
+		web_sys::console::log_1(&format!("Apa Kan invite: {link}").into());
 		if let Some(w) = web_sys::window() {
 			let _ = w.navigator().clipboard().write_text(link);
 		}
 	}
 	#[cfg(not(target_arch = "wasm32"))]
 	{
-		println!("Apa Kan invite (seat 2): {link}");
+		println!("Apa Kan invite: {link}");
 	}
 }
 

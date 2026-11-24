@@ -665,7 +665,9 @@ fn handle_clicks(
 			{
 				if crate::remote::request_create(&host.0) {
 					division.pending = None;
-					shell.notice = "Creating a hosted game… the seat-2 invite link is copied when it is ready.".into();
+					shell.notice =
+						"Creating a hosted game… the invite link is copied when it is ready."
+							.into();
 				} else {
 					shell.notice = OFFLINE_NOTICE.into();
 				}

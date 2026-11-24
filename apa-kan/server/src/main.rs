@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use apa_kan_server::api;
-use apa_kan_server::games::{game_store_url_from_env, GameHost, DEFAULT_MAX_GAMES};
+use apa_kan_server::games::{chain_id_from_env, ledger_url_from_env, GameHost, DEFAULT_MAX_GAMES};
 use apa_kan_server::mailer::NoopMailer;
 use apa_kan_server::state::AppState;
 use apa_kan_store::sqlite::SqliteStore;
@@ -19,11 +19,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	});
 	let path = database_url.strip_prefix("sqlite:").unwrap_or(&database_url);
 	let store = SqliteStore::connect_file(path).await?;
-	let game_store_url = game_store_url_from_env();
-	let game_store = apa_kan_game_store::connect(&game_store_url).await?;
-	tracing::info!(backend = game_store.backend(), "hosted game store ready");
-	let state = AppState::new(store, Arc::new(SystemClock), Arc::new(NoopMailer))
-		.with_games(GameHost::new(game_store, DEFAULT_MAX_GAMES));
+	let ledger = apa_kan_ledger::connect(&ledger_url_from_env()).await?;
+	let chain = chain_id_from_env();
+	tracing::info!(backend = ledger.backend(), %chain, "ledger ready");
+	let state = AppState::new(store, Arc::new(SystemClock), Arc::new(NoopMailer));
+	let keys = state.account_keys();
+	let state = state.with_games(GameHost::new(ledger, keys, chain, DEFAULT_MAX_GAMES));
 
 	let app = api::router(state);
 

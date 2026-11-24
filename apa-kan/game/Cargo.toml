@@ -35,9 +35,11 @@ name = "apa-kan-analyze"
 path = "src/bin/analyze.rs"
 
 [dependencies]
+apa-kan-account = { path = "../account" }
 apa-kan-core = { path = "../core" }
 apa-kan-tx = { path = "../tx" }
 apa-kan-view = { path = "../view" }
+hex = { workspace = true }
 bevy = { workspace = true, optional = true }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }

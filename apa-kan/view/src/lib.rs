@@ -10,7 +10,13 @@
 //! - [`GameView`] — a snapshot for thin clients and humans: status, side to
 //!   move, board, seats, legal actions, plus the record itself.
 //!
-//! Transactions (submitting actions) live in `apa-kan-tx`. HTTP lives in
+//! - [`HostedGameView`] — derived state of one `game/<id>` ledger stream:
+//!   phase (open / playing / finished / cancelled), seat claims by account,
+//!   the stream head a client builds its next transaction on, and the
+//!   [`GameView`] once both seats are in.
+//!
+//! Views are the read side only: nothing here mutates. Every state change is
+//! a signed transaction in `apa-kan-tx`. HTTP lives in
 //! `apa-kan-server`. This crate has no Bevy, no HTTP, and no randomness.
 //!
 //! Hosted games are unclocked for now: the record has no time control because
@@ -260,6 +266,67 @@ impl GameView {
 	/// Replay the embedded record. Clients use this to get a playable `Game`.
 	pub fn replay(&self) -> Result<Game, String> {
 		self.record.replay()
+	}
+}
+
+/// Where a ledger stream's chain ends: what the next transaction builds on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerHead {
+	/// Deployment / network id every transaction must name.
+	pub chain: String,
+	/// Stream id, e.g. `game/<id>`.
+	pub stream: String,
+	/// Next transaction's `seq` (number of committed transactions).
+	pub seq: u64,
+	/// Hex hash of the last committed transaction (the next one's `prev`).
+	pub head: String,
+}
+
+/// An account holding a seat.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatClaim {
+	pub seat: Seat,
+	/// Hex `AccountId`.
+	pub account: String,
+	pub label: String,
+}
+
+/// Lifecycle of a hosted game stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GamePhase {
+	/// Created; waiting for the other seat to join.
+	Open,
+	Playing,
+	Finished,
+	/// Creator cancelled before anyone joined.
+	Cancelled,
+}
+
+/// Derived state of one hosted game stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedGameView {
+	pub v: u32,
+	pub id: String,
+	pub phase: GamePhase,
+	pub ledger: LedgerHead,
+	pub seats: [Option<SeatClaim>; 2],
+	/// Position, once both seats are in (the deal is fixed by the join).
+	pub game: Option<GameView>,
+}
+
+impl HostedGameView {
+	/// Seat held by `account` (hex), if any.
+	pub fn seat_of_account(&self, account: &str) -> Option<Seat> {
+		self.seats.iter().flatten().find(|c| c.account == account).map(|c| c.seat)
+	}
+
+	/// First open seat, if the game still takes a join.
+	pub fn open_seat(&self) -> Option<Seat> {
+		if self.phase != GamePhase::Open {
+			return None;
+		}
+		self.seats.iter().position(Option::is_none).map(|i| i as Seat + 1)
 	}
 }
 
