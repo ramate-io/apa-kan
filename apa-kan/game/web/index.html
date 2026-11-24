@@ -129,11 +129,37 @@
 		window.addEventListener("focus", focusCanvas);
 		focusCanvas();
 
+		// Bevy only advances on the web when winit gets a redraw (rAF) or an input
+		// event. Rarely the redraw request is lost and the game freezes (bot turns,
+		// clock, hosted moves) until the player touches the mouse. The game bumps
+		// window.__apakanTick every update; if a visible page goes 1.5s without a
+		// tick, re-deliver a focus event to the canvas, which wakes winit's loop.
+		function watchFrameLoop() {
+			let last = window.__apakanTick;
+			let since = performance.now();
+			window.__apakanWakeups = 0;
+			setInterval(() => {
+				const now = performance.now();
+				if (window.__apakanTick !== last || document.visibilityState !== "visible") {
+					last = window.__apakanTick;
+					since = now;
+					return;
+				}
+				if (now - since > 1500) {
+					window.__apakanWakeups += 1;
+					console.warn(`apa-kan: frame loop idle for ${Math.round(now - since)}ms at tick ${last}; waking it`);
+					canvas.dispatchEvent(new FocusEvent("focus"));
+					since = now;
+				}
+			}, 500);
+		}
+
 		try {
 			const { default: init } = await import("./apa-kan.js");
 			await init();
 			status.classList.add("hidden");
 			focusCanvas();
+			watchFrameLoop();
 		} catch (err) {
 			console.error(err);
 			status.classList.add("error");

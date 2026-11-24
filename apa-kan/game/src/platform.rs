@@ -133,7 +133,22 @@ impl Plugin for PlatformPlugin {
 		app.add_message::<IncomingUrl>()
 			.init_resource::<BrowserLocation>()
 			.add_systems(Startup, emit_startup_browser_url)
-			.add_systems(Update, (poll_browser_location, poll_incoming_urls));
+			.add_systems(Update, (poll_browser_location, poll_incoming_urls))
+			.add_systems(Last, publish_frame_tick);
+	}
+}
+
+/// Bump `window.__apakanTick` once per Bevy update. The host page's watchdog
+/// (`apa-kan/game/web/index.html`) uses it to notice a stopped frame loop.
+fn publish_frame_tick(mut tick: Local<u32>) {
+	*tick = tick.wrapping_add(1);
+	#[cfg(target_arch = "wasm32")]
+	if let Some(window) = web_sys::window() {
+		let _ = js_sys::Reflect::set(
+			&window,
+			&wasm_bindgen::JsValue::from_str("__apakanTick"),
+			&wasm_bindgen::JsValue::from_f64(f64::from(*tick)),
+		);
 	}
 }
 

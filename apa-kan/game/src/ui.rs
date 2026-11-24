@@ -7,6 +7,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Capturing, Screenshot};
 use bevy::window::WindowResolution;
+use bevy::winit::{UpdateMode, WinitSettings};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -81,6 +82,15 @@ pub fn run_app(cfg: GameConfig) {
 		visual::BG_RGB[1],
 		visual::BG_RGB[2],
 	)))
+	// Keep ticking when the window/canvas is unfocused. Bevy's default drops to
+	// reactive low-power then; on the web the canvas usually is not focused
+	// (pointer events are prevent-defaulted), and the low-power wakeup could be
+	// lost, freezing bot turns, the clock and hosted-game polling until the
+	// next input event.
+	.insert_resource(WinitSettings {
+		focused_mode: UpdateMode::Continuous,
+		unfocused_mode: UpdateMode::Continuous,
+	})
 	.insert_resource(ConfigRes(cfg))
 	.insert_resource(play)
 	.insert_resource(RngRes(rng))
