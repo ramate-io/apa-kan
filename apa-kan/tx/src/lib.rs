@@ -31,6 +31,7 @@ pub mod account;
 pub mod admin;
 pub mod envelope;
 pub mod game;
+pub mod preview;
 
 pub use account::{account_id_of, account_stream, AccountRules, AccountState};
 pub use admin::{RolesState, ROLES_STREAM};

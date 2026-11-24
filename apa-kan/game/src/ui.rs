@@ -1343,7 +1343,10 @@ fn remote_sync(
 	}
 	if let Some(r) = play.remote.as_mut().filter(|r| r.wants_join()) {
 		r.join_sent = true;
-		if let Some(tx) = r.sign(apa_kan_tx::TxPayload::GameJoin { label: String::new() }) {
+		if let Some(tx) = r.sign(apa_kan_tx::TxPayload::GameJoin {
+			label: String::new(),
+			preview_pk: Some(remote::identity::preview_pk(&apa_kan_tx::game_stream(&r.id))),
+		}) {
 			r.inflight = true;
 			play.outbox = Some(tx);
 		}
@@ -1486,9 +1489,14 @@ fn handle_leave_match(
 	mut screen: ResMut<NextState<AppScreen>>,
 	mut play: ResMut<PlayState>,
 	mut division: ResMut<shell::DivisionMatch>,
+	host: Res<shell::HostRes>,
 ) {
 	if leaves.read().next().is_none() {
 		return;
+	}
+	// Leaving a started hosted game resigns it: not finishing is a loss.
+	if let Some(tx) = play.remote.as_ref().and_then(|r| r.leave_tx(&play.game)) {
+		remote::submit(&host.0, &tx);
 	}
 	// Leaving an unfinished Divisions match does not rate it.
 	division.pending = None;

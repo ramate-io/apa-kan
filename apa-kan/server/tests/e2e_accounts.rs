@@ -152,6 +152,7 @@ async fn e2e_register_link_revoke_and_old_routes_gone() {
 				seat: 1,
 				label: "p".into(),
 				seed_commit: seed_commitment(&game_stream(id), &[1; 32]),
+				preview_pk: None,
 			},
 		)
 		.unwrap()
