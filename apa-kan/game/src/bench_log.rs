@@ -2810,6 +2810,7 @@ mod tests {
 			"benchmark_results/capture_score/h2h_unl_mark_b_rep_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_capturer_rep_mm.jsonl.gz",
 			"benchmark_results/capture_score/h2h_unl_noreturn_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_unl_mark_b_noreturn_mm.jsonl.gz",
 		] {
 			assert_committed_jsonl_gz_replays_n(rel, 150);
 		}
