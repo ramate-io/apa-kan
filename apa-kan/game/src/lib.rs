@@ -13,6 +13,10 @@ pub mod config;
 pub mod divisions;
 pub mod host;
 #[cfg(feature = "desktop")]
+pub mod identity;
+#[cfg(feature = "desktop")]
+pub mod keyguard;
+#[cfg(feature = "desktop")]
 pub mod platform;
 pub mod play_log;
 #[cfg(feature = "desktop")]

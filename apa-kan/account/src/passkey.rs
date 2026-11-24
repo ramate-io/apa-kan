@@ -97,6 +97,9 @@ pub fn wrap_seed(
 	}
 }
 
+/// Decoded `(credential_id, salt, nonce, ciphertext)`.
+type WrapParts = (Vec<u8>, [u8; 32], [u8; 12], Vec<u8>);
+
 impl PasskeyWrappedSeed {
 	/// Shape checks (lengths, hex) without the key; hosts run this before
 	/// storing a wrapped seed.
@@ -104,7 +107,7 @@ impl PasskeyWrappedSeed {
 		self.parts().map(|_| ())
 	}
 
-	fn parts(&self) -> Result<(Vec<u8>, [u8; 32], [u8; 12], Vec<u8>), PasskeyError> {
+	fn parts(&self) -> Result<WrapParts, PasskeyError> {
 		if self.v != PASSKEY_WRAP_VERSION {
 			return Err(PasskeyError::Malformed("unknown version"));
 		}

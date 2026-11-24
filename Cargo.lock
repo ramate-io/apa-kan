@@ -236,11 +236,13 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "image",
+ "js-sys",
  "rand 0.8.8",
  "serde",
  "serde_json",
  "toml",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "webbrowser",
 ]
