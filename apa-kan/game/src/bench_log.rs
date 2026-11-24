@@ -522,6 +522,8 @@ pub struct RulesLog {
 	pub repetition_ends: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub no_immediate_return: bool,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub self_capture_penalty: String,
 }
 
 fn default_control_objective() -> String {
@@ -649,6 +651,12 @@ impl RulesLog {
 			},
 			repetition_ends: r.repetition_ends,
 			no_immediate_return: r.no_immediate_return,
+			self_capture_penalty: if r.self_capture_penalty == crate::game::SelfCapturePenalty::Off
+			{
+				String::new()
+			} else {
+				r.self_capture_penalty.name().into()
+			},
 		}
 	}
 
@@ -737,6 +745,11 @@ impl RulesLog {
 			},
 			repetition_ends: self.repetition_ends,
 			no_immediate_return: self.no_immediate_return,
+			self_capture_penalty: if self.self_capture_penalty.is_empty() {
+				crate::game::SelfCapturePenalty::Off
+			} else {
+				crate::game::SelfCapturePenalty::parse(&self.self_capture_penalty)?
+			},
 		})
 	}
 }
@@ -2805,6 +2818,29 @@ mod tests {
 			"benchmark_results/capture_score/h2h_capture_b_mm.jsonl.gz",
 			150,
 		);
+	}
+
+	#[test]
+	fn self_capture_penalty_round_trips_through_the_log() {
+		let mut r = RuleSet::capture_b();
+		let json = serde_json::to_string(&RulesLog::from_rules(r)).unwrap();
+		assert!(!json.contains("self_capture_penalty"), "{json}");
+		for p in
+			[crate::game::SelfCapturePenalty::Always, crate::game::SelfCapturePenalty::MatchPoint]
+		{
+			r.self_capture_penalty = p;
+			assert_eq!(RulesLog::from_rules(r).to_rules().unwrap(), r);
+		}
+	}
+
+	#[test]
+	fn committed_capture_b_penalty_replays() {
+		for rel in [
+			"benchmark_results/capture_score/h2h_capture_b_penalty_always_mm.jsonl.gz",
+			"benchmark_results/capture_score/h2h_capture_b_penalty_matchpoint_mm.jsonl.gz",
+		] {
+			assert_committed_jsonl_gz_replays_n(rel, 150);
+		}
 	}
 
 	#[test]

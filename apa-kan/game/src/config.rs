@@ -371,6 +371,10 @@ where
 		"--repetition-ends" => {
 			rules.repetition_ends = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--self-capture-penalty" => {
+			rules.self_capture_penalty =
+				crate::game::SelfCapturePenalty::parse(&require_value(arg, it.next())?)?;
+		}
 		"--no-immediate-return" => {
 			rules.no_immediate_return = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
@@ -559,6 +563,7 @@ pub fn usage() -> &'static str {
 	   --graveyard <on|off>                       Captures go to a graveyard; RECOVER (one action) returns the oldest to the bench (default: off)\n\
 	   --mark-capture-routing <off|b>             Acting tile's mark routes captures: dots soak to your graveyard; triangle self-capture -> their graveyard, opponent capture -> your hand (default: off)\n\
 	   --repetition-ends <on|off>                 3-fold repetition of the visible position ends the game on capture score (default: off)\n\
+	   --self-capture-penalty <off|always|match-point>  Self-captured tiles award opponent points (default: off)\n\
 	   --no-immediate-return <on|off>             a tile may not move straight back to the node it left on its own last move (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
 	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
@@ -884,6 +889,17 @@ mod tests {
 		let back = GameConfig::parse(["--ruleset", "capture-b", "--ruleset", "control"]).unwrap();
 		assert_eq!(back.rules, RuleSet::default());
 		assert!(GameConfig::parse(["--ruleset", "mode-a"]).is_err());
+	}
+
+	#[test]
+	fn parses_self_capture_penalty() {
+		let def = GameConfig::parse(["--ruleset", "capture-b"]).unwrap();
+		assert_eq!(def.rules.self_capture_penalty, crate::game::SelfCapturePenalty::Off);
+		let mp =
+			GameConfig::parse(["--ruleset", "capture-b", "--self-capture-penalty", "match-point"])
+				.unwrap();
+		assert_eq!(mp.rules.self_capture_penalty, crate::game::SelfCapturePenalty::MatchPoint);
+		assert!(GameConfig::parse(["--self-capture-penalty", "sometimes"]).is_err());
 	}
 
 	#[test]

@@ -9,6 +9,7 @@
 #   run_h2h.sh control_mm       # 150-game mm-mm on live control defaults
 #   run_h2h.sh capture_b_smoke  # 4-game mm-mm sanity of the preset
 #   run_h2h.sh capture_b_mm     # 150-game mm-mm of the preset, seed 300
+#   run_h2h.sh capture_b_penalty_always_mm | capture_b_penalty_matchpoint_mm
 #
 # The sweep cells behind the committed h2h_* logs (majority bonus, capture
 # cascade, weights, graveyard / capturer ablations, mark modes A and
@@ -78,8 +79,16 @@ case "$cfg" in
   capture_b_mm)
     run_one h2h_capture_b_mm "${mm_pair[@]}" --games 75 --seed 300 --ruleset capture-b
     ;;
+  capture_b_penalty_always_mm)
+    run_one h2h_capture_b_penalty_always_mm "${mm_pair[@]}" --games 75 --seed 300 \
+      --ruleset capture-b --self-capture-penalty always
+    ;;
+  capture_b_penalty_matchpoint_mm)
+    run_one h2h_capture_b_penalty_matchpoint_mm "${mm_pair[@]}" --games 75 --seed 300 \
+      --ruleset capture-b --self-capture-penalty match-point
+    ;;
   *)
-    echo "usage: $0 [smoke|control_mm|capture_b_smoke|capture_b_mm]" >&2
+    echo "usage: $0 [smoke|control_mm|capture_b_smoke|capture_b_mm|capture_b_penalty_always_mm|capture_b_penalty_matchpoint_mm]" >&2
     exit 2
     ;;
 esac

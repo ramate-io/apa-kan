@@ -3096,6 +3096,45 @@ pub struct RuleSet {
 	/// clean. ADD, CLAIM, RECOVER and Pass never record. Default off.
 	/// `--no-immediate-return`. Missing JSONL replays as off.
 	pub no_immediate_return: bool,
+	/// Per-tile self-capture points for the opponent. Default off.
+	pub self_capture_penalty: SelfCapturePenalty,
+}
+
+/// Points awarded to the opponent for each self-captured tile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum SelfCapturePenalty {
+	#[default]
+	Off,
+	Always,
+	/// Active only if the acting player's pre-action score is target - 1.
+	MatchPoint,
+}
+
+impl SelfCapturePenalty {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s {
+			"off" => Ok(Self::Off),
+			"always" => Ok(Self::Always),
+			"match-point" => Ok(Self::MatchPoint),
+			_ => Err(format!(
+				"invalid --self-capture-penalty '{s}' (expected off|always|match-point)"
+			)),
+		}
+	}
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Off => "off",
+			Self::Always => "always",
+			Self::MatchPoint => "match-point",
+		}
+	}
+	pub fn active(self, score: u8, target: u8) -> bool {
+		match self {
+			Self::Off => false,
+			Self::Always => true,
+			Self::MatchPoint => score == target.max(1) - 1,
+		}
+	}
 }
 
 /// Named one-switch rule bundles (`--ruleset`).
@@ -3146,6 +3185,7 @@ impl RuleSet {
 			if capture { MarkCaptureRouting::B } else { MarkCaptureRouting::Off };
 		self.no_immediate_return = capture;
 		self.repetition_ends = capture;
+		self.self_capture_penalty = SelfCapturePenalty::Off;
 	}
 
 	/// [`RuleSet::default`] with [`RulesetPreset::CaptureB`] applied.
@@ -3217,6 +3257,7 @@ impl Default for RuleSet {
 			mark_capture_routing: MarkCaptureRouting::Off,
 			repetition_ends: false,
 			no_immediate_return: false,
+			self_capture_penalty: SelfCapturePenalty::Off,
 		}
 	}
 }
@@ -5773,6 +5814,20 @@ impl Game {
 			}
 		}
 		if self.rules.is_capture_score() {
+			// Resolve both awards simultaneously, using the pre-action score
+			// for match-point eligibility. A mixed capture does not evade a
+			// penalty by increasing the mover's score first.
+			let penalty = if self
+				.rules
+				.self_capture_penalty
+				.active(self.capture_score[player.index()], self.rules.score_target)
+			{
+				removals.iter().filter(|r| r.tile.owner == player).count() as u8
+			} else {
+				0
+			};
+			self.capture_score[opponent.index()] =
+				self.capture_score[opponent.index()].saturating_add(penalty);
 			let opp_caps = removals.iter().filter(|r| r.tile.owner == opponent).count() as u8;
 			self.capture_score[player.index()] =
 				self.capture_score[player.index()].saturating_add(opp_caps);
@@ -14810,6 +14865,59 @@ mod tests {
 		assert!(!outcome.removals.is_empty());
 		assert_eq!(game.status(), GameStatus::InProgress);
 		assert_eq!(game.capture_score, [4, 4]);
+	}
+
+	fn penalty_self_capture(
+		penalty: SelfCapturePenalty,
+		scores: [u8; 2],
+		mark: CaptureMark,
+	) -> (Game, usize) {
+		let mut rules = RuleSet::capture_b();
+		rules.capture_mode = CaptureMode::Cascade;
+		rules.self_capture_penalty = penalty;
+		let mut game = Game::empty(rules);
+		let spawn = game.board().spawns()[0];
+		overwhelm_neighbors(&mut game, spawn, Player::Two);
+		put_capture(&mut game, spawn, Player::One, TileColor::Green, 1, 1, CaptureMark::Triangle);
+		let from = game.board().spawns()[4];
+		put_capture(&mut game, from, Player::One, TileColor::Blue, 3, 1, mark);
+		game.capture_score = scores;
+		game.set_current(Player::One);
+		let to = game.destinations(from).into_iter().next().expect("blue d=1 can step");
+		let outcome = game.apply(Action::Move { from, to }).unwrap();
+		let selfs = outcome.removals.iter().filter(|r| r.tile.owner == Player::One).count();
+		assert!(selfs > 0);
+		assert!(outcome.removals.iter().all(|r| r.tile.owner == Player::One));
+		(game, selfs)
+	}
+
+	#[test]
+	fn self_capture_penalty_always_scores_each_tile_for_the_opponent() {
+		let (game, n) = penalty_self_capture(SelfCapturePenalty::Always, [1, 1], CaptureMark::Dot);
+		assert_eq!(game.capture_score, [1, 1 + n as u8]);
+		assert_eq!(game.graveyard(Player::One).len(), n, "dot routing is unchanged");
+	}
+
+	#[test]
+	fn self_capture_penalty_can_win_for_the_opponent() {
+		let (game, _) =
+			penalty_self_capture(SelfCapturePenalty::Always, [2, 4], CaptureMark::Triangle);
+		assert_eq!(
+			game.status(),
+			GameStatus::Won { winner: Player::Two, reason: EndReason::Score }
+		);
+		assert_eq!(game.graveyard(Player::Two).len(), 1, "triangle routing is unchanged");
+	}
+
+	#[test]
+	fn self_capture_penalty_match_point_uses_the_self_capturers_score() {
+		let (off, _) =
+			penalty_self_capture(SelfCapturePenalty::MatchPoint, [3, 4], CaptureMark::Dot);
+		assert_eq!(off.capture_score, [3, 4]);
+		assert_eq!(off.status(), GameStatus::InProgress);
+		let (on, n) =
+			penalty_self_capture(SelfCapturePenalty::MatchPoint, [4, 2], CaptureMark::Dot);
+		assert_eq!(on.capture_score, [4, 2 + n as u8]);
 	}
 
 	#[test]
