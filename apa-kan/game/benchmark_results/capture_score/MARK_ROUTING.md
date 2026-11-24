@@ -63,7 +63,7 @@ Examples (B):
 
 Example (A-discard): seed 300, P2 leads from the first capture and wins 1-5 with no lead change.
 
-## B + repetition-ends (\`MARK_MODE=b unl_mark_rep_mm\`)
+## B + repetition-ends (`MARK_MODE=b unl_mark_rep_mm`)
 
 - **It doesn't break the 4-4 standoff.**
   - Only 5 of 150 games end on repetition: 3 won on points and 2 drawn at 4-4, with a median of 84 turns.
