@@ -3133,6 +3133,10 @@ pub struct RuleSet {
 	/// A tile whose every graph neighbor holds an enemy tile flips to that
 	/// enemy after the action resolves. Default off. `--surround-flip`.
 	pub surround_flip: bool,
+	/// An ADD whose added tile is overwhelmed on arrival is illegal unless the
+	/// same action also removes at least one other tile (either side's).
+	/// Default off. `--no-suicide-add`.
+	pub no_suicide_add: bool,
 }
 
 /// Matched-neighborhood move rule (MMM): a piece may MOVE only if
@@ -3384,6 +3388,7 @@ impl Default for RuleSet {
 			bench_ring_cap: 0,
 			mirror_palette: false,
 			surround_flip: false,
+			no_suicide_add: false,
 		}
 	}
 }
@@ -5499,10 +5504,32 @@ impl Game {
 		let mut acts = Vec::new();
 		for i in 0..bench.len() {
 			for &node in &dests {
+				if self.rules.no_suicide_add && self.add_is_bare_suicide(i, node) {
+					continue;
+				}
 				acts.push(Action::Add { bench_index: i, node });
 			}
 		}
 		acts
+	}
+
+	/// Under [`RuleSet::no_suicide_add`]: would ADDing bench tile
+	/// `bench_index` at `node` remove the added tile and nothing else?
+	/// Resolved on a clone with the rule off, so it sees the full action
+	/// (captures, self-captures, surround flips).
+	pub fn add_is_bare_suicide(&self, bench_index: usize, node: NodeId) -> bool {
+		let Some(tile) = self.benches[self.current.index()].get(bench_index).copied() else {
+			return false;
+		};
+		let mut g = self.clone();
+		g.rules.no_suicide_add = false;
+		match g.apply(Action::Add { bench_index, node }) {
+			Ok(out) => {
+				out.removals.iter().any(|r| r.tile.id == tile.id)
+					&& out.removals.iter().all(|r| r.tile.id == tile.id)
+			}
+			Err(_) => false,
+		}
 	}
 
 	pub fn legal_moves(&self) -> Vec<Action> {
@@ -6714,6 +6741,9 @@ impl Game {
 		}
 		if self.tile_at(node).is_some() {
 			return Err("destination is occupied".into());
+		}
+		if self.rules.no_suicide_add && self.add_is_bare_suicide(bench_index, node) {
+			return Err("ADD would only lose the added tile (--no-suicide-add)".into());
 		}
 		let bench = &mut self.benches[self.current.index()];
 		if bench_index >= bench.len() {
@@ -15386,6 +15416,49 @@ mod team_spawn_rules_tests {
 		game.apply(Action::Add { bench_index: 0, node: 8 }).unwrap();
 		assert_eq!(game.tile_at(6).unwrap().owner, Player::One, "enclosed tile flips");
 		assert_eq!(game.capture_score(Player::One), 0, "a flip scores nothing");
+	}
+
+	/// Spawn node `s` ringed by enemy orange triples (mismatch 1 each on a
+	/// green single never overwhelms them); `single_at` swaps one ring
+	/// neighbor for an orange single that the ADD does overwhelm.
+	fn suicide_add_setup(no_suicide: bool, single_at: Option<usize>) -> (Game, NodeId) {
+		let mut r = RuleSet::capture_b();
+		r.no_suicide_add = no_suicide;
+		let mut game = Game::empty(r);
+		let s = game.board().spawns()[0];
+		let nbs: Vec<NodeId> = game.board().neighbors(s).to_vec();
+		for (k, &n) in nbs.iter().enumerate() {
+			let t = if single_at == Some(k) {
+				game.alloc_ring_kinds(Player::Two, &[(TileColor::Orange, false)], 1, 1)
+			} else {
+				game.alloc_ring_kinds(Player::Two, &[(TileColor::Orange, false); 3], 3, 1)
+			};
+			game.place_tile(n, t);
+		}
+		let green = game.alloc_ring_kinds(Player::One, &[(TileColor::Green, false)], 1, 1);
+		game.set_bench(Player::One, vec![green]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 3]);
+		game.set_current(Player::One);
+		(game, s)
+	}
+
+	#[test]
+	fn no_suicide_add_rejects_an_add_that_only_loses_itself() {
+		let (off, s) = suicide_add_setup(false, None);
+		assert!(off.add_is_bare_suicide(0, s));
+		assert!(off.legal_adds().contains(&Action::Add { bench_index: 0, node: s }));
+		let (mut on, s) = suicide_add_setup(true, None);
+		assert!(!on.legal_adds().contains(&Action::Add { bench_index: 0, node: s }));
+		assert!(on.apply(Action::Add { bench_index: 0, node: s }).is_err());
+	}
+
+	#[test]
+	fn no_suicide_add_allows_a_suicide_that_also_captures() {
+		let (mut on, s) = suicide_add_setup(true, Some(0));
+		assert!(!on.add_is_bare_suicide(0, s));
+		assert!(on.legal_adds().contains(&Action::Add { bench_index: 0, node: s }));
+		let out = on.apply(Action::Add { bench_index: 0, node: s }).unwrap();
+		assert!(out.removals.len() >= 2, "adder and the orange single go");
 	}
 
 	#[test]

@@ -161,12 +161,15 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 				.filter(|&id| game.tile_at(id).is_none())
 				.collect()
 		};
-		for tile in bench {
+		for (i, tile) in bench.iter().enumerate() {
 			let k = search_kind(*tile);
 			if !seen.insert(k) {
 				continue;
 			}
 			for &node in &dests {
+				if game.rules().no_suicide_add && game.add_is_bare_suicide(i, node) {
+					continue;
+				}
 				out.push(SearchMove::Add { kind: k, node });
 			}
 		}

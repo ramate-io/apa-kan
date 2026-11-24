@@ -71,6 +71,7 @@ L3=(--match-gain minus-rings)
 CAP=(--bench-ring-cap 17)
 PERM=(--mirror-palette permute)
 FLIP=(--surround-flip on)
+NOSUI=(--no-suicide-add on)
 
 cell() {
   local name="$1"
@@ -91,8 +92,10 @@ case "$cfg" in
   combo_perm) cell ts_l1_l3_cap17_perm "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${PERM[@]}" ;;
   combo_flip) cell ts_l1_l3_cap17_flip "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${FLIP[@]}" ;;
   combo_flip_perm) cell ts_l1_l3_cap17_flip_perm "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${FLIP[@]}" "${PERM[@]}" ;;
+  combo_flip_nosuicide) cell ts_l1_l3_cap17_flip_nosuicide "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${FLIP[@]}" "${NOSUI[@]}" ;;
+  combo_flip_nosuicide_perm) cell ts_l1_l3_cap17_flip_nosuicide_perm "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${FLIP[@]}" "${NOSUI[@]}" "${PERM[@]}" ;;
   *)
-    echo "usage: $0 [smoke|base|l1|l3|combo|base_perm|l1_perm|l3_perm|combo_perm|combo_flip|combo_flip_perm]" >&2
+    echo "usage: $0 [smoke|base|l1|l3|combo|base_perm|l1_perm|l3_perm|combo_perm|combo_flip|combo_flip_perm|combo_flip_nosuicide|combo_flip_nosuicide_perm]" >&2
     exit 2
     ;;
 esac

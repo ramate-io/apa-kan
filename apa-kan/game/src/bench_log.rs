@@ -542,6 +542,8 @@ pub struct RulesLog {
 	pub mirror_palette: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub surround_flip: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub no_suicide_add: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -695,6 +697,7 @@ impl RulesLog {
 			bench_ring_cap: r.bench_ring_cap,
 			mirror_palette: r.mirror_palette,
 			surround_flip: r.surround_flip,
+			no_suicide_add: r.no_suicide_add,
 		}
 	}
 
@@ -803,6 +806,7 @@ impl RulesLog {
 			bench_ring_cap: self.bench_ring_cap,
 			mirror_palette: self.mirror_palette,
 			surround_flip: self.surround_flip,
+			no_suicide_add: self.no_suicide_add,
 		})
 	}
 }
@@ -2919,6 +2923,7 @@ mod tests {
 			"bench_ring_cap",
 			"mirror_palette",
 			"surround_flip",
+			"no_suicide_add",
 		] {
 			assert!(!json.contains(k), "{k} omitted when off: {json}");
 		}
@@ -2928,6 +2933,7 @@ mod tests {
 		r.bench_ring_cap = 17;
 		r.mirror_palette = true;
 		r.surround_flip = true;
+		r.no_suicide_add = true;
 		assert_eq!(RulesLog::from_rules(r).to_rules().unwrap(), r);
 		r.team_opening_adds = 2;
 		assert_eq!(RulesLog::from_rules(r).to_rules().unwrap(), r);

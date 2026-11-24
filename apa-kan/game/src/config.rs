@@ -401,6 +401,9 @@ where
 		"--surround-flip" => {
 			rules.surround_flip = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--no-suicide-add" => {
+			rules.no_suicide_add = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--self-capture-penalty" => {
 			rules.self_capture_penalty =
 				crate::game::SelfCapturePenalty::parse(&require_value(arg, it.next())?)?;
@@ -601,6 +604,7 @@ pub fn usage() -> &'static str {
 	   --bench-ring-cap <n>                       Max total rings on the picked 11-tile bench, 0 = off (default: 0)\n\
 	   --mirror-palette <off|permute>             P2's mirrored collection gets permuted colors (default: off)\n\
 	   --surround-flip <on|off>                   A tile with every neighbor enemy-held flips owner (default: off)\n\
+	   --no-suicide-add <on|off>                  ADD that only loses the added tile is illegal (default: off)\n\
 	   --no-immediate-return <on|off>             a tile may not move straight back to the node it left on its own last move (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
 	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
