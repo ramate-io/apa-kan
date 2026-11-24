@@ -15,20 +15,19 @@ macro_rules! sql_ledger {
 		#[async_trait::async_trait]
 		impl $crate::LedgerStore for $store {
 			async fn append(&self, e: &$crate::LedgerEntry) -> $crate::Result<()> {
-				use $crate::sql::{is_unique_violation, storage};
+				use $crate::sql::{
+					is_unique_violation, storage, CAS_HEAD, INSERT_ENTRY, INSERT_STREAM,
+				};
 				$crate::validate_entry(e)?;
 				let mut db = self.pool.begin().await.map_err(storage)?;
 				if e.seq == 0 {
 					// Genesis: creating the stream row is the CAS.
-					let res = sqlx::query(
-										"INSERT INTO ledger_streams (stream_id, next_seq, head_hash, created_at_unix) \
-						 VALUES ($1, 1, $2, $3)",
-									)
-									.bind(&e.stream)
-									.bind(&e.hash)
-									.bind(e.committed_at_unix)
-									.execute(&mut *db)
-									.await;
+					let res = sqlx::query(INSERT_STREAM)
+						.bind(&e.stream)
+						.bind(&e.hash)
+						.bind(e.committed_at_unix)
+						.execute(&mut *db)
+						.await;
 					match res {
 						Ok(_) => {}
 						Err(err) if is_unique_violation(&err) => {
@@ -41,37 +40,31 @@ macro_rules! sql_ledger {
 					// Compare-and-swap seq *and* head hash. Postgres takes the
 					// stream row lock, so a racing append blocks, re-checks,
 					// and misses; SQLite serializes writers.
-					let bumped = sqlx::query(
-						"UPDATE ledger_streams SET next_seq = next_seq + 1, head_hash = $3 \
-						 WHERE stream_id = $1 AND next_seq = $2 AND head_hash = $4",
-					)
-					.bind(&e.stream)
-					.bind(e.seq as i64)
-					.bind(&e.hash)
-					.bind(&e.prev)
-					.execute(&mut *db)
-					.await
-					.map_err(storage)?
-					.rows_affected();
+					let bumped = sqlx::query(CAS_HEAD)
+						.bind(&e.stream)
+						.bind(e.seq as i64)
+						.bind(&e.hash)
+						.bind(&e.prev)
+						.execute(&mut *db)
+						.await
+						.map_err(storage)?
+						.rows_affected();
 					if bumped != 1 {
 						drop(db);
 						return Err(self.conflict_or_missing(e).await);
 					}
 				}
-				let res = sqlx::query(
-									"INSERT INTO ledger_entries (stream_id, seq, tx_hash, prev_hash, signer, kind, \
-					 tx_json, committed_at_unix) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-								)
-								.bind(&e.stream)
-								.bind(e.seq as i64)
-								.bind(&e.hash)
-								.bind(&e.prev)
-								.bind(&e.signer)
-								.bind(&e.kind)
-								.bind(&e.tx_json)
-								.bind(e.committed_at_unix)
-								.execute(&mut *db)
-								.await;
+				let res = sqlx::query(INSERT_ENTRY)
+					.bind(&e.stream)
+					.bind(e.seq as i64)
+					.bind(&e.hash)
+					.bind(&e.prev)
+					.bind(&e.signer)
+					.bind(&e.kind)
+					.bind(&e.tx_json)
+					.bind(e.committed_at_unix)
+					.execute(&mut *db)
+					.await;
 				match res {
 					Ok(_) => {}
 					Err(err) if is_unique_violation(&err) => {
@@ -90,17 +83,14 @@ macro_rules! sql_ledger {
 				from: u64,
 			) -> $crate::Result<Vec<$crate::LedgerEntry>> {
 				use sqlx::Row;
-				use $crate::sql::storage;
+				use $crate::sql::{storage, SELECT_ENTRIES};
 				let head = <$store as $crate::LedgerStore>::head(self, stream).await?;
-				let rows = sqlx::query(
-					"SELECT seq, tx_hash, prev_hash, signer, kind, tx_json, committed_at_unix \
-					 FROM ledger_entries WHERE stream_id = $1 AND seq >= $2 ORDER BY seq",
-				)
-				.bind(stream)
-				.bind(from.min(i64::MAX as u64) as i64)
-				.fetch_all(&self.pool)
-				.await
-				.map_err(storage)?;
+				let rows = sqlx::query(SELECT_ENTRIES)
+					.bind(stream)
+					.bind(from.min(i64::MAX as u64) as i64)
+					.fetch_all(&self.pool)
+					.await
+					.map_err(storage)?;
 				let mut out = Vec::with_capacity(rows.len());
 				for r in rows {
 					let seq: i64 = r.try_get(0).map_err(storage)?;
@@ -129,15 +119,13 @@ macro_rules! sql_ledger {
 
 			async fn head(&self, stream: &str) -> $crate::Result<$crate::StreamHead> {
 				use sqlx::Row;
-				use $crate::sql::storage;
-				let row = sqlx::query(
-					"SELECT next_seq, head_hash FROM ledger_streams WHERE stream_id = $1",
-				)
-				.bind(stream)
-				.fetch_optional(&self.pool)
-				.await
-				.map_err(storage)?
-				.ok_or($crate::LedgerError::NotFound)?;
+				use $crate::sql::{storage, SELECT_HEAD};
+				let row = sqlx::query(SELECT_HEAD)
+					.bind(stream)
+					.fetch_optional(&self.pool)
+					.await
+					.map_err(storage)?
+					.ok_or($crate::LedgerError::NotFound)?;
 				let n: i64 = row.try_get(0).map_err(storage)?;
 				Ok($crate::StreamHead {
 					next_seq: n as u64,
@@ -147,16 +135,14 @@ macro_rules! sql_ledger {
 
 			async fn count_streams(&self, prefix: &str) -> $crate::Result<u64> {
 				use sqlx::Row;
-				use $crate::sql::storage;
+				use $crate::sql::{storage, COUNT_STREAMS};
 				// Prefix match without LIKE escaping pitfalls.
-				let row = sqlx::query(
-					"SELECT COUNT(*) FROM ledger_streams WHERE substr(stream_id, 1, $2) = $1",
-				)
-				.bind(prefix)
-				.bind(prefix.chars().count() as i32)
-				.fetch_one(&self.pool)
-				.await
-				.map_err(storage)?;
+				let row = sqlx::query(COUNT_STREAMS)
+					.bind(prefix)
+					.bind(prefix.chars().count() as i32)
+					.fetch_one(&self.pool)
+					.await
+					.map_err(storage)?;
 				let n: i64 = row.try_get(0).map_err(storage)?;
 				Ok(n as u64)
 			}
@@ -169,6 +155,21 @@ macro_rules! sql_ledger {
 }
 
 pub(crate) use sql_ledger;
+
+pub(crate) const CAS_HEAD: &str = "UPDATE ledger_streams SET next_seq = next_seq + 1, head_hash = $3 WHERE stream_id = $1 AND next_seq = $2 AND head_hash = $4";
+
+pub(crate) const INSERT_ENTRY: &str = "INSERT INTO ledger_entries (stream_id, seq, tx_hash, prev_hash, signer, kind, tx_json, committed_at_unix) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)";
+
+pub(crate) const SELECT_ENTRIES: &str = "SELECT seq, tx_hash, prev_hash, signer, kind, tx_json, committed_at_unix FROM ledger_entries WHERE stream_id = $1 AND seq >= $2 ORDER BY seq";
+
+pub(crate) const SELECT_HEAD: &str =
+	"SELECT next_seq, head_hash FROM ledger_streams WHERE stream_id = $1";
+
+pub(crate) const COUNT_STREAMS: &str =
+	"SELECT COUNT(*) FROM ledger_streams WHERE substr(stream_id, 1, $2) = $1";
+
+pub(crate) const INSERT_STREAM: &str = "INSERT INTO ledger_streams \
+	(stream_id, next_seq, head_hash, created_at_unix) VALUES ($1, 1, $2, $3)";
 
 pub(crate) fn storage(e: sqlx::Error) -> crate::LedgerError {
 	crate::LedgerError::Storage(e.to_string())
