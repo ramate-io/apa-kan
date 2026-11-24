@@ -1,4 +1,4 @@
-# Team spawn, matched-neighborhood moves, matched gain, ring budget, mirror palette, surround flip
+# Team spawn, matched-neighborhood moves, matched gain, ring budget, mirror palette, surround flip, no bare suicide ADDs
 
 Stacked on `--ruleset capture-b` (#110). Every rule below is a toggle that is off by default. Design discussion is in #111.
 
@@ -54,3 +54,10 @@ Each team ADDs only onto its own **spawn diamond**, all game long. The two diamo
 - **Board edges are not walls.** An outer node needs all 4 of its neighbors, a spawn-ring node 4, an inner node 3 (center + two spawns), and the center all 8.
 - **Flips are simultaneous** and evaluated once per action.
 - **Scoring.** A flip is not a capture: no points, nothing leaves the board, and it doesn't count for the self-capture penalty. The tile simply changes sides. Later captures route and score it by its new owner.
+
+## No bare suicide ADDs (`--no-suicide-add on`)
+
+- **Rule.** An ADD is illegal if the added tile would be overwhelmed on arrival and the same ADD captures nothing else. An ADD that loses the added tile is still legal when it also removes at least one other tile, yours or your opponent's.
+- **What counts.** Only removals count. A surround flip is not a removal, so an ADD that loses itself and only flips something is still banned.
+- **Everything else is unchanged.** Legal ADDs, scoring and recovery work as before. If a player has no legal action left, the existing locked-out rule applies.
+- **Bots.** Search uses the same legality check. No tactics were added.
