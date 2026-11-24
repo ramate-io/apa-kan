@@ -1,34 +1,33 @@
-//! Ledger host: admits signed transactions, folds them through the
+//! Game host: admits signed `game/<id>` transactions, folds them through the
 //! `apa-kan-tx` state machine, and commits them to an `apa-kan-ledger` store.
 //!
 //! Every mutation is one [`SignedTx`] posted to `POST /v1/tx`; every read is a
 //! view derived from the folded state. Submission order:
 //!
-//! 1. look up the signer key's status in the account directory, then
-//!    [`admit`] (domain, chain, signature, key authority);
-//! 2. lock the stream's cache slot and refresh it if the store's head moved;
-//! 3. [`GameState::apply`] on a clone (seq, prev link, phase, seat, engine);
-//! 4. append to the ledger (CAS on seq + prev) and await the commit;
-//! 5. only then swap the new state into the cache and acknowledge.
+//! 1. look up the signer key's status in the key directory (the account
+//!    folds, see [`crate::accounts`]), then [`admit`] (domain, chain,
+//!    signature, key authority);
+//! 2. commit through [`Streams`]: lock, refresh, [`GameState::apply`], append
+//!    (CAS on seq + prev), swap, acknowledge.
 //!
 //! Loading a stream replays its committed transactions, re-verifying every
-//! signature and link ([`apa_kan_tx::game::replay`]).
+//! signature and link.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use apa_kan_account::crypto::VerifyingKeyBytes;
-use apa_kan_account::{AccountId, AuthorizedKeyStatus};
-use apa_kan_ledger::{LedgerEntry, LedgerError, LedgerStore};
-use apa_kan_store::{AccountRepo, KeyRepo};
+use apa_kan_account::AccountId;
+use apa_kan_ledger::LedgerStore;
 use apa_kan_tx::{
-	admit, game_id_of, game_stream, GameState, KeyStatus, SignedTx, TxError, TxResponse, TX_DOMAIN,
+	admit, game_id_of, game_stream, GameState, KeyStatus, SignedTx, TxError, TxReceipt, TxResponse,
+	TX_DOMAIN,
 };
 use apa_kan_view::HostedGameView;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+
+pub use crate::streams::CommittedTx;
+use crate::streams::{host_err, ledger_err, now_unix, Machine, Streams};
 
 /// Refuse new game streams past this many.
 pub const DEFAULT_MAX_GAMES: usize = 10_000;
@@ -55,62 +54,15 @@ impl KeyDirectory for GenesisOnly {
 	}
 }
 
-/// Directory backed by the account store's `authorized_keys`.
-pub struct AccountStoreKeys<S>(pub Arc<S>);
-
-#[async_trait]
-impl<S: AccountRepo + KeyRepo + Send + Sync> KeyDirectory for AccountStoreKeys<S> {
-	async fn status(
-		&self,
-		account: &AccountId,
-		vk: &VerifyingKeyBytes,
-	) -> Result<KeyStatus, String> {
-		if self.0.get_account(account).await.map_err(|e| e.to_string())?.is_none() {
-			return Ok(KeyStatus::UnknownAccount);
-		}
-		let keys = self.0.list_keys(account).await.map_err(|e| e.to_string())?;
-		Ok(match keys.iter().find(|k| &k.vk == vk).map(|k| k.status) {
-			Some(AuthorizedKeyStatus::Active) => KeyStatus::Active,
-			Some(_) => KeyStatus::Inactive,
-			None => KeyStatus::NotOnAccount,
-		})
-	}
-}
-
 /// `GET /v1/ledger`: what a client needs to build transactions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LedgerInfo {
 	pub domain: String,
 	pub chain: String,
 	pub backend: String,
-}
-
-/// One committed transaction, as served by `GET /v1/games/{id}/txs`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommittedTx {
-	pub seq: u64,
-	pub hash: String,
-	pub committed_at_unix: i64,
-	pub tx: SignedTx,
-}
-
-fn host_err(reason: impl Into<String>) -> TxError {
-	TxError::Host { reason: reason.into() }
-}
-
-fn ledger_err(e: LedgerError) -> TxError {
-	match e {
-		LedgerError::NotFound => TxError::NotFound,
-		LedgerError::Conflict { current, got } => TxError::StaleSeq { current, got },
-		other => host_err(other.to_string()),
-	}
-}
-
-fn now_unix() -> i64 {
-	SystemTime::now()
-		.duration_since(UNIX_EPOCH)
-		.map(|d| d.as_secs() as i64)
-		.unwrap_or(0)
+	/// Hex operator account (signs recovery challenges; administers roles).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub operator: Option<String>,
 }
 
 /// Ledger URL from the environment: `APAKAN_LEDGER_URL` (`memory`,
@@ -143,16 +95,31 @@ pub fn chain_id_from_env() -> String {
 		.unwrap_or_else(|| DEFAULT_CHAIN_ID.into())
 }
 
-type Slot = Arc<Mutex<Option<GameState>>>;
+/// [`Machine`] for `game/<id>` streams.
+pub struct GameMachine;
+
+impl Machine for GameMachine {
+	type State = GameState;
+
+	fn head(s: &GameState) -> (u64, &str) {
+		(s.next_seq, s.head.as_str())
+	}
+
+	fn apply(
+		&self,
+		state: Option<&GameState>,
+		tx: &SignedTx,
+		id: &[u8; 32],
+		_now: Option<i64>,
+	) -> Result<(GameState, TxReceipt), TxError> {
+		GameState::apply(state, tx, id)
+	}
+}
 
 pub struct GameHost {
-	ledger: Arc<dyn LedgerStore>,
+	streams: Streams<GameMachine>,
 	keys: Arc<dyn KeyDirectory>,
-	chain: String,
-	/// Folded streams; one lock per stream. Cleared past `max_cached`.
-	cache: Mutex<HashMap<String, Slot>>,
 	max_games: usize,
-	max_cached: usize,
 }
 
 impl Default for GameHost {
@@ -174,14 +141,7 @@ impl GameHost {
 		chain: impl Into<String>,
 		max_games: usize,
 	) -> Self {
-		Self {
-			ledger,
-			keys,
-			chain: chain.into(),
-			cache: Mutex::new(HashMap::new()),
-			max_games,
-			max_cached: 4_096,
-		}
+		Self { streams: Streams::new(ledger, chain, GameMachine), keys, max_games }
 	}
 
 	/// Same host with a different key directory.
@@ -191,92 +151,38 @@ impl GameHost {
 	}
 
 	pub fn chain(&self) -> &str {
-		&self.chain
+		self.streams.chain()
+	}
+
+	pub fn ledger(&self) -> &Arc<dyn LedgerStore> {
+		self.streams.ledger()
 	}
 
 	pub fn info(&self) -> LedgerInfo {
 		LedgerInfo {
 			domain: TX_DOMAIN.into(),
-			chain: self.chain.clone(),
-			backend: self.ledger.backend().into(),
+			chain: self.chain().into(),
+			backend: self.ledger().backend().into(),
+			operator: None,
 		}
-	}
-
-	async fn slot(&self, stream: &str) -> Slot {
-		let mut cache = self.cache.lock().await;
-		if let Some(s) = cache.get(stream) {
-			return s.clone();
-		}
-		if cache.len() >= self.max_cached {
-			cache.clear();
-		}
-		let slot: Slot = Arc::new(Mutex::new(None));
-		cache.insert(stream.to_string(), slot.clone());
-		slot
-	}
-
-	/// Rebuild a stream from the ledger (`None` if it has no entries).
-	async fn load(&self, stream: &str) -> Result<Option<GameState>, TxError> {
-		let entries = match self.ledger.read(stream, 0).await {
-			Ok(e) => e,
-			Err(LedgerError::NotFound) => return Ok(None),
-			Err(e) => return Err(ledger_err(e)),
-		};
-		let chain = self.chain.clone();
-		tokio::task::spawn_blocking(move || {
-			let txs = entries
-				.iter()
-				.map(|e| serde_json::from_str::<SignedTx>(&e.tx_json))
-				.collect::<Result<Vec<_>, _>>()
-				.map_err(|e| host_err(format!("stored tx does not parse: {e}")))?;
-			apa_kan_tx::game::replay(&chain, &txs)
-				.map_err(|e| host_err(format!("stored stream does not replay: {e}")))
-		})
-		.await
-		.map_err(|e| host_err(e.to_string()))?
-	}
-
-	/// Bring a locked cached stream up to the ledger head.
-	async fn refresh(&self, stream: &str, state: &mut Option<GameState>) -> Result<(), TxError> {
-		let head = match self.ledger.head(stream).await {
-			Ok(h) => Some(h),
-			Err(LedgerError::NotFound) => None,
-			Err(e) => return Err(ledger_err(e)),
-		};
-		let cached = state.as_ref().map(|s| (s.next_seq, s.head.as_str()));
-		let fresh = head.as_ref().map(|h| (h.next_seq, h.head.as_str()));
-		if cached != fresh {
-			*state = self.load(stream).await?;
-		}
-		Ok(())
 	}
 
 	pub async fn view(&self, id: &str) -> Result<HostedGameView, TxError> {
 		let stream = game_stream(id);
 		game_id_of(&stream).ok_or(TxError::NotFound)?;
-		let slot = self.slot(&stream).await;
-		let mut state = slot.lock().await;
-		self.refresh(&stream, &mut state).await?;
-		state.as_ref().map(GameState::view).ok_or(TxError::NotFound)
+		self.streams
+			.current(&stream)
+			.await?
+			.as_ref()
+			.map(GameState::view)
+			.ok_or(TxError::NotFound)
 	}
 
 	/// Committed transactions of a game from `from` on (resync / audit / p2p).
 	pub async fn log(&self, id: &str, from: u64) -> Result<Vec<CommittedTx>, TxError> {
 		let stream = game_stream(id);
 		game_id_of(&stream).ok_or(TxError::NotFound)?;
-		let entries = self.ledger.read(&stream, from).await.map_err(ledger_err)?;
-		entries
-			.into_iter()
-			.map(|e| {
-				Ok(CommittedTx {
-					seq: e.seq,
-					hash: e.hash,
-					committed_at_unix: e.committed_at_unix,
-					tx: serde_json::from_str(&e.tx_json)
-						.map_err(|err| host_err(format!("stored tx does not parse: {err}")))?,
-				})
-			})
-			.collect()
+		self.streams.log(&stream, from).await
 	}
 
 	/// Admit, apply, commit, then acknowledge one transaction.
@@ -284,52 +190,25 @@ impl GameHost {
 		let stream = tx.body.stream.clone();
 		game_id_of(&stream).ok_or_else(|| TxError::UnsupportedStream { stream: stream.clone() })?;
 		let key = self.keys.status(&tx.body.signer, &tx.body.signer_vk).await.map_err(host_err)?;
-		let chain = self.chain.clone();
+		let chain = self.chain().to_string();
 		// ML-DSA verification is CPU work; keep it off the async workers.
 		let (tx, id) =
 			tokio::task::spawn_blocking(move || admit(&tx, &chain, key).map(|id| (tx, id)))
 				.await
 				.map_err(|e| host_err(e.to_string()))??;
 		if tx.body.seq == 0
-			&& self.ledger.count_streams("game/").await.map_err(ledger_err)?
+			&& self.ledger().count_streams("game/").await.map_err(ledger_err)?
 				>= self.max_games as u64
 		{
 			return Err(host_err("game capacity reached"));
 		}
-
-		let slot = self.slot(&stream).await;
-		let mut state = slot.lock().await;
-		self.refresh(&stream, &mut state).await?;
-		let (next, receipt) = GameState::apply(state.as_ref(), &tx, &id)?;
-		let entry = LedgerEntry {
-			stream: stream.clone(),
-			seq: tx.body.seq,
-			hash: receipt.tx_id.clone(),
-			prev: tx.body.prev.clone(),
-			signer: tx.body.signer.to_hex(),
-			kind: receipt.kind.clone(),
-			tx_json: serde_json::to_string(&tx).map_err(|e| host_err(e.to_string()))?,
-			committed_at_unix: now_unix(),
-		};
-		match self.ledger.append(&entry).await {
-			Ok(()) => {}
-			Err(LedgerError::Conflict { current, got }) => {
-				// Another writer committed this seq first; resync.
-				if let Ok(fresh) = self.load(&stream).await {
-					*state = fresh;
-				}
-				return Err(TxError::StaleSeq { current, got });
-			}
-			Err(e) => return Err(ledger_err(e)),
-		}
-		let view = next.view();
-		*state = Some(next);
-		Ok(TxResponse { receipt, view })
+		let (next, receipt) = self.streams.commit(&tx, &id, Some(now_unix())).await?;
+		Ok(TxResponse { receipt, view: next.view() })
 	}
 
 	/// Forget cached state (tests: simulate a restart on the same ledger).
 	pub async fn clear_cache(&self) {
-		self.cache.lock().await.clear();
+		self.streams.clear_cache().await;
 	}
 }
 

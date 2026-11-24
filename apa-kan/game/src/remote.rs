@@ -34,8 +34,8 @@ pub const HTTP_AVAILABLE: bool =
 /// A 32-byte ML-DSA seed, generated on first use and kept in `localStorage`
 /// (`apakan.key.v1`) on web, or in `APAKAN_KEY_FILE` on desktop (memory only
 /// when unset). The account is the one this key is genesis for, so it works
-/// unregistered and becomes a full account if registered with
-/// `POST /v1/accounts`; linking more devices uses the account crate's link flow.
+/// unregistered and becomes a full account once it signs `account.register`;
+/// more devices join with `account.link_key` (see `apa-kan/ledger/DESIGN.md`).
 pub mod identity {
 	use std::sync::OnceLock;
 

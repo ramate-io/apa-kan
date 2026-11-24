@@ -4,12 +4,13 @@ Apa Kan's hosted state is a small state-machine / chain-style service:
 
 - **Transactions** are the only way to change state. One common, signed
   envelope (`apa-kan-tx::SignedTx`) carries every mutation: game creation,
-  seat joins, moves, resignations, cancellation, and later account and admin
-  actions.
+  seat joins, the deal reveal, moves, resignations, cancellation, account
+  keys and recovery, and admin role grants.
 - **The ledger** (`apa-kan-ledger`) is an ordered, append-only,
   hash-linked log of accepted transactions, one chain per **stream**.
 - **State** is the fold of a stream through a deterministic transition
-  function (`apa-kan-tx::game::GameState::apply`).
+  function (`GameState::apply` for `game/<id>`, `AccountState::apply` for
+  `account/<id>`, `RolesState::apply` for `admin/roles`).
 - **Views** (`apa-kan-view`) are read models derived from state. Views never
   mutate; transactions never read except through the state they fold into.
 
@@ -64,19 +65,62 @@ not matter.
 
 Seats belong to **accounts**, not keys. A transaction names its account
 (`signer`) and the key that signed (`signer_vk`). Admission asks the account
-directory (`authorized_keys` in `apa-kan-store`) about that pair:
+directory — the fold of the account's own `account/<id>` stream — about
+that pair:
 
-| Directory says | Result |
+| Account fold says | Result |
 |---|---|
-| account registered, key `active` | accepted |
-| account registered, key revoked / pending recovery | `key_not_authorized` |
-| account registered, key never linked | `key_not_authorized` |
-| account not registered | accepted **only if** `signer == AccountId::from_genesis_vk(signer_vk)` |
+| stream exists, key `active` | accepted |
+| stream exists, key revoked / pending recovery | `key_not_authorized` |
+| stream exists, key never linked | `key_not_authorized` |
+| no stream (unregistered) | accepted **only if** `signer == AccountId::from_genesis_vk(signer_vk)` |
 
 So a fresh device key works immediately as a self-certifying guest account,
-can be registered later with `POST /v1/accounts` (same id), and additional
-devices join through the existing link-request flow and then sign for the
-same account. Revoking a key stops it from acting on any stream.
+can be registered later with `account.register` (same id), and additional
+devices join with `account.link_key` and then sign for the same account.
+Revoking a key stops it from acting on any stream.
+
+## Accounts and admin as transactions
+
+There are no mutating account routes. Everything below is a `SignedTx` on
+`POST /v1/tx`; reads are `GET /v1/accounts/{id}` (`AccountView` plus the
+store's tiles and rating), `GET /v1/accounts/{id}/keys`, and
+`GET /v1/admin/roles`.
+
+| Payload (`account/<id>`) | Signed by | Rule |
+|---|---|---|
+| `account.register { label }` | genesis key | seq 0; `id == from_genesis_vk(signer_vk)`. Projects starter tiles and rating into the store after commit. |
+| `account.link_key { vk, label, proof }` | active key | `proof` = the **new** key's ML-DSA signature over `SHA3(canonical {domain: "apa-kan/link-key/v1", chain, account} ‖ vk)`; nobody links a key they don't hold. |
+| `account.revoke_key { vk }` | active key | never the last active key |
+| `account.set_email { email?, recovery_opt_in, approve_via_email }` | active key | email trimmed, lowercased, checked for shape; switches need an email |
+| `account.recovery_request { kind, email_proof }` | the key to recover (not on the account) | account opted in for `kind`; `email_proof = SHA3("apa-kan/recovery-email/v1" ‖ account ‖ pending_vk ‖ email)` matches the email on file; one recovery at a time |
+| `account.recovery_challenge { token_hash, usable_at_unix }` | **operator** | emitted by the host right after a request commits; records `SHA3("apa-kan/recovery-token/v1" ‖ token)` and the cooldown end (72 h full recovery, 24 h email link approval); the token is mailed |
+| `account.recovery_confirm { token }` | pending key | token hashes to `token_hash`; key added as `pending_recovery` |
+| `account.recovery_finish` | pending key | host clock ≥ `usable_at_unix` (else `too_early`); key becomes `active` |
+| `account.recovery_cancel` | any active key | drops the recovery; the pending key is revoked |
+
+The **operator** is a self-certifying account whose key the host holds
+(`APAKAN_OPERATOR_SEED`, else a seed file at `APAKAN_OPERATOR_SEED_FILE`,
+default `$TMP/apa-kan-operator.seed`). Its id is chain configuration
+(`AccountRules`), published in `GET /v1/ledger` as `operator`: replay accepts
+challenges only from it, so it must not change for a chain. Email recovery
+needs it; without one, requests are refused.
+
+Wall-clock rules (the cooldown) are checked by the host at admission; replay
+passes no clock and trusts what was committed. The token itself never touches
+the ledger until the pending key reveals it in `recovery_confirm`, after which
+it is spent.
+
+**Admin:** `admin/roles` holds `admin.grant_role { account, role }` and
+`admin.revoke_role`, signed by the operator or an account holding `admin`
+(key checked against that account's fold). Further admin actions (catalog,
+character-pass publishing from the admin panel work) become more `admin.*`
+payloads on `admin/<topic>` streams under the same rule.
+
+**Privacy:** `account.set_email` carries the address, so raw account
+transactions are not served (no `/txs` view for accounts); views show only
+`email_set`. Peer replication of account streams would need the address
+encrypted or replaced by a commitment.
 
 ## Ordering, replay and fork protection
 
@@ -159,11 +203,16 @@ ledger head differs (another server instance or a relay committed first).
 
 | Route | View |
 |---|---|
-| `GET /v1/ledger` | `{ domain, chain, backend }` — what a client needs to sign |
+| `GET /v1/ledger` | `{ domain, chain, backend, operator }` — what a client needs to sign |
 | `GET /v1/games/{id}` | `HostedGameView`: phase (`open`, `revealing`, `playing`, `finished`, `cancelled`), `ledger` head (`chain`, `stream`, `seq`, `head`), seat claims (account + label), `seed_commit`, `cancel_reason`, and the `GameView` (status, board, legal actions, replayable record) once the deal is revealed |
 | `GET /v1/games/{id}/txs?from=n` | committed signed transactions from `n` (audit, resync, peers) |
 
-The only game write route is `POST /v1/tx`.
+| `GET /v1/accounts/{id}` | `AccountView` (keys with status, label, `email_set`, recovery switches and stage) + `tiles`, `elo_milli` from the store projection |
+| `GET /v1/accounts/{id}/keys` | the account's keys |
+| `GET /v1/admin/roles` | `RolesView`: account → roles |
+
+The only write route is `POST /v1/tx`; it routes by stream prefix (`game/`,
+`account/`, `admin/`) and replies `{ receipt, view }` with that stream's view.
 
 ## Peer-to-peer (not built)
 
