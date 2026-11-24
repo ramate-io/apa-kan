@@ -2889,7 +2889,18 @@ mod tests {
 	#[test]
 	fn committed_team_spawn_replays() {
 		assert_committed_jsonl_gz_replays_n("benchmark_results/team_spawn/smoke_ts.jsonl.gz", 4);
-		for cell in ["ts_base", "ts_l1", "ts_l3", "ts_l1_l3_cap17"] {
+		for cell in [
+			"ts_base",
+			"ts_l1",
+			"ts_l3",
+			"ts_l1_l3_cap17",
+			"ts_base_perm",
+			"ts_l1_perm",
+			"ts_l3_perm",
+			"ts_l1_l3_cap17_perm",
+			"ts_l1_l3_cap17_flip",
+			"ts_l1_l3_cap17_flip_perm",
+		] {
 			assert_committed_jsonl_gz_replays_n(
 				&format!("benchmark_results/team_spawn/h2h_{cell}_mm.jsonl.gz"),
 				150,
