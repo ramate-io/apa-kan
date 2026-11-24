@@ -5523,6 +5523,13 @@ impl Game {
 		if self.tile_at(node).is_some() {
 			return false;
 		}
+		// Fast path: under local claims the added tile is removed only if it is
+		// overwhelmed on the post-placement board.
+		if self.rules.capture_mode == CaptureMode::LocalClaim
+			&& !self.would_overwhelm_add(tile, node)
+		{
+			return false;
+		}
 		// Removals are collected from the post-placement snapshot (the same
 		// call `apply` makes); flips and scoring don't remove tiles.
 		let mut g = self.clone();
