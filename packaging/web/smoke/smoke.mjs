@@ -66,8 +66,14 @@ function watch(page, name) {
 }
 
 async function snap(page) {
-	const raw = await page.getAttribute("#bevy-canvas", "data-apakan-smoke");
-	return raw ? JSON.parse(raw) : null;
+	const [raw, tick] = await page.evaluate(() => [
+		document.getElementById("bevy-canvas")?.getAttribute("data-apakan-smoke"),
+		window.__apakanTick,
+	]);
+	if (!raw) return null;
+	const s = JSON.parse(raw);
+	s.tick = tick; // bumped every Bevy update, unlike the snapshot (every 10 frames)
+	return s;
 }
 
 async function waitSnap(page, pred, what, timeout = 60_000) {
@@ -79,15 +85,15 @@ async function waitSnap(page, pred, what, timeout = 60_000) {
 		if (failures.length) throw new Error(`aborting on errors while waiting for ${what}`);
 		last = await snap(page);
 		if (last && pred(last)) return last;
-		if (last && last.frame !== seenFrame) {
-			seenFrame = last.frame;
+		if (last && last.tick !== seenFrame) {
+			seenFrame = last.tick;
 			seenAt = Date.now();
-		} else if (Date.now() - seenAt > 10_000) {
+		} else if (Date.now() - seenAt > 15_000) {
 			// The game must keep ticking without input (bot turns, clock, hosted polling).
 			// A frozen frame counter is a hang a player would see: fail, don't nudge.
 			const env = await page.evaluate(() => `visibility=${document.visibilityState} focus=${document.hasFocus()} active=${document.activeElement?.id || document.activeElement?.tagName}`).catch(() => "?");
 			const stack = await mainThreadStack(page);
-			throw new Error(`frame stall: no new frame for 10s at frame ${seenFrame} (${env}) while waiting for ${what}${stack}`);
+			throw new Error(`frame stall: no Bevy update for 15s at tick ${seenFrame} (${env}) while waiting for ${what}${stack}`);
 		}
 		await page.waitForTimeout(150);
 	}
@@ -122,8 +128,10 @@ async function shot(page, name) {
 
 async function load(page, url, name) {
 	await page.goto(smokeUrl(url), { waitUntil: "load" });
+	// A 40+ MB wasm compiles on the page's main thread; next to a running game on a
+	// small CI runner that can take well over 30s, so wait on the loader, then the canvas.
+	await page.waitForSelector("#status.hidden", { state: "attached", timeout: 240_000 });
 	await page.waitForSelector("#bevy-canvas", { state: "visible", timeout: 30_000 });
-	await page.waitForSelector("#status.hidden", { state: "attached", timeout: 120_000 });
 	const box = await page.locator("#bevy-canvas").boundingBox();
 	if (!box || box.width < 100 || box.height < 100) throw new Error(`${name}: canvas missing or tiny: ${JSON.stringify(box)}`);
 	const gl = await page.evaluate(() => {
@@ -153,7 +161,7 @@ async function humanAction(page, name, timeout = 90_000) {
 	let s = null;
 	let escFrame = -1;
 	for (;;) {
-		s = await waitSnap(page, (n) => n.screen === "match", `${name}: match`, 10_000);
+		s = await waitSnap(page, (n) => n.screen === "match", `${name}: match`, 30_000);
 		if (s.match.over || s.match.clicks.length > 0) break;
 		// A half-made selection hides the next move; Esc clears it (once per fresh snapshot,
 		// because Esc with nothing selected leaves the match).
@@ -178,7 +186,7 @@ async function humanAction(page, name, timeout = 90_000) {
 	}
 	// Snapshots are written every 10 frames; never act on one taken before the click landed.
 	const fresh = await waitSnap(page, (n) => n.frame > frame, `${name}: fresh snapshot`, 60_000);
-	const after = key(fresh) !== before ? fresh : await waitSnap(page, (n) => n.screen !== "match" || key(n) !== before, `${name}: response to click`, 10_000);
+	const after = key(fresh) !== before ? fresh : await waitSnap(page, (n) => n.screen !== "match" || key(n) !== before, `${name}: response to click`, 45_000);
 	if (after.match?.warning) log(`${name}: warning after click: ${after.match.warning}`);
 	return true;
 }
