@@ -82,6 +82,6 @@ No. Because "next capture wins" was already true at 4-4, the standoff looks exac
   - The bots shuffle, and spend tempo on RECOVER (14.5% of standoff actions) and self-captures (0.13 per action). Only 23 of those 48 standoffs end in a capture.
   - Example, seed 10341 at 4-4 (t164–t177): P2 dot-ADDs into a self-capture at 23, P2 sends a triangle self-capture to P1's graveyard at 16, both RECOVER, and P1 walks tiles 24→4, 12→18, 13→17, 18→21. Nobody moves into contact, and it is drawn at the cap.
 - **When it does resolve, it is a multi-capture out of quiet play, not a sustained attack.**
-  - Seed 10314 (t58): P2's triangle MOVE 4→24 takes P1's 23 into P2's hand. P1 answers with a dot ADD at 23 that removes 21 and 24, and wins 6-4.
+  - Seed 10314 (t58): P2 equalizes to 4-4 with a triangle MOVE 4→24, taking P1's 23 into P2's hand, but that leaves 24 exposed. P1 dot-ADDs at 23, removes 21 and 24, and wins 6-4 on the next action.
   - Seed 307 (t68): P1's dot MOVE 2→7 removes 7, 8 and 10 and wins 5-4.
 - **Verdict:** the remaining problem is incentive, not detection. At 4-4 any exposure loses, and waiting costs nothing. A rule has to make waiting cost something (a match-point clock), make the stall moves cost something (a self-capture or RECOVER at match point scoring for the opponent), or make attacking safer.
