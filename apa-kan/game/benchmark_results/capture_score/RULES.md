@@ -94,3 +94,25 @@ No. Because "next capture wins" was already true at 4-4, the standoff looks exac
   - Seed 10314 (t58): P2 equalizes to 4-4 with a triangle MOVE 4→24, taking P1's 23 into P2's hand, but that leaves 24 exposed. P1 dot-ADDs at 23, removes 21 and 24, and wins 6-4 on the next action.
   - Seed 307 (t68): P1's dot MOVE 2→7 removes 7, 8 and 10 and wins 5-4.
 - **Verdict:** the remaining problem is incentive, not detection. At 4-4 any exposure loses, and waiting costs nothing. A rule has to make waiting cost something (a match-point clock), make the stall moves cost something (a self-capture or RECOVER at match point scoring for the opponent), or make attacking safer.
+
+### Self-capture penalty cells
+
+150 games each; same bench args as `capture-b` plus `--self-capture-penalty`. Data: `h2h_capture_b_penalty_{always,matchpoint}_mm.{jsonl.gz,txt}`.
+
+| Cell | P1 W-D-L (seat p) | mean / med turns | opp / self caps per game | mean final score | end reasons | comebacks | first to +2 won | RECOVER/game |
+|---|---|---|---|---|---|---|---|---|
+| capture-b | 69-28-53 (p=0.17) | 99.4 / 74.0 | 7.97 / 13.70 | 4.09 / 3.89 | score 109, draw turn_limit 26, other 15 | 79/122 (64.8%) | 72/136 | 14.5 |
+| + penalty always | 68-10-72 (p=0.80) | 64.1 / 47.0 | 8.74 / 7.55 | 8.10 / 8.19 | score 140, draw turn_limit 10 | 22/140 (15.7%) | 21/23 | 8.8 |
+| + penalty match-point | 74-17-59 (p=0.23) | 90.6 / 69.5 | 8.34 / 11.81 | 4.75 / 4.55 | score 119, draw turn_limit 16, other 15 | 94/133 (70.7%) | 62/129 | 12.8 |
+
+| Cell | penalty pts/game | lost on own penalty | winner needed gifted pts | tied 4-4 (wait mean/med, hit cap) | tied at ≥5-5 (wait med) | 1-for-1 trade actions | max lead ≤1 |
+|---|---|---|---|---|---|---|---|
+| capture-b | 0 | 0 | 0 | 91 (55.8 / 36, 26) | 0 | 0 | — |
+| always | 7.55 | 0 | 90/140 | 85 (50.7 / 38, 10) | 68 (40) | 1085 | 127/150 |
+| match-point | 0.95 | 0 | 11/119 | 100 (38.8 / 16, 15) | 63 (29) | 98 | — |
+
+Here "1-for-1 trade actions" means actions where both players scored. "Lost on own penalty" counts games where the loser's own self-capture handed over the winning point. Search never does this, because the penalty win is terminal.
+
+**always.** Self-captures don't go away. They drop from 13.7 to 7.6 per game, and the rate per action barely moves (0.13 to 0.12). What changes is that they get paired with an opponent capture. The usual move becomes a MOVE or ADD that takes one enemy tile and one of your own, which scores +1/+1. Scores climb in lockstep (in 127 of 150 games nobody ever leads by 2), and 68 games pass 5-5 still tied. Seed 302 climbs 6-6 → 12-12 through one trade every 3-4 plies and ends 14-13 on a 2-enemy + 1-own capture. So play is contact-heavy, and every score change comes from a capture, but it is a trading race rather than attacking play. Leads are always 1 and short-lived, which is why comebacks drop to 15.7%. Games are about a third shorter and turn-limit draws fall from 26 to 10. The standoff shifts from MOVE toward ADD (ADD 17% → 31% of actions). RECOVER rises a little at the standoff (15% → 18%) but falls per game; I found no RECOVER-as-pass stall.
+
+**match-point.** The 4-4 wait halves (median 36 → 16) and the seats are the most even of the three. But the penalty is only live at exactly `target - 1`. A 1-for-1 trade at 4-4 lifts both players to 5-5, where the penalty is off again and the next opponent capture wins. That is the old 4-4 standoff one point higher: 63 games reach 5-5, and 16 end in turn-limit draws there. Seed 10303 shuffles MOVEs at 5-5 from turn 177 to 200, with free self-captures at turns 180 and 200. Making the penalty apply at `score >= target - 1` would close this gap. That variant has not been run.
