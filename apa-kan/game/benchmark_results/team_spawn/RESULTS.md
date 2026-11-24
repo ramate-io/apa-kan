@@ -20,6 +20,8 @@ Setup for every cell: 150 games, minimax vs minimax, seed 300, release, `--no-de
 
 ### Aggregate
 
+Cell names: `combo` = `ts_l1_l3_cap17`, `_perm` = permuted mirror deck, `_flip` = surround flip. `capture_b` is the old #110 baseline (global spawns, 4:3:1 collections).
+
 - **comebacks:** the eventual winner trailed by 2 or more points at some point, out of decisive games.
 - **lead≤1:** the score lead never exceeded 1.
 - **freezes:** a side went 15 or more own turns with no capture available, counted per game (mutual = both sides).
