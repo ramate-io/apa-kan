@@ -289,6 +289,23 @@ pub struct SeatClaim {
 	/// Hex `AccountId`.
 	pub account: String,
 	pub label: String,
+	/// Ephemeral X25519 key (hex) for encrypted UDP previews, if the seat
+	/// sent one in its `game.create` / `game.join`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub preview_pk: Option<String>,
+}
+
+/// How a hosted game ended, for ratings. Present once the game is decided:
+/// finished on the board, resigned, or forfeited.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameResultView {
+	/// Winning seat (`None` for a draw).
+	pub winner: Option<Seat>,
+	/// Losing seat (`None` for a draw).
+	pub loser: Option<Seat>,
+	/// `board` (engine win), `draw`, `resign` (includes leaving a started
+	/// game), or `no_reveal_forfeit` (the creator never revealed).
+	pub reason: String,
 }
 
 /// Lifecycle of a hosted game stream.
@@ -322,6 +339,9 @@ pub struct HostedGameView {
 	pub cancel_reason: Option<String>,
 	/// Position, once the creator has revealed (the deal is fixed then).
 	pub game: Option<GameView>,
+	/// Rating-ready result once the game is decided.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub result: Option<GameResultView>,
 }
 
 impl HostedGameView {

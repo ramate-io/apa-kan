@@ -23,6 +23,7 @@
 
 pub mod envelope;
 pub mod game;
+pub mod preview;
 
 pub use envelope::{
 	admit, verify_self_contained, KeyStatus, SignedTx, TxBody, TxPayload, TxSigner, GENESIS_PREV,

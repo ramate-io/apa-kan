@@ -365,13 +365,18 @@ mod tests {
 				&game_stream(id),
 				0,
 				GENESIS_PREV,
-				TxPayload::GameCreate { seat: 1, label: "ana".into(), seed_commit: commit(id) },
+				TxPayload::GameCreate {
+					seat: 1,
+					label: "ana".into(),
+					seed_commit: commit(id),
+					preview_pk: None,
+				},
 			)
 			.unwrap();
 		let v = host.submit(create).await.unwrap().view;
 		assert_eq!(v.phase, GamePhase::Open);
 		let v = host
-			.submit(next_tx(b, &v, TxPayload::GameJoin { label: "bo".into() }))
+			.submit(next_tx(b, &v, TxPayload::GameJoin { label: "bo".into(), preview_pk: None }))
 			.await
 			.unwrap()
 			.view;
@@ -465,7 +470,12 @@ mod tests {
 				"game/r",
 				0,
 				GENESIS_PREV,
-				TxPayload::GameCreate { seat: 1, label: "a".into(), seed_commit: commit("r") },
+				TxPayload::GameCreate {
+					seat: 1,
+					label: "a".into(),
+					seed_commit: commit("r"),
+					preview_pk: None,
+				},
 			)
 			.unwrap();
 		assert_eq!(host.submit(tx).await.unwrap_err(), TxError::KeyNotAuthorized);
@@ -536,7 +546,12 @@ mod tests {
 				&game_stream(id),
 				0,
 				GENESIS_PREV,
-				TxPayload::GameCreate { seat: 1, label: "a".into(), seed_commit: commit(id) },
+				TxPayload::GameCreate {
+					seat: 1,
+					label: "a".into(),
+					seed_commit: commit(id),
+					preview_pk: None,
+				},
 			)
 			.unwrap()
 		};

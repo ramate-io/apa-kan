@@ -137,13 +137,22 @@ committed:
    the game is `playing`. The creator fixed `salt` before seeing the join id.
 
 **Non-reveal (default):** while `revealing`, the joiner may `game.cancel` at
-any time → `cancelled` with `cancel_reason: "no_reveal"`. The creator may
-**not** cancel after a join (it can already compute the deal, so cancelling
-would let it re-roll). There is no clock-based forfeit: `apply` has no trusted
-time and must replay identically everywhere; a timeout belongs in a
-host-side policy or in the client offering "cancel" after a wait. Open
-question: once rated games exist, count a `no_reveal` cancel as a creator
-forfeit.
+any time → `cancelled` with `cancel_reason: "no_reveal"`, and the result view
+records it as the **creator's forfeit** (`result.reason =
+"no_reveal_forfeit"`, joiner wins). The creator may **not** cancel after a
+join (it can already compute the deal, so cancelling would let it re-roll).
+There is no clock-based forfeit: `apply` has no trusted time and must replay
+identically everywhere; a timeout belongs in a host-side policy or in the
+client offering "cancel" after a wait.
+
+**Results (ready for ratings):** starting a game and not finishing it is a
+loss. `HostedGameView.result = { winner, loser, reason }` once decided:
+`board` (engine win), `draw`, `resign`, or `no_reveal_forfeit`. Leaving a
+started hosted game in the client signs `game.resign`, so abandoning through
+the UI is a recorded loss. A creator withdrawing an unjoined game has no
+result. Silent abandonment (a seat that just stops) needs trusted time; the
+plan is a host policy that commits an operator-signed forfeit after a
+timeout, not built.
 
 **Client:** the web/desktop client derives `salt = SHA3("apa-kan/deal-salt/v1"
 ‖ device seed ‖ stream)`, so it can reveal after a reload with nothing extra
@@ -160,7 +169,7 @@ ledger head differs (another server instance or a relay committed first).
 | Route | View |
 |---|---|
 | `GET /v1/ledger` | `{ domain, chain, backend }` — what a client needs to sign |
-| `GET /v1/games/{id}` | `HostedGameView`: phase (`open`, `revealing`, `playing`, `finished`, `cancelled`), `ledger` head (`chain`, `stream`, `seq`, `head`), seat claims (account + label), `seed_commit`, `cancel_reason`, and the `GameView` (status, board, legal actions, replayable record) once the deal is revealed |
+| `GET /v1/games/{id}` | `HostedGameView`: phase (`open`, `revealing`, `playing`, `finished`, `cancelled`), `ledger` head (`chain`, `stream`, `seq`, `head`), seat claims (account, label, optional `preview_pk`), `seed_commit`, `cancel_reason`, `result` (winner, loser, reason) once decided, and the `GameView` (status, board, legal actions, replayable record) once the deal is revealed |
 | `GET /v1/games/{id}/txs?from=n` | committed signed transactions from `n` (audit, resync, peers) |
 
 The only game write route is `POST /v1/tx`.
@@ -188,18 +197,26 @@ The only game write route is `POST /v1/tx`.
 An ML-DSA envelope doesn't fit a datagram, and the point of UDP is an early
 read, not authority. So:
 
-- **Preview datagram** (unsigned, compact binary): `game id`, `seq`, `prev`
+- **Preview datagram** (unsigned but encrypted, compact binary): `game id`, `seq`, `prev`
   (first bytes), the encoded action, and `tx_hash` — the id of the full
   signed transaction the sender is about to submit (or has submitted) over
   HTTP. Tens of bytes.
-- **Per-game preview code:** each datagram carries a short MAC under a key
-  derived from the seats' admission transactions
-  (`HKDF("apa-kan/preview/v1", create_id ‖ join_id ‖ seat)`). That stops
-  stray or cross-game traffic and cheap spoofing by anyone who doesn't follow
-  the game. Caveat: create and join ids are public via `/txs`, so this is not
-  a secret against an observer of the ledger; if that matters, add an
-  ephemeral X25519 key to `game.create` / `game.join` and derive the MAC key
-  from the DH instead (still "from the join transactions", now secret).
+- **Encryption (X25519 + ChaCha20-Poly1305; helpers in
+  `apa_kan_tx::preview`, transport not built):** each seat puts an ephemeral
+  X25519 public key in its signed payload (`game.create.preview_pk`,
+  `game.join.preview_pk`, optional, 64 hex), so the key exchange is
+  authenticated by ML-DSA and costs no extra round trip. Session keys are
+  `HKDF-SHA256(ikm = X25519 shared secret, salt = SHA-256("apa-kan/preview/v1"
+  ‖ create_tx_id ‖ join_tx_id))`, one per sending seat (`info = domain ‖
+  "/seat" ‖ seat`) so directions never share a nonce. A packet is a 96-bit
+  big-endian counter (the nonce) ‖ ChaCha20-Poly1305 ciphertext ‖ 16-byte tag
+  (28 bytes overhead), with the stream id as AAD. Receivers keep the highest
+  counter accepted and drop anything at or below it (stale, replayed or
+  reordered previews are simply lost; they are disposable). Clients derive the
+  per-game secret from the device seed (`preview_secret`), like the deal salt.
+  This replaces the earlier idea of a code derived from the public tx ids.
+  **Future:** hybrid X25519 + ML-KEM-768 if previews need post-quantum
+  confidentiality (the payload field grows; the rest is unchanged).
 - **Authority:** the receiver applies the preview tentatively (animate the
   move, start thinking) and marks it provisional. The signed transaction —
   via `POST /v1/tx` and the view/`/txs` poll, or relayed peer-to-peer — is
