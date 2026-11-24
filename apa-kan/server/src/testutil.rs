@@ -7,10 +7,11 @@ use tokio::task::JoinHandle;
 use apa_kan_store::sqlite::SqliteStore;
 
 use crate::api;
-use crate::games::GameHost;
 use crate::mailer::Mailer;
 use crate::state::AppState;
+use apa_kan_ledger::LedgerStore;
 use apa_kan_store::Clock;
+use apa_kan_tx::TxSigner;
 
 pub async fn spawn_test_server(
 	clock: Arc<dyn Clock>,
@@ -22,20 +23,28 @@ pub async fn spawn_test_server(
 	serve(AppState::new(store, clock, mailer)).await
 }
 
-/// Like [`spawn_test_server`], with a caller-chosen game host (e.g. one over a
-/// durable ledger, to exercise restarts). Its key directory is replaced by the
-/// test server's account store.
-pub async fn spawn_test_server_with_games(
+/// Like [`spawn_test_server`], over a caller-chosen ledger and chain (e.g. a
+/// durable one, to exercise restarts) with a fixed operator key.
+pub async fn spawn_test_server_with_ledger(
 	clock: Arc<dyn Clock>,
 	mailer: Arc<dyn Mailer>,
-	games: GameHost,
+	ledger: Arc<dyn LedgerStore>,
+	chain: &str,
+	operator: TxSigner,
 ) -> Result<(SocketAddr, JoinHandle<()>), std::io::Error> {
 	let store = SqliteStore::connect_in_memory()
 		.await
 		.map_err(|e| std::io::Error::other(e.to_string()))?;
-	let state = AppState::new(store, clock, mailer);
-	let keys = state.account_keys();
-	serve(state.with_games(games.with_keys(keys))).await
+	serve(AppState::with_ledger(
+		store,
+		clock,
+		mailer,
+		ledger,
+		chain,
+		Some(operator),
+		crate::games::DEFAULT_MAX_GAMES,
+	))
+	.await
 }
 
 async fn serve(state: AppState) -> Result<(SocketAddr, JoinHandle<()>), std::io::Error> {

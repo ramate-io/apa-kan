@@ -91,20 +91,23 @@ Hash routes work on any static file server. Path routes need a SPA fallback (see
 
 With an API URL configured, `/game/<id>` loads a real game from `apa-kan-server`; without one it stays a local seeded match.
 
-The server is a small ledger: **views for reads, transactions for writes.** Every change (create, join, move, resign, cancel) is one signed `apa-kan-tx` `SignedTx` posted to `POST /v1/tx`; every read is a view. Design, envelope schema, and the p2p plan: [`apa-kan/ledger/DESIGN.md`](../../apa-kan/ledger/DESIGN.md).
+The server is a small ledger: **views for reads, transactions for writes.** Every change (game create, join, reveal, move, resign, cancel; account register, key link/revoke, recovery email and email recovery; admin role grants) is one signed `apa-kan-tx` `SignedTx` posted to `POST /v1/tx`; every read is a view. Design, envelope schema, and the p2p plan: [`apa-kan/ledger/DESIGN.md`](../../apa-kan/ledger/DESIGN.md).
 
-- **`apa-kan-tx`**: the envelope `{ body: { domain, chain, stream, seq, prev, signer, signer_vk, payload }, sig }`, signed with the account crate's ML-DSA-65 scheme, and the deterministic game state machine.
-- **`apa-kan-ledger`**: append-only, hash-linked log per stream (`game/<id>`), CAS on `(seq, prev)`; memory, SQLite, or Postgres (`APAKAN_LEDGER_URL`).
-- **`apa-kan-view`**: `HostedGameView` (phase, stream head, seat claims, and the `GameView` with board, legal actions, and a replayable `GameRecord`).
+- **`apa-kan-tx`**: the envelope `{ body: { domain, chain, stream, seq, prev, signer, signer_vk, payload }, sig }`, signed with the account crate's ML-DSA-65 scheme, and the deterministic state machines for `game/<id>`, `account/<id>`, and `admin/<topic>` (today `admin/roles`).
+- **`apa-kan-ledger`**: append-only, hash-linked log per stream (`game/<id>`, `account/<id>`, `admin/roles`), CAS on `(seq, prev)`; memory, SQLite, or Postgres (`APAKAN_LEDGER_URL`).
+- **`apa-kan-view`**: `HostedGameView` (phase, stream head, seat claims, and the `GameView` with board, legal actions, and a replayable `GameRecord`), `AccountView`, `RolesView`.
 
 | Route | Does |
 |---|---|
-| `GET /v1/ledger` | `{ domain, chain, backend }` for signing |
-| `POST /v1/tx` | Apply one signed transaction: `200 { receipt, view }`, or a typed error: `400 bad_envelope / wrong_chain`, `401 bad_signature / key_not_authorized`, `403 unauthorized`, `409 stale_seq / prev_mismatch / wrong_phase / not_your_turn / game_over`, `422 illegal`, `503 host` |
+| `GET /v1/ledger` | `{ domain, chain, backend, operator }` for signing |
+| `POST /v1/tx` | Apply one signed transaction: `200 { receipt, view }`, or a typed error: `400 bad_envelope / wrong_chain`, `401 bad_signature / key_not_authorized`, `403 unauthorized`, `409 stale_seq / prev_mismatch / wrong_phase / not_your_turn / game_over / rejected / too_early`, `422 illegal / bad_reveal`, `503 host` |
 | `GET /v1/games/<id>` | `HostedGameView` |
 | `GET /v1/games/<id>/txs?from=n` | Committed signed transactions from `n` |
+| `GET /v1/accounts/<id>` | `AccountView` + tiles and rating |
+| `GET /v1/accounts/<id>/keys` | The account's keys and their status |
+| `GET /v1/admin/roles` | `RolesView` |
 
-Set `APAKAN_CHAIN_ID` per deployment so transactions can't be replayed across hosts. CORS allows any origin (auth is in the signed body, never cookies); set `APAKAN_CORS_ORIGINS=https://play.example` to restrict it.
+Set `APAKAN_CHAIN_ID` per deployment so transactions can't be replayed across hosts, and `APAKAN_OPERATOR_SEED` (64 hex) to a stable secret: the operator signs email-recovery challenges and must not change for a chain. `APAKAN_RECOVERY_COOLDOWN_SECS` (default 86400) and `APAKAN_RECOVERY_CHALLENGE_TIMEOUT_SECS` (default 900) set the recovery retry cooldown and how long an unchallenged request lives; like the operator, keep them fixed for a chain. CORS allows any origin (auth is in the signed body, never cookies); set `APAKAN_CORS_ORIGINS=https://play.example` to restrict it.
 
 Client flow: the client keeps an ML-DSA account key (seed in `localStorage` `apakan.key.v1` on web, `APAKAN_KEY_FILE` on desktop); unregistered, it is a self-certifying guest account. Head-to-Head → Opponent **Online (invite link)** → Play signs `game.create` (seat 1, committing to a per-game deal salt derived from the device seed) and copies `#/game/<id>` to the clipboard (also logged to the console). Opening that link on another device signs `game.join` for the open seat; the creator's client then signs `game.reveal` automatically, which fixes the deal from the salt and the join transaction, and play starts (see `apa-kan/ledger/DESIGN.md`, "Deal seed: commit-reveal"). If both seats are taken you spectate. Each local move is a signed `game.move` against the last stream head; while the other seat moves the client polls the view every 1.5 s and replays new actions. A rejected transaction reloads the authoritative view.
 

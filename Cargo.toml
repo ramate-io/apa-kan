@@ -63,6 +63,15 @@ expect_used = "warn"
 [profile.dev]
 panic = "unwind"
 
+# ML-DSA keygen/signing unoptimized needs ~1.5 MB of stack (most of a test
+# thread's 2 MB) and is slow. Its generics are instantiated in
+# apa-kan-account, so optimize that crate and ml-dsa in dev builds.
+[profile.dev.package.ml-dsa]
+opt-level = 2
+
+[profile.dev.package.apa-kan-account]
+opt-level = 2
+
 [profile.release.build-override]
 opt-level = 3
 strip = false

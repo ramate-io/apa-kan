@@ -1,7 +1,10 @@
+#![allow(clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
-use apa_kan_account::crypto::{generate_keypair, Seed};
+use apa_kan_account::Seed;
+use apa_kan_tx::{account_stream, TxPayload, TxSigner, GENESIS_PREV};
 
 fn server_binary() -> PathBuf {
 	std::env::var("CARGO_BIN_EXE_apa_kan_server")
@@ -28,6 +31,7 @@ async fn smoke_real_server_binary_health_and_account() {
 	let mut child = std::process::Command::new(server_binary())
 		.env("PORT", port.to_string())
 		.env("APA_KAN_DATABASE_URL", format!("sqlite:{}", db_path.display()))
+		.env("APAKAN_OPERATOR_SEED", "07".repeat(32))
 		.stdout(std::process::Stdio::null())
 		.stderr(std::process::Stdio::null())
 		.spawn()
@@ -58,17 +62,35 @@ async fn smoke_real_server_binary_health_and_account() {
 		.expect("json");
 	assert_eq!(health["status"], "ok");
 
-	let (_sk, vk) = generate_keypair(&Seed::from_bytes([99u8; 32]));
-	let create: serde_json::Value = client
-		.post(format!("{root}/v1/accounts"))
-		.json(&serde_json::json!({ "genesis_vk_hex": hex::encode(&vk.0) }))
+	// Registration is a signed `account.register` on `POST /v1/tx`.
+	let info: serde_json::Value = client
+		.get(format!("{root}/v1/ledger"))
 		.send()
 		.await
-		.expect("create")
+		.expect("ledger")
 		.json()
 		.await
 		.expect("json");
-	let account_id = create["account_id"].as_str().expect("id");
+	let chain = info["chain"].as_str().expect("chain");
+	let key = TxSigner::from_seed(&Seed::from_bytes([99u8; 32]));
+	let account = key.account();
+	let register = key
+		.sign(
+			chain,
+			&account_stream(&account),
+			0,
+			GENESIS_PREV,
+			TxPayload::AccountRegister { label: "smoke".into() },
+		)
+		.expect("sign");
+	let res = client
+		.post(format!("{root}/v1/tx"))
+		.json(&register)
+		.send()
+		.await
+		.expect("register");
+	assert!(res.status().is_success(), "{:?}", res.text().await);
+	let account_id = account.to_hex();
 
 	let profile: serde_json::Value = client
 		.get(format!("{root}/v1/accounts/{account_id}"))

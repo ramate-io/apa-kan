@@ -5,7 +5,7 @@ use apa_kan_account::crypto::{
 	generate_keypair, message_id, sign_bytes, verify_bytes, Param, Seed, SignatureBytes,
 	VerifyingKeyBytes,
 };
-use apa_kan_account::AccountId;
+use apa_kan_account::{AccountId, RecoveryKind};
 use apa_kan_view::{ActionWire, Seat};
 use ml_dsa::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -57,9 +57,79 @@ pub enum TxPayload {
 	/// game whose creator has not revealed.
 	#[serde(rename = "game.cancel")]
 	GameCancel,
+
+	/// Open `account/<id>` (seq 0), signed by the genesis key `id` derives from.
+	#[serde(rename = "account.register")]
+	AccountRegister { label: String },
+	/// Add `vk` to the account. `proof` is `vk`'s signature over
+	/// [`link_proof_id`], so nobody can link a key they don't hold.
+	#[serde(rename = "account.link_key")]
+	AccountLinkKey { vk: VerifyingKeyBytes, label: String, proof: SignatureBytes },
+	/// Revoke a key (never the last active one).
+	#[serde(rename = "account.revoke_key")]
+	AccountRevokeKey { vk: VerifyingKeyBytes },
+	/// Set or clear the recovery email and its switches.
+	#[serde(rename = "account.set_email")]
+	AccountSetEmail { email: Option<String>, recovery_opt_in: bool, approve_via_email: bool },
+	/// Signed by the key to be recovered (not on the account yet).
+	/// `email_proof` = [`crate::account::email_proof`] for the email on file.
+	#[serde(rename = "account.recovery_request")]
+	/// `requested_at_unix` is the requester's clock; hosts admit it only
+	/// within [`crate::account::MAX_CLOCK_SKEW_SECS`] of their own, and the
+	/// expiry and cooldown rules compare signed times only, so replay is
+	/// deterministic.
+	AccountRecoveryRequest { kind: RecoveryKind, email_proof: String, requested_at_unix: i64 },
+	/// Operator-signed: the host mailed a token whose hash this records, and
+	/// the cooldown ends at `usable_at_unix`.
+	#[serde(rename = "account.recovery_challenge")]
+	AccountRecoveryChallenge { token_hash: String, usable_at_unix: i64 },
+	/// Pending key proves it received the mailed token.
+	#[serde(rename = "account.recovery_confirm")]
+	AccountRecoveryConfirm { token: String },
+	/// Pending key becomes active once the cooldown passed.
+	#[serde(rename = "account.recovery_finish")]
+	AccountRecoveryFinish,
+	/// An active key stops a recovery in progress. New requests then wait
+	/// out the chain's retry cooldown from `at_unix` (checked against the
+	/// host clock like `requested_at_unix`).
+	#[serde(rename = "account.recovery_cancel")]
+	AccountRecoveryCancel { at_unix: i64 },
+
+	/// Give `account` a role (`admin/roles`; operator or an `admin`).
+	#[serde(rename = "admin.grant_role")]
+	AdminGrantRole { account: AccountId, role: String },
+	/// Take a role away.
+	#[serde(rename = "admin.revoke_role")]
+	AdminRevokeRole { account: AccountId, role: String },
+}
+
+/// Domain of the new key's proof in `account.link_key`.
+pub const LINK_PROOF_DOMAIN: &str = "apa-kan/link-key/v1";
+
+/// Message the new key signs to be linked to `account` on `chain`.
+pub fn link_proof_id(chain: &str, account: &AccountId, vk: &VerifyingKeyBytes) -> [u8; 32] {
+	let body = serde_json::json!({
+		"domain": LINK_PROOF_DOMAIN,
+		"chain": chain,
+		"account": account.to_hex(),
+	});
+	// serde_json::Value always serializes.
+	let canonical = to_canonical_json(&body).unwrap_or_default();
+	message_id(canonical.as_bytes(), vk)
 }
 
 impl TxPayload {
+	/// Admin topic (`admin/<topic>` stream) this payload belongs to, if it
+	/// is an admin payload.
+	pub fn admin_topic(&self) -> Option<&'static str> {
+		match self {
+			TxPayload::AdminGrantRole { .. } | TxPayload::AdminRevokeRole { .. } => {
+				Some(crate::admin::ROLES_TOPIC)
+			}
+			_ => None,
+		}
+	}
+
 	pub fn kind(&self) -> &'static str {
 		match self {
 			TxPayload::GameCreate { .. } => "game.create",
@@ -68,6 +138,17 @@ impl TxPayload {
 			TxPayload::GameMove { .. } => "game.move",
 			TxPayload::GameResign => "game.resign",
 			TxPayload::GameCancel => "game.cancel",
+			TxPayload::AccountRegister { .. } => "account.register",
+			TxPayload::AccountLinkKey { .. } => "account.link_key",
+			TxPayload::AccountRevokeKey { .. } => "account.revoke_key",
+			TxPayload::AccountSetEmail { .. } => "account.set_email",
+			TxPayload::AccountRecoveryRequest { .. } => "account.recovery_request",
+			TxPayload::AccountRecoveryChallenge { .. } => "account.recovery_challenge",
+			TxPayload::AccountRecoveryConfirm { .. } => "account.recovery_confirm",
+			TxPayload::AccountRecoveryFinish => "account.recovery_finish",
+			TxPayload::AccountRecoveryCancel { .. } => "account.recovery_cancel",
+			TxPayload::AdminGrantRole { .. } => "admin.grant_role",
+			TxPayload::AdminRevokeRole { .. } => "admin.revoke_role",
 		}
 	}
 }
@@ -203,6 +284,11 @@ impl TxSigner {
 
 	pub fn verifying_key(&self) -> &VerifyingKeyBytes {
 		&self.vk
+	}
+
+	/// This key's proof for `account.link_key` onto `account`.
+	pub fn link_proof(&self, chain: &str, account: &AccountId) -> SignatureBytes {
+		sign_bytes(&self.sk, &link_proof_id(chain, account, &self.vk))
 	}
 
 	pub fn sign(

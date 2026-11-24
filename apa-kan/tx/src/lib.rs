@@ -8,8 +8,14 @@
 //!   SHA3-256(canonical ‖ signer_vk), ML-DSA-65 over the id. The id is also the
 //!   entry hash the next transaction links to.
 //! - [`game`]: [`GameState`] and [`GameState::apply`], the transition function
-//!   for `game/<id>` streams (create, join, move, resign, cancel). State is the
-//!   fold of the stream: [`game::replay`] rebuilds it from committed entries.
+//!   for `game/<id>` streams (create, join, reveal, move, resign, cancel).
+//!   State is the fold of the stream: [`game::replay`] rebuilds it from
+//!   committed entries.
+//! - [`account`]: [`AccountState`] for `account/<id>` streams (register, link
+//!   and revoke keys, recovery email, email recovery). The fold is the
+//!   authority on which keys an account has.
+//! - [`admin`]: [`RolesState`] for the `admin/roles` stream, signed by the
+//!   operator account or an `admin`.
 //!
 //! Account authority uses the account crate's indirection: a transaction is
 //! signed by one of the account's keys, the key travels in the body, and the
@@ -21,13 +27,19 @@
 //! carry the bytes, look up key status, and persist entries via
 //! `apa-kan-ledger`.
 
+pub mod account;
+pub mod admin;
 pub mod envelope;
 pub mod game;
 pub mod preview;
 
+pub use account::{account_id_of, account_stream, AccountRules, AccountState};
+pub use admin::{
+	admin_stream, admin_topic_of, require_admin, RolesState, ROLES_STREAM, ROLES_TOPIC,
+};
 pub use envelope::{
-	admit, verify_self_contained, KeyStatus, SignedTx, TxBody, TxPayload, TxSigner, GENESIS_PREV,
-	TX_DOMAIN,
+	admit, link_proof_id, verify_self_contained, KeyStatus, SignedTx, TxBody, TxPayload, TxSigner,
+	GENESIS_PREV, LINK_PROOF_DOMAIN, TX_DOMAIN,
 };
 pub use game::{deal_salt, game_id_of, game_stream, seed_commitment, GameState};
 
@@ -43,17 +55,21 @@ pub struct TxReceipt {
 	/// `seq` of this transaction; the stream's next is `seq + 1`.
 	pub seq: u64,
 	pub kind: String,
-	pub phase: GamePhase,
+	/// Game phase after a `game.*` transaction.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub phase: Option<GamePhase>,
 	/// Engine log line for a move.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub log_line: Option<String>,
 }
 
-/// Host reply to an accepted transaction.
+/// Host reply to an accepted transaction: the receipt plus the stream's view
+/// after it ([`HostedGameView`] for games, `AccountView` for accounts,
+/// `RolesView` for `admin/roles`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TxResponse {
+pub struct TxResponse<V = HostedGameView> {
 	pub receipt: TxReceipt,
-	pub view: HostedGameView,
+	pub view: V,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -87,6 +103,10 @@ pub enum TxError {
 	NotYourTurn { to_move: Seat },
 	#[error("revealed salt does not match the creator's commitment")]
 	BadReveal,
+	#[error("rejected: {reason}")]
+	Rejected { reason: String },
+	#[error("too early: allowed from unix time {usable_at_unix}")]
+	TooEarly { usable_at_unix: i64 },
 	#[error("illegal action: {reason}")]
 	Illegal { reason: String },
 	#[error("host error: {reason}")]

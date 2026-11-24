@@ -7,11 +7,12 @@
 use std::sync::Arc;
 
 use apa_kan_account::{AccountId, Seed};
-use apa_kan_server::games::GameHost;
 use apa_kan_server::mailer::NoopMailer;
-use apa_kan_server::testutil::{base_url, spawn_test_server, spawn_test_server_with_games};
+use apa_kan_server::testutil::{base_url, spawn_test_server, spawn_test_server_with_ledger};
 use apa_kan_store::SystemClock;
-use apa_kan_tx::{game_stream, seed_commitment, SignedTx, TxPayload, TxSigner, GENESIS_PREV};
+use apa_kan_tx::{
+	account_stream, game_stream, seed_commitment, SignedTx, TxPayload, TxSigner, GENESIS_PREV,
+};
 use apa_kan_view::{GamePhase, HostedGameView};
 
 fn signer(n: u8) -> TxSigner {
@@ -189,14 +190,17 @@ async fn e2e_registered_account_key_indirection() {
 	let client = reqwest::Client::new();
 	let root = base_url(addr);
 	let genesis = signer(41);
-	let res = client
-		.post(format!("{root}/v1/accounts"))
-		.json(&serde_json::json!({ "genesis_vk_hex": hex::encode(&genesis.verifying_key().0) }))
-		.send()
-		.await
-		.expect("account");
-	assert!(res.status().is_success());
 	let chain = chain(&client, &root).await;
+	let register = genesis
+		.sign(
+			&chain,
+			&account_stream(&genesis.account()),
+			0,
+			GENESIS_PREV,
+			TxPayload::AccountRegister { label: String::new() },
+		)
+		.expect("sign");
+	assert_eq!(post(&client, &root, &register).await.status(), 200);
 	let create = |who: &TxSigner, id: &str| {
 		who.sign(
 			&chain,
@@ -232,28 +236,38 @@ async fn e2e_game_survives_server_restart() {
 	let url = format!("sqlite:{}", dir.join("ledger.db").display());
 	let client = reqwest::Client::new();
 	let (a, b) = (signer(51), signer(52));
-	let host = |ledger| {
-		GameHost::new(ledger, Arc::new(apa_kan_server::games::GenesisOnly), "restart", 100)
-	};
+	let operator = || signer(50);
 
-	let first = apa_kan_ledger::connect(&url).await.expect("ledger");
-	let (addr, handle) =
-		spawn_test_server_with_games(Arc::new(SystemClock), Arc::new(NoopMailer), host(first))
-			.await
-			.expect("spawn");
+	let first = Box::pin(apa_kan_ledger::connect(&url)).await.expect("ledger");
+	let (addr, handle) = Box::pin(spawn_test_server_with_ledger(
+		Arc::new(SystemClock),
+		Arc::new(NoopMailer),
+		first,
+		"restart",
+		operator(),
+	))
+	.await
+	.expect("spawn");
 	let root = base_url(addr);
-	let mut v = open_game(&client, &root, "durable", &a, &b).await;
+	// Debug builds keep big futures on the stack; box them (ML-DSA keygen
+	// needs most of a test thread's stack too).
+	let mut v = Box::pin(open_game(&client, &root, "durable", &a, &b)).await;
 	for _ in 0..3 {
 		v = accept(&client, &root, &play_first(&v, &a, &b)).await;
 	}
 	handle.abort();
 	let _ = handle.await;
 
-	let second = apa_kan_ledger::connect(&url).await.expect("reopen");
-	let (addr, handle) =
-		spawn_test_server_with_games(Arc::new(SystemClock), Arc::new(NoopMailer), host(second))
-			.await
-			.expect("respawn");
+	let second = Box::pin(apa_kan_ledger::connect(&url)).await.expect("reopen");
+	let (addr, handle) = Box::pin(spawn_test_server_with_ledger(
+		Arc::new(SystemClock),
+		Arc::new(NoopMailer),
+		second,
+		"restart",
+		operator(),
+	))
+	.await
+	.expect("respawn");
 	let root = base_url(addr);
 	let after: HostedGameView = client
 		.get(format!("{root}/v1/games/durable"))
