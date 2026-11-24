@@ -93,11 +93,29 @@ store's tiles and rating), `GET /v1/accounts/{id}/keys`, and
 | `account.link_key { vk, label, proof }` | active key | `proof` = the **new** key's ML-DSA signature over `SHA3(canonical {domain: "apa-kan/link-key/v1", chain, account} ‖ vk)`; nobody links a key they don't hold. |
 | `account.revoke_key { vk }` | active key | never the last active key |
 | `account.set_email { email?, recovery_opt_in, approve_via_email }` | active key | email trimmed, lowercased, checked for shape; switches need an email |
-| `account.recovery_request { kind, email_proof }` | the key to recover (not on the account) | account opted in for `kind`; `email_proof = SHA3("apa-kan/recovery-email/v1" ‖ account ‖ pending_vk ‖ email)` matches the email on file; one recovery at a time |
+| `account.recovery_request { kind, email_proof, requested_at_unix }` | the key to recover (not on the account) | account opted in for `kind`; `email_proof = SHA3("apa-kan/recovery-email/v1" ‖ account ‖ pending_vk ‖ email)` matches the email on file; `requested_at_unix` within 10 min of the host clock; **one open recovery per account**; refused (`too_early`) before the retry cooldown ends (see below) |
 | `account.recovery_challenge { token_hash, usable_at_unix }` | **operator** | emitted by the host right after a request commits; records `SHA3("apa-kan/recovery-token/v1" ‖ token)` and the cooldown end (72 h full recovery, 24 h email link approval); the token is mailed |
 | `account.recovery_confirm { token }` | pending key | token hashes to `token_hash`; key added as `pending_recovery` |
-| `account.recovery_finish` | pending key | host clock ≥ `usable_at_unix` (else `too_early`); key becomes `active` |
-| `account.recovery_cancel` | any active key | drops the recovery; the pending key is revoked |
+| `account.recovery_finish` | pending key | host clock ≥ `usable_at_unix` (else `too_early`); key becomes `active`. A **full recovery revokes every other active key** (the old devices are presumed lost or compromised); email-link approval only adds the key. |
+| `account.recovery_cancel { at_unix }` | any active key | drops the recovery; the pending key is revoked; `at_unix` within 10 min of the host clock starts the retry cooldown |
+
+**Recovery spam and stuck requests.** At most one recovery is open per
+account. Times that matter for these rules are signed (`requested_at_unix`,
+`at_unix`, the operator's `usable_at_unix`), so replay is deterministic; hosts
+only check them against their clock (±`MAX_CLOCK_SKEW_SECS` = 600 s) at
+admission.
+- After a cancel, new requests wait `recovery_retry_cooldown_secs` (default
+  24 h) from `at_unix`.
+- A request the operator never challenged (mail or commit failed) **expires**
+  after `recovery_challenge_timeout_secs` (default 15 min); a challenged one
+  whose token was not confirmed expires at its `usable_at_unix`. An expired
+  recovery is a failure: the same pending key may re-request at once (the
+  host challenges and mails again), any other key only after the retry
+  cooldown counted from the expiry. Confirmed recoveries don't expire; an
+  active key cancels them.
+- Both timings are chain configuration in `AccountRules`
+  (`APAKAN_RECOVERY_COOLDOWN_SECS`, `APAKAN_RECOVERY_CHALLENGE_TIMEOUT_SECS`
+  on the server) and must be the same for every host replaying the chain.
 
 The **operator** is a self-certifying account whose key the host holds
 (`APAKAN_OPERATOR_SEED`, else a seed file at `APAKAN_OPERATOR_SEED_FILE`,
@@ -111,15 +129,21 @@ passes no clock and trusts what was committed. The token itself never touches
 the ledger until the pending key reveals it in `recovery_confirm`, after which
 it is spent.
 
-**Admin:** `admin/roles` holds `admin.grant_role { account, role }` and
-`admin.revoke_role`, signed by the operator or an account holding `admin`
-(key checked against that account's fold). Further admin actions (catalog,
-character-pass publishing from the admin panel work) become more `admin.*`
-payloads on `admin/<topic>` streams under the same rule.
+**Admin:** admin state lives on per-topic streams `admin/<topic>` (topic
+`[a-z][a-z0-9_-]{0,31}`), all submitted through the normal `POST /v1/tx`.
+Every `admin.*` payload names its topic (`TxPayload::admin_topic`) and is
+refused on any other stream; the host routes by topic and refuses topics it
+has no fold for. Authorization is shared (`require_admin`): the operator, or
+an account holding `admin` in `admin/roles` (key checked against that
+account's fold). Today's topic is `admin/roles` (`admin.grant_role { account,
+role }`, `admin.revoke_role`); further admin actions (catalog, character-pass
+publishing from #97) add payloads mapped to their topic plus a fold, without
+new routes.
 
 **Privacy:** `account.set_email` carries the address, so raw account
 transactions are not served (no `/txs` view for accounts); views show only
-`email_set`. Peer replication of account streams would need the address
+`email_set`. This is fine while the server is the only host. **Before any
+decentralization** (peers replicating account streams) the address must be
 encrypted or replaced by a commitment.
 
 ## Ordering, replay and fork protection

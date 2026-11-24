@@ -74,7 +74,11 @@ pub enum TxPayload {
 	/// Signed by the key to be recovered (not on the account yet).
 	/// `email_proof` = [`crate::account::email_proof`] for the email on file.
 	#[serde(rename = "account.recovery_request")]
-	AccountRecoveryRequest { kind: RecoveryKind, email_proof: String },
+	/// `requested_at_unix` is the requester's clock; hosts admit it only
+	/// within [`crate::account::MAX_CLOCK_SKEW_SECS`] of their own, and the
+	/// expiry and cooldown rules compare signed times only, so replay is
+	/// deterministic.
+	AccountRecoveryRequest { kind: RecoveryKind, email_proof: String, requested_at_unix: i64 },
 	/// Operator-signed: the host mailed a token whose hash this records, and
 	/// the cooldown ends at `usable_at_unix`.
 	#[serde(rename = "account.recovery_challenge")]
@@ -85,9 +89,11 @@ pub enum TxPayload {
 	/// Pending key becomes active once the cooldown passed.
 	#[serde(rename = "account.recovery_finish")]
 	AccountRecoveryFinish,
-	/// An active key stops a recovery in progress.
+	/// An active key stops a recovery in progress. New requests then wait
+	/// out the chain's retry cooldown from `at_unix` (checked against the
+	/// host clock like `requested_at_unix`).
 	#[serde(rename = "account.recovery_cancel")]
-	AccountRecoveryCancel,
+	AccountRecoveryCancel { at_unix: i64 },
 
 	/// Give `account` a role (`admin/roles`; operator or an `admin`).
 	#[serde(rename = "admin.grant_role")]
@@ -113,6 +119,17 @@ pub fn link_proof_id(chain: &str, account: &AccountId, vk: &VerifyingKeyBytes) -
 }
 
 impl TxPayload {
+	/// Admin topic (`admin/<topic>` stream) this payload belongs to, if it
+	/// is an admin payload.
+	pub fn admin_topic(&self) -> Option<&'static str> {
+		match self {
+			TxPayload::AdminGrantRole { .. } | TxPayload::AdminRevokeRole { .. } => {
+				Some(crate::admin::ROLES_TOPIC)
+			}
+			_ => None,
+		}
+	}
+
 	pub fn kind(&self) -> &'static str {
 		match self {
 			TxPayload::GameCreate { .. } => "game.create",
@@ -129,7 +146,7 @@ impl TxPayload {
 			TxPayload::AccountRecoveryChallenge { .. } => "account.recovery_challenge",
 			TxPayload::AccountRecoveryConfirm { .. } => "account.recovery_confirm",
 			TxPayload::AccountRecoveryFinish => "account.recovery_finish",
-			TxPayload::AccountRecoveryCancel => "account.recovery_cancel",
+			TxPayload::AccountRecoveryCancel { .. } => "account.recovery_cancel",
 			TxPayload::AdminGrantRole { .. } => "admin.grant_role",
 			TxPayload::AdminRevokeRole { .. } => "admin.revoke_role",
 		}

@@ -26,8 +26,9 @@ use apa_kan_ledger::LedgerStore;
 use apa_kan_store::Clock;
 use apa_kan_tx::account::recovery_token_hash;
 use apa_kan_tx::{
-	account_id_of, account_stream, admit, AccountRules, AccountState, KeyStatus, RolesState,
-	SignedTx, TxError, TxPayload, TxReceipt, TxResponse, TxSigner, ROLES_STREAM,
+	account_id_of, account_stream, admin_topic_of, admit, AccountRules, AccountState, KeyStatus,
+	RolesState, SignedTx, TxError, TxPayload, TxReceipt, TxResponse, TxSigner, ROLES_STREAM,
+	ROLES_TOPIC,
 };
 use apa_kan_view::{AccountView, RolesView};
 use async_trait::async_trait;
@@ -153,7 +154,7 @@ impl AccountHost {
 		mailer: Arc<dyn Mailer>,
 	) -> Self {
 		let chain = chain.into();
-		let rules = AccountRules { operator: operator.as_ref().map(TxSigner::account) };
+		let rules = rules_from_env(operator.as_ref().map(TxSigner::account));
 		Self {
 			accounts: Streams::new(ledger.clone(), chain.clone(), AccountMachine(rules.clone())),
 			roles: Streams::new(ledger, chain, RolesMachine(rules.clone())),
@@ -268,11 +269,24 @@ impl AccountHost {
 		Ok(next)
 	}
 
-	/// Commit one `admin/roles` transaction (operator or `admin` signer).
-	pub async fn submit_admin(&self, tx: SignedTx) -> Result<TxResponse<RolesView>, TxError> {
-		if tx.body.stream != ROLES_STREAM {
-			return Err(TxError::UnsupportedStream { stream: tx.body.stream.clone() });
+	/// Commit one `admin/<topic>` transaction (operator or `admin` signer),
+	/// routed by topic. Only `roles` has a fold so far; other topics add a
+	/// [`Streams`] and an arm here.
+	pub async fn submit_admin(&self, tx: SignedTx) -> Result<AdminResponse, TxError> {
+		let unsupported = || TxError::UnsupportedStream { stream: tx.body.stream.clone() };
+		let topic = admin_topic_of(&tx.body.stream).ok_or_else(unsupported)?;
+		if tx.body.payload.admin_topic() != Some(topic) {
+			return Err(TxError::BadEnvelope {
+				reason: format!("{} does not belong on {}", tx.body.payload.kind(), tx.body.stream),
+			});
 		}
+		match topic {
+			ROLES_TOPIC => self.submit_roles(tx).await.map(AdminResponse::Roles),
+			_ => Err(unsupported()),
+		}
+	}
+
+	async fn submit_roles(&self, tx: SignedTx) -> Result<TxResponse<RolesView>, TxError> {
 		let key = self.key_status(&tx.body.signer, &tx.body.signer_vk).await?;
 		let chain = self.chain().to_string();
 		let (tx, id) =
@@ -287,6 +301,39 @@ impl AccountHost {
 	pub async fn clear_cache(&self) {
 		self.accounts.clear_cache().await;
 		self.roles.clear_cache().await;
+	}
+}
+
+/// Reply to an admin transaction: that topic's `{ receipt, view }`.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(untagged)]
+pub enum AdminResponse {
+	Roles(TxResponse<RolesView>),
+}
+
+/// Account rules for `operator`, with recovery timings from
+/// `APAKAN_RECOVERY_COOLDOWN_SECS` (default 24 h) and
+/// `APAKAN_RECOVERY_CHALLENGE_TIMEOUT_SECS` (default 15 min). These are chain
+/// configuration: every host replaying the chain must use the same values.
+pub fn rules_from_env(operator: Option<AccountId>) -> AccountRules {
+	let secs = |k: &str, d: i64| {
+		std::env::var(k)
+			.ok()
+			.and_then(|v| v.trim().parse::<i64>().ok())
+			.filter(|v| *v >= 0)
+			.unwrap_or(d)
+	};
+	let base = AccountRules::with_operator(operator);
+	AccountRules {
+		recovery_retry_cooldown_secs: secs(
+			"APAKAN_RECOVERY_COOLDOWN_SECS",
+			base.recovery_retry_cooldown_secs,
+		),
+		recovery_challenge_timeout_secs: secs(
+			"APAKAN_RECOVERY_CHALLENGE_TIMEOUT_SECS",
+			base.recovery_challenge_timeout_secs,
+		),
+		..base
 	}
 }
 

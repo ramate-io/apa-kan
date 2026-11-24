@@ -34,7 +34,9 @@ pub mod game;
 pub mod preview;
 
 pub use account::{account_id_of, account_stream, AccountRules, AccountState};
-pub use admin::{RolesState, ROLES_STREAM};
+pub use admin::{
+	admin_stream, admin_topic_of, require_admin, RolesState, ROLES_STREAM, ROLES_TOPIC,
+};
 pub use envelope::{
 	admit, link_proof_id, verify_self_contained, KeyStatus, SignedTx, TxBody, TxPayload, TxSigner,
 	GENESIS_PREV, LINK_PROOF_DOMAIN, TX_DOMAIN,
