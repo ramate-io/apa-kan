@@ -8,6 +8,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use apa_kan_account::id::AccountId;
+use apa_kan_account::PasskeyWrappedSeed;
 use apa_kan_tx::{SignedTx, TxError};
 use apa_kan_view::{AccountKeyView, AccountView, HostedGameView, RolesView};
 
@@ -48,6 +49,7 @@ pub fn router(state: AppState) -> Router {
 		.route("/v1/games/{game_id}/txs", get(get_game_txs))
 		.route("/v1/accounts/{account_id}", get(get_account))
 		.route("/v1/accounts/{account_id}/keys", get(get_account_keys))
+		.route("/v1/accounts/{account_id}/passkeys/{credential_id}", get(get_passkey_backup))
 		.route("/v1/admin/roles", get(get_roles))
 		.layer(cors_layer())
 		.with_state(state)
@@ -188,6 +190,23 @@ async fn get_account_keys(
 ) -> Result<Json<Vec<AccountKeyView>>, GameApiError> {
 	let id = account_id(&id)?;
 	state.accounts.view(&id).await.map(|v| Json(v.keys)).map_err(tx_error)
+}
+
+/// The passkey-wrapped seed for one credential: what a new device fetches
+/// after its passkey (synced by the platform) names the account and
+/// credential. Useless without that passkey's PRF output.
+async fn get_passkey_backup(
+	State(state): State<AppState>,
+	Path((id, credential_id)): Path<(String, String)>,
+) -> Result<Json<PasskeyWrappedSeed>, GameApiError> {
+	let id = account_id(&id)?;
+	let account = state.accounts.state(&id).await.map_err(tx_error)?.ok_or(TxError::NotFound);
+	let account = account.map_err(tx_error)?;
+	account
+		.passkey_backup(&credential_id.to_lowercase())
+		.cloned()
+		.map(Json)
+		.ok_or_else(|| tx_error(TxError::NotFound))
 }
 
 async fn get_roles(State(state): State<AppState>) -> Result<Json<RolesView>, GameApiError> {

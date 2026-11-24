@@ -11,6 +11,8 @@
 //!   account.recovery_confirm    pending key shows the token → key pending_recovery
 //!   account.recovery_finish     pending key, after the cooldown → key active
 //!   account.recovery_cancel     any active key, any time before finish
+//!   account.set_passkey_backup     active key; seed wrapped under a passkey PRF
+//!   account.remove_passkey_backup  active key
 //! ```
 //!
 //! The fold is the authority on an account's keys: game hosts look keys up
@@ -20,9 +22,10 @@
 //! admission; replay passes `None` and trusts what was committed.
 
 use apa_kan_account::crypto::{verify_bytes, VerifyingKeyBytes};
-use apa_kan_account::{AccountId, AuthorizedKeyStatus, RecoveryKind};
+use apa_kan_account::{AccountId, AuthorizedKeyStatus, PasskeyWrappedSeed, RecoveryKind};
 use apa_kan_view::{
-	AccountKeyView, AccountView, KeyState, LedgerHead, RecoveryStage, RecoveryView, VIEW_SCHEMA,
+	AccountKeyView, AccountView, KeyState, LedgerHead, PasskeyBackupView, RecoveryStage,
+	RecoveryView, VIEW_SCHEMA,
 };
 use sha3::{Digest, Sha3_256};
 
@@ -35,6 +38,8 @@ pub const MAX_KEY_LABEL_LEN: usize = 40;
 pub const MAX_EMAIL_LEN: usize = 254;
 /// Most keys (any status) an account keeps.
 pub const MAX_KEYS: usize = 64;
+/// Most passkey backups an account keeps.
+pub const MAX_PASSKEY_BACKUPS: usize = 8;
 /// Domain of `account.recovery_request`'s email proof.
 pub const EMAIL_PROOF_DOMAIN: &[u8] = b"apa-kan/recovery-email/v1";
 /// Domain of the recovery token hash.
@@ -122,6 +127,8 @@ pub struct AccountState {
 	pub recovery_opt_in: bool,
 	pub approve_via_email: bool,
 	pub recovery: Option<Recovery>,
+	/// Passkey-wrapped seed copies, by credential id: `(wrapped, added_seq)`.
+	pub passkey_backups: Vec<(PasskeyWrappedSeed, u64)>,
 	pub next_seq: u64,
 	pub head: String,
 }
@@ -220,6 +227,7 @@ impl AccountState {
 					recovery_opt_in: false,
 					approve_via_email: false,
 					recovery: None,
+					passkey_backups: Vec::new(),
 					next_seq: 0,
 					head: GENESIS_PREV.into(),
 				}
@@ -399,6 +407,25 @@ impl AccountState {
 						}
 						n.recovery = None;
 					}
+					TxPayload::AccountSetPasskeyBackup { wrapped } => {
+						s.require_active(vk)?;
+						wrapped
+							.validate()
+							.map_err(|e| TxError::BadEnvelope { reason: e.to_string() })?;
+						n.passkey_backups.retain(|(w, _)| w.credential_id != wrapped.credential_id);
+						if n.passkey_backups.len() >= MAX_PASSKEY_BACKUPS {
+							return Err(reject("too many passkey backups"));
+						}
+						n.passkey_backups.push((wrapped.clone(), b.seq));
+					}
+					TxPayload::AccountRemovePasskeyBackup { credential_id } => {
+						s.require_active(vk)?;
+						let before = n.passkey_backups.len();
+						n.passkey_backups.retain(|(w, _)| &w.credential_id != credential_id);
+						if n.passkey_backups.len() == before {
+							return Err(reject("no such passkey backup"));
+						}
+					}
 					other => {
 						return Err(TxError::BadEnvelope {
 							reason: format!("{} is not an account transaction", other.kind()),
@@ -420,6 +447,14 @@ impl AccountState {
 			log_line: None,
 		};
 		Ok((next, receipt))
+	}
+
+	/// The stored backup for a passkey credential (hex id).
+	pub fn passkey_backup(&self, credential_id: &str) -> Option<&PasskeyWrappedSeed> {
+		self.passkey_backups
+			.iter()
+			.map(|(w, _)| w)
+			.find(|w| w.credential_id == credential_id)
 	}
 
 	pub fn view(&self) -> AccountView {
@@ -450,6 +485,14 @@ impl AccountState {
 			email_set: self.email.is_some(),
 			recovery_opt_in: self.recovery_opt_in,
 			approve_via_email: self.approve_via_email,
+			passkeys: self
+				.passkey_backups
+				.iter()
+				.map(|(w, seq)| PasskeyBackupView {
+					credential_id: w.credential_id.clone(),
+					added_seq: *seq,
+				})
+				.collect(),
 			recovery: self.recovery.as_ref().map(|r| RecoveryView {
 				pending_vk: hex::encode(r.pending_vk.as_slice()),
 				kind: kind_name(r.kind).into(),
@@ -719,6 +762,54 @@ mod tests {
 			a.send(&other, TxPayload::AccountRecoveryCancel),
 			Err(TxError::KeyNotAuthorized)
 		);
+	}
+
+	#[test]
+	fn passkey_backups() {
+		let mut a = Acct::new();
+		let owner = TxSigner::from_seed(&key(1));
+		a.send(&owner, TxPayload::AccountRegister { label: String::new() }).unwrap();
+		let wrapped = |cred: &[u8], prf: u8| {
+			apa_kan_account::wrap_seed(
+				&key(1),
+				&[prf; 32],
+				&owner.account(),
+				cred,
+				[1; 32],
+				[2; 12],
+			)
+		};
+		let mut bad = wrapped(b"c1", 1);
+		bad.salt = "zz".into();
+		assert!(matches!(
+			a.send(&owner, TxPayload::AccountSetPasskeyBackup { wrapped: bad }),
+			Err(TxError::BadEnvelope { .. })
+		));
+		a.send(&owner, TxPayload::AccountSetPasskeyBackup { wrapped: wrapped(b"c1", 1) })
+			.unwrap();
+		// Same credential replaces; another adds.
+		a.send(&owner, TxPayload::AccountSetPasskeyBackup { wrapped: wrapped(b"c1", 2) })
+			.unwrap();
+		a.send(&owner, TxPayload::AccountSetPasskeyBackup { wrapped: wrapped(b"c2", 3) })
+			.unwrap();
+		let v = a.s().view();
+		assert_eq!(v.passkeys.len(), 2);
+		assert_eq!(v.passkeys[0].added_seq, 2);
+		let got = a.s().passkey_backup(&hex::encode(b"c1")).unwrap();
+		assert_eq!(got.unwrap_seed(&[2; 32], &owner.account()).unwrap().0, [1; 32]);
+		// Only active keys manage backups.
+		let stranger = a.linked(8);
+		assert_eq!(
+			a.send(
+				&stranger,
+				TxPayload::AccountRemovePasskeyBackup { credential_id: hex::encode(b"c1") }
+			),
+			Err(TxError::KeyNotAuthorized)
+		);
+		a.send(&owner, TxPayload::AccountRemovePasskeyBackup { credential_id: hex::encode(b"c1") })
+			.unwrap();
+		assert!(a.s().passkey_backup(&hex::encode(b"c1")).is_none());
+		assert_eq!(&replay(&a.rules, CHAIN, &a.log).unwrap().unwrap(), a.s());
 	}
 
 	#[test]

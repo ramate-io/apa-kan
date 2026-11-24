@@ -7,6 +7,8 @@ pub mod id;
 pub mod keystore;
 pub mod link;
 pub mod param;
+pub mod passkey;
+pub mod phrase;
 pub mod recovery;
 pub mod types;
 
@@ -20,6 +22,8 @@ pub use keystore::{
 };
 pub use link::{verify_link_approval, LinkApproval, LinkError, LinkRequest};
 pub use param::AccountMlDsaParams;
+pub use passkey::{prf_input, wrap_seed, PasskeyError, PasskeyWrappedSeed};
+pub use phrase::{phrase_to_seed, seed_to_phrase, PhraseError};
 pub use recovery::{
 	RecoveryKind, RecoveryPending, COOLDOWN_EMAIL_LINK_SECS, COOLDOWN_RECOVERY_SECS,
 };

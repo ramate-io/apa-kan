@@ -30,15 +30,19 @@ apa-kan-ledger = { path = "apa-kan/ledger" }
 apa-kan-store = { path = "apa-kan/store" }
 apa-kan-tx = { path = "apa-kan/tx" }
 apa-kan-view = { path = "apa-kan/view" }
+aes-gcm = "0.10"
 async-trait = "0.1"
+bip39 = { version = "2", default-features = false, features = ["std"] }
 axum = "0.8"
 bevy = { version = "0.19.1" }
 hex = "0.4"
+hkdf = "0.12"
 # OPEN-Q #58-19: joint bump with gwrdfa vs crates.io 0.1.2 — pinned to gwrdfa for now.
 ml-dsa = { version = "=0.1.0-rc.7", default-features = false }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 sha3 = "0.10.8"
 sqlx = { version = "0.8", default-features = false }
 thiserror = "2"
