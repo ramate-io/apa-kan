@@ -49,12 +49,42 @@ Base: unlimited spawn, no 2-2-1-1, target 5, graveyard on, mark routing B, plus 
 | B + no-return | 150 | 69-28-53 | 53-28-69 | 0.460 | 101.7 / 76.0 | 7.98 / 14.81 | 4.09 / 3.89 (abs 1.53) | score 110, draw turn_limit 28, locked_out 7, turn_limit 5 | 7 rep≥3 (avg max 1.60) | 79/122 (64.8%) | 2.7/21.1/52.8/23.4 | 2.3/12.7/70.3/14.7 | 0.0 / 50 / 35/120 | 15.6 |
 
 - **On the best routing base the rule is close to neutral.**
-  - Seats are a bit fairer (0.460 against 0.433). Pace is 1.5 turns slower (median 76 against 74.5). Comebacks drop slightly (64.8% against 69.3%).
+  - P1 wins a bit more (69-28-53 against 65-23-62); the next section shows this is noise. Pace is 1.5 turns slower (median 76 against 74.5). Comebacks drop slightly (64.8% against 69.3%).
   - Loops stay low: 7 games with rep≥3, against 8.
 - **Standoff unchanged:** 91 games reach a tied 4-4, waiting a median of 36 turns (28 hit the cap), against 91 / 35 for B alone.
 - **Trapping is about the same as B alone.** 54.3% of opponent captures hit a tile that moved on its owner's last turn, against 55.0%. Under B, captured triangle-steals already turn over fast, so the extra commitment barely registers.
 - **The capturer-owns snowball seen above doesn't appear here** (first +2 holder won 72/136, lead-tail median 0). That confirms capturer-owns, not this rule, caused the snowball.
 - The mark split is unchanged: triangle/dot self-captures 5.9 / 8.9 per game; triangle share of opponent captures 0.57 (winners 0.54, losers 0.59).
+
+## Seat split: noise, not a mechanism
+
+Question: why does P1 go 69-28-53 under B + no-return, against 65-23-62 for B and 64-24-62 for B + repetition-ends? Read from the committed JSONL. Each seed is the same deal (mirror decks) and the same search RNG seed in all three cells.
+
+- **Not significant.** 69 vs 53 decided games gives a two-sided binomial p = 0.17. For B, p = 0.86; for B + rep, p = 0.93.
+- **The edge comes from reshuffling, not from particular deals.**
+  - The rule changes the search from early on: 142/150 games diverge from plain B, at a median of action 21. Only 4 of those first divergences are an actual banned undo; the other 138 are the search reacting to the changed move set, its own and the opponent's.
+  - The result changes on 69/150 deals. Win to win flips: 25 go from P2 to P1 and 15 go from P1 to P2 (p = 0.15). Counting every change of result, 36 favour P1 and 33 favour P2.
+- **The ban hits both seats equally.** In plain B, P1 makes 158 next-turn undo moves and P2 makes 162. The 4 games where a banned undo was the first divergence were 3 at P1 and 1 at P2. Results: 2 unchanged, 1 P2 win became a draw, 1 P2 win became a P1 win.
+- **The trap and first-capture splits by seat are the same in all three cells.**
+  - Strict trap capture means the captured tile was the one its owner moved on their last action, taken on its new node. P1 / P2: B 21.7% / 17.6%, B + no-return 20.2% / 16.5%, B + rep 21.7% / 17.8%.
+  - The first opponent capture comes at a median of action 6 in all three cells. P2 makes it more often: 86, 88 and 86 of 150.
+  - The first capturer's win rate is low in every cell. In B + no-return: P1 32/62, P2 38/88. In B: P1 27/64, P2 34/86.
+- **Repetition-ends did not change P1's choices.**
+  - All 5 repetition endings (seeds 325, 338, 343, 357, 10305) are move for move identical to plain B up to the ending, and they end with the same outcome B reached at the 200-turn cap.
+  - Only 11 games diverge from B at all, at a median of action 95: 7 at P2, 4 at P1. 3 of them changed result: 309 (P1 win to draw), 10303 (P2 win to P1 win), 10321 (P1 win to P2 win). That nets to zero.
+- Excerpts:
+  - **Seed 10370, the ban as the first divergence.**
+    - In B, P2 plays `MOVE 0→8` (t24), P1 plays `2→0` with a self-capture, then P2 moves back `8→0` (t26) and goes on to win 5-4.
+    - Under no-return, `8→0` is illegal. P2 plays `ADD →2` instead, and P1 wins 5-4 at t86.
+    - This is the one deal where a banned undo flipped a P2 win to a P1 win.
+  - **Seed 301, a search-horizon divergence.** No undo is involved.
+    - At t19, P1 plays `RECOVER` instead of B's `MOVE 6→0`, because the search sees different replies.
+    - P1 wins both games: 5-3 at t58 in B, 4-1 at t49 under no-return.
+  - **Seed 343, repetition only shortens the game.**
+    - It matches B move for move and ends as a 4-4 repetition draw at t76.
+    - Plain B played on to a 4-4 draw at the cap.
+
+Verdict: noise. The rule reseeds most games early and does not give P1 anything systematic. The 16-game gap is within sampling error (p ≈ 0.17) and the per-seat mechanisms are flat. Repetition-ends is almost a no-op on B, so it can't be what evens out the seats there either.
 
 ## Take
 
