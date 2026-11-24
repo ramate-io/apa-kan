@@ -371,6 +371,36 @@ where
 		"--repetition-ends" => {
 			rules.repetition_ends = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--team-spawn" => {
+			rules.team_spawn = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--team-opening-adds" => {
+			rules.team_opening_adds = require_value(arg, it.next())?
+				.parse()
+				.map_err(|e| format!("invalid --team-opening-adds: {e}"))?;
+		}
+		"--move-support" => {
+			rules.move_support = crate::game::MoveSupport::parse(&require_value(arg, it.next())?)?;
+		}
+		"--match-gain" => {
+			rules.match_gain = crate::game::MatchGain::parse(&require_value(arg, it.next())?)?;
+		}
+		"--bench-ring-cap" => {
+			rules.bench_ring_cap = require_value(arg, it.next())?
+				.parse()
+				.map_err(|e| format!("invalid --bench-ring-cap: {e}"))?;
+		}
+		"--mirror-palette" => {
+			let v = require_value(arg, it.next())?;
+			rules.mirror_palette = match v.as_str() {
+				"permute" | "on" => true,
+				"off" => false,
+				_ => return Err(format!("invalid --mirror-palette '{v}' (expected off|permute)")),
+			};
+		}
+		"--surround-flip" => {
+			rules.surround_flip = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
 		"--self-capture-penalty" => {
 			rules.self_capture_penalty =
 				crate::game::SelfCapturePenalty::parse(&require_value(arg, it.next())?)?;
@@ -564,6 +594,13 @@ pub fn usage() -> &'static str {
 	   --mark-capture-routing <off|b>             Acting tile's mark routes captures: dots soak to your graveyard; triangle self-capture -> their graveyard, opponent capture -> your hand (default: off)\n\
 	   --repetition-ends <on|off>                 3-fold repetition of the visible position ends the game on capture score (default: off)\n\
 	   --self-capture-penalty <off|always|match-point>  Self-captured tiles award opponent points (default: off)\n\
+	   --team-spawn <on|off>                      Each team ADDs only on its own spawn diamond; first ADDs forced (default: off)\n\
+	   --team-opening-adds <n>                    Forced opening ADDs per player under --team-spawn (default: 3)\n\
+	   --move-support <off|matched|matched-any>   MOVE needs 1 + matched neighbors >= rings (default: off)\n\
+	   --match-gain <flat|minus-rings>            Matches defend only beyond ring count under minus-rings (default: flat)\n\
+	   --bench-ring-cap <n>                       Max total rings on the picked 11-tile bench, 0 = off (default: 0)\n\
+	   --mirror-palette <off|permute>             P2's mirrored collection gets permuted colors (default: off)\n\
+	   --surround-flip <on|off>                   A tile with every neighbor enemy-held flips owner (default: off)\n\
 	   --no-immediate-return <on|off>             a tile may not move straight back to the node it left on its own last move (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
 	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\

@@ -412,7 +412,78 @@ pub fn capped_ring_types() -> &'static [RingType] {
 }
 
 pub fn respects_type_cap(tiles: &[Tile]) -> bool {
-	capped_overflow(tiles).is_none()
+	capped_overflow(tiles).is_none() && within_ring_cap(tiles)
+}
+
+thread_local! {
+	/// Live [`RuleSet::bench_ring_cap`] while [`pick_setup`] runs on this
+	/// thread (0 = off). Scoped so UI and tests never see a stale cap.
+	static BENCH_RING_CAP: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Total rings stay within the active bench ring cap (always true when off).
+pub fn within_ring_cap(tiles: &[Tile]) -> bool {
+	let cap = BENCH_RING_CAP.with(|c| c.get());
+	cap == 0 || tiles.iter().map(|t| u32::from(t.n_rings)).sum::<u32>() <= u32::from(cap)
+}
+
+fn ring_sum(tiles: &[Tile]) -> u32 {
+	tiles.iter().map(|t| u32::from(t.n_rings)).sum()
+}
+
+/// `prefix` plus the `k` lightest of `rest` fit the active ring cap.
+fn ring_cap_completable(prefix: &[Tile], rest: &[Tile], k: usize) -> bool {
+	let cap = BENCH_RING_CAP.with(|c| c.get());
+	if cap == 0 {
+		return true;
+	}
+	let mut r: Vec<u32> = rest.iter().map(|t| u32::from(t.n_rings)).collect();
+	r.sort_unstable();
+	ring_sum(prefix) + r.iter().take(k).sum::<u32>() <= u32::from(cap)
+}
+
+struct RingCapGuard;
+impl RingCapGuard {
+	fn set(cap: u8) -> Self {
+		BENCH_RING_CAP.with(|c| c.set(cap));
+		Self
+	}
+}
+impl Drop for RingCapGuard {
+	fn drop(&mut self) {
+		BENCH_RING_CAP.with(|c| c.set(0));
+	}
+}
+
+/// Last-resort repair: swap the heaviest bench tile for the lightest
+/// reserve until the bench fits `cap` (7-pick first, then the +4).
+fn enforce_ring_cap(deck: &[Tile], pick7: &mut [Tile], extend: &mut [Tile], cap: u8) {
+	if cap == 0 {
+		return;
+	}
+	for _ in 0..32 {
+		let total = ring_sum(pick7) + ring_sum(extend);
+		if total <= u32::from(cap) {
+			return;
+		}
+		let used: Vec<u32> = pick7.iter().chain(extend.iter()).map(|t| t.id).collect();
+		let Some(light) = deck
+			.iter()
+			.copied()
+			.filter(|t| !used.contains(&t.id))
+			.min_by_key(|t| (t.n_rings, t.id))
+		else {
+			return;
+		};
+		let heavy = pick7
+			.iter_mut()
+			.chain(extend.iter_mut())
+			.max_by_key(|t| (t.n_rings, std::cmp::Reverse(t.id)));
+		match heavy {
+			Some(h) if h.n_rings > light.n_rings => *h = light,
+			_ => return,
+		}
+	}
 }
 
 /// First capped type that exceeds [`RING_TYPE_CAP`], if any.
@@ -660,7 +731,17 @@ pub fn generate_both_collections(
 	let same_arch = setup.p1_deck == setup.p2_deck;
 	let p2 = if rules.identical_bags && same_arch {
 		let sample = setup.p2_deck.sampling_rules(rules);
-		apply_deck_noise(&p1, Player::Two, setup.deck_noise, &sample, next_id, &mut rng)
+		let mut p2 =
+			apply_deck_noise(&p1, Player::Two, setup.deck_noise, &sample, next_id, &mut rng);
+		if rules.mirror_palette {
+			for t in p2.iter_mut() {
+				let n = t.n_rings.clamp(1, MAX_COLOR_RINGS) as usize;
+				for c in t.rings.iter_mut().take(n) {
+					*c = crate::game::permute_palette(*c);
+				}
+			}
+		}
+		p2
 	} else {
 		generate_archetype_collection(Player::Two, size, rules, setup.p2_deck, next_id, &mut rng)
 	};
@@ -822,6 +903,9 @@ fn greedy_indices(
 }
 
 fn has_legal_prefixed(prefix: &[Tile], rest: &[Tile], k: usize) -> bool {
+	if !ring_cap_completable(prefix, rest, k) {
+		return false;
+	}
 	if k == 0 {
 		return respects_type_cap(prefix);
 	}
@@ -1179,6 +1263,16 @@ pub fn pick_from_pool(
 
 /// Simultaneous 7-picks (no opponent knowledge), then +4 with the revealed 7s.
 pub fn pick_setup(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) -> SetupRecord {
+	let _cap = RingCapGuard::set(rules.bench_ring_cap);
+	let mut rec = pick_setup_inner(decks, rules, setup);
+	for p in 0..2 {
+		let (a, b) = (&mut rec.pick7, &mut rec.extend);
+		enforce_ring_cap(&decks[p], &mut a[p], &mut b[p], rules.bench_ring_cap);
+	}
+	rec
+}
+
+fn pick_setup_inner(decks: &[Vec<Tile>; 2], rules: &RuleSet, setup: &SetupConfig) -> SetupRecord {
 	let seed = setup.deck_seed.unwrap_or(0);
 	if decks[0].len() <= BENCH_SIZE && decks[1].len() <= BENCH_SIZE {
 		let mut pick7 = [Vec::new(), Vec::new()];

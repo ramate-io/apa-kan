@@ -151,8 +151,7 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	if game.budget(current) > 0 && !bench.is_empty() {
 		let mut seen = std::collections::HashSet::<u32>::new();
 		let dests: Vec<NodeId> = if game.rules().add_only_on_spawns {
-			game.board()
-				.spawns()
+			game.add_spawns(current)
 				.iter()
 				.copied()
 				.filter(|&s| game.tile_at(s).is_none())
