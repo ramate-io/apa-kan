@@ -1,34 +1,20 @@
 #!/usr/bin/env bash
-# Capture-score overnight cell. Live control stays the default; this script
-# benches `--objective capture-score` and the three independent toggles
-# against a control baseline. Liam-standard light package: release,
-# --no-default-features, nodes:33000,iters:650, exactplay, zag-mismatch sum.
+# Capture-score benchmark cells. Live control stays the default; the
+# capture-score game is one preset, `--ruleset capture-b` (see RULES.md).
+# Liam-standard light package: release, --no-default-features,
+# nodes:33000,iters:650, exactplay, zag-mismatch sum. 75 deals x 2 seats.
 #
 # Usage:
-#   run_h2h.sh smoke            # 4-game mm-mm sanity (both objectives)
+#   run_h2h.sh smoke            # 2-game mm-mm sanity per objective
 #   run_h2h.sh control_mm       # 150-game mm-mm on live control defaults
-#   run_h2h.sh control_mcts     # 100-game mm-mcts on live control defaults
-#   run_h2h.sh base_mm          # 150-game mm-mm capture-score (no toggles)
-#   run_h2h.sh base_mcts        # 100-game mm-mcts capture-score
-#   run_h2h.sh majority_mm      # variant 4
-#   run_h2h.sh cascade_mm       # variant 5
-#   run_h2h.sh unlimited_mm     # variant 6
-#   run_h2h.sh majority_mcts | cascade_mcts | unlimited_mcts
-#   run_h2h.sh combo_maj_cas_mm # 4+5
-#   run_h2h.sh combo_maj_unlim_mm # 4+6
-#   run_h2h.sh combo_maj_cas_unlim_mm # 4+5+6
-#   run_h2h.sh majority_inner_mm | majority_center_mm  # trigger sweep
-#   run_h2h.sh majority_t4_mm | majority_t8_mm         # score-target sweep
-#   run_h2h.sh majority_w40_mm | majority_w80_mm | majority_w160_mm
-#   run_h2h.sh majority_t8_150_mm | majority_w40_150_mm | majority_w80_150_mm  # 150-game seed-300 reruns
-#   run_h2h.sh weight40_mm | weight80_mm | weight160_mm  # base + eval weight (n=40)
-#   run_h2h.sh unl_combo_mm | unl_graveyard_mm | unl_capturer_mm | unl_t5_mm | unl_no_opening_mm  # graveyard variant on unlimited spawn
-#   run_h2h.sh unl_mark_a_mm | unl_mark_adiscard_mm | unl_mark_b_mm | unl_capturer_rep_mm  # mark routing
-#   MARK_MODE=a run_h2h.sh unl_mark_rep_mm   # best routing + repetition-ends
-#   run_h2h.sh unl_noreturn_mm; MARK_MODE=a run_h2h.sh unl_mark_noreturn_mm  # no-immediate-return
-#   run_h2h.sh weight400_mm     # base + eval_capture_score=400
-#   run_h2h.sh all_light        # control + base + 4/5/6 mm-mm (150 each)
-#   run_h2h.sh followup_maj     # combos + trigger/target/weight sweeps
+#   run_h2h.sh capture_b_smoke  # 4-game mm-mm sanity of the preset
+#   run_h2h.sh capture_b_mm     # 150-game mm-mm of the preset, seed 300
+#
+# The sweep cells behind the committed h2h_* logs (majority bonus, capture
+# cascade, weights, graveyard / capturer ablations, mark modes A and
+# A-discard, the separate no-return and repetition cells) used flags that
+# were removed; their commands are in this file's history before the
+# simplification (`git log -- run_h2h.sh`).
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../../../.." && pwd)"
 cd "$repo"
@@ -81,228 +67,19 @@ cfg="${1:-smoke}"
 case "$cfg" in
   smoke)
     run_one smoke_control "${mm_pair[@]}" --games 2 --seed 1 --objective control
-    run_one smoke_base "${mm_pair[@]}" --games 2 --seed 1 --objective capture-score
+    run_one smoke_capture_b "${mm_pair[@]}" --games 2 --seed 1 --ruleset capture-b
     ;;
   control_mm)
     run_one h2h_control_mm "${mm_pair[@]}" --games 75 --seed 300 --objective control
     ;;
-  control_mcts)
-    run_one h2h_control_mcts "${mcts_pair[@]}" --games 50 --seed 10300 --objective control
+  capture_b_smoke)
+    run_one smoke_capture_b "${mm_pair[@]}" --games 2 --seed 1 --ruleset capture-b
     ;;
-  base_mm)
-    run_one h2h_base_mm "${mm_pair[@]}" --games 75 --seed 300 --objective capture-score
-    ;;
-  base_mcts)
-    run_one h2h_base_mcts "${mcts_pair[@]}" --games 50 --seed 10300 --objective capture-score
-    ;;
-  majority_mm)
-    run_one h2h_majority_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --majority-spawn-bonus on
-    ;;
-  majority_mcts)
-    run_one h2h_majority_mcts "${mcts_pair[@]}" --games 50 --seed 10300 \
-      --objective capture-score --majority-spawn-bonus on
-    ;;
-  cascade_mm)
-    run_one h2h_cascade_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --capture-cascade on
-    ;;
-  cascade_mcts)
-    run_one h2h_cascade_mcts "${mcts_pair[@]}" --games 50 --seed 10300 \
-      --objective capture-score --capture-cascade on
-    ;;
-  unlimited_mm)
-    run_one h2h_unlimited_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on
-    ;;
-  unlimited_mcts)
-    run_one h2h_unlimited_mcts "${mcts_pair[@]}" --games 50 --seed 10300 \
-      --objective capture-score --unlimited-spawn on
-    ;;
-  combo_maj_cas_mm)
-    run_one h2h_maj_cas_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --majority-spawn-bonus on --capture-cascade on
-    ;;
-  combo_maj_unlim_mm)
-    run_one h2h_maj_unlim_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --majority-spawn-bonus on --unlimited-spawn on
-    ;;
-  combo_maj_cas_unlim_mm)
-    run_one h2h_maj_cas_unlim_mm "${mm_pair[@]}" --games 40 --seed 500 \
-      --objective capture-score --majority-spawn-bonus on --capture-cascade on --unlimited-spawn on
-    ;;
-  majority_inner_mm)
-    run_one h2h_majority_inner_mm "${mm_pair[@]}" --games 40 --seed 400 \
-      --objective capture-score --majority-spawn-bonus on --majority-spawn-set inner
-    ;;
-  majority_center_mm)
-    run_one h2h_majority_center_mm "${mm_pair[@]}" --games 40 --seed 400 \
-      --objective capture-score --majority-spawn-bonus on --majority-spawn-set center
-    ;;
-  majority_t4_mm)
-    run_one h2h_majority_t4_mm "${mm_pair[@]}" --games 40 --seed 400 \
-      --objective capture-score --majority-spawn-bonus on --score-target 4
-    ;;
-  majority_t8_mm)
-    run_one h2h_majority_t8_mm "${mm_pair[@]}" --games 40 --seed 400 \
-      --objective capture-score --majority-spawn-bonus on --score-target 8
-    ;;
-  majority_w40_mm)
-    run_one h2h_majority_w40_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=40
-    ;;
-  majority_w80_mm)
-    run_one h2h_majority_w80_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=80
-    ;;
-  majority_w160_mm)
-    run_one h2h_majority_w160_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=160
-    ;;
-  weight40_mm)
-    run_one h2h_weight40_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --search eval-capture-score=40
-    ;;
-  weight80_mm)
-    run_one h2h_weight80_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --search eval-capture-score=80
-    ;;
-  weight160_mm)
-    run_one h2h_weight160_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --search eval-capture-score=160
-    ;;
-  majority_t8_150_mm)
-    run_one h2h_majority_t8_150_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --majority-spawn-bonus on --score-target 8
-    ;;
-  majority_w40_150_mm)
-    run_one h2h_majority_w40_150_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=40
-    ;;
-  majority_w80_150_mm)
-    run_one h2h_majority_w80_150_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=80
-    ;;
-  unl_combo_smoke)
-    run_one smoke_unl_combo "${mm_pair[@]}" --games 2 --seed 1 \
-      --objective capture-score --unlimited-spawn on --opening-double off \
-      --graveyard on --capture-to-capturer on --score-target 5
-    ;;
-  unl_combo_mm)
-    # Liam t261u: no 2-2-1-1, graveyard, capturer owns captures, target 5.
-    run_one h2h_unl_combo_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --opening-double off \
-      --graveyard on --capture-to-capturer on --score-target 5
-    ;;
-  unl_graveyard_mm)
-    run_one h2h_unl_graveyard_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --graveyard on
-    ;;
-  unl_capturer_mm)
-    run_one h2h_unl_capturer_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --capture-to-capturer on
-    ;;
-  unl_t5_mm)
-    run_one h2h_unl_t5_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --score-target 5
-    ;;
-  unl_mark_smoke)
-    run_one smoke_unl_mark "${mm_pair[@]}" --games 2 --seed 1 \
-      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
-      --graveyard on --mark-capture-routing a --repetition-ends on
-    ;;
-  unl_mark_a_mm)
-    run_one h2h_unl_mark_a_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
-      --graveyard on --mark-capture-routing a
-    ;;
-  unl_mark_adiscard_mm)
-    run_one h2h_unl_mark_adiscard_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
-      --graveyard on --mark-capture-routing a-discard
-    ;;
-  unl_mark_b_mm)
-    run_one h2h_unl_mark_b_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
-      --graveyard on --mark-capture-routing b
-    ;;
-  unl_mark_rep_mm)
-    # MARK_MODE=a|a-discard|b: the best routing cell plus repetition-ends.
-    mode="${MARK_MODE:?set MARK_MODE=a|a-discard|b}"
-    run_one "h2h_unl_mark_${mode//-/}_rep_mm" "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
-      --graveyard on --mark-capture-routing "$mode" --repetition-ends on
-    ;;
-  unl_capturer_rep_mm)
-    run_one h2h_unl_capturer_rep_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
-      --capture-to-capturer on --repetition-ends on
-    ;;
-  unl_noreturn_smoke)
-    run_one smoke_unl_noreturn "${mm_pair[@]}" --games 2 --seed 1 \
-      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
-      --capture-to-capturer on --no-immediate-return on
-    ;;
-  unl_noreturn_mm)
-    run_one h2h_unl_noreturn_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
-      --capture-to-capturer on --no-immediate-return on
-    ;;
-  unl_mark_noreturn_mm)
-    # MARK_MODE=a|a-discard|b: the best routing cell plus no-immediate-return.
-    mode="${MARK_MODE:?set MARK_MODE=a|a-discard|b}"
-    run_one "h2h_unl_mark_${mode//-/}_noreturn_mm" "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --opening-double off --score-target 5 \
-      --capture-to-capturer on --graveyard on --mark-capture-routing "$mode" --no-immediate-return on
-    ;;
-  unl_no_opening_mm)
-    run_one h2h_unl_no_opening_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on --opening-double off
-    ;;
-  weight400_mm)
-    run_one h2h_weight400_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --search eval-capture-score=400
-    ;;
-  followup_maj)
-    run_one h2h_maj_unlim_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --majority-spawn-bonus on --unlimited-spawn on
-    run_one h2h_unlimited_mcts "${mcts_pair[@]}" --games 50 --seed 10300 \
-      --objective capture-score --unlimited-spawn on
-    run_one h2h_majority_inner_mm "${mm_pair[@]}" --games 40 --seed 400 \
-      --objective capture-score --majority-spawn-bonus on --majority-spawn-set inner
-    run_one h2h_majority_center_mm "${mm_pair[@]}" --games 40 --seed 400 \
-      --objective capture-score --majority-spawn-bonus on --majority-spawn-set center
-    run_one h2h_majority_t4_mm "${mm_pair[@]}" --games 40 --seed 400 \
-      --objective capture-score --majority-spawn-bonus on --score-target 4
-    run_one h2h_majority_t8_mm "${mm_pair[@]}" --games 40 --seed 400 \
-      --objective capture-score --majority-spawn-bonus on --score-target 8
-    run_one h2h_majority_w40_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=40
-    run_one h2h_majority_w80_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=80
-    run_one h2h_majority_w160_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --majority-spawn-bonus on --search eval-capture-score=160
-    run_one h2h_weight40_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --search eval-capture-score=40
-    run_one h2h_weight80_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --search eval-capture-score=80
-    run_one h2h_weight160_mm "${mm_pair[@]}" --games 20 --seed 600 \
-      --objective capture-score --search eval-capture-score=160
-    run_one h2h_maj_cas_unlim_mm "${mm_pair[@]}" --games 40 --seed 500 \
-      --objective capture-score --majority-spawn-bonus on --capture-cascade on --unlimited-spawn on
-    ;;
-  all_light)
-    run_one h2h_control_mm "${mm_pair[@]}" --games 75 --seed 300 --objective control
-    run_one h2h_base_mm "${mm_pair[@]}" --games 75 --seed 300 --objective capture-score
-    run_one h2h_majority_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --majority-spawn-bonus on
-    run_one h2h_cascade_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --capture-cascade on
-    run_one h2h_unlimited_mm "${mm_pair[@]}" --games 75 --seed 300 \
-      --objective capture-score --unlimited-spawn on
+  capture_b_mm)
+    run_one h2h_capture_b_mm "${mm_pair[@]}" --games 75 --seed 300 --ruleset capture-b
     ;;
   *)
-    echo "usage: $0 [smoke|control_mm|control_mcts|base_mm|base_mcts|majority_mm|majority_mcts|cascade_mm|cascade_mcts|unlimited_mm|unlimited_mcts|combo_maj_cas_mm|combo_maj_unlim_mm|combo_maj_cas_unlim_mm|majority_inner_mm|majority_center_mm|majority_t4_mm|majority_t8_mm|majority_w40_mm|majority_w80_mm|majority_w160_mm|majority_t8_150_mm|majority_w40_150_mm|majority_w80_150_mm|unl_combo_smoke|unl_combo_mm|unl_graveyard_mm|unl_capturer_mm|unl_t5_mm|unl_no_opening_mm|unl_mark_smoke|unl_mark_a_mm|unl_mark_adiscard_mm|unl_mark_b_mm|unl_mark_rep_mm|unl_capturer_rep_mm|unl_noreturn_smoke|unl_noreturn_mm|unl_mark_noreturn_mm|weight40_mm|weight80_mm|weight160_mm|weight400_mm|followup_maj|all_light]" >&2
+    echo "usage: $0 [smoke|control_mm|capture_b_smoke|capture_b_mm]" >&2
     exit 2
     ;;
 esac
