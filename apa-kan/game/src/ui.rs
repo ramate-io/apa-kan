@@ -42,8 +42,15 @@ pub(crate) fn ui_title_font(font: &UiFont, size: f32) -> TextFont {
 		.with_font_weight(FontWeight::SEMIBOLD)
 }
 
-fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
-	commands.insert_resource(UiFont(fonts.add(Font::from_bytes(EXPLETUS_SANS.to_vec()))));
+/// Insert [`UiFont`] while building the app. It must exist before the first
+/// `OnEnter(AppScreen::…)`, which Bevy runs ahead of `PreStartup`; loading it in
+/// a `Startup` system made the shell panic on a missing resource.
+fn insert_ui_font(app: &mut App) {
+	let handle = app
+		.world_mut()
+		.resource_mut::<Assets<Font>>()
+		.add(Font::from_bytes(EXPLETUS_SANS.to_vec()));
+	app.insert_resource(UiFont(handle));
 }
 
 pub fn run_app(cfg: GameConfig) {
@@ -86,7 +93,7 @@ pub fn run_app(cfg: GameConfig) {
 	.insert_resource(host)
 	.add_plugins(PlatformPlugin)
 	.add_plugins(shell::plugin)
-	.add_systems(Startup, (load_ui_font, setup_camera))
+	.add_systems(Startup, setup_camera)
 	.add_systems(OnEnter(AppScreen::Match), spawn_match_hud)
 	.add_systems(OnExit(AppScreen::Match), despawn_match_hud)
 	.add_systems(
@@ -112,6 +119,7 @@ pub fn run_app(cfg: GameConfig) {
 			clear_division_on_game_link,
 		),
 	);
+	insert_ui_font(&mut app);
 	app.run();
 }
 
