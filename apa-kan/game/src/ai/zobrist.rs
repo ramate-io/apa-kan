@@ -296,6 +296,21 @@ pub fn hash(game: &Game) -> u64 {
 				^ mix_id(salt as u32 ^ (salt >> 32) as u32);
 		}
 	}
+	// `--no-immediate-return` records change legality, so they key the
+	// position. Empty with the rule off, so other hashes are unchanged.
+	for (slot, recs) in [
+		game.return_block(Player::One),
+		game.return_block(Player::Two),
+		game.moved_from_this_turn(),
+	]
+	.into_iter()
+	.enumerate()
+	{
+		for &(id, node) in recs {
+			let key = id ^ (u32::from(node) << 22) ^ ((slot as u32) << 30) ^ 0x5BE0_CD19;
+			h ^= mix_id(key).rotate_left(17 + slot as u32);
+		}
+	}
 	h
 }
 
