@@ -20,14 +20,15 @@ Each team ADDs only onto its own **spawn diamond**, all game long. The two diamo
 ## Matched-neighborhood moves, "MMM" (`--move-support matched|matched-any`)
 
 - **Rule.** A piece may MOVE only if `1 + (matched neighbors) >= n_rings`, counted at its starting node. Singles always move; doubles need 1 matched neighbor and triples need 2.
-- **What counts as matched.** A unique graph neighbor whose edge has any match: normal, bead, or braid, the same matches the HUD shows. This holds even though live capture-b scoring (`braid-only-exact`) gives 0 defense for a normal-color match.
+- **What counts as matched.** A unique graph neighbor whose edge has any match: normal, bead, or braid, the same matches the HUD shows. This counts support (structure), not defense, so it applies even though base capture-b gives normal matches no defense.
 - **Whose neighbors.** `matched` counts only your own pieces, which is the supporting structure. `matched-any` also counts enemy pieces. The cells use `matched`.
 - **When a side has no legal action.** The existing rule applies (`no_moves_loses`: `LockedOut` loss).
 
 ## Matched gain (`--match-gain minus-rings`)
 
 - **Rule.** Overwhelm when `mismatch − max(0, matches − n_rings) >= n_rings`. Mismatches sum exactly as before.
-- **What counts as a match.** Every channel's match (normal + bead + braid). Under the live braid-only scoring, today only braid matches defend. With this toggle, normal matches defend too, but only those beyond the ring count. So a single with 3 matches gets +2, and a triple needs 4 matches before it gains anything.
+- **What counts as a match.** Every channel's match: normal, bead and braid.
+- **Framing (confirmed by Liam).** Base capture-b (`braid_scoring=braid-only-exact`) gives defense only to braid matches, so a normal-color match shown in the HUD adds nothing. That is intended. L3 replaces that blanket filter with a threshold: any match type counts, but only the matches beyond the piece's ring count add defense. A single with 3 matches gets +2 defense; a triple needs 4 matches before it gains anything.
 
 ## Bench ring budget (`--bench-ring-cap 17`)
 
