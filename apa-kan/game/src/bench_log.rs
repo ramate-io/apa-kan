@@ -2925,6 +2925,7 @@ mod tests {
 			"cc_all_perm",
 			"cc_shared_perm",
 			"cc_all",
+			"cc_shared",
 		] {
 			assert_committed_jsonl_gz_replays_n(
 				&format!("benchmark_results/team_spawn/h2h_{cell}_mm.jsonl.gz"),
