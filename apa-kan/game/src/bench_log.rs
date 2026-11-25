@@ -2918,6 +2918,8 @@ mod tests {
 			"ts_l1_l3_cap17_flip_perm",
 			"ts_l1_l3_cap17_flip_nosuicide",
 			"ts_l1_l3_cap17_flip_nosuicide_perm",
+			"cc_strict",
+			"cc_strict_perm",
 		] {
 			assert_committed_jsonl_gz_replays_n(
 				&format!("benchmark_results/team_spawn/h2h_{cell}_mm.jsonl.gz"),
