@@ -181,3 +181,65 @@ The same seed gives the same decks in both cells, but games diverge by about ply
 2. It doesn't touch the center SWAP ping-pong. A no-immediate-re-flip rule (a ko) or a 4-enemy-neighbor threshold on inner nodes would still help.
 3. It makes "frozen + no safe ADD" a lockout. That gives a few very short lockouts on degenerate decks, and lockouts with the loser holding exactly 1 piece become the typical ending. If those are unwanted, a graveyard restructure that gives the stuck side a real move, rather than a free pass, may be the cleaner lever.
 4. The own-tile-plus-added-tile suicide is the remaining wait move. It isn't free, but if you want it gone too, ban any ADD where the added tile dies unless it also removes an enemy tile.
+
+## capture-c (new default) + strict ADD / shared graveyard / 2-ply no-return / all three
+
+**Baseline.** `--ruleset capture-c` = combo + flip + `--no-suicide-add` (it reproduces `ts_l1_l3_cap17_flip_nosuicide` game for game). Every cell below is capture-c plus one toggle, 150 games each, mm vs mm, seed 300, release, `--no-default-features`, SUM, with a permuted twin. All of them are committed and replayed in CI.
+
+- `cc_strict`: `--strict-suicide-add on`. An ADD whose added tile dies is illegal unless it also removes an enemy tile.
+- `cc_shared`: `--mark-capture-routing shared`. One graveyard. Triangle: opponent captures → shared, self-captures → hand. Dot: self-captures → shared, opponent captures → hand. The acting tile's mark decides; CLAIM counts as triangle. RECOVER takes the oldest shared tile, either player may take it, and the taker owns it.
+- `cc_noreturn`: `--no-return-turns 2`. A tile (either side's, swap partners included) can't re-enter a node it left within the last 2 plies.
+- `cc_all`: all three.
+
+| cell | P1 W-D-L | turns med | TL (draws) | rep draws | locked-out | comebacks | lead≤1 | self-caps/g | enemy caps by rings 1/2/3 | bench singles | single share of actions | life med 1/2/3 | singles alive at end | no-capture turns | longest dry med/p75 | freezes ≥15 mutual/one-sided | flips |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ts_l1_l3_cap17_flip_nosuicide | 67-9-74 | 106.5 | 15 (8) | 4 | 34 | 32/141 | 27 | 9.53 | 456/456/137 | 56.8% | 70.6% | 36.0/26.0/24.5 | 53.1% | 82.6% | 18.0/29 | 75/45 | 892 |
+| cc_strict | 72-6-72 | 89.5 | 16 (6) | 2 | 34 | 26/144 | 24 | 6.95 | 487/401/117 | 57.5% | 73.1% | 23.0/26/30.0 | 47.7% | 82.3% | 15.0/30 | 63/28 | 1070 |
+| cc_noreturn | 63-6-81 | 108.0 | 13 (6) | 2 | 30 | 33/144 | 20 | 9.75 | 469/468/139 | 56.8% | 70.1% | 35/27.0/28 | 52.1% | 81.9% | 18.0/29 | 75/37 | 704 |
+| cc_shared | 70-11-69 | 113.5 | 23 (10) | 3 | 31 | 33/139 | 25 | 17.12 | 515/430/83 | 56.8% | 68.2% | 24/18/18.0 | 44.7% | 86.7% | 21.0/32 | 92/32 | 1257 |
+| cc_all | 73-7-70 | 91.0 | 11 (7) | 0 | 33 | 35/143 | 26 | 9.47 | 502/416/126 | 57.5% | 69.9% | 18.0/22/25.0 | 43.9% | 84.0% | 16.0/27 | 67/31 | 716 |
+| ts_l1_l3_cap17_flip_nosuicide_perm | 83-7-60 | 80.5 | 7 (7) | 2 | 9 | 43/143 | 22 | 14.94 | 573/510/131 | 57.0% | 65.9% | 9.0/13/17.0 | 28.0% | 78.5% | 15.0/29 | 62/29 | 63 |
+| cc_strict_perm | 86-1-63 | 54.0 | 2 (1) | 0 | 23 | 29/149 | 19 | 8.74 | 550/472/104 | 57.5% | 65.4% | 7/13.0/19 | 26.7% | 73.0% | 9.0/14 | 20/28 | 84 |
+| cc_noreturn_perm | 80-8-62 | 81.0 | 8 (8) | 1 | 7 | 39/142 | 20 | 14.96 | 570/522/132 | 57.0% | 65.8% | 9/12/15.0 | 29.1% | 79.0% | 15.0/30 | 66/29 | 82 |
+| cc_shared_perm | 79-9-62 | 82.0 | 12 (9) | 3 | 11 | 39/141 | 7 | 24.85 | 651/390/87 | 57.1% | 61.1% | 6.0/8/9 | 24.8% | 82.9% | 14.0/26 | 54/40 | 93 |
+| cc_all_perm | 72-2-76 | 60.0 | 3 (2) | 0 | 16 | 34/148 | 11 | 12.14 | 611/418/101 | 57.5% | 64.9% | 6/11.0/18 | 23.6% | 75.9% | 10.0/17 | 30/34 | 60 |
+
+Extra columns (lockouts before ply 40/60; own-only = ADDs where the added tile and only own tiles die; waiting mix = actions on turns with no capture available; graveyard flows = removals by acting mark / victim side / destination, gy = owner's graveyard, opp_gy = opponent's; cross-owner = recovered tiles that started on the other side; 2-ply returns = MOVE/SWAP plies that put a tile back where it was within 2 plies):
+
+| cell | flips | ping-pong re-flips | lockouts (<40/<60 plies) | own-only suicide ADDs | waiting-move mix (no capture available) | graveyard flows (mark,victim,dest) | RECOVER P1/P2 (cross-owner) | 2-ply returns |
+|---|---|---|---|---|---|---|---|---|
+| ts_l1_l3_cap17_flip_nosuicide | 892 | 194 (22%) | 34 (1/1) | 163 | MOVE 50%, ADD 18%, SWAP 16%, RECOVER 10%, SWAP(flip) 4%, MOVE(flip) 1% | dot/opp→gy 483; dot/own→gy 841; tri/opp→hand 566; tri/own→opp_gy 589 | 808/738 (786) | 182 |
+| cc_strict | 1070 | 336 (31%) | 34 (3/7) | 0 | MOVE 50%, ADD 17%, SWAP 17%, RECOVER 8%, SWAP(flip) 6%, MOVE(flip) 1% | dot/opp→gy 439; dot/own→gy 531; tri/opp→hand 566; tri/own→opp_gy 512 | 579/580 (648) | 325 |
+| cc_noreturn | 704 | 11 (2%) | 30 (1/1) | 166 | MOVE 51%, ADD 18%, SWAP 17%, RECOVER 10%, SWAP(flip) 3%, MOVE(flip) 1% | dot/opp→gy 498; dot/own→gy 868; tri/opp→hand 578; tri/own→opp_gy 595 | 806/762 (792) | 0 |
+| cc_shared | 1257 | 453 (36%) | 31 (0/0) | 571 | MOVE 48%, ADD 24%, SWAP 15%, SWAP(flip) 6%, RECOVER 6%, MOVE(flip) 1% | dot/opp→hand 429; dot/own→shared 491; tri/opp→shared 599; tri/own→hand 2077 | 481/464 (402) | 438 |
+| cc_all | 716 | 10 (1%) | 33 (5/6) | 0 | MOVE 52%, ADD 21%, SWAP 17%, RECOVER 6%, SWAP(flip) 4%, MOVE(flip) 1% | dot/opp→hand 472; dot/own→shared 407; tri/opp→shared 572; tri/own→hand 1014 | 408/418 (381) | 0 |
+| ts_l1_l3_cap17_flip_nosuicide_perm | 63 | 0 (0%) | 9 (2/2) | 365 | MOVE 44%, ADD 28%, RECOVER 19%, SWAP 9% | dot/opp→gy 535; dot/own→gy 1333; tri/opp→hand 679; tri/own→opp_gy 908 | 1190/1062 (1128) | 2 |
+| cc_strict_perm | 84 | 9 (11%) | 23 (8/14) | 0 | MOVE 45%, ADD 29%, RECOVER 17%, SWAP 9%, SWAP(flip) 1% | dot/opp→gy 477; dot/own→gy 653; tri/opp→hand 649; tri/own→opp_gy 658 | 694/689 (785) | 10 |
+| cc_noreturn_perm | 82 | 0 (0%) | 7 (2/2) | 374 | MOVE 44%, ADD 27%, RECOVER 19%, SWAP 10% | dot/opp→gy 531; dot/own→gy 1354; tri/opp→hand 693; tri/own→opp_gy 890 | 1182/1082 (1133) | 0 |
+| cc_shared_perm | 93 | 12 (13%) | 11 (2/3) | 1045 | MOVE 42%, ADD 40%, RECOVER 9%, SWAP 8% | dot/opp→hand 505; dot/own→shared 639; tri/opp→shared 623; tri/own→hand 3089 | 524/545 (454) | 13 |
+| cc_all_perm | 60 | 0 (0%) | 16 (7/9) | 0 | MOVE 45%, ADD 34%, RECOVER 11%, SWAP 10% | dot/opp→hand 465; dot/own→shared 507; tri/opp→shared 665; tri/own→hand 1314 | 466/479 (416) | 0 |
+
+**Numbers.**
+- **Strict ADD** removes the last suicide wait move (own-only 163 → 0, 365 → 0), and games get shorter (normal median 106.5 → 89.5, permuted 80.5 → 54). The cost is very short lockouts: before ply 40 they go 1 → 3 (normal) and 2 → 8 (permuted). Permuted lockouts go 9 → 23, and the P1 edge stays (86-63).
+- **2-ply no-return** is the ping-pong fix. Re-flips within 2 plies fall from 194 (22% of flips) to 11 (2%), and 2-ply returns drop from 182 to 0. Everything else stays close to the default: median 108, 6 draws, 30 lockouts, and no new short lockouts. Permuted decks are unaffected, since they never ping-ponged. Normal decks went 63-81 for P2 (p ≈ 0.15), likely noise.
+- **Shared graveyard** on its own is the weakest cell: 11 draws and 23 turn-limit games (default 9/15), median 113.5, and self-captures per game 9.5 → 17.1 (14.9 → 24.9 permuted). Triangle self-captures now go straight back to hand (2,077 and 3,089 removals), so self-capture is free again: own-only suicide ADDs come back (163 → 571, 365 → 1,045), 95% of those tiles are back on the bench next ply, and ADD rises to 40% of permuted waiting moves. Ping-pong also gets worse (36% of flips).
+- **All three** is the best-balanced cell: 73-7-70 and 72-2-76, 7 and 2 draws, median 91 and 60, ping-pong 1% and 0%, and no own-only suicides. Strict closes the free self-capture that shared opens, and no-return closes the center loop. It keeps strict's short-lockout cost (5 and 7 before ply 40). 12 of the default's 15 turn-limit games are decided (7 lockouts, 5 score wins), and 3 still go to the turn limit.
+- **Graveyard use.** Under shared, the pile stays small (median 2 at the end, max 4 in a game), and RECOVERs drop by about 40% (1,546 → 945 normal) because triangles' own losses skip the graveyard. Both players draw from the pile about equally (481/464), and 402 of 945 recovered tiles started on the other side.
+
+### Qualitative read of the logs
+- **Strict: short lockouts are "frozen + no safe ADD".** cc_strict_perm g20 (seed 310) is locked at ply 9. P1's single trades itself for one of P2's (ply 6). P2's 2 diamond tiles are frozen by L1, and every diamond ADD would die without taking an enemy, so its only action is RECOVER (ply 7), and then it has nothing. cc_strict g72 and g138 lock at ply 15 the same way. Under the default, those seeds are a 39-, 63- and 128-ply score game. The free suicide was also the stuck side's escape valve.
+- **No-return: the center loop is gone and standoffs resolve.** g122 under the default has 38 center re-flips and ends in a 3-3 turn-limit draw. Under no-return, P2's singles keep flipping without the swap-back, P2 grows to 12 pieces, and P1 is locked out at ply 106. Default g0 (33 re-flips, repetition at 196) becomes a lockout at 95, g21 (repetition at 75) a score win at 142, and g133 (turn limit) a score win at 192. A 2-ply window is enough: the 3-tile center rotation needs the swap-back that this rule bans.
+- **Shared: free trades and shuffles.** cc_shared g131 is a 79-re-flip center SWAP loop (nodes 6 and 21, plies 145–160+) that ends at the turn limit. g121 is a 30-ply double-vs-double MOVE shuffle around a held center. cc_shared_perm's wait move is a triangle ADD that kills itself plus an own neighbour, with both returning to hand next ply (902 of 1,045).
+- **All three: fast, trade-heavy games.** cc_all_perm g71 (seed 10335) is a chain of 1-for-1 kamikaze singles (plies 6, 14, 17, 23 each capture an enemy and lose the attacker), which is cheap because the triangle attacker comes back to hand. It ends in a 3-3 lockout at ply 29. cc_all g90 (seed 345) locks at ply 9: P2 is down to 2 frozen tiles with no strict-legal ADD, and P1 takes the only tile in the shared pile with its own RECOVER. Under the default, that seed is a 79-ply score game. On normal decks, lockouts in cc_all still look like conquest (the winner holds part of the loser's diamond in 29 of 33). On permuted decks they mostly don't (2 of 16), and the loser usually still has 2 frozen pieces.
+
+### Takeaways
+1. **Keep 2-ply no-return.** It is cheap and targeted: it kills the ping-pong and leaves everything else alone.
+2. **Shared graveyard needs strict ADD** (or another way to make self-capture cost something). On its own it reopens the free pass through "triangle self-capture → hand".
+3. **All three** gives the most decisive, balanced games, but it makes "frozen + no strict-legal ADD + empty pile" a very fast lockout. If that's unwanted, a small valve would help without a free pass: always allow an ADD to an empty diamond node, or count a frozen side's RECOVER as a turn even with an empty pile (pass), or let a stuck player swap two of its own frozen tiles.
+
+### Open questions
+- **How tiles leave the shared graveyard.** Currently RECOVER takes the oldest tile, either player may take it, and the taker owns it. Alternatives: only the side that lost the tile may recover it; the mover chooses any tile; or newest first.
+- **Which mark routes a removal.** Currently it's the acting tile's mark (CLAIM, Pass and RECOVER count as triangle). The alternative is the captured tile's own mark.
+- **Should a triangle's self-capture going to hand be free?** It's the source of the shared-graveyard free pass. It could go to the shared pile instead, or cost a turn.
+- **No-return window.** 2 plies is enough in the logs. 4 plies would also stop longer rotations, but we haven't seen one survive 2.
+- **The permuted-deck P1 edge persists** in strict (86-63) and shared (79-62), but not in all three (72-76). A seat-swap check is still pending.
