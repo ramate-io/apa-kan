@@ -524,6 +524,30 @@ pub struct RulesLog {
 	pub no_immediate_return: bool,
 	#[serde(default, skip_serializing_if = "String::is_empty")]
 	pub self_capture_penalty: String,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub team_spawn: bool,
+	/// Forced opening ADDs under team spawn. Absent: 3.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub team_opening_adds: Option<u8>,
+	/// `off` is omitted.
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub move_support: String,
+	/// `flat` is omitted.
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub match_gain: String,
+	/// 0 (off) is omitted.
+	#[serde(default, skip_serializing_if = "is_zero_u8")]
+	pub bench_ring_cap: u8,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub mirror_palette: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub surround_flip: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub no_suicide_add: bool,
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+	*v == 0
 }
 
 fn default_control_objective() -> String {
@@ -657,6 +681,23 @@ impl RulesLog {
 			} else {
 				r.self_capture_penalty.name().into()
 			},
+			team_spawn: r.team_spawn,
+			team_opening_adds: (r.team_spawn && r.team_opening_adds != 3)
+				.then_some(r.team_opening_adds),
+			move_support: if r.move_support == crate::game::MoveSupport::Off {
+				String::new()
+			} else {
+				r.move_support.name().into()
+			},
+			match_gain: if r.match_gain == crate::game::MatchGain::Flat {
+				String::new()
+			} else {
+				r.match_gain.name().into()
+			},
+			bench_ring_cap: r.bench_ring_cap,
+			mirror_palette: r.mirror_palette,
+			surround_flip: r.surround_flip,
+			no_suicide_add: r.no_suicide_add,
 		}
 	}
 
@@ -750,6 +791,22 @@ impl RulesLog {
 			} else {
 				crate::game::SelfCapturePenalty::parse(&self.self_capture_penalty)?
 			},
+			team_spawn: self.team_spawn,
+			team_opening_adds: self.team_opening_adds.unwrap_or(3),
+			move_support: if self.move_support.is_empty() {
+				crate::game::MoveSupport::Off
+			} else {
+				crate::game::MoveSupport::parse(&self.move_support)?
+			},
+			match_gain: if self.match_gain.is_empty() {
+				crate::game::MatchGain::Flat
+			} else {
+				crate::game::MatchGain::parse(&self.match_gain)?
+			},
+			bench_ring_cap: self.bench_ring_cap,
+			mirror_palette: self.mirror_palette,
+			surround_flip: self.surround_flip,
+			no_suicide_add: self.no_suicide_add,
 		})
 	}
 }
@@ -2831,6 +2888,105 @@ mod tests {
 			r.self_capture_penalty = p;
 			assert_eq!(RulesLog::from_rules(r).to_rules().unwrap(), r);
 		}
+	}
+
+	#[test]
+	fn committed_team_spawn_replays() {
+		assert_committed_jsonl_gz_replays_n("benchmark_results/team_spawn/smoke_ts.jsonl.gz", 4);
+		for cell in [
+			"ts_base",
+			"ts_l1",
+			"ts_l3",
+			"ts_l1_l3_cap17",
+			"ts_base_perm",
+			"ts_l1_perm",
+			"ts_l3_perm",
+			"ts_l1_l3_cap17_perm",
+			"ts_l1_l3_cap17_flip",
+			"ts_l1_l3_cap17_flip_perm",
+			"ts_l1_l3_cap17_flip_nosuicide",
+			"ts_l1_l3_cap17_flip_nosuicide_perm",
+		] {
+			assert_committed_jsonl_gz_replays_n(
+				&format!("benchmark_results/team_spawn/h2h_{cell}_mm.jsonl.gz"),
+				150,
+			);
+		}
+	}
+
+	/// `Game::add_is_bare_suicide` agrees with actually applying each ADD, at
+	/// every ply of committed combo + surround-flip games (where bots made
+	/// thousands of suicide ADDs).
+	#[test]
+	fn bare_suicide_check_matches_apply_on_committed_games() {
+		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+			.join("benchmark_results/team_spawn/h2h_ts_l1_l3_cap17_flip_mm.jsonl.gz");
+		if !path.exists() {
+			return;
+		}
+		let logs = decode_jsonl_gz(&std::fs::read(&path).unwrap()).unwrap();
+		let mut seen_bare = 0usize;
+		for log in logs.iter().take(12) {
+			let rules = log.rules.to_rules().unwrap();
+			let mut game = Game::from_setup_record(
+				rules,
+				log.seed,
+				log.setup.as_ref().unwrap().to_record().unwrap(),
+			);
+			game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; log.opening.p1_tokens]);
+			game.set_budget_tokens(Player::Two, vec![BudgetToken::Blank; log.opening.p2_tokens]);
+			game.set_current(Player::One);
+			for act in &log.actions {
+				let me = game.current_player();
+				for i in 0..game.bench(me).len() {
+					for node in game.add_spawns(me).to_vec() {
+						let id = game.bench(me)[i].id;
+						let mut g = game.clone();
+						let Ok(out) = g.apply(Action::Add { bench_index: i, node }) else {
+							continue;
+						};
+						let bare = out.removals.iter().any(|x| x.tile.id == id)
+							&& out.removals.iter().all(|x| x.tile.id == id);
+						seen_bare += usize::from(bare);
+						assert_eq!(
+							game.add_is_bare_suicide(i, node),
+							bare,
+							"seed {} node {node}",
+							log.seed
+						);
+					}
+				}
+				game.apply(act.to_action().unwrap()).unwrap();
+			}
+		}
+		assert!(seen_bare > 0);
+	}
+
+	#[test]
+	fn team_spawn_rule_toggles_round_trip_through_the_log() {
+		let mut r = RuleSet::capture_b();
+		let json = serde_json::to_string(&RulesLog::from_rules(r)).unwrap();
+		for k in [
+			"team_spawn",
+			"move_support",
+			"match_gain",
+			"bench_ring_cap",
+			"mirror_palette",
+			"surround_flip",
+			"no_suicide_add",
+		] {
+			assert!(!json.contains(k), "{k} omitted when off: {json}");
+		}
+		r.team_spawn = true;
+		r.move_support = crate::game::MoveSupport::Matched;
+		r.match_gain = crate::game::MatchGain::MinusRings;
+		r.bench_ring_cap = 17;
+		r.mirror_palette = true;
+		r.surround_flip = true;
+		r.no_suicide_add = true;
+		assert_eq!(RulesLog::from_rules(r).to_rules().unwrap(), r);
+		r.team_opening_adds = 2;
+		assert_eq!(RulesLog::from_rules(r).to_rules().unwrap(), r);
 	}
 
 	#[test]

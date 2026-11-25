@@ -2517,6 +2517,21 @@ impl EdgeChannels {
 		self.score_for_mode(rules.channel_mode, rules.bead_scoring, rules.braid_scoring)
 	}
 
+	/// `(match, mismatch)` for [`MatchGain::MinusRings`]: the match side is
+	/// every channel's match (normal + bead + braid, as the HUD shows them),
+	/// even under a braid-only [`BraidScoring`]; the mismatch side is the
+	/// live mismatch total.
+	pub fn gain_score(self, rules: &RuleSet) -> (i32, i32) {
+		(
+			self.match_weight_for(rules.bead_scoring),
+			self.mismatch_weight_for_mode(
+				rules.channel_mode,
+				rules.bead_scoring,
+				rules.braid_scoring,
+			),
+		)
+	}
+
 	pub fn effective_for_rules(self, rules: &RuleSet) -> i32 {
 		self.effective_for_mode(rules.channel_mode, rules.bead_scoring, rules.braid_scoring)
 	}
@@ -3098,6 +3113,114 @@ pub struct RuleSet {
 	pub no_immediate_return: bool,
 	/// Per-tile self-capture points for the opponent. Default off.
 	pub self_capture_penalty: SelfCapturePenalty,
+	/// Each team ADDs only onto its own spawn diamond
+	/// ([`Board::team_diamond`]) and its first [`Self::team_opening_adds`]
+	/// actions must be ADDs. Default off. `--team-spawn`.
+	pub team_spawn: bool,
+	/// Forced opening ADDs per player under [`Self::team_spawn`]. Default 3.
+	pub team_opening_adds: u8,
+	/// Matched-neighborhood moves (MMM). Default off. `--move-support`.
+	pub move_support: MoveSupport,
+	/// How edge matches defend against overwhelm. Default flat.
+	/// `--match-gain`.
+	pub match_gain: MatchGain,
+	/// Max total rings on the picked 11-tile bench (0 = off).
+	/// `--bench-ring-cap`.
+	pub bench_ring_cap: u8,
+	/// P2's mirrored collection gets [`permute_palette`] colors.
+	/// `--mirror-palette permute`.
+	pub mirror_palette: bool,
+	/// A tile whose every graph neighbor holds an enemy tile flips to that
+	/// enemy after the action resolves. Default off. `--surround-flip`.
+	pub surround_flip: bool,
+	/// An ADD whose added tile is overwhelmed on arrival is illegal unless the
+	/// same action also removes at least one other tile (either side's).
+	/// Default off. `--no-suicide-add`.
+	pub no_suicide_add: bool,
+}
+
+/// Matched-neighborhood move rule (MMM): a piece may MOVE only if
+/// `1 + matched neighbors >= n_rings`, counted at the origin over unique
+/// graph neighbors with any channel match (normal, bead or braid, as the HUD
+/// shows matches; independent of a braid-only [`BraidScoring`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum MoveSupport {
+	#[default]
+	Off,
+	/// Only own (friendly) matched neighbors count.
+	Matched,
+	/// Any matched neighbor counts, own or enemy.
+	MatchedAny,
+}
+
+impl MoveSupport {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s {
+			"off" => Ok(Self::Off),
+			"matched" | "mmm" => Ok(Self::Matched),
+			"matched-any" => Ok(Self::MatchedAny),
+			_ => Err(format!("invalid --move-support '{s}' (expected off|matched|matched-any)")),
+		}
+	}
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Off => "off",
+			Self::Matched => "matched",
+			Self::MatchedAny => "matched-any",
+		}
+	}
+}
+
+/// Overwhelm defense from edge matches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum MatchGain {
+	/// `mismatch - match >= weight` (live).
+	#[default]
+	Flat,
+	/// Defense is `max(rings, matches)`: overwhelmed when
+	/// `mismatch >= max(weight, match)`, written as
+	/// `mismatch - max(0, match - weight) >= weight`. No match type adds
+	/// defense until the matches exceed the ring count. `match` counts every
+	/// channel (see [`EdgeChannels::gain_score`]), replacing the braid-only
+	/// filter of the live scoring with this threshold.
+	MinusRings,
+}
+
+impl MatchGain {
+	pub fn parse(s: &str) -> Result<Self, String> {
+		match s {
+			"flat" | "off" => Ok(Self::Flat),
+			"minus-rings" => Ok(Self::MinusRings),
+			_ => Err(format!("invalid --match-gain '{s}' (expected flat|minus-rings)")),
+		}
+	}
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Flat => "flat",
+			Self::MinusRings => "minus-rings",
+		}
+	}
+	/// Effective overwhelm pressure from summed match `m` and mismatch `x`.
+	pub fn effective(self, m: i32, x: i32, weight: u8) -> i32 {
+		match self {
+			Self::Flat => x - m,
+			Self::MinusRings => x - (m - i32::from(weight)).max(0),
+		}
+	}
+}
+
+/// Fixed palette permutation for [`RuleSet::mirror_palette`]: a 3-cycle on
+/// the common colors (Green→Blue→Orange→Green), LavenderPink↔Teal, and
+/// Maroon (the single rare) fixed. Rarity tiers are preserved.
+pub fn permute_palette(c: TileColor) -> TileColor {
+	match c {
+		TileColor::Green => TileColor::Blue,
+		TileColor::Blue => TileColor::Orange,
+		TileColor::Orange => TileColor::Green,
+		TileColor::LavenderPink => TileColor::Teal,
+		TileColor::Teal => TileColor::LavenderPink,
+		TileColor::Maroon => TileColor::Maroon,
+	}
 }
 
 /// Points awarded to the opponent for each self-captured tile.
@@ -3258,6 +3381,14 @@ impl Default for RuleSet {
 			repetition_ends: false,
 			no_immediate_return: false,
 			self_capture_penalty: SelfCapturePenalty::Off,
+			team_spawn: false,
+			team_opening_adds: 3,
+			move_support: MoveSupport::Off,
+			match_gain: MatchGain::Flat,
+			bench_ring_cap: 0,
+			mirror_palette: false,
+			surround_flip: false,
+			no_suicide_add: false,
 		}
 	}
 }
@@ -3428,6 +3559,8 @@ pub struct Game {
 	/// Banked extra consecutive turns per player, awarded by cascade turn
 	/// gain. Consumed in [`Self::finish_turn`] instead of passing the side.
 	extra_turns: [u8; 2],
+	/// ADDs each player has made (team-spawn opening gate).
+	adds_made: [u8; 2],
 	/// The player to move is taking a consumed extra turn (HUD + JSONL).
 	playing_extra_turn: bool,
 	/// The turn that just passed was an extra turn. Used to flag games that
@@ -3591,6 +3724,7 @@ impl Game {
 			control_ratchet: initial_control_ratchet(&rules),
 			control_win_immediate: false,
 			extra_turns: [0, 0],
+			adds_made: [0, 0],
 			playing_extra_turn: false,
 			prev_finished_extra: false,
 			last_turn_gain: None,
@@ -3678,6 +3812,7 @@ impl Game {
 			control_ratchet: initial_control_ratchet(&rules),
 			control_win_immediate: false,
 			extra_turns: [0, 0],
+			adds_made: [0, 0],
 			playing_extra_turn: false,
 			prev_finished_extra: false,
 			last_turn_gain: None,
@@ -3767,6 +3902,7 @@ impl Game {
 			control_ratchet: initial_control_ratchet(&rules),
 			control_win_immediate: false,
 			extra_turns: [0, 0],
+			adds_made: [0, 0],
 			playing_extra_turn: false,
 			prev_finished_extra: false,
 			last_turn_gain: None,
@@ -3926,6 +4062,7 @@ impl Game {
 		if self.status.is_over()
 			|| !self.graveyard_rules_on()
 			|| self.graveyards[self.current.index()].is_empty()
+			|| self.team_opening_forces_add()
 		{
 			return Vec::new();
 		}
@@ -4886,6 +5023,10 @@ impl Game {
 	/// Unique occupied neighbors of `node` (inner↔center is one neighbor
 	/// even though per-arc scoring walks two petals). Used by Crescent Moon.
 	pub fn occupied_adjacency_count(&self, node: NodeId) -> u8 {
+		self.occupied_adjacency_count_with(node, None)
+	}
+
+	fn occupied_adjacency_count_with(&self, node: NodeId, extra: Option<NodeId>) -> u8 {
 		let mut seen = [false; 32];
 		let mut n = 0u8;
 		for nb in self.board.incident_others(node) {
@@ -4893,7 +5034,7 @@ impl Game {
 			if i >= seen.len() || seen[i] {
 				continue;
 			}
-			if self.tile_at(nb).is_some() {
+			if self.tile_at(nb).is_some() || extra == Some(nb) {
 				seen[i] = true;
 				n = n.saturating_add(1);
 			}
@@ -4915,13 +5056,107 @@ impl Game {
 	}
 
 	fn effective_for_tile(&self, node: NodeId, tile: Tile) -> i32 {
+		self.effective_for_tile_with(node, tile, None)
+	}
+
+	/// [`Self::effective_for_tile`] as if `extra` (node, tile) were placed.
+	fn effective_for_tile_with(
+		&self,
+		node: NodeId,
+		tile: Tile,
+		extra: Option<(NodeId, Tile)>,
+	) -> i32 {
+		let at = |nb: NodeId| match extra {
+			Some((n, t)) if n == nb => Some(t),
+			_ => self.tile_at(nb),
+		};
+		if self.rules.match_gain != MatchGain::Flat {
+			let (mut m, mut x) = (0i32, 0i32);
+			for nb in self.scoring_neighbors(node) {
+				if let Some(other) = at(nb) {
+					let (em, ex) = self.edge_channels(tile, other).gain_score(&self.rules);
+					m += em;
+					x += ex;
+				}
+			}
+			return self.rules.match_gain.effective(m, x, tile.weight);
+		}
 		let mut effective = 0i32;
 		for nb in self.scoring_neighbors(node) {
-			if let Some(other) = self.tile_at(nb) {
+			if let Some(other) = at(nb) {
 				effective += self.edge_channels(tile, other).effective_for_rules(&self.rules);
 			}
 		}
 		effective
+	}
+
+	/// Spawn nodes `player` may ADD onto: its own diamond under
+	/// [`RuleSet::team_spawn`], else every spawn.
+	pub fn add_spawns(&self, player: Player) -> &[NodeId] {
+		if self.rules.team_spawn {
+			self.board.team_diamond(player.index())
+		} else {
+			self.board.spawns()
+		}
+	}
+
+	/// Opening ADDs `player` still owes under [`RuleSet::team_spawn`].
+	pub fn team_opening_adds_owed(&self, player: Player) -> u8 {
+		if self.rules.team_spawn {
+			self.rules.team_opening_adds.saturating_sub(self.adds_made[player.index()])
+		} else {
+			0
+		}
+	}
+
+	/// Under [`RuleSet::team_spawn`] the side to move still owes opening
+	/// ADDs and has one available, so only ADD is legal.
+	pub fn team_opening_forces_add(&self) -> bool {
+		self.rules.team_spawn
+			&& self.adds_made[self.current.index()] < self.rules.team_opening_adds
+			&& !self.legal_adds().is_empty()
+	}
+
+	/// Unique graph neighbors of `node` holding a tile that `tile` matches
+	/// (edge match weight > 0), restricted to `tile.owner` under
+	/// [`MoveSupport::Matched`].
+	pub fn matched_support(&self, node: NodeId, tile: Tile) -> u8 {
+		let friendly = self.rules.move_support == MoveSupport::Matched;
+		let mut n = 0u8;
+		for &nb in self.board.neighbors(node) {
+			let Some(other) = self.tile_at(nb) else {
+				continue;
+			};
+			if friendly && other.owner != tile.owner {
+				continue;
+			}
+			if self.edge_channels(tile, other).match_weight_for(self.rules.bead_scoring) > 0 {
+				n = n.saturating_add(1);
+			}
+		}
+		n
+	}
+
+	/// MMM: `1 + matched neighbors >= n_rings` (always true when off).
+	pub fn move_is_supported(&self, node: NodeId, tile: Tile) -> bool {
+		self.rules.move_support == MoveSupport::Off
+			|| 1 + self.matched_support(node, tile) >= tile.n_rings.max(1)
+	}
+
+	/// Tiles whose every unique graph neighbor holds a tile of the other
+	/// owner. Board edges never count as walls: an outer node needs all 4
+	/// of its neighbors, an inner node 3, the center 8.
+	pub fn surrounded_nodes(&self) -> Vec<NodeId> {
+		let mut out = Vec::new();
+		for (node, tile) in self.tiles() {
+			let nbs = self.board.neighbors(node);
+			if !nbs.is_empty()
+				&& nbs.iter().all(|&nb| self.tile_at(nb).is_some_and(|o| o.owner != tile.owner))
+			{
+				out.push(node);
+			}
+		}
+		out
 	}
 
 	/// Two Zag Zs +1 count for `tile` at `node`: incident scoring edges whose
@@ -5061,6 +5296,7 @@ impl Game {
 		let mut contrib = false;
 		let mut with = 0i32;
 		let mut without = 0i32;
+		let (mut with_m, mut with_x, mut without_m, mut without_x) = (0i32, 0i32, 0i32, 0i32);
 		let mut single_bead_neighbor = false;
 		for nb in self.scoring_neighbors(node) {
 			let Some(other) = self.tile_at(nb) else {
@@ -5073,8 +5309,21 @@ impl Game {
 			if other.bead_ring_count() == 1 {
 				single_bead_neighbor = true;
 			}
-			with += ch.effective_for_rules(&self.rules);
-			without += ch.without_beads().effective_for_rules(&self.rules);
+			if self.rules.match_gain == MatchGain::Flat {
+				with += ch.effective_for_rules(&self.rules);
+				without += ch.without_beads().effective_for_rules(&self.rules);
+			} else {
+				let (m, x) = ch.gain_score(&self.rules);
+				let (m0, x0) = ch.without_beads().gain_score(&self.rules);
+				with_m += m;
+				with_x += x;
+				without_m += m0;
+				without_x += x0;
+			}
+		}
+		if self.rules.match_gain != MatchGain::Flat {
+			with = self.rules.match_gain.effective(with_m, with_x, tile.weight);
+			without = self.rules.match_gain.effective(without_m, without_x, tile.weight);
 		}
 		let adj = self.occupied_adjacency_count(node);
 		let needed = Self::overwhelms(tile, adj, with) && !Self::overwhelms(tile, adj, without);
@@ -5229,7 +5478,10 @@ impl Game {
 	/// Claim any one currently overwhelmed tile. Own and opponent tiles are
 	/// both legal. Empty under [`CaptureMode::Cascade`].
 	pub fn legal_claims(&self) -> Vec<Action> {
-		if self.status.is_over() || !self.rules.capture_mode.allows_claim() {
+		if self.status.is_over()
+			|| !self.rules.capture_mode.allows_claim()
+			|| self.team_opening_forces_add()
+		{
 			return Vec::new();
 		}
 		let mut acts = Vec::new();
@@ -5255,7 +5507,7 @@ impl Game {
 		}
 		let mut dests = Vec::new();
 		if self.rules.add_only_on_spawns {
-			for &s in self.board.spawns() {
+			for &s in self.add_spawns(self.current) {
 				if self.tile_at(s).is_none() {
 					dests.push(s);
 				}
@@ -5270,19 +5522,59 @@ impl Game {
 		let mut acts = Vec::new();
 		for i in 0..bench.len() {
 			for &node in &dests {
+				if self.rules.no_suicide_add && self.add_is_bare_suicide(i, node) {
+					continue;
+				}
 				acts.push(Action::Add { bench_index: i, node });
 			}
 		}
 		acts
 	}
 
+	/// Under [`RuleSet::no_suicide_add`]: would ADDing bench tile
+	/// `bench_index` at `node` remove the added tile and nothing else?
+	/// Uses the same removal collection `apply` runs after placing the tile.
+	pub fn add_is_bare_suicide(&self, bench_index: usize, node: NodeId) -> bool {
+		let Some(tile) = self.benches[self.current.index()].get(bench_index).copied() else {
+			return false;
+		};
+		if self.tile_at(node).is_some() {
+			return false;
+		}
+		// Local claims (the `collect_local_removals` path) without cloning: the
+		// added tile must be overwhelmed on the post-placement board, and no
+		// tile on a neighbor of `node` may be.
+		if self.rules.capture_mode == CaptureMode::LocalClaim {
+			if !self.would_overwhelm_add(tile, node) {
+				return false;
+			}
+			let extra = Some((node, tile));
+			return !self.board.neighbors(node).iter().any(|&nb| {
+				self.tile_at(nb).is_some_and(|t| {
+					Self::overwhelms(
+						t,
+						self.occupied_adjacency_count_with(nb, Some(node)),
+						self.effective_for_tile_with(nb, t, extra),
+					)
+				})
+			});
+		}
+		// Removals are collected from the post-placement snapshot (the same
+		// call `apply` makes); flips and scoring don't remove tiles.
+		let mut g = self.clone();
+		g.tiles[node as usize] = Some(tile);
+		let removals = g.collect_captures_for(Action::Add { bench_index, node });
+		removals.iter().any(|r| r.tile.id == tile.id)
+			&& removals.iter().all(|r| r.tile.id == tile.id)
+	}
+
 	pub fn legal_moves(&self) -> Vec<Action> {
-		if self.status.is_over() {
+		if self.status.is_over() || self.team_opening_forces_add() {
 			return Vec::new();
 		}
 		let mut acts = Vec::new();
 		for (node, tile) in self.tiles() {
-			if tile.owner != self.current {
+			if tile.owner != self.current || !self.move_is_supported(node, tile) {
 				continue;
 			}
 			let restricted = self.same_piece_is_restricted(tile.id);
@@ -5303,7 +5595,7 @@ impl Game {
 	/// Post-ratchet CONVERT of opponent tiles. Empty unless
 	/// [`Self::extra_convert_active`].
 	pub fn legal_converts(&self) -> Vec<Action> {
-		if self.status.is_over() || !self.extra_convert_active() {
+		if self.status.is_over() || !self.extra_convert_active() || self.team_opening_forces_add() {
 			return Vec::new();
 		}
 		let mut acts = Vec::new();
@@ -5318,7 +5610,7 @@ impl Game {
 	/// Legal SWAP actions for the side to move. Empty when SWAP is off
 	/// unless a post-ratchet permissive SWAP is active.
 	pub fn legal_swaps(&self) -> Vec<Action> {
-		if self.status.is_over() || !self.swap_is_available() {
+		if self.status.is_over() || !self.swap_is_available() || self.team_opening_forces_add() {
 			return Vec::new();
 		}
 		let mut acts = Vec::new();
@@ -5528,7 +5820,10 @@ impl Game {
 		let Some(tile) = self.tile_at(from) else {
 			return Vec::new();
 		};
-		if tile.owner != self.current {
+		if tile.owner != self.current
+			|| !self.move_is_supported(from, tile)
+			|| self.team_opening_forces_add()
+		{
 			return Vec::new();
 		}
 		let restricted = self.same_piece_is_restricted(tile.id);
@@ -5752,6 +6047,9 @@ impl Game {
 		let pre_p2_tok = self.budget_token_count(Player::Two);
 		let pre_center_id = self.tile_at(self.board.center()).map(|t| t.id);
 		let player = self.current;
+		if !matches!(action, Action::Add { .. }) && self.team_opening_forces_add() {
+			return Err("team-spawn opening: the first ADDs are forced".into());
+		}
 		match action {
 			Action::Add { bench_index, node } => self.apply_add(bench_index, node)?,
 			Action::Move { from, to } => self.apply_move(from, to)?,
@@ -5885,6 +6183,18 @@ impl Game {
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
 				if self.draw_from_bag(player).is_some() {
 					draws = draws.saturating_add(1);
+				}
+			}
+		}
+		if self.rules.surround_flip && !matches!(action, Action::Pass | Action::Recover) {
+			for node in self.surrounded_nodes() {
+				if let Some(t) = self.tiles[node as usize].as_mut() {
+					t.owner = t.owner.other();
+				}
+				if let Some(t) = self.tiles[node as usize] {
+					if self.rules.no_immediate_return {
+						self.forget_return_block(t.id);
+					}
 				}
 			}
 		}
@@ -6458,11 +6768,18 @@ impl Game {
 		if self.budget(self.current) == 0 {
 			return Err("no capture budget".into());
 		}
-		if self.rules.add_only_on_spawns && !self.board.is_spawn(node) {
-			return Err("ADD is only legal on spawn nodes".into());
+		if self.rules.add_only_on_spawns && !self.add_spawns(self.current).contains(&node) {
+			return Err(if self.rules.team_spawn {
+				"ADD is only legal on your team's spawn diamond".into()
+			} else {
+				"ADD is only legal on spawn nodes".into()
+			});
 		}
 		if self.tile_at(node).is_some() {
 			return Err("destination is occupied".into());
+		}
+		if self.rules.no_suicide_add && self.add_is_bare_suicide(bench_index, node) {
+			return Err("ADD would only lose the added tile (--no-suicide-add)".into());
 		}
 		let bench = &mut self.benches[self.current.index()];
 		if bench_index >= bench.len() {
@@ -6471,6 +6788,8 @@ impl Game {
 		let tile = bench.remove(bench_index);
 		self.tiles[node as usize] = Some(tile);
 		self.spend_budget(self.current)?;
+		let i = self.current.index();
+		self.adds_made[i] = self.adds_made[i].saturating_add(1);
 		Ok(())
 	}
 
@@ -6478,6 +6797,9 @@ impl Game {
 		let tile = self.tile_at(from).ok_or_else(|| "no tile at source".to_string())?;
 		if tile.owner != self.current {
 			return Err("not your tile".into());
+		}
+		if !self.move_is_supported(from, tile) {
+			return Err("MOVE needs 1 + matched neighbors >= ring count (--move-support)".into());
 		}
 		if !self.destinations(from).contains(&to) {
 			return Err("illegal MOVE destination".into());
@@ -14974,5 +15296,232 @@ mod tests {
 			game.status(),
 			GameStatus::Won { winner: Player::One, reason: EndReason::TurnLimit }
 		);
+	}
+}
+
+#[cfg(test)]
+mod team_spawn_rules_tests {
+	#![allow(clippy::unwrap_used, clippy::expect_used)]
+	use super::*;
+
+	fn ts_rules() -> RuleSet {
+		let mut r = RuleSet::capture_b();
+		r.team_spawn = true;
+		r
+	}
+
+	#[test]
+	fn team_diamonds_sit_on_opposite_sides() {
+		let b = Board::rosette_8();
+		assert_eq!(b.team_diamond(0), &[5, 6, 7, 8]);
+		assert_eq!(b.team_diamond(1), &[17, 18, 19, 20]);
+		for &n in b.team_diamond(0) {
+			assert!(b.position(n)[1] > 0.0, "P1 diamond is on +Y");
+		}
+		for &n in b.team_diamond(1) {
+			assert!(b.position(n)[1] < 0.0, "P2 diamond is on -Y");
+		}
+	}
+
+	#[test]
+	fn team_spawn_forces_three_opening_adds_on_own_diamond() {
+		let mut game = Game::new(ts_rules(), 7);
+		for ply in 0..6 {
+			let me = game.current_player();
+			let acts = game.legal_actions();
+			assert!(!acts.is_empty());
+			for a in &acts {
+				match a {
+					Action::Add { node, .. } => {
+						assert!(game.board().team_diamond(me.index()).contains(node), "ply {ply}")
+					}
+					other => panic!("ply {ply}: only ADD is legal in the opening, got {other:?}"),
+				}
+			}
+			game.apply(acts[0]).unwrap();
+		}
+		assert!(
+			game.legal_actions().iter().any(|a| !matches!(a, Action::Add { .. })),
+			"after three ADDs each, other actions open up"
+		);
+		for a in game.legal_adds() {
+			let Action::Add { node, .. } = a else { unreachable!() };
+			assert!(game.board().team_diamond(game.current_player().index()).contains(&node));
+		}
+	}
+
+	#[test]
+	fn matched_neighborhood_gates_heavy_moves() {
+		let mut r = RuleSet::capture_b();
+		r.move_support = MoveSupport::Matched;
+		let mut game = Game::empty(r);
+		let double = game.alloc_ring_kinds(Player::One, &[(TileColor::Green, false); 2], 2, 1);
+		game.place_tile(7, double);
+		game.set_current(Player::One);
+		assert!(!game.legal_moves().iter().any(|a| matches!(a, Action::Move { from: 7, .. })));
+		// An enemy match does not count under `matched` (friendly only).
+		let enemy = game.alloc_tile(Player::Two, TileColor::Green, 1, 1);
+		game.place_tile(10, enemy);
+		assert!(!game.move_is_supported(7, double));
+		let friend = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		game.place_tile(4, friend);
+		assert!(game.move_is_supported(7, double));
+		assert!(game.legal_moves().iter().any(|a| matches!(a, Action::Move { from: 7, .. })));
+		// A single always moves.
+		assert!(game.move_is_supported(4, friend));
+		// matched-any counts the enemy too; a triple needs two.
+		game.rules.move_support = MoveSupport::MatchedAny;
+		let triple = game.alloc_ring_kinds(Player::One, &[(TileColor::Green, false); 3], 3, 1);
+		game.clear_tile(7);
+		game.place_tile(7, triple);
+		assert!(game.move_is_supported(7, triple), "friend + enemy = 2 matched");
+		game.rules.move_support = MoveSupport::Matched;
+		assert!(!game.move_is_supported(7, triple));
+	}
+
+	#[test]
+	fn minus_rings_match_gain_formula() {
+		let g = MatchGain::MinusRings;
+		assert_eq!(g.effective(0, 1, 1), 1);
+		assert_eq!(g.effective(1, 1, 1), 1, "a single's first match buys nothing");
+		assert_eq!(g.effective(3, 3, 1), 1, "two bonus matches on a single");
+		assert_eq!(g.effective(3, 3, 3), 3, "a triple needs four matches to gain");
+		assert_eq!(MatchGain::Flat.effective(3, 3, 3), 0);
+		// Same rule as "defense = max(rings, matches)": overwhelmed iff
+		// mismatch >= max(rings, matches).
+		for w in 1u8..=3 {
+			for m in 0..=12 {
+				for x in 0..=12 {
+					assert_eq!(
+						g.effective(m, x, w) >= i32::from(w),
+						x >= m.max(i32::from(w)),
+						"m={m} x={x} w={w}"
+					);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn minus_rings_changes_overwhelm() {
+		let mut r = RuleSet::capture_b();
+		let mut game = Game::empty(r);
+		// Center (0) holds a green single: inner 6 sees it on two petals, so
+		// green single at 6 has 2 normal matches. Two orange mismatches from
+		// the spawns 5 and 8 give mismatch 2.
+		let t = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		game.place_tile(6, t);
+		let m = game.alloc_tile(Player::One, TileColor::Green, 1, 1);
+		game.place_tile(0, m);
+		for n in [5, 8] {
+			let x = game.alloc_tile(Player::Two, TileColor::Orange, 1, 1);
+			game.place_tile(n, x);
+		}
+		assert!(game.is_overwhelmed(6), "live braid-only scoring: normal matches do not defend");
+		r.match_gain = MatchGain::MinusRings;
+		game.rules = r;
+		// eff = 2 - max(0, 2 - 1) = 1 >= 1: still overwhelmed.
+		assert!(game.is_overwhelmed(6));
+		let third = game.alloc_tile(Player::Two, TileColor::Green, 1, 1);
+		game.clear_tile(8);
+		game.place_tile(8, third);
+		// matches 3, mismatch 1: eff = 1 - 2 = -1 → safe under minus-rings.
+		assert!(!game.is_overwhelmed(6));
+		game.rules.match_gain = MatchGain::Flat;
+		assert!(game.is_overwhelmed(6), "flat (braid-only) still loses it to one mismatch");
+	}
+
+	#[test]
+	fn surround_flip_takes_a_fully_enclosed_tile() {
+		let mut r = RuleSet::capture_b();
+		r.surround_flip = true;
+		let mut game = Game::empty(r);
+		// Inner node 6 has neighbors {0, 5, 8}. Use matching colors so no
+		// overwhelm fires; only the enclosure matters.
+		let victim = game.alloc_tile(Player::Two, TileColor::Green, 3, 1);
+		game.place_tile(6, victim);
+		for n in [0, 5] {
+			let t = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+			game.place_tile(n, t);
+		}
+		assert!(game.surrounded_nodes().is_empty());
+		let closer = game.alloc_tile(Player::One, TileColor::Green, 3, 1);
+		game.set_bench(Player::One, vec![closer]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 3]);
+		game.set_current(Player::One);
+		game.apply(Action::Add { bench_index: 0, node: 8 }).unwrap();
+		assert_eq!(game.tile_at(6).unwrap().owner, Player::One, "enclosed tile flips");
+		assert_eq!(game.capture_score(Player::One), 0, "a flip scores nothing");
+	}
+
+	/// Spawn node `s` ringed by enemy orange triples (mismatch 1 each on a
+	/// green single never overwhelms them); `single_at` swaps one ring
+	/// neighbor for an orange single that the ADD does overwhelm.
+	fn suicide_add_setup(no_suicide: bool, single_at: Option<usize>) -> (Game, NodeId) {
+		let mut r = RuleSet::capture_b();
+		r.no_suicide_add = no_suicide;
+		let mut game = Game::empty(r);
+		let s = game.board().spawns()[0];
+		let nbs: Vec<NodeId> = game.board().neighbors(s).to_vec();
+		for (k, &n) in nbs.iter().enumerate() {
+			let t = if single_at == Some(k) {
+				game.alloc_ring_kinds(Player::Two, &[(TileColor::Orange, false)], 1, 1)
+			} else {
+				game.alloc_ring_kinds(Player::Two, &[(TileColor::Orange, false); 3], 3, 1)
+			};
+			game.place_tile(n, t);
+		}
+		let green = game.alloc_ring_kinds(Player::One, &[(TileColor::Green, false)], 1, 1);
+		game.set_bench(Player::One, vec![green]);
+		game.set_budget_tokens(Player::One, vec![BudgetToken::Blank; 3]);
+		game.set_current(Player::One);
+		(game, s)
+	}
+
+	#[test]
+	fn no_suicide_add_rejects_an_add_that_only_loses_itself() {
+		let (off, s) = suicide_add_setup(false, None);
+		assert!(off.add_is_bare_suicide(0, s));
+		assert!(off.legal_adds().contains(&Action::Add { bench_index: 0, node: s }));
+		let (mut on, s) = suicide_add_setup(true, None);
+		assert!(!on.legal_adds().contains(&Action::Add { bench_index: 0, node: s }));
+		assert!(on.apply(Action::Add { bench_index: 0, node: s }).is_err());
+	}
+
+	#[test]
+	fn no_suicide_add_allows_a_suicide_that_also_captures() {
+		let (mut on, s) = suicide_add_setup(true, Some(0));
+		assert!(!on.add_is_bare_suicide(0, s));
+		assert!(on.legal_adds().contains(&Action::Add { bench_index: 0, node: s }));
+		let out = on.apply(Action::Add { bench_index: 0, node: s }).unwrap();
+		assert!(out.removals.len() >= 2, "adder and the orange single go");
+	}
+
+	#[test]
+	fn bench_ring_cap_limits_the_pick() {
+		let mut r = RuleSet::capture_b();
+		r.bench_ring_cap = 17;
+		let game = Game::new(r, 11);
+		for p in [Player::One, Player::Two] {
+			let rings: u32 = game.bench(p).iter().map(|t| u32::from(t.n_rings)).sum();
+			assert!(rings <= 17, "{p:?} bench has {rings} rings");
+		}
+	}
+
+	#[test]
+	fn mirror_palette_permutes_p2_colors() {
+		let mut r = RuleSet::capture_b();
+		r.mirror_palette = true;
+		let mut setup = crate::deck::SetupConfig::for_seed(5);
+		setup.apply_same_deck();
+		let game = Game::new_with_setup(r, 5, setup);
+		let rec = game.setup_record().unwrap();
+		assert_eq!(rec.decks[0].len(), rec.decks[1].len());
+		for (a, b) in rec.decks[0].iter().zip(&rec.decks[1]) {
+			assert_eq!(a.n_rings, b.n_rings);
+			for k in 0..a.n_rings as usize {
+				assert_eq!(permute_palette(a.rings[k]), b.rings[k]);
+			}
+		}
 	}
 }

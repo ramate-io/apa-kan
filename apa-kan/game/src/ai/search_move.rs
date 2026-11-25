@@ -151,8 +151,7 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 	if game.budget(current) > 0 && !bench.is_empty() {
 		let mut seen = std::collections::HashSet::<u32>::new();
 		let dests: Vec<NodeId> = if game.rules().add_only_on_spawns {
-			game.board()
-				.spawns()
+			game.add_spawns(current)
 				.iter()
 				.copied()
 				.filter(|&s| game.tile_at(s).is_none())
@@ -162,12 +161,15 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 				.filter(|&id| game.tile_at(id).is_none())
 				.collect()
 		};
-		for tile in bench {
+		for (i, tile) in bench.iter().enumerate() {
 			let k = search_kind(*tile);
 			if !seen.insert(k) {
 				continue;
 			}
 			for &node in &dests {
+				if game.rules().no_suicide_add && game.add_is_bare_suicide(i, node) {
+					continue;
+				}
 				out.push(SearchMove::Add { kind: k, node });
 			}
 		}

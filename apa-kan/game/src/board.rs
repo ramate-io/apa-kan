@@ -59,6 +59,8 @@ pub struct Board {
 	circles: Vec<CircleSpec>,
 	circle_cycles: Vec<Vec<NodeId>>,
 	spawns: Vec<NodeId>,
+	/// Per-team spawn diamonds (`[P1, P2]`) for `--team-spawn`.
+	team_diamonds: [Vec<NodeId>; 2],
 	center: NodeId,
 	construction_radius: f64,
 }
@@ -171,6 +173,7 @@ impl Board {
 
 		let construction_radius = circles.first().map(|c| c.radius).unwrap_or(1.0);
 		let spawns = identify_spawn_ring(&positions, construction_radius, tolerance);
+		let team_diamonds = team_diamonds(&positions, &neighbors, &spawns);
 
 		Self {
 			name: name.to_string(),
@@ -181,6 +184,7 @@ impl Board {
 			circles: circles.to_vec(),
 			circle_cycles,
 			spawns,
+			team_diamonds,
 			center: 0,
 			construction_radius,
 		}
@@ -188,7 +192,17 @@ impl Board {
 
 	pub fn with_spawns(mut self, spawns: Vec<NodeId>) -> Self {
 		self.spawns = spawns;
+		self.team_diamonds = team_diamonds(&self.positions, &self.neighbors, &self.spawns);
 		self
+	}
+
+	/// Team spawn diamond for player index `team` (0 = P1, 1 = P2).
+	///
+	/// On the rosette: the inner-ring node farthest along +Y (P1) or −Y
+	/// (P2), its two spawn-ring neighbors, and the outer node adjacent to
+	/// both spawns. P1 = {5, 6, 7, 8} (top), P2 = {17, 18, 19, 20} (bottom).
+	pub fn team_diamond(&self, team: usize) -> &[NodeId] {
+		&self.team_diamonds[team.min(1)]
 	}
 
 	pub fn name(&self) -> &str {
@@ -390,6 +404,43 @@ fn circle_circle_intersections(a: &CircleSpec, b: &CircleSpec, tolerance: f64) -
 	}
 	let h = h2.sqrt();
 	vec![[px - h * dy / d, py + h * dx / d], [px + h * dy / d, py - h * dx / d]]
+}
+
+/// Two opposite diamonds: inner node (max / min y) + its spawn neighbors +
+/// the non-inner node adjacent to both spawns. Empty when the geometry has
+/// no such shape.
+fn team_diamonds(
+	positions: &[[f64; 2]],
+	neighbors: &[Vec<NodeId>],
+	spawns: &[NodeId],
+) -> [Vec<NodeId>; 2] {
+	let inner: Vec<NodeId> = neighbors.first().cloned().unwrap_or_default();
+	let build = |sign: f64| -> Vec<NodeId> {
+		let Some(&apex) = inner.iter().max_by(|&&a, &&b| {
+			(sign * positions[a as usize][1])
+				.partial_cmp(&(sign * positions[b as usize][1]))
+				.unwrap_or(std::cmp::Ordering::Equal)
+		}) else {
+			return Vec::new();
+		};
+		let sp: Vec<NodeId> = neighbors[apex as usize]
+			.iter()
+			.copied()
+			.filter(|n| spawns.contains(n))
+			.collect();
+		let mut out = vec![apex];
+		out.extend(&sp);
+		if sp.len() == 2 {
+			if let Some(&top) = neighbors[sp[0] as usize].iter().find(|&&n| {
+				n != apex && !inner.contains(&n) && neighbors[sp[1] as usize].contains(&n)
+			}) {
+				out.push(top);
+			}
+		}
+		out.sort_unstable();
+		out
+	};
+	[build(1.0), build(-1.0)]
 }
 
 fn push_dedup(points: &mut Vec<[f64; 2]>, p: [f64; 2], tolerance: f64) {

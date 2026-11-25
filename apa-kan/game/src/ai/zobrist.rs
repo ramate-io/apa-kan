@@ -282,6 +282,12 @@ pub fn hash(game: &Game) -> u64 {
 		h ^= z.opening_double_active;
 	}
 	for player in [Player::One, Player::Two] {
+		let owed = game.team_opening_adds_owed(player);
+		if owed > 0 {
+			h ^= mix_id(0x7EA0_0000 | (u32::from(owed) << 1) | player.index() as u32);
+		}
+	}
+	for player in [Player::One, Player::Two] {
 		let n = game.capture_score(player).min(31) as usize;
 		if n > 0 {
 			h ^= z.capture_score[player.index()][n];
