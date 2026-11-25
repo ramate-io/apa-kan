@@ -2,6 +2,8 @@
 
 Stacked on `--ruleset capture-b` (#110). Every rule below is a toggle that is off by default. Design discussion is in #111.
 
+**Default capture game: `--ruleset capture-c`** (aliases `capture`, `capture-score`). It is capture-b plus team spawn, `--ring-count-weights 10,3,1`, `--move-support matched` (L1), `--match-gain minus-rings` (L3), `--bench-ring-cap 17`, `--surround-flip on` and `--no-suicide-add on`. It plays the committed `ts_l1_l3_cap17_flip_nosuicide` games exactly. The individual toggles stay for ablations, and later flags override the preset. `--ruleset capture-b` is still the old #110 game.
+
 ## Team spawn (`--team-spawn on`, `--team-opening-adds 3`)
 
 Each team ADDs only onto its own **spawn diamond**, all game long. The two diamonds sit on opposite sides of the board:
@@ -61,3 +63,28 @@ Each team ADDs only onto its own **spawn diamond**, all game long. The two diamo
 - **What counts.** Only removals count. A surround flip is not a removal, so an ADD that loses itself and only flips something is still banned.
 - **Everything else is unchanged.** Legal ADDs, scoring and recovery work as before. If a player has no legal action left, the existing locked-out rule applies.
 - **Bots.** Search uses the same legality check. No tactics were added.
+
+## Strict suicide ADD (`--strict-suicide-add on`)
+
+- **Rule.** An ADD whose added tile would be overwhelmed on arrival is illegal unless the same ADD also removes at least one **enemy** tile. Losing the added tile together with one of your own tiles is banned too, which closes the loophole left by `--no-suicide-add`.
+- It works on its own, and it supersedes `--no-suicide-add` when both are on. Search uses the same check. A test on committed games confirms it matches what applying the ADD removes.
+
+## Shared graveyard (`--mark-capture-routing shared`)
+
+- **One graveyard for both players.** It replaces mark routing B's per-player piles.
+- **The acting tile's mark decides where each removed tile goes,** as in routing B. The acting tile is the ADDed, MOVEd or SWAP-initiating tile; CLAIM has no acting tile and counts as a triangle.
+
+| acting tile | opponent tile captured | own tile captured |
+|---|---|---|
+| triangle | shared graveyard | back to your hand (bench) |
+| dot (circle) | your hand (you now own it) | shared graveyard |
+
+- **Leaving the graveyard (my choice, open question).** RECOVER (one action) takes the **oldest** tile in the shared graveyard onto the mover's bench, and the mover owns it from then on. Either player may RECOVER whenever the pile is non-empty, so a non-empty pile keeps both sides from being locked out.
+- **Logs.** `p1_graveyard` and `p2_graveyard` in the JSONL both report the shared pile's size.
+
+## No return for two turns (`--no-return-turns 2`)
+
+- **Rule.** A tile that left a node by MOVE or SWAP may not be put back on that node by a MOVE or SWAP for the next 2 turns. One turn is one ply, so this covers the opponent's reply and your own next turn.
+- **Scope.** It applies to every tile, yours or the opponent's, the SWAP initiator and the displaced partner alike. A flip does not clear the record, and leaving the board does. ADD, CLAIM and RECOVER are never blocked.
+- **Relation to older rules.** It stacks with `--no-immediate-return` (the mover only, own next turn) and the existing same-pair SWAP ban (the same two tiles can't swap again right away).
+
