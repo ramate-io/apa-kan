@@ -167,7 +167,7 @@ pub fn legal_search_moves(game: &Game) -> Vec<SearchMove> {
 				continue;
 			}
 			for &node in &dests {
-				if game.rules().no_suicide_add && game.add_is_bare_suicide(i, node) {
+				if game.add_is_banned_suicide(i, node) {
 					continue;
 				}
 				out.push(SearchMove::Add { kind: k, node });

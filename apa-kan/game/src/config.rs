@@ -404,6 +404,14 @@ where
 		"--no-suicide-add" => {
 			rules.no_suicide_add = parse_bool(arg, &require_value(arg, it.next())?)?;
 		}
+		"--strict-suicide-add" => {
+			rules.strict_suicide_add = parse_bool(arg, &require_value(arg, it.next())?)?;
+		}
+		"--no-return-turns" => {
+			rules.no_return_turns = require_value(arg, it.next())?
+				.parse()
+				.map_err(|e| format!("invalid --no-return-turns: {e}"))?;
+		}
 		"--self-capture-penalty" => {
 			rules.self_capture_penalty =
 				crate::game::SelfCapturePenalty::parse(&require_value(arg, it.next())?)?;
@@ -590,11 +598,11 @@ pub fn usage() -> &'static str {
 	   --opening-double <on|off>                  2-2-1-1 opening: P1 two actions, P2 two, then singles (default: on)\n\
 	   --opening <2-2-1-1|1-1-1-1>                Alias for --opening-double on|off\n\
 	   --objective <control|capture-score>        Win condition (default: control). capture-score: 1 point per opponent capture, no control wins\n\
-	   --ruleset <control|capture-b>              One-switch preset. capture-b = capture-score, target 5, unlimited spawn, 1-1-1-1 opening, graveyard, mark routing B, no-immediate-return, repetition-ends. Later flags override (default: control)\n\
+	   --ruleset <control|capture-b|capture-c>    One-switch preset. capture-b = capture-score, target 5, unlimited spawn, 1-1-1-1 opening, graveyard, mark routing B, no-immediate-return, repetition-ends. capture-c (alias capture, capture-score) = capture-b + team spawn, ring weights 10,3,1, move-support matched, match-gain minus-rings, bench-ring-cap 17, surround-flip, no-suicide-add. Later flags override (default: control)\n\
 	   --score-target <1..64>                     First-to-N captures under capture-score (default: 6; capture-b: 5)\n\
 	   --unlimited-spawn <on|off>                 Captures return to the owner; ADD does not spend tokens (default: off)\n\
 	   --graveyard <on|off>                       Captures go to a graveyard; RECOVER (one action) returns the oldest to the bench (default: off)\n\
-	   --mark-capture-routing <off|b>             Acting tile's mark routes captures: dots soak to your graveyard; triangle self-capture -> their graveyard, opponent capture -> your hand (default: off)\n\
+	   --mark-capture-routing <off|b|shared>      Acting tile's mark routes captures. b: dots soak to your graveyard; triangle self-capture -> their graveyard, opponent capture -> your hand. shared: one graveyard for both; triangle opponent capture -> shared, self-capture -> your hand; dot self-capture -> shared, opponent capture -> your hand; RECOVER takes the oldest shared tile (default: off)\n\
 	   --repetition-ends <on|off>                 3-fold repetition of the visible position ends the game on capture score (default: off)\n\
 	   --self-capture-penalty <off|always|match-point>  Self-captured tiles award opponent points (default: off)\n\
 	   --team-spawn <on|off>                      Each team ADDs only on its own spawn diamond; first ADDs forced (default: off)\n\
@@ -605,6 +613,8 @@ pub fn usage() -> &'static str {
 	   --mirror-palette <off|permute>             P2's mirrored collection gets permuted colors (default: off)\n\
 	   --surround-flip <on|off>                   A tile with every neighbor enemy-held flips owner (default: off)\n\
 	   --no-suicide-add <on|off>                  ADD that only loses the added tile is illegal (default: off)\n\
+	   --strict-suicide-add <on|off>              ADD whose added tile dies is illegal unless it also removes an enemy tile (default: off)\n\
+	   --no-return-turns <0..255>                 A tile that left a node by MOVE/SWAP (either side, swap partner too) cannot be put back there for N turns (plies); 2 = the opponent's reply and your next turn (default: 0 = off)\n\
 	   --no-immediate-return <on|off>             a tile may not move straight back to the node it left on its own last move (default: off)\n\
 	   --starting-tokens <1..27>                  Opening spawn tokens (default: 7; alias --starting-bench)\n\
 	   --deck-size <1..27>                        Collection size per player (default: 27; alias --bag-size)\n\
@@ -930,6 +940,27 @@ mod tests {
 		let back = GameConfig::parse(["--ruleset", "capture-b", "--ruleset", "control"]).unwrap();
 		assert_eq!(back.rules, RuleSet::default());
 		assert!(GameConfig::parse(["--ruleset", "mode-a"]).is_err());
+	}
+
+	#[test]
+	fn ruleset_capture_c_and_new_toggles_parse() {
+		let c = GameConfig::parse(["--ruleset", "capture"]).unwrap();
+		assert_eq!(c.rules, RuleSet::capture_c());
+		let t = GameConfig::parse([
+			"--ruleset",
+			"capture-c",
+			"--strict-suicide-add",
+			"on",
+			"--no-return-turns",
+			"2",
+			"--mark-capture-routing",
+			"shared",
+		])
+		.unwrap();
+		assert!(t.rules.strict_suicide_add);
+		assert_eq!(t.rules.no_return_turns, 2);
+		assert_eq!(t.rules.mark_capture_routing, crate::game::MarkCaptureRouting::Shared);
+		assert!(GameConfig::parse(["--no-return-turns", "x"]).is_err());
 	}
 
 	#[test]

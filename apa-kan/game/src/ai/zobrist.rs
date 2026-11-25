@@ -317,6 +317,11 @@ pub fn hash(game: &Game) -> u64 {
 			h ^= mix_id(key).rotate_left(17 + slot as u32);
 		}
 	}
+	// `--no-return-turns` records (with their age) change legality too.
+	for (id, node, age) in game.left_node_records() {
+		let key = id ^ (u32::from(node) << 20) ^ (age << 27) ^ 0x1F83_D9AB;
+		h ^= mix_id(key).rotate_left(29);
+	}
 	h
 }
 
