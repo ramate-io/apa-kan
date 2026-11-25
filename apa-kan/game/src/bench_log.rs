@@ -2923,6 +2923,7 @@ mod tests {
 			"cc_noreturn",
 			"cc_noreturn_perm",
 			"cc_all_perm",
+			"cc_shared_perm",
 		] {
 			assert_committed_jsonl_gz_replays_n(
 				&format!("benchmark_results/team_spawn/h2h_{cell}_mm.jsonl.gz"),
