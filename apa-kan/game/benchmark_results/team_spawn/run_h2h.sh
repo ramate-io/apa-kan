@@ -73,6 +73,19 @@ PERM=(--mirror-palette permute)
 FLIP=(--surround-flip on)
 NOSUI=(--no-suicide-add on)
 
+# Default capture game since #111 t292: `--ruleset capture-c` (= the
+# combo_flip_nosuicide cell). New toggles are benchmarked on top of it.
+CC=(--ruleset capture-c)
+STRICT=(--strict-suicide-add on)
+SHARED=(--mark-capture-routing shared)
+NORET=(--no-return-turns 2)
+
+cc_cell() {
+  local name="$1"
+  shift
+  run_one "h2h_${name}_mm" "${mm_pair[@]}" --games 75 --seed 300 "${CC[@]}" "$@"
+}
+
 cell() {
   local name="$1"
   shift
@@ -94,8 +107,18 @@ case "$cfg" in
   combo_flip_perm) cell ts_l1_l3_cap17_flip_perm "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${FLIP[@]}" "${PERM[@]}" ;;
   combo_flip_nosuicide) cell ts_l1_l3_cap17_flip_nosuicide "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${FLIP[@]}" "${NOSUI[@]}" ;;
   combo_flip_nosuicide_perm) cell ts_l1_l3_cap17_flip_nosuicide_perm "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${FLIP[@]}" "${NOSUI[@]}" "${PERM[@]}" ;;
+  cc_smoke) run_one smoke_cc "${mm_pair[@]}" --games 1 --seed 300 "${CC[@]}" ;;
+  cd_smoke) run_one smoke_cd "${mm_pair[@]}" --games 1 --seed 300 --ruleset capture-d ;;
+  cc_strict) cc_cell cc_strict "${STRICT[@]}" ;;
+  cc_strict_perm) cc_cell cc_strict_perm "${STRICT[@]}" "${PERM[@]}" ;;
+  cc_shared) cc_cell cc_shared "${SHARED[@]}" ;;
+  cc_shared_perm) cc_cell cc_shared_perm "${SHARED[@]}" "${PERM[@]}" ;;
+  cc_noreturn) cc_cell cc_noreturn "${NORET[@]}" ;;
+  cc_noreturn_perm) cc_cell cc_noreturn_perm "${NORET[@]}" "${PERM[@]}" ;;
+  cc_all) cc_cell cc_all "${STRICT[@]}" "${SHARED[@]}" "${NORET[@]}" ;;
+  cc_all_perm) cc_cell cc_all_perm "${STRICT[@]}" "${SHARED[@]}" "${NORET[@]}" "${PERM[@]}" ;;
   *)
-    echo "usage: $0 [smoke|base|l1|l3|combo|base_perm|l1_perm|l3_perm|combo_perm|combo_flip|combo_flip_perm|combo_flip_nosuicide|combo_flip_nosuicide_perm]" >&2
+    echo "usage: $0 [smoke|base|l1|l3|combo|base_perm|l1_perm|l3_perm|combo_perm|combo_flip|combo_flip_perm|combo_flip_nosuicide|combo_flip_nosuicide_perm|cc_smoke|cd_smoke|cc_strict[_perm]|cc_shared[_perm]|cc_noreturn[_perm]|cc_all[_perm]]" >&2
     exit 2
     ;;
 esac

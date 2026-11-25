@@ -735,7 +735,7 @@ fn run(cfg: BenchConfig) {
 		));
 	}
 	lines.push(format!(
-		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} ratchet_cascade={} opening_double={} objective={} score_target={} unlimited_spawn={} graveyard={} mark_capture_routing={} repetition_ends={} no_immediate_return={} self_capture_penalty={} team_spawn={} move_support={} match_gain={} bench_ring_cap={} mirror_palette={} surround_flip={} no_suicide_add={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
+		"# rules: no_moves_loses={} center_hold_win={} center_hold_n={} no_same_piece_twice={} color_restricted_hops={} hop_weight_cmp={} counted_pass_through={} pass_through_ring_cmp={} petal_majority_win={} petal_majority_n={} control_win={} control_n={} control_hold_turns={} endgame_rule={} cascade_turn_gain={} cascade_winner_swap={} ratchet_cascade={} opening_double={} objective={} score_target={} unlimited_spawn={} graveyard={} mark_capture_routing={} repetition_ends={} no_immediate_return={} self_capture_penalty={} team_spawn={} move_support={} match_gain={} bench_ring_cap={} mirror_palette={} surround_flip={} no_suicide_add={} strict_suicide_add={} no_return_turns={} insufficient_tiles_loss={} starting_bench={} bag_size={} deck_size={} pick={} deck_noise={} self_capture_budget={} max_rings={} ring_count_weights={} color_drift={} zag_numer={} braid_numer={} bead_numer={} bead_scoring={} braid_scoring={} score_unique_neighbors={} channel_mode={} capture_mode={} singles_swap={} single_braids={} dot_percent={} emblem_weights={} blocker_blocks={} zag_mismatch={} path_constraint={} scenario={}",
 		on_off(rules.no_moves_loses),
 		on_off(rules.center_hold_win),
 		rules.center_hold_n,
@@ -769,6 +769,8 @@ fn run(cfg: BenchConfig) {
         rules.mirror_palette,
         rules.surround_flip,
         rules.no_suicide_add,
+        rules.strict_suicide_add,
+        rules.no_return_turns,
 		rules.insufficient_tiles_loss.name(),
 		rules.starting_bench_size,
 		rules.bag_size,

@@ -544,6 +544,11 @@ pub struct RulesLog {
 	pub surround_flip: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub no_suicide_add: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub strict_suicide_add: bool,
+	/// 0 (off) is omitted.
+	#[serde(default, skip_serializing_if = "is_zero_u8")]
+	pub no_return_turns: u8,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -698,6 +703,8 @@ impl RulesLog {
 			mirror_palette: r.mirror_palette,
 			surround_flip: r.surround_flip,
 			no_suicide_add: r.no_suicide_add,
+			strict_suicide_add: r.strict_suicide_add,
+			no_return_turns: r.no_return_turns,
 		}
 	}
 
@@ -807,6 +814,8 @@ impl RulesLog {
 			mirror_palette: self.mirror_palette,
 			surround_flip: self.surround_flip,
 			no_suicide_add: self.no_suicide_add,
+			strict_suicide_add: self.strict_suicide_add,
+			no_return_turns: self.no_return_turns,
 		})
 	}
 }
@@ -2893,6 +2902,12 @@ mod tests {
 	#[test]
 	fn committed_team_spawn_replays() {
 		assert_committed_jsonl_gz_replays_n("benchmark_results/team_spawn/smoke_ts.jsonl.gz", 4);
+		// `--ruleset capture-c` reproduces the committed combo_flip_nosuicide
+		// games exactly (seeds 300 and 10300).
+		assert_committed_jsonl_gz_replays_n("benchmark_results/team_spawn/smoke_cc.jsonl.gz", 2);
+		// `--ruleset capture-d` (the default capture game) reproduces the
+		// committed cc_all games exactly (seeds 300 and 10300).
+		assert_committed_jsonl_gz_replays_n("benchmark_results/team_spawn/smoke_cd.jsonl.gz", 2);
 		for cell in [
 			"ts_base",
 			"ts_l1",
@@ -2906,6 +2921,14 @@ mod tests {
 			"ts_l1_l3_cap17_flip_perm",
 			"ts_l1_l3_cap17_flip_nosuicide",
 			"ts_l1_l3_cap17_flip_nosuicide_perm",
+			"cc_strict",
+			"cc_strict_perm",
+			"cc_noreturn",
+			"cc_noreturn_perm",
+			"cc_all_perm",
+			"cc_shared_perm",
+			"cc_all",
+			"cc_shared",
 		] {
 			assert_committed_jsonl_gz_replays_n(
 				&format!("benchmark_results/team_spawn/h2h_{cell}_mm.jsonl.gz"),
@@ -2914,7 +2937,8 @@ mod tests {
 		}
 	}
 
-	/// `Game::add_is_bare_suicide` agrees with actually applying each ADD, at
+	/// `Game::add_is_bare_suicide` and `Game::add_is_enemyless_suicide` agree
+	/// with actually applying each ADD, at
 	/// every ply of committed combo + surround-flip games (where bots made
 	/// thousands of suicide ADDs).
 	#[test]
@@ -2926,6 +2950,7 @@ mod tests {
 		}
 		let logs = decode_jsonl_gz(&std::fs::read(&path).unwrap()).unwrap();
 		let mut seen_bare = 0usize;
+		let mut seen_enemyless = 0usize;
 		for log in logs.iter().take(12) {
 			let rules = log.rules.to_rules().unwrap();
 			let mut game = Game::from_setup_record(
@@ -2954,12 +2979,22 @@ mod tests {
 							"seed {} node {node}",
 							log.seed
 						);
+						let enemyless = out.removals.iter().any(|x| x.tile.id == id)
+							&& out.removals.iter().all(|x| x.tile.owner == me);
+						seen_enemyless += usize::from(enemyless && !bare);
+						assert_eq!(
+							game.add_is_enemyless_suicide(i, node),
+							enemyless,
+							"strict: seed {} node {node}",
+							log.seed
+						);
 					}
 				}
 				game.apply(act.to_action().unwrap()).unwrap();
 			}
 		}
 		assert!(seen_bare > 0);
+		assert!(seen_enemyless > 0, "some ADDs lose the added tile plus an own tile");
 	}
 
 	#[test]
@@ -2974,6 +3009,8 @@ mod tests {
 			"mirror_palette",
 			"surround_flip",
 			"no_suicide_add",
+			"strict_suicide_add",
+			"no_return_turns",
 		] {
 			assert!(!json.contains(k), "{k} omitted when off: {json}");
 		}
@@ -2984,6 +3021,9 @@ mod tests {
 		r.mirror_palette = true;
 		r.surround_flip = true;
 		r.no_suicide_add = true;
+		r.strict_suicide_add = true;
+		r.no_return_turns = 2;
+		r.mark_capture_routing = crate::game::MarkCaptureRouting::Shared;
 		assert_eq!(RulesLog::from_rules(r).to_rules().unwrap(), r);
 		r.team_opening_adds = 2;
 		assert_eq!(RulesLog::from_rules(r).to_rules().unwrap(), r);

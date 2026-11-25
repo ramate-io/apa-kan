@@ -800,6 +800,8 @@ pub enum CaptureDest {
 	Graveyard,
 	/// [`RuleSet::mark_capture_routing`]: the opponent's graveyard (owner = opponent).
 	OppGraveyard,
+	/// [`MarkCaptureRouting::Shared`]: the one graveyard both players share.
+	SharedGraveyard,
 }
 
 impl CaptureDest {
@@ -811,6 +813,7 @@ impl CaptureDest {
 			Self::Hand => "hand",
 			Self::Graveyard => "graveyard",
 			Self::OppGraveyard => "opp_graveyard",
+			Self::SharedGraveyard => "shared_graveyard",
 		}
 	}
 
@@ -822,6 +825,7 @@ impl CaptureDest {
 			"hand" => Ok(Self::Hand),
 			"graveyard" => Ok(Self::Graveyard),
 			"opp_graveyard" => Ok(Self::OppGraveyard),
+			"shared_graveyard" => Ok(Self::SharedGraveyard),
 			other => Err(format!("unknown capture dest '{other}' (expected bench|tokens|owner)")),
 		}
 	}
@@ -2719,6 +2723,13 @@ pub enum MarkCaptureRouting {
 	Off,
 	/// Aggressive swap (see the type docs).
 	B,
+	/// One graveyard shared by both players ([`CaptureDest::SharedGraveyard`]).
+	/// Triangle acting tile: opponent captures go to the shared graveyard,
+	/// self-captures go back to the mover's hand (bench). Dot acting tile:
+	/// self-captures go to the shared graveyard, opponent captures go to the
+	/// mover's hand (owner = mover). [`Action::Recover`] takes the oldest
+	/// tile in the shared graveyard onto the mover's bench (owner = mover).
+	Shared,
 }
 
 impl MarkCaptureRouting {
@@ -2726,10 +2737,13 @@ impl MarkCaptureRouting {
 		match s.to_ascii_lowercase().as_str() {
 			"off" | "none" => Ok(Self::Off),
 			"b" | "swap" => Ok(Self::B),
+			"shared" | "shared-graveyard" | "shared_graveyard" => Ok(Self::Shared),
 			"a" | "tempo" | "a-discard" | "a_discard" | "discard" => {
 				Err(format!("--mark-capture-routing '{s}' was removed (only off|b remain)"))
 			}
-			other => Err(format!("unknown --mark-capture-routing '{other}' (expected off|b)")),
+			other => {
+				Err(format!("unknown --mark-capture-routing '{other}' (expected off|b|shared)"))
+			}
 		}
 	}
 
@@ -2737,6 +2751,7 @@ impl MarkCaptureRouting {
 		match self {
 			Self::Off => "off",
 			Self::B => "b",
+			Self::Shared => "shared",
 		}
 	}
 
@@ -2751,6 +2766,10 @@ impl MarkCaptureRouting {
 			(Self::B, CaptureMark::Dot, _) => CaptureDest::Graveyard,
 			(Self::B, CaptureMark::Triangle, true) => CaptureDest::OppGraveyard,
 			(Self::B, CaptureMark::Triangle, false) => CaptureDest::Hand,
+			(Self::Shared, CaptureMark::Triangle, false) => CaptureDest::SharedGraveyard,
+			(Self::Shared, CaptureMark::Triangle, true) => CaptureDest::Hand,
+			(Self::Shared, CaptureMark::Dot, true) => CaptureDest::SharedGraveyard,
+			(Self::Shared, CaptureMark::Dot, false) => CaptureDest::Hand,
 		})
 	}
 }
@@ -3137,6 +3156,20 @@ pub struct RuleSet {
 	/// same action also removes at least one other tile (either side's).
 	/// Default off. `--no-suicide-add`.
 	pub no_suicide_add: bool,
+	/// Stricter [`Self::no_suicide_add`]: an ADD whose added tile is
+	/// overwhelmed on arrival is illegal unless the same action also removes
+	/// at least one **enemy** tile (losing the added tile plus one of your own
+	/// is banned too). Works on its own. Default off.
+	/// `--strict-suicide-add`.
+	pub strict_suicide_add: bool,
+	/// Positional no-return: a tile (either side's, whoever moved it) that
+	/// left a node by MOVE or SWAP (initiator or displaced partner) may not be
+	/// put back on that node by a MOVE or SWAP for this many turns
+	/// ([`Game::turn_count`]; one turn = one ply, so 2 = the opponent's
+	/// reply and your own next turn, which blocks the immediate swap-back). A flip does not clear the record; removal
+	/// from the board does. ADD, CLAIM and RECOVER are never blocked.
+	/// 0 = off. `--no-return-turns`.
+	pub no_return_turns: u8,
 }
 
 /// Matched-neighborhood move rule (MMM): a piece may MOVE only if
@@ -3270,6 +3303,16 @@ pub enum RulesetPreset {
 	/// [`RuleSet::graveyard`], [`MarkCaptureRouting::B`],
 	/// [`RuleSet::no_immediate_return`] and [`RuleSet::repetition_ends`].
 	CaptureB,
+	/// [`Self::CaptureB`] plus team spawn, 10:3:1 singles-heavy
+	/// collections, matched-neighborhood moves (L1), defense =
+	/// max(rings, matches) (L3), a 17-ring bench cap, surround flip and no
+	/// bare suicide ADDs (#111 / #112).
+	CaptureC,
+	/// The default capture-score game (#111 / #113): [`Self::CaptureC`]
+	/// plus strict suicide ADDs, [`MarkCaptureRouting::Shared`] (one shared
+	/// graveyard) and a 2-ply no-return window. `--ruleset capture` and
+	/// `--ruleset capture-score` select it.
+	CaptureD,
 }
 
 /// Score target of [`RulesetPreset::CaptureB`]. At a tied
@@ -3277,12 +3320,22 @@ pub enum RulesetPreset {
 /// strict lead, so "overtime: next capture wins" holds without an extra rule.
 pub const CAPTURE_B_SCORE_TARGET: u8 = 5;
 
+/// [`RulesetPreset::CaptureC`]'s bench ring cap.
+pub const CAPTURE_C_BENCH_RING_CAP: u8 = 17;
+
+/// [`RulesetPreset::CaptureD`]'s no-return window, in plies.
+pub const CAPTURE_D_NO_RETURN_TURNS: u8 = 2;
+
 impl RulesetPreset {
 	pub fn parse(s: &str) -> Result<Self, String> {
 		match s.to_ascii_lowercase().as_str() {
 			"control" | "default" => Ok(Self::Control),
-			"capture-b" | "capture_b" | "capture" | "capture-score" => Ok(Self::CaptureB),
-			other => Err(format!("unknown --ruleset '{other}' (expected control|capture-b)")),
+			"capture-b" | "capture_b" => Ok(Self::CaptureB),
+			"capture-c" | "capture_c" => Ok(Self::CaptureC),
+			"capture-d" | "capture_d" | "capture" | "capture-score" => Ok(Self::CaptureD),
+			other => Err(format!(
+				"unknown --ruleset '{other}' (expected control|capture-b|capture-c|capture-d)"
+			)),
 		}
 	}
 
@@ -3290,6 +3343,8 @@ impl RulesetPreset {
 		match self {
 			Self::Control => "control",
 			Self::CaptureB => "capture-b",
+			Self::CaptureC => "capture-c",
+			Self::CaptureD => "capture-d",
 		}
 	}
 }
@@ -3298,17 +3353,59 @@ impl RuleSet {
 	/// Overwrite the fields [`RulesetPreset`] owns; everything else stays.
 	pub fn apply_preset(&mut self, preset: RulesetPreset) {
 		let d = RuleSet::default();
-		let capture = matches!(preset, RulesetPreset::CaptureB);
+		let capture = matches!(
+			preset,
+			RulesetPreset::CaptureB | RulesetPreset::CaptureC | RulesetPreset::CaptureD
+		);
+		let c = matches!(preset, RulesetPreset::CaptureC | RulesetPreset::CaptureD);
+		let dd = matches!(preset, RulesetPreset::CaptureD);
 		self.objective = if capture { Objective::CaptureScore } else { d.objective };
 		self.score_target = if capture { CAPTURE_B_SCORE_TARGET } else { d.score_target };
 		self.unlimited_spawn = capture;
 		self.opening_double = if capture { false } else { d.opening_double };
 		self.graveyard = capture;
-		self.mark_capture_routing =
-			if capture { MarkCaptureRouting::B } else { MarkCaptureRouting::Off };
+		self.mark_capture_routing = if dd {
+			MarkCaptureRouting::Shared
+		} else if capture {
+			MarkCaptureRouting::B
+		} else {
+			MarkCaptureRouting::Off
+		};
 		self.no_immediate_return = capture;
 		self.repetition_ends = capture;
 		self.self_capture_penalty = SelfCapturePenalty::Off;
+		// Capture-C bundle; the other presets reset it so presets compose.
+		self.team_spawn = c;
+		self.team_opening_adds = d.team_opening_adds;
+		self.ring_count_weights = if c {
+			RingCountWeights { singles: 10, doubles: 3, triples: 1 }
+		} else {
+			d.ring_count_weights
+		};
+		self.move_support = if c { MoveSupport::Matched } else { d.move_support };
+		self.match_gain = if c { MatchGain::MinusRings } else { d.match_gain };
+		self.bench_ring_cap = if c { CAPTURE_C_BENCH_RING_CAP } else { d.bench_ring_cap };
+		self.surround_flip = c;
+		self.no_suicide_add = c;
+		// Capture-D additions.
+		self.strict_suicide_add = dd;
+		self.no_return_turns = if dd { CAPTURE_D_NO_RETURN_TURNS } else { 0 };
+		self.mirror_palette = false;
+	}
+
+	/// [`RuleSet::default`] with [`RulesetPreset::CaptureC`] applied.
+	pub fn capture_c() -> Self {
+		let mut r = Self::default();
+		r.apply_preset(RulesetPreset::CaptureC);
+		r
+	}
+
+	/// [`RuleSet::default`] with [`RulesetPreset::CaptureD`] applied: the
+	/// default capture-score game.
+	pub fn capture_d() -> Self {
+		let mut r = Self::default();
+		r.apply_preset(RulesetPreset::CaptureD);
+		r
 	}
 
 	/// [`RuleSet::default`] with [`RulesetPreset::CaptureB`] applied.
@@ -3389,6 +3486,8 @@ impl Default for RuleSet {
 			mirror_palette: false,
 			surround_flip: false,
 			no_suicide_add: false,
+			strict_suicide_add: false,
+			no_return_turns: 0,
 		}
 	}
 }
@@ -3622,6 +3721,8 @@ pub struct Game {
 	return_block: [Vec<(u32, NodeId)>; 2],
 	/// Same, for tiles moved so far this turn (latest move per tile).
 	moved_from_this_turn: Vec<(u32, NodeId)>,
+	/// [`RuleSet::no_return_turns`]: `(tile id, node it left, turn_count)`.
+	left_nodes: Vec<(u32, NodeId, u32)>,
 }
 
 impl Game {
@@ -3758,6 +3859,7 @@ impl Game {
 			setup: Some(record),
 			capture_score: [0, 0],
 			graveyards: [Vec::new(), Vec::new()],
+			left_nodes: Vec::new(),
 			position_history: Vec::new(),
 			return_block: [Vec::new(), Vec::new()],
 			moved_from_this_turn: Vec::new(),
@@ -3846,6 +3948,7 @@ impl Game {
 			setup: Some(record),
 			capture_score: [0, 0],
 			graveyards: [Vec::new(), Vec::new()],
+			left_nodes: Vec::new(),
 			position_history: Vec::new(),
 			return_block: [Vec::new(), Vec::new()],
 			moved_from_this_turn: Vec::new(),
@@ -3936,6 +4039,7 @@ impl Game {
 			setup: None,
 			capture_score: [0, 0],
 			graveyards: [Vec::new(), Vec::new()],
+			left_nodes: Vec::new(),
 			position_history: Vec::new(),
 			return_block: [Vec::new(), Vec::new()],
 			moved_from_this_turn: Vec::new(),
@@ -4047,8 +4151,20 @@ impl Game {
 	}
 
 	/// [`RuleSet::graveyard`] pile for `player`, oldest first.
+	///
+	/// Under [`MarkCaptureRouting::Shared`] both players see the same shared
+	/// pile (stored in slot 0).
 	pub fn graveyard(&self, player: Player) -> &[Tile] {
-		&self.graveyards[player.index()]
+		&self.graveyards[self.graveyard_slot(player)]
+	}
+
+	/// Index into `graveyards` for `player`'s pile (0 for both when shared).
+	fn graveyard_slot(&self, player: Player) -> usize {
+		if self.rules.mark_capture_routing == MarkCaptureRouting::Shared {
+			0
+		} else {
+			player.index()
+		}
 	}
 
 	/// Graveyard piles are live: [`RuleSet::graveyard`], or
@@ -4061,7 +4177,7 @@ impl Game {
 	pub fn legal_recovers(&self) -> Vec<Action> {
 		if self.status.is_over()
 			|| !self.graveyard_rules_on()
-			|| self.graveyards[self.current.index()].is_empty()
+			|| self.graveyards[self.graveyard_slot(self.current)].is_empty()
 			|| self.team_opening_forces_add()
 		{
 			return Vec::new();
@@ -4074,10 +4190,12 @@ impl Game {
 			return Err("recover needs --graveyard on or --mark-capture-routing".into());
 		}
 		let i = self.current.index();
-		if self.graveyards[i].is_empty() {
+		let slot = self.graveyard_slot(self.current);
+		if self.graveyards[slot].is_empty() {
 			return Err("graveyard is empty".into());
 		}
-		let tile = self.graveyards[i].remove(0);
+		let mut tile = self.graveyards[slot].remove(0);
+		tile.owner = self.current;
 		self.benches[i].push(tile);
 		Ok(())
 	}
@@ -4877,7 +4995,7 @@ impl Game {
 	pub fn is_alive(&self, player: Player) -> bool {
 		self.board_count(player) > 0
 			|| !self.benches[player.index()].is_empty()
-			|| !self.graveyards[player.index()].is_empty()
+			|| !self.graveyards[self.graveyard_slot(player)].is_empty()
 	}
 
 	pub fn set_current(&mut self, player: Player) {
@@ -5522,7 +5640,7 @@ impl Game {
 		let mut acts = Vec::new();
 		for i in 0..bench.len() {
 			for &node in &dests {
-				if self.rules.no_suicide_add && self.add_is_bare_suicide(i, node) {
+				if self.add_is_banned_suicide(i, node) {
 					continue;
 				}
 				acts.push(Action::Add { bench_index: i, node });
@@ -5535,6 +5653,32 @@ impl Game {
 	/// `bench_index` at `node` remove the added tile and nothing else?
 	/// Uses the same removal collection `apply` runs after placing the tile.
 	pub fn add_is_bare_suicide(&self, bench_index: usize, node: NodeId) -> bool {
+		self.add_loses_itself_without(bench_index, node, false)
+	}
+
+	/// Under [`RuleSet::strict_suicide_add`]: would ADDing bench tile
+	/// `bench_index` at `node` lose the added tile without removing any
+	/// enemy tile?
+	pub fn add_is_enemyless_suicide(&self, bench_index: usize, node: NodeId) -> bool {
+		self.add_loses_itself_without(bench_index, node, true)
+	}
+
+	/// The live suicide-ADD ban: [`RuleSet::strict_suicide_add`] (no enemy
+	/// removed) or [`RuleSet::no_suicide_add`] (nothing else removed).
+	pub fn add_is_banned_suicide(&self, bench_index: usize, node: NodeId) -> bool {
+		if self.rules.strict_suicide_add {
+			self.add_is_enemyless_suicide(bench_index, node)
+		} else if self.rules.no_suicide_add {
+			self.add_is_bare_suicide(bench_index, node)
+		} else {
+			false
+		}
+	}
+
+	/// The added tile is removed and no other qualifying tile is: any other
+	/// tile, or only enemy tiles when `enemy_only`.
+	fn add_loses_itself_without(&self, bench_index: usize, node: NodeId, enemy_only: bool) -> bool {
+		let me = self.current;
 		let Some(tile) = self.benches[self.current.index()].get(bench_index).copied() else {
 			return false;
 		};
@@ -5551,11 +5695,12 @@ impl Game {
 			let extra = Some((node, tile));
 			return !self.board.neighbors(node).iter().any(|&nb| {
 				self.tile_at(nb).is_some_and(|t| {
-					Self::overwhelms(
-						t,
-						self.occupied_adjacency_count_with(nb, Some(node)),
-						self.effective_for_tile_with(nb, t, extra),
-					)
+					(!enemy_only || t.owner != me)
+						&& Self::overwhelms(
+							t,
+							self.occupied_adjacency_count_with(nb, Some(node)),
+							self.effective_for_tile_with(nb, t, extra),
+						)
 				})
 			});
 		}
@@ -5565,7 +5710,9 @@ impl Game {
 		g.tiles[node as usize] = Some(tile);
 		let removals = g.collect_captures_for(Action::Add { bench_index, node });
 		removals.iter().any(|r| r.tile.id == tile.id)
-			&& removals.iter().all(|r| r.tile.id == tile.id)
+			&& removals
+				.iter()
+				.all(|r| r.tile.id == tile.id || (enemy_only && r.tile.owner == me))
 	}
 
 	pub fn legal_moves(&self) -> Vec<Action> {
@@ -5583,7 +5730,7 @@ impl Game {
 				if restricted && !self.move_removes_opponent(node, dest) {
 					continue;
 				}
-				if back == Some(dest) {
+				if back == Some(dest) || self.no_return_blocks(tile.id, dest) {
 					continue;
 				}
 				acts.push(Action::Move { from: node, to: dest });
@@ -5638,7 +5785,11 @@ impl Game {
 		let back = self.return_blocked_node(init.id);
 		let mut out = Vec::new();
 		for (to, partner) in self.tiles() {
-			if to == from || back == Some(to) {
+			if to == from
+				|| back == Some(to)
+				|| self.no_return_blocks(init.id, to)
+				|| self.no_return_blocks(partner.id, from)
+			{
 				continue;
 			}
 			if !self.swap_partner_allowed(from, to, init, partner) {
@@ -5729,6 +5880,36 @@ impl Game {
 		}
 		self.moved_from_this_turn.retain(|(id, _)| *id != tile_id);
 		self.moved_from_this_turn.push((tile_id, from));
+	}
+
+	/// [`RuleSet::no_return_turns`] records still in force, as
+	/// `(tile id, node it left, turns ago)`.
+	pub fn left_node_records(&self) -> impl Iterator<Item = (u32, NodeId, u32)> + '_ {
+		let n = u32::from(self.rules.no_return_turns);
+		let now = self.turn_count;
+		self.left_nodes
+			.iter()
+			.map(move |&(id, at, t)| (id, at, now.saturating_sub(t)))
+			.filter(move |&(_, _, age)| n > 0 && age <= n)
+	}
+
+	/// [`RuleSet::no_return_turns`]: may `tile_id` not be put on `node` now?
+	pub fn no_return_blocks(&self, tile_id: u32, node: NodeId) -> bool {
+		let n = u32::from(self.rules.no_return_turns);
+		n > 0
+			&& self.left_nodes.iter().any(|&(id, at, t)| {
+				id == tile_id && at == node && self.turn_count.saturating_sub(t) <= n
+			})
+	}
+
+	fn record_left_node(&mut self, tile_id: u32, from: NodeId) {
+		let n = u32::from(self.rules.no_return_turns);
+		if n == 0 {
+			return;
+		}
+		let now = self.turn_count;
+		self.left_nodes.retain(|&(_, _, t)| now.saturating_sub(t) <= n);
+		self.left_nodes.push((tile_id, from, now));
 	}
 
 	fn forget_return_block(&mut self, tile_id: u32) {
@@ -5832,6 +6013,7 @@ impl Game {
 			.into_iter()
 			.filter(|&to| !restricted || self.move_removes_opponent(from, to))
 			.filter(|&to| back != Some(to))
+			.filter(|&to| !self.no_return_blocks(tile.id, to))
 			.collect()
 	}
 
@@ -6138,6 +6320,7 @@ impl Game {
 			if self.rules.no_immediate_return {
 				self.forget_return_block(rem.tile.id);
 			}
+			self.left_nodes.retain(|&(id, _, _)| id != rem.tile.id);
 			match rem.dest {
 				CaptureDest::Bench => {
 					let mut tile = rem.tile;
@@ -6178,6 +6361,10 @@ impl Game {
 					let mut tile = rem.tile;
 					tile.owner = opponent;
 					self.graveyards[opponent.index()].push(tile);
+				}
+				CaptureDest::SharedGraveyard => {
+					// Ownership is assigned on RECOVER.
+					self.graveyards[0].push(rem.tile);
 				}
 			}
 			if is_move && self.rules.capture_draw_on_move && rem.tile.owner == opponent {
@@ -6778,7 +6965,7 @@ impl Game {
 		if self.tile_at(node).is_some() {
 			return Err("destination is occupied".into());
 		}
-		if self.rules.no_suicide_add && self.add_is_bare_suicide(bench_index, node) {
+		if self.add_is_banned_suicide(bench_index, node) {
 			return Err("ADD would only lose the added tile (--no-suicide-add)".into());
 		}
 		let bench = &mut self.benches[self.current.index()];
@@ -6813,10 +7000,14 @@ impl Game {
 		if self.return_blocked_node(tile.id) == Some(to) {
 			return Err("cannot move a tile straight back to the node it just left".into());
 		}
+		if self.no_return_blocks(tile.id, to) {
+			return Err("that tile left this node too recently (--no-return-turns)".into());
+		}
 		self.tiles[from as usize] = None;
 		self.tiles[to as usize] = Some(tile);
 		self.moved_this_turn = Some(tile.id);
 		self.record_return_block(tile.id, from);
+		self.record_left_node(tile.id, from);
 		Ok(())
 	}
 
@@ -6844,11 +7035,17 @@ impl Game {
 					.into(),
 			);
 		}
+		if self.no_return_blocks(init.id, to) || self.no_return_blocks(partner.id, from) {
+			return Err("a swapped tile left its new node too recently (--no-return-turns)".into());
+		}
 		self.tiles[from as usize] = Some(partner);
 		self.tiles[to as usize] = Some(init);
 		self.moved_this_turn = Some(init.id);
 		// Only the initiator moved of its own accord; see no_immediate_return.
 		self.record_return_block(init.id, from);
+		// Positional no-return tracks both tiles.
+		self.record_left_node(init.id, from);
+		self.record_left_node(partner.id, to);
 		self.swapped_this_turn = Some(swap_pair_key(init.id, partner.id));
 		Ok(())
 	}
@@ -9119,6 +9316,54 @@ mod tests {
 		assert!(!game.legal_moves().contains(&Action::Move { from: center, to: a }));
 		assert!(game.apply(Action::Move { from: center, to: a }).is_err());
 		assert!(!game.legal_destinations(center).is_empty(), "other moves stay legal");
+	}
+
+	fn no_return_turns_game() -> (Game, NodeId, NodeId, NodeId) {
+		let (mut game, a, other, center) = no_return_game();
+		game.rules.no_immediate_return = false;
+		game.rules.no_return_turns = 2;
+		(game, a, other, center)
+	}
+
+	#[test]
+	fn no_return_turns_blocks_reentry_for_two_plies() {
+		let (mut game, a, other, center) = no_return_turns_game();
+		let id = game.tile_at(a).unwrap().id;
+		game.apply(Action::Move { from: a, to: center }).unwrap();
+		let s0 = game.board().spawns()[0];
+		game.apply(Action::Add { bench_index: 0, node: s0 }).unwrap();
+		assert!(game.no_return_blocks(id, a));
+		assert!(!game.legal_moves().contains(&Action::Move { from: center, to: a }));
+		assert!(game.apply(Action::Move { from: center, to: a }).is_err());
+		// Two plies later the block has expired.
+		let step = game.legal_destinations(other).into_iter().find(|&d| d != a).unwrap();
+		game.apply(Action::Move { from: other, to: step }).unwrap();
+		let s1 = game.board().spawns()[1];
+		game.apply(Action::Add { bench_index: 0, node: s1 }).unwrap();
+		assert!(!game.no_return_blocks(id, a));
+	}
+
+	#[test]
+	fn no_return_turns_blocks_the_swap_back_for_both_tiles() {
+		let (mut game, a, _, center) = no_return_turns_game();
+		game.rules.swap_mode = SwapMode::NormalOnly;
+		// P1's single at a; P2's single at the center.
+		game.tiles[a as usize] = None;
+		put_rings(&mut game, a, Player::One, &[TileColor::Blue], 1);
+		put_rings(&mut game, center, Player::Two, &[TileColor::Blue], 1);
+		let (p1, p2) = (game.tile_at(a).unwrap().id, game.tile_at(center).unwrap().id);
+		let mut off = game.clone();
+		off.rules.no_return_turns = 0;
+		for g in [&mut game, &mut off] {
+			g.apply(Action::Swap { from: a, to: center }).unwrap();
+			// Lift the existing same-pair swap ban so only the new rule is tested.
+			g.last_swap = [None, None];
+			g.swapped_this_turn = None;
+		}
+		assert!(off.legal_swaps().contains(&Action::Swap { from: a, to: center }));
+		assert!(game.no_return_blocks(p1, a) && game.no_return_blocks(p2, center));
+		assert!(!game.legal_swaps().contains(&Action::Swap { from: a, to: center }));
+		assert!(game.apply(Action::Swap { from: a, to: center }).is_err());
 	}
 
 	#[test]
@@ -15140,6 +15385,56 @@ mod tests {
 	}
 
 	#[test]
+	fn shared_graveyard_routing_table() {
+		use CaptureDest as D;
+		use CaptureMark::{Dot, Triangle};
+		let m = MarkCaptureRouting::Shared;
+		assert_eq!(m.route(Triangle, false), Some(D::SharedGraveyard));
+		assert_eq!(m.route(Triangle, true), Some(D::Hand));
+		assert_eq!(m.route(Dot, true), Some(D::SharedGraveyard));
+		assert_eq!(m.route(Dot, false), Some(D::Hand));
+		assert_eq!(MarkCaptureRouting::parse("shared"), Ok(m));
+		assert_eq!(CaptureDest::parse(D::SharedGraveyard.name()), Ok(D::SharedGraveyard));
+	}
+
+	#[test]
+	fn shared_graveyard_triangle_self_capture_returns_to_hand() {
+		let (game, id, bench_n) =
+			routed_self_capture(MarkCaptureRouting::Shared, CaptureMark::Triangle);
+		assert_eq!(game.bench(Player::One).len(), bench_n + 1);
+		let t = game.bench(Player::One).iter().find(|t| t.id == id).unwrap();
+		assert_eq!(t.owner, Player::One);
+		assert!(game.graveyard(Player::One).is_empty());
+	}
+
+	#[test]
+	fn shared_graveyard_dot_self_capture_is_recoverable_by_either_player() {
+		let (mut game, id, bench_n) =
+			routed_self_capture(MarkCaptureRouting::Shared, CaptureMark::Dot);
+		assert_eq!(game.bench(Player::One).len(), bench_n);
+		assert_eq!(game.graveyard(Player::One).len(), 1);
+		assert_eq!(game.graveyard(Player::Two)[0].id, id, "one pile for both players");
+		// P2 is to move: it may RECOVER the tile and owns it from then on.
+		assert_eq!(game.current_player(), Player::Two);
+		assert_eq!(game.legal_recovers(), vec![Action::Recover]);
+		game.apply(Action::Recover).unwrap();
+		let t = game.bench(Player::Two).iter().find(|t| t.id == id).unwrap();
+		assert_eq!(t.owner, Player::Two);
+		assert!(game.graveyard(Player::One).is_empty());
+	}
+
+	#[test]
+	fn shared_graveyard_triangle_opponent_capture_goes_to_the_pile() {
+		let (mut game, node) = claimable_opponent(routing_rules(MarkCaptureRouting::Shared));
+		let id = game.tile_at(node).unwrap().id;
+		let p1_bench = game.bench(Player::One).len();
+		game.apply(Action::Claim { node }).unwrap();
+		assert_eq!(game.bench(Player::One).len(), p1_bench, "CLAIM counts as triangle");
+		assert_eq!(game.graveyard(Player::Two).len(), 1);
+		assert_eq!(game.graveyard(Player::One)[0].id, id);
+	}
+
+	#[test]
 	fn mark_routing_without_graveyard_flag_still_allows_recover() {
 		let mut rules = routing_rules(MarkCaptureRouting::B);
 		rules.graveyard = false;
@@ -15495,6 +15790,73 @@ mod team_spawn_rules_tests {
 		assert!(on.legal_adds().contains(&Action::Add { bench_index: 0, node: s }));
 		let out = on.apply(Action::Add { bench_index: 0, node: s }).unwrap();
 		assert!(out.removals.len() >= 2, "adder and the orange single go");
+	}
+
+	/// Like [`suicide_add_setup`], but the overwhelmed single at neighbor 0
+	/// belongs to `single_owner`.
+	fn strict_add_setup(strict: bool, single_owner: Player) -> (Game, NodeId) {
+		let (mut game, s) = suicide_add_setup(true, None);
+		game.rules.strict_suicide_add = strict;
+		let n0 = game.board().neighbors(s)[0];
+		game.tiles[n0 as usize] = None;
+		let t = game.alloc_ring_kinds(single_owner, &[(TileColor::Orange, false)], 1, 1);
+		game.place_tile(n0, t);
+		(game, s)
+	}
+
+	#[test]
+	fn strict_suicide_add_bans_losing_the_added_tile_with_an_own_tile() {
+		let add = |s| Action::Add { bench_index: 0, node: s };
+		let (loose, s) = strict_add_setup(false, Player::One);
+		assert!(!loose.add_is_bare_suicide(0, s), "the own single goes too");
+		assert!(loose.add_is_enemyless_suicide(0, s));
+		assert!(loose.legal_adds().contains(&add(s)), "--no-suicide-add allows it");
+		let (mut strict, s) = strict_add_setup(true, Player::One);
+		assert!(!strict.legal_adds().contains(&add(s)));
+		assert!(strict.apply(add(s)).is_err());
+		let (mut enemy, s) = strict_add_setup(true, Player::Two);
+		assert!(!enemy.add_is_enemyless_suicide(0, s));
+		assert!(enemy.legal_adds().contains(&add(s)));
+		let out = enemy.apply(add(s)).unwrap();
+		assert!(out.removals.iter().any(|r| r.tile.owner == Player::Two));
+	}
+
+	#[test]
+	fn capture_d_is_the_default_capture_game() {
+		let d = RuleSet::capture_d();
+		assert_eq!(RulesetPreset::parse("capture"), Ok(RulesetPreset::CaptureD));
+		assert_eq!(RulesetPreset::parse("capture-score"), Ok(RulesetPreset::CaptureD));
+		assert_eq!(RulesetPreset::parse("capture-d"), Ok(RulesetPreset::CaptureD));
+		assert_eq!(RulesetPreset::parse("capture-c"), Ok(RulesetPreset::CaptureC));
+		let mut c = RuleSet::capture_c();
+		c.strict_suicide_add = true;
+		c.mark_capture_routing = MarkCaptureRouting::Shared;
+		c.no_return_turns = 2;
+		assert_eq!(d, c, "capture-d = capture-c + strict ADD + shared graveyard + 2-ply no-return");
+		let mut back = d;
+		back.apply_preset(RulesetPreset::CaptureC);
+		assert_eq!(back, RuleSet::capture_c(), "presets compose");
+		back.apply_preset(RulesetPreset::CaptureD);
+		assert_eq!(back, RuleSet::capture_d());
+	}
+
+	#[test]
+	fn capture_c_preset() {
+		let c = RuleSet::capture_c();
+		assert_eq!(RulesetPreset::parse("capture-b"), Ok(RulesetPreset::CaptureB));
+		let mut b = RuleSet::capture_b();
+		b.team_spawn = true;
+		b.ring_count_weights = RingCountWeights { singles: 10, doubles: 3, triples: 1 };
+		b.move_support = MoveSupport::Matched;
+		b.match_gain = MatchGain::MinusRings;
+		b.bench_ring_cap = 17;
+		b.surround_flip = true;
+		b.no_suicide_add = true;
+		assert_eq!(c, b, "capture-c = capture-b + combo + flip + no-suicide-add");
+		assert!(!c.strict_suicide_add && c.no_return_turns == 0 && !c.mirror_palette);
+		let mut back = c;
+		back.apply_preset(RulesetPreset::CaptureB);
+		assert_eq!(back, RuleSet::capture_b(), "presets compose");
 	}
 
 	#[test]
