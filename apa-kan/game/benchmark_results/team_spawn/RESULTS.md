@@ -243,3 +243,5 @@ Extra columns (lockouts before ply 40/60; own-only = ADDs where the added tile a
 - **Should a triangle's self-capture going to hand be free?** It's the source of the shared-graveyard free pass. It could go to the shared pile instead, or cost a turn.
 - **No-return window.** 2 plies is enough in the logs. 4 plies would also stop longer rotations, but we haven't seen one survive 2.
 - **The permuted-deck P1 edge persists** in strict (86-63) and shared (79-62), but not in all three (72-76). A seat-swap check is still pending.
+
+**Decision (Liam, t296): all three are locked in as the default.** `--ruleset capture-d` (aliases `capture`, `capture-score`) = capture-c + strict ADD + shared graveyard + 2-ply no-return, and it reproduces `cc_all` game for game (`smoke_cd`). `--ruleset capture-c` stays available as the previous default.

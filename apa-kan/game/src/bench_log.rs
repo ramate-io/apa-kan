@@ -2905,6 +2905,9 @@ mod tests {
 		// `--ruleset capture-c` reproduces the committed combo_flip_nosuicide
 		// games exactly (seeds 300 and 10300).
 		assert_committed_jsonl_gz_replays_n("benchmark_results/team_spawn/smoke_cc.jsonl.gz", 2);
+		// `--ruleset capture-d` (the default capture game) reproduces the
+		// committed cc_all games exactly (seeds 300 and 10300).
+		assert_committed_jsonl_gz_replays_n("benchmark_results/team_spawn/smoke_cd.jsonl.gz", 2);
 		for cell in [
 			"ts_base",
 			"ts_l1",

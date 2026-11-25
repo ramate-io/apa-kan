@@ -598,7 +598,7 @@ pub fn usage() -> &'static str {
 	   --opening-double <on|off>                  2-2-1-1 opening: P1 two actions, P2 two, then singles (default: on)\n\
 	   --opening <2-2-1-1|1-1-1-1>                Alias for --opening-double on|off\n\
 	   --objective <control|capture-score>        Win condition (default: control). capture-score: 1 point per opponent capture, no control wins\n\
-	   --ruleset <control|capture-b|capture-c>    One-switch preset. capture-b = capture-score, target 5, unlimited spawn, 1-1-1-1 opening, graveyard, mark routing B, no-immediate-return, repetition-ends. capture-c (alias capture, capture-score) = capture-b + team spawn, ring weights 10,3,1, move-support matched, match-gain minus-rings, bench-ring-cap 17, surround-flip, no-suicide-add. Later flags override (default: control)\n\
+	   --ruleset <control|capture-b|capture-c|capture-d>    One-switch preset. capture-b = capture-score, target 5, unlimited spawn, 1-1-1-1 opening, graveyard, mark routing B, no-immediate-return, repetition-ends. capture-c = capture-b + team spawn, ring weights 10,3,1, move-support matched, match-gain minus-rings, bench-ring-cap 17, surround-flip, no-suicide-add. capture-d (alias capture, capture-score) = capture-c + strict-suicide-add, mark-capture-routing shared, no-return-turns 2. Later flags override (default: control)\n\
 	   --score-target <1..64>                     First-to-N captures under capture-score (default: 6; capture-b: 5)\n\
 	   --unlimited-spawn <on|off>                 Captures return to the owner; ADD does not spend tokens (default: off)\n\
 	   --graveyard <on|off>                       Captures go to a graveyard; RECOVER (one action) returns the oldest to the bench (default: off)\n\
@@ -945,6 +945,8 @@ mod tests {
 	#[test]
 	fn ruleset_capture_c_and_new_toggles_parse() {
 		let c = GameConfig::parse(["--ruleset", "capture"]).unwrap();
+		assert_eq!(c.rules, RuleSet::capture_d());
+		let c = GameConfig::parse(["--ruleset", "capture-c"]).unwrap();
 		assert_eq!(c.rules, RuleSet::capture_c());
 		let t = GameConfig::parse([
 			"--ruleset",

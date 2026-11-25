@@ -3303,12 +3303,16 @@ pub enum RulesetPreset {
 	/// [`RuleSet::graveyard`], [`MarkCaptureRouting::B`],
 	/// [`RuleSet::no_immediate_return`] and [`RuleSet::repetition_ends`].
 	CaptureB,
-	/// The default capture-score game (#111 / #112): [`Self::CaptureB`] plus
-	/// team spawn, 10:3:1 singles-heavy collections, matched-neighborhood
-	/// moves (L1), defense = max(rings, matches) (L3), a 17-ring bench cap,
-	/// surround flip and no bare suicide ADDs. `--ruleset capture` and
-	/// `--ruleset capture-score` select it.
+	/// [`Self::CaptureB`] plus team spawn, 10:3:1 singles-heavy
+	/// collections, matched-neighborhood moves (L1), defense =
+	/// max(rings, matches) (L3), a 17-ring bench cap, surround flip and no
+	/// bare suicide ADDs (#111 / #112).
 	CaptureC,
+	/// The default capture-score game (#111 / #113): [`Self::CaptureC`]
+	/// plus strict suicide ADDs, [`MarkCaptureRouting::Shared`] (one shared
+	/// graveyard) and a 2-ply no-return window. `--ruleset capture` and
+	/// `--ruleset capture-score` select it.
+	CaptureD,
 }
 
 /// Score target of [`RulesetPreset::CaptureB`]. At a tied
@@ -3319,15 +3323,19 @@ pub const CAPTURE_B_SCORE_TARGET: u8 = 5;
 /// [`RulesetPreset::CaptureC`]'s bench ring cap.
 pub const CAPTURE_C_BENCH_RING_CAP: u8 = 17;
 
+/// [`RulesetPreset::CaptureD`]'s no-return window, in plies.
+pub const CAPTURE_D_NO_RETURN_TURNS: u8 = 2;
+
 impl RulesetPreset {
 	pub fn parse(s: &str) -> Result<Self, String> {
 		match s.to_ascii_lowercase().as_str() {
 			"control" | "default" => Ok(Self::Control),
 			"capture-b" | "capture_b" => Ok(Self::CaptureB),
-			"capture-c" | "capture_c" | "capture" | "capture-score" => Ok(Self::CaptureC),
-			other => {
-				Err(format!("unknown --ruleset '{other}' (expected control|capture-b|capture-c)"))
-			}
+			"capture-c" | "capture_c" => Ok(Self::CaptureC),
+			"capture-d" | "capture_d" | "capture" | "capture-score" => Ok(Self::CaptureD),
+			other => Err(format!(
+				"unknown --ruleset '{other}' (expected control|capture-b|capture-c|capture-d)"
+			)),
 		}
 	}
 
@@ -3336,6 +3344,7 @@ impl RulesetPreset {
 			Self::Control => "control",
 			Self::CaptureB => "capture-b",
 			Self::CaptureC => "capture-c",
+			Self::CaptureD => "capture-d",
 		}
 	}
 }
@@ -3344,15 +3353,24 @@ impl RuleSet {
 	/// Overwrite the fields [`RulesetPreset`] owns; everything else stays.
 	pub fn apply_preset(&mut self, preset: RulesetPreset) {
 		let d = RuleSet::default();
-		let capture = matches!(preset, RulesetPreset::CaptureB | RulesetPreset::CaptureC);
-		let c = matches!(preset, RulesetPreset::CaptureC);
+		let capture = matches!(
+			preset,
+			RulesetPreset::CaptureB | RulesetPreset::CaptureC | RulesetPreset::CaptureD
+		);
+		let c = matches!(preset, RulesetPreset::CaptureC | RulesetPreset::CaptureD);
+		let dd = matches!(preset, RulesetPreset::CaptureD);
 		self.objective = if capture { Objective::CaptureScore } else { d.objective };
 		self.score_target = if capture { CAPTURE_B_SCORE_TARGET } else { d.score_target };
 		self.unlimited_spawn = capture;
 		self.opening_double = if capture { false } else { d.opening_double };
 		self.graveyard = capture;
-		self.mark_capture_routing =
-			if capture { MarkCaptureRouting::B } else { MarkCaptureRouting::Off };
+		self.mark_capture_routing = if dd {
+			MarkCaptureRouting::Shared
+		} else if capture {
+			MarkCaptureRouting::B
+		} else {
+			MarkCaptureRouting::Off
+		};
 		self.no_immediate_return = capture;
 		self.repetition_ends = capture;
 		self.self_capture_penalty = SelfCapturePenalty::Off;
@@ -3369,16 +3387,24 @@ impl RuleSet {
 		self.bench_ring_cap = if c { CAPTURE_C_BENCH_RING_CAP } else { d.bench_ring_cap };
 		self.surround_flip = c;
 		self.no_suicide_add = c;
-		self.strict_suicide_add = false;
-		self.no_return_turns = 0;
+		// Capture-D additions.
+		self.strict_suicide_add = dd;
+		self.no_return_turns = if dd { CAPTURE_D_NO_RETURN_TURNS } else { 0 };
 		self.mirror_palette = false;
 	}
 
-	/// [`RuleSet::default`] with [`RulesetPreset::CaptureC`] applied: the
-	/// default capture-score game.
+	/// [`RuleSet::default`] with [`RulesetPreset::CaptureC`] applied.
 	pub fn capture_c() -> Self {
 		let mut r = Self::default();
 		r.apply_preset(RulesetPreset::CaptureC);
+		r
+	}
+
+	/// [`RuleSet::default`] with [`RulesetPreset::CaptureD`] applied: the
+	/// default capture-score game.
+	pub fn capture_d() -> Self {
+		let mut r = Self::default();
+		r.apply_preset(RulesetPreset::CaptureD);
 		r
 	}
 
@@ -15796,10 +15822,27 @@ mod team_spawn_rules_tests {
 	}
 
 	#[test]
-	fn capture_c_is_the_default_capture_game() {
+	fn capture_d_is_the_default_capture_game() {
+		let d = RuleSet::capture_d();
+		assert_eq!(RulesetPreset::parse("capture"), Ok(RulesetPreset::CaptureD));
+		assert_eq!(RulesetPreset::parse("capture-score"), Ok(RulesetPreset::CaptureD));
+		assert_eq!(RulesetPreset::parse("capture-d"), Ok(RulesetPreset::CaptureD));
+		assert_eq!(RulesetPreset::parse("capture-c"), Ok(RulesetPreset::CaptureC));
+		let mut c = RuleSet::capture_c();
+		c.strict_suicide_add = true;
+		c.mark_capture_routing = MarkCaptureRouting::Shared;
+		c.no_return_turns = 2;
+		assert_eq!(d, c, "capture-d = capture-c + strict ADD + shared graveyard + 2-ply no-return");
+		let mut back = d;
+		back.apply_preset(RulesetPreset::CaptureC);
+		assert_eq!(back, RuleSet::capture_c(), "presets compose");
+		back.apply_preset(RulesetPreset::CaptureD);
+		assert_eq!(back, RuleSet::capture_d());
+	}
+
+	#[test]
+	fn capture_c_preset() {
 		let c = RuleSet::capture_c();
-		assert_eq!(RulesetPreset::parse("capture"), Ok(RulesetPreset::CaptureC));
-		assert_eq!(RulesetPreset::parse("capture-score"), Ok(RulesetPreset::CaptureC));
 		assert_eq!(RulesetPreset::parse("capture-b"), Ok(RulesetPreset::CaptureB));
 		let mut b = RuleSet::capture_b();
 		b.team_spawn = true;

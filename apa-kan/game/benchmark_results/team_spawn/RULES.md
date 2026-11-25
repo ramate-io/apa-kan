@@ -2,7 +2,9 @@
 
 Stacked on `--ruleset capture-b` (#110). Every rule below is a toggle that is off by default. Design discussion is in #111.
 
-**Default capture game: `--ruleset capture-c`** (aliases `capture`, `capture-score`). It is capture-b plus team spawn, `--ring-count-weights 10,3,1`, `--move-support matched` (L1), `--match-gain minus-rings` (L3), `--bench-ring-cap 17`, `--surround-flip on` and `--no-suicide-add on`. It plays the committed `ts_l1_l3_cap17_flip_nosuicide` games exactly. The individual toggles stay for ablations, and later flags override the preset. `--ruleset capture-b` is still the old #110 game.
+**Default capture game: `--ruleset capture-d`** (aliases `capture`, `capture-score`; Liam, t296). It is capture-c plus `--strict-suicide-add on`, `--mark-capture-routing shared` and `--no-return-turns 2`. It plays the committed `cc_all` games exactly (`smoke_cd.jsonl.gz`, seeds 300 and 10300, is identical to `h2h_cc_all_mm` for the same seeds, actions and end included). Shared-graveyard semantics for now: the acting tile's mark routes each removal (CLAIM, Pass and RECOVER count as triangle), RECOVER takes the oldest tile in the shared pile, either player may take it, and the taker owns it.
+
+**`--ruleset capture-c`** is capture-b plus team spawn, `--ring-count-weights 10,3,1`, `--move-support matched` (L1), `--match-gain minus-rings` (L3), `--bench-ring-cap 17`, `--surround-flip on` and `--no-suicide-add on`. It plays the committed `ts_l1_l3_cap17_flip_nosuicide` games exactly and is the baseline for the cc_* cells. The individual toggles stay for ablations, and later flags override the preset. `--ruleset capture-b` is still the old #110 game.
 
 ## Team spawn (`--team-spawn on`, `--team-opening-adds 3`)
 

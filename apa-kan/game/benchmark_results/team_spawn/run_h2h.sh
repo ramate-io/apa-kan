@@ -108,6 +108,7 @@ case "$cfg" in
   combo_flip_nosuicide) cell ts_l1_l3_cap17_flip_nosuicide "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${FLIP[@]}" "${NOSUI[@]}" ;;
   combo_flip_nosuicide_perm) cell ts_l1_l3_cap17_flip_nosuicide_perm "${L1[@]}" "${L3[@]}" "${CAP[@]}" "${FLIP[@]}" "${NOSUI[@]}" "${PERM[@]}" ;;
   cc_smoke) run_one smoke_cc "${mm_pair[@]}" --games 1 --seed 300 "${CC[@]}" ;;
+  cd_smoke) run_one smoke_cd "${mm_pair[@]}" --games 1 --seed 300 --ruleset capture-d ;;
   cc_strict) cc_cell cc_strict "${STRICT[@]}" ;;
   cc_strict_perm) cc_cell cc_strict_perm "${STRICT[@]}" "${PERM[@]}" ;;
   cc_shared) cc_cell cc_shared "${SHARED[@]}" ;;
@@ -117,7 +118,7 @@ case "$cfg" in
   cc_all) cc_cell cc_all "${STRICT[@]}" "${SHARED[@]}" "${NORET[@]}" ;;
   cc_all_perm) cc_cell cc_all_perm "${STRICT[@]}" "${SHARED[@]}" "${NORET[@]}" "${PERM[@]}" ;;
   *)
-    echo "usage: $0 [smoke|base|l1|l3|combo|base_perm|l1_perm|l3_perm|combo_perm|combo_flip|combo_flip_perm|combo_flip_nosuicide|combo_flip_nosuicide_perm|cc_smoke|cc_strict[_perm]|cc_shared[_perm]|cc_noreturn[_perm]|cc_all[_perm]]" >&2
+    echo "usage: $0 [smoke|base|l1|l3|combo|base_perm|l1_perm|l3_perm|combo_perm|combo_flip|combo_flip_perm|combo_flip_nosuicide|combo_flip_nosuicide_perm|cc_smoke|cd_smoke|cc_strict[_perm]|cc_shared[_perm]|cc_noreturn[_perm]|cc_all[_perm]]" >&2
     exit 2
     ;;
 esac
