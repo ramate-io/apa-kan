@@ -109,3 +109,75 @@ Old capture-b (global spawns, 4:3:1 collections): first capture at a median of p
    - **The control games** (control cascade / majority). A flip converts control directly, without needing a mismatch, which is the missing counterplay #111 found there too.
    - **Little help with permuted or random-palette decks**, where contact already kills.
 4. **Turn the self-capture penalty on with the combo,** or ban dead-on-arrival ADDs, to remove the free pass.
+
+## Follow-up: combo + flip + no bare suicide ADDs (`--no-suicide-add on`)
+
+**Rule.** An ADD is illegal when the added tile would be overwhelmed on arrival and the same ADD removes no other tile, yours or your opponent's. A flip is not a removal. Search uses the same check, and no tactics were added. A test replays committed games and confirms the check matches what applying the ADD actually removes.
+
+New cells: `ts_l1_l3_cap17_flip_nosuicide` and `ts_l1_l3_cap17_flip_nosuicide_perm`, with the same settings as the combo cells plus `--surround-flip on --no-suicide-add on`. Both are committed and replayed in CI.
+
+| cell | P1 W-D-L | turns med | TL (draws) | rep draws | locked-out | comebacks | lead≤1 | self-caps/g | enemy caps by rings 1/2/3 | bench singles | single share of actions | life med 1/2/3 | singles alive at end | no-capture turns | longest dry med/p75 | freezes ≥15 mutual/one-sided | flips |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| combo | 66-18-66 | 125.0 | 41 (18) | 4 | 4 | 27/132 | 26 | 10.83 | 488/476/122 | 56.8% | 75.4% | 44/32.5/36.0 | 53.1% | 82.6% | 20.0/34 | 83/31 | 0 |
+| combo_flip | 65-18-67 | 116.0 | 32 (17) | 5 | 34 | 31/132 | 31 | 11.69 | 436/456/126 | 56.8% | 70.9% | 40/30/29 | 52.9% | 83.6% | 19.0/37 | 79/31 | 1237 |
+| **combo_flip_nosuicide** | 67-9-74 | **106.5** | 15 (**8**) | 4 | 34 | 32/141 | 27 | 9.53 | 456/456/137 | 56.8% | 70.6% | 36.0/26.0/24.5 | 53.1% | 82.6% | 18.0/29 | 75/45 | 892 |
+| combo_perm | 73-19-58 | 80.5 | 18 (14) | 12 | 0 | 31/131 | 33 | 19.42 | 512/543/121 | 57.0% | 68.2% | 8.0/16/23.5 | 30.1% | 79.7% | 16.0/30 | 66/34 | 0 |
+| combo_flip_perm | 69-17-64 | 84.0 | 18 (14) | 12 | 9 | 33/133 | 25 | 20.01 | 517/520/130 | 57.0% | 67.3% | 8.0/16/23 | 30.2% | 80.2% | 16.5/31 | 67/31 | 94 |
+| **combo_flip_nosuicide_perm** | 83-7-60 | 80.5 | 7 (**7**) | 2 | 9 | 43/143 | 22 | 14.94 | 573/510/131 | 57.0% | 65.9% | 9.0/13/17.0 | 28.0% | 78.5% | 15.0/29 | 62/29 | 63 |
+
+**Numbers.**
+- **Draws drop by half or more.** Normal decks: 18 draws → 9, turn-limit draws 17 → 8, median 116 → 106.5 plies. Permuted decks: 17 draws → 7, repetition draws 12 → 2.
+- **Lockouts are unchanged in count** (34 normal, 9 permuted), but they end harder. Normal-deck lockout losers end with 1 piece in 17 games (8 before) and 0 pieces in 3 (12 before).
+- **The permuted cell's P1 edge grows to 83-60.** That's 58% of decisive games, z ≈ 1.9 (p ≈ 0.06). It's borderline, and it was already 73-58 in combo_perm, so it's worth a seat-swap check before trusting it.
+
+**How bots wait out standoffs now** (action mix on turns with no capture available):
+
+| cell | MOVE | SWAP | ADD | RECOVER | SWAP(flip) | MOVE(flip) | suicide ADD |
+|---|---|---|---|---|---|---|---|
+| combo_flip | 48% | 16% | 16% | 11% | 6% | 1% | 3% |
+| combo_flip_nosuicide | 50% | 16% | 18% | 10% | 4% | 1% | – |
+| combo_flip_perm | 37% | 8% | 21% | 23% | 0% | 0% | 10% |
+| combo_flip_nosuicide_perm | 44% | 9% | 28% | 19% | 0% | 0% | – |
+
+- **The bare-suicide pass is gone.** Bare suicides drop from 450 to 0 (normal) and from 1,275 to 0 (permuted).
+- **Bots shift to shuffling MOVEs and safe ADDs.** That works on permuted decks especially, where the suicide pass had been 10% of waiting turns.
+- **The rule leaves a loophole.** An ADD that loses the added tile plus one of your own tiles is still legal. Those rise from 112 to 163 (normal) and from 183 to 365 (permuted). It costs two pieces instead of zero, so it's no longer free, but it's the new pass in permuted standoffs. Same-tile repeats within 8 plies fall from 26–35% to 10–13%.
+
+**Flips.**
+
+| cell | flips | games with flips | ping-pong (re-flip within 2 plies) | by SWAP / MOVE / ADD | flipped by a single |
+|---|---|---|---|---|---|
+| combo_flip | 1237 | 100 | 389 (31%) in 21 games | 965 / 244 / 28 | 92% |
+| combo_flip_nosuicide | 892 | 106 | 194 (22%) in 20 games | 659 / 206 / 27 | 91% |
+| combo_flip_perm | 94 | 40 | 0 | 41 / 46 / 7 | 68% |
+| combo_flip_nosuicide_perm | 63 | 34 | 0 | 22 / 35 / 6 | 71% |
+
+- **Flips spread wider but waste less.** Normal decks: flips show up in slightly more games (106 vs 100), and there are fewer total (892 vs 1237), mostly because ping-pong halves (389 → 194). The side that made most of the flips wins 62 of 106 games.
+- **Flip still barely fires with permuted decks,** and the ban doesn't change that. Mismatched contact captures before it can surround.
+
+### Qualitative read of the logs
+
+The same seed gives the same decks in both cells, but games diverge by about ply 3, so pairs share a deck, not a game.
+
+**combo_flip**
+- **Flips cluster in long games.** Score wins (78) have a median of 0 flips, and 46 have none at all. Lockouts and turn-limit games have a median of 8, and repetition games 22. Flip kicks in when the game would otherwise freeze.
+- **Real counterplay: g10.** It sits in a 4-4 standoff until P1 SWAPs singles in and flips P2's diamond nodes 18, 19 and 20. P2 drops to 1 piece and has no legal action.
+- **g45 (lockout at ply 56).** P2 flips P1's inner diamond node 6 (a triple), then node 3. P1's legal actions go 7 → 5 → 2 → 1 → none.
+- **Slow squeeze: g16 and g33.** By ply 55 the loser is down to 1–3 pieces with 4–9 legal actions. With nothing left to capture, the score freezes (g33 sits at 4-1 for 50 plies), and the winner shuffles until the last piece can't move. Lockout is the only way such a game can end.
+- **Noise: g106 and g52.** g106 is a 100-ply ping-pong. P1 SWAPs a single into the center, which flips node 6. P2 SWAPs back, which flips node 21. This repeats until the turn limit, even while P2 has 4 capture options. g52 has a shorter version (plies 106–116).
+- **Singles.** They make 71% of actions and 67% of capturing actions, and they're the actor in 92% of flips. Every SWAP is a single.
+- **Center.** It's held by a single 48% of the time and empty 39%. It's the ping-pong pivot: from the center a single touches both inner diamond nodes (6, 18) and the inner ring, so one SWAP can flip a 3-neighbor inner node.
+- **Waiting.** Late-game suicide ADDs (g52: P2 at 6–7 legal actions) are a minor share. Most waiting is MOVE shuffling.
+
+**combo_flip_nosuicide**
+- **Ping-pong is still there but halved.** g122 has a long center SWAP loop (from ply ~90) flipping nodes 9 and 1, and ends in a 3-3 turn-limit draw. Taking the suicide pass away doesn't stop it. A SWAP in the center is still a free, reversible move.
+- **Standoffs now break into lockouts.** g106 (the same deck as combo_flip's 100-ply ping-pong) ends in a lockout at ply 95 at 4-4. P1 flips P2's diamond nodes 3, 21 and 18 with single SWAPs, and P2's legal actions fall 24 → 11 → 4. This happened because P2 no longer has the suicide ADD as a free escape.
+- **New, abrupt lockouts on degenerate decks.** g116 is a near-mono-orange deck, all doubles [0,0] plus a few singles, which went to the turn limit under combo_flip. Here it's a lockout at ply 21: one P2 capture and one P1 flip on node 18, then P2's 4 pieces are all frozen by L1, it has no legal ADD, and RECOVER is its only legal action. In the permuted cell, g80 is locked out at ply 25 the same way, after P2 had 2 frozen pieces and only RECOVER for two turns. Lockouts before ply 40 go from 0 to 1 (normal) and from 0 to 2 (permuted).
+- **Lockout endings look like conquest.** In 33 of 34 the winner holds the loser's diamond, and the loser usually has exactly 1 piece left (17 of 34).
+- **Singles and center are unchanged.** Singles make 71% of actions, 65% of capturing actions and 91% of flips. The center is held by a single 46% of the time.
+
+**Takeaways**
+1. The ban does what you hoped on the draw side. It halves draws in both deck types and shortens normal-deck games to about 106 plies. It doesn't kill flip: flips reach more games, with less ping-pong.
+2. It doesn't touch the center SWAP ping-pong. A no-immediate-re-flip rule (a ko) or a 4-enemy-neighbor threshold on inner nodes would still help.
+3. It makes "frozen + no safe ADD" a lockout. That gives a few very short lockouts on degenerate decks, and lockouts with the loser holding exactly 1 piece become the typical ending. If those are unwanted, a graveyard restructure that gives the stuck side a real move, rather than a free pass, may be the cleaner lever.
+4. The own-tile-plus-added-tile suicide is the remaining wait move. It isn't free, but if you want it gone too, ban any ADD where the added tile dies unless it also removes an enemy tile.
